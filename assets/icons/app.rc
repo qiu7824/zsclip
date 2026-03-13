@@ -1,0 +1,2 @@
+#include <winres.h>
+IDI_APP ICON "clipboard.ico"
