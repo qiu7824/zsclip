@@ -16,8 +16,8 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::mem::{size_of, zeroed};
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::process::Command;
 use rusqlite::params;
@@ -37,6 +37,10 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetLastError() -> u32;
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
+    fn GlobalAlloc(uflags: u32, dwbytes: usize) -> *mut core::ffi::c_void;
+    fn GlobalLock(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    fn GlobalUnlock(hmem: *mut core::ffi::c_void) -> i32;
+    fn GlobalFree(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
 }
 
 #[link(name = "psapi")]
@@ -68,65 +72,6 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn SetWindowTheme(hwnd: HWND, pszsubappid: *const u16, pszsubidlist: *const u16) -> i32;
 }
-
-// 进程启动时调用：让系统菜单/控件跟随深色主题（Win10 1903+ 未公开接口）
-pub(crate) unsafe fn init_dark_mode_for_process() {
-    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    let lib = LoadLibraryW(to_wide("uxtheme.dll").as_ptr());
-    if lib.is_null() { return; }
-    // 序号135: SetPreferredAppMode(mode)  0=Default 1=AllowDark 2=ForceDark
-    type FnSetMode = unsafe extern "system" fn(i32) -> i32;
-    if let Some(f) = core::mem::transmute::<_, Option<FnSetMode>>(GetProcAddress(lib, 135usize as _)) {
-        f(if is_dark_mode() { 2 } else { 0 });
-    }
-    // 序号136: FlushMenuThemes()  刷新已存在的菜单
-    type FnFlush = unsafe extern "system" fn();
-    if let Some(f) = core::mem::transmute::<_, Option<FnFlush>>(GetProcAddress(lib, 136usize as _)) {
-        f();
-    }
-    FreeLibrary(lib);
-}
-
-// 对单个窗口允许深色模式（标题栏+系统控件）
-pub(crate) unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
-    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    if is_dark_mode() {
-        let val: u32 = 1;
-        DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
-    }
-    let lib = LoadLibraryW(to_wide("uxtheme.dll").as_ptr());
-    if lib.is_null() { return; }
-    // 序号133: AllowDarkModeForWindow(hwnd, allow)
-    type FnAllow = unsafe extern "system" fn(HWND, i32) -> i32;
-    if let Some(f) = core::mem::transmute::<_, Option<FnAllow>>(GetProcAddress(lib, 133usize as _)) {
-        f(hwnd, if is_dark_mode() { 1 } else { 0 });
-    }
-    FreeLibrary(lib);
-}
-
-/// 给 PopupMenu 设置主题背景色，使菜单跟随系统深色/浅色配置
-/// 在 CreatePopupMenu() 之后、TrackPopupMenu() 之前调用
-/// 让弹出菜单跟随系统深色/浅色主题，颜色完全统一（图标列+文字列+高亮）。
-/// 原理：依赖 uxtheme.dll 私有 API 使系统接管菜单渲染，
-/// 不自定义 hbrBack（自定义 brush 只染文字列，图标列/高亮仍用 COLOR_MENU，导致色差）。
-/// init_dark_mode_for_process() 启动时已调用 SetPreferredAppMode(ForceDark/Default)，
-/// 此处只需 FlushMenuThemes 刷新当前菜单即可。
-pub(crate) unsafe fn apply_theme_to_menu(hmenu: *mut core::ffi::c_void) {
-    if hmenu.is_null() { return; }
-    use windows_sys::Win32::System::LibraryLoader::{LoadLibraryW, GetProcAddress};
-    use windows_sys::Win32::Foundation::FreeLibrary;
-    let lib = LoadLibraryW(to_wide("uxtheme.dll").as_ptr());
-    if lib.is_null() { return; }
-    // ord 136: FlushMenuThemes — 通知系统以当前 AppMode 重绘菜单
-    type FnFlush = unsafe extern "system" fn();
-    if let Some(f) = core::mem::transmute::<_, Option<FnFlush>>(GetProcAddress(lib, 136usize as _)) {
-        f();
-    }
-    FreeLibrary(lib);
-}
-
 
 #[repr(C)]
 struct TRACKMOUSEEVENT {
@@ -162,20 +107,17 @@ struct INPUT {
 const INPUT_KEYBOARD: u32 = 1;
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
+pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
+use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell};
 use crate::sticker::show_image_sticker;
 use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
 use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
-use crate::settings_model::{settings_section_body_rect, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
-use crate::settings_render::{draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x, settings_title_rect_win as settings_title_rect, SETTINGS_CLASS, IDC_SET_SAVE, IDC_SET_CLOSE, IDC_SET_AUTOSTART, IDC_SET_CLOSETRAY, IDC_SET_CLICK_HIDE, IDC_SET_EDGEHIDE, IDC_SET_HOVERPREVIEW, IDC_SET_MAX, IDC_SET_POSMODE, IDC_SET_DX, IDC_SET_DY, IDC_SET_FX, IDC_SET_FY, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_ADD, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_UP, IDC_SET_GROUP_DOWN, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_PLUGIN_MAILMERGE};
-use crate::settings_ui_host::{create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_toggle_component, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind, WM_SETTINGS_DROPDOWN_SELECTED};
-use crate::settings_layout::{SETTINGS_CONTENT_TOTAL_H, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE};
-
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
 use crate::time_utils::{format_created_at_local, format_local_time_for_image_preview, now_utc_sqlite};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::settings_registry::{SettingsCtrlReg, SettingsPage, SettingsUiRegistry};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_MAX, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_SAVE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, nav_divider_x, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -187,7 +129,7 @@ use windows_sys::Win32::{
         DEFAULT_GUI_FONT, NULL_PEN, SRCCOPY,
     },
     System::{
-        DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData},
+        DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData},
         LibraryLoader::GetModuleHandleW,
         Ole::{DoDragDrop, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY},
     },
@@ -228,8 +170,6 @@ const LIST_W: i32 = 288;
 const LIST_H: i32 = 538;
 const LIST_PAD: i32 = 4;
 const ROW_H: i32 = 44;
-const BTN_W: i32 = 32;
-const BTN_GAP: i32 = 2;
 const SEARCH_LEFT: i32 = 58;
 const SEARCH_TOP: i32 = 4;
 const SEARCH_W: i32 = 112;
@@ -263,42 +203,7 @@ const IDM_ROW_GROUP_BASE: usize = 41100;
 const IDM_GROUP_FILTER_ALL: usize = 41200;
 const IDM_GROUP_FILTER_BASE: usize = 41210;
 const HOTKEY_ID: i32 = 1;
-const MK_LBUTTON_FLAG: u32 = 0x0001;
-const S_OK_HR: i32 = 0;
-const E_NOINTERFACE_HR: i32 = 0x80004002u32 as i32;
-const E_POINTER_HR: i32 = 0x80004003u32 as i32;
-const DRAGDROP_S_DROP_HR: i32 = 0x00040100;
-const DRAGDROP_S_CANCEL_HR: i32 = 0x00040101;
-const DRAGDROP_S_USEDEFAULTCURSORS_HR: i32 = 0x00040102;
-const RPC_E_CHANGED_MODE_HR: i32 = 0x80010106u32 as i32;
-const IID_IUNKNOWN_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
-const IID_IDROPSOURCE_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x00000121_0000_0000_c000_000000000046);
-const IID_IDATAOBJECT_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
-
-#[repr(C)]
-struct RawIUnknown {
-    vtbl: *const RawIUnknownVtbl,
-}
-
-#[repr(C)]
-struct RawIUnknownVtbl {
-    query_interface: unsafe extern "system" fn(*mut core::ffi::c_void, *const windows_sys::core::GUID, *mut *mut core::ffi::c_void) -> windows_sys::core::HRESULT,
-    add_ref: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
-    release: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
-}
-
-#[repr(C)]
-struct RawDropSourceVtbl {
-    base: RawIUnknownVtbl,
-    query_continue_drag: unsafe extern "system" fn(*mut core::ffi::c_void, i32, u32) -> windows_sys::core::HRESULT,
-    give_feedback: unsafe extern "system" fn(*mut core::ffi::c_void, DROPEFFECT) -> windows_sys::core::HRESULT,
-}
-
-#[repr(C)]
-struct SimpleDropSource {
-    vtbl: *const RawDropSourceVtbl,
-    refs: AtomicU32,
-}
+const MAIN_UI_LAYOUT: MainUiLayout = MainUiLayout::zsclip();
 
 const EN_CHANGE_CODE: u16 = 0x0300;
 const MOD_ALT: u32 = 0x0001;
@@ -308,7 +213,6 @@ const MOD_WIN: u32 = 0x0008;
 const MOD_NOREPEAT: u32 = 0x4000;
 const TME_LEAVE: u32 = 0x00000002;
 const WM_MOUSELEAVE: u32 = 0x02A3;
-const CF_HDROP: u32 = 15;
 
 type AppResult<T> = Result<T, io::Error>;
 
@@ -559,38 +463,6 @@ struct DbItem {
     created_at: String,
 }
 
-
-#[derive(Clone, Debug)]
-pub(crate) struct ClipGroup {
-    id: i64,
-    name: String,
-}
-
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ClipKind {
-    Text,
-    Image,
-    Phrase,
-    Files,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ClipItem {
-    pub(crate) id: i64,
-    pub(crate) kind: ClipKind,
-    pub(crate) preview: String,
-    pub(crate) text: Option<String>,
-    pub(crate) file_paths: Option<Vec<String>>,
-    pub(crate) image_bytes: Option<Vec<u8>>,
-    pub(crate) image_path: Option<String>,
-    pub(crate) image_width: usize,
-    pub(crate) image_height: usize,
-    pub(crate) pinned: bool,
-    pub(crate) group_id: i64,
-    pub(crate) created_at: String,  // "YYYY-MM-DD HH:MM:SS" UTC
-}
-
 #[derive(Clone, Copy)]
 #[derive(Default)]
 pub(crate) struct Icons {
@@ -639,26 +511,15 @@ pub(crate) struct AppState {
     pub(crate) records: Vec<ClipItem>,
     pub(crate) phrases: Vec<ClipItem>,
     pub(crate) groups: Vec<ClipGroup>,
-    pub(crate) filtered_indices: Vec<usize>,
-    pub(crate) tab_index: usize,
-    pub(crate) search_on: bool,
-    pub(crate) search_text: String,
-    pub(crate) hover_idx: i32,
-    pub(crate) sel_idx: i32,
-    pub(crate) scroll_y: i32,
+    pub(crate) list: ClipListState,
     pub(crate) hover_btn: &'static str,
     pub(crate) down_btn: &'static str,
     pub(crate) down_row: i32,
     pub(crate) down_x: i32,
     pub(crate) down_y: i32,
     pub(crate) hover_tab: i32,
-    pub(crate) current_group_filter: i64,
-    pub(crate) tab_group_filters: [i64; 2],
-    pub(crate) selected_rows: BTreeSet<i32>,
-    pub(crate) selection_anchor: i32,
     pub(crate) last_signature: String,
     pub(crate) ignore_clipboard_until: Option<Instant>,
-    pub(crate) context_row: i32,
     pub(crate) settings: AppSettings,
     pub(crate) hotkey_registered: bool,
     pub(crate) hotkey_conflict_notified: bool,
@@ -667,6 +528,20 @@ pub(crate) struct AppState {
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
     pub(crate) paste_return_to_main: bool,
+}
+
+impl Deref for AppState {
+    type Target = ClipListState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.list
+    }
+}
+
+impl DerefMut for AppState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.list
+    }
 }
 
 
@@ -679,26 +554,15 @@ impl AppState {
             records: Vec::new(),
             phrases: Vec::new(),
             groups: Vec::new(),
-            filtered_indices: Vec::new(),
-            tab_index: 0,
-            search_on: false,
-            search_text: String::new(),
-            hover_idx: -1,
-            sel_idx: -1,
-            scroll_y: 0,
+            list: ClipListState::default(),
             hover_btn: "",
             down_btn: "",
             down_row: -1,
             down_x: 0,
             down_y: 0,
             hover_tab: -1,
-            current_group_filter: 0,
-            tab_group_filters: [0, 0],
-            selected_rows: BTreeSet::new(),
-            selection_anchor: -1,
             last_signature: String::new(),
             ignore_clipboard_until: None,
-            context_row: -1,
             settings: load_settings(),
             hotkey_registered: false,
             hotkey_conflict_notified: false,
@@ -747,63 +611,29 @@ impl AppState {
     }
 
     fn refilter(&mut self) {
-        let key = self.search_text.trim().to_lowercase();
-        let group_filter = if self.settings.grouping_enabled { self.current_group_filter } else { 0 };
-        let matches: Vec<usize> = self
-            .active_items()
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                let group_ok = if group_filter == 0 {
-                    true
-                } else {
-                    item.group_id == group_filter
-                };
-                let search_ok = key.is_empty() || item.preview.to_lowercase().contains(&key);
-                if group_ok && search_ok { Some(idx) } else { None }
-            })
-            .collect();
-        self.filtered_indices = matches;
-        if self.sel_idx >= self.filtered_indices.len() as i32 {
-            self.sel_idx = if self.filtered_indices.is_empty() { -1 } else { 0 };
-        }
-        if self.hover_idx >= self.filtered_indices.len() as i32 {
-            self.hover_idx = -1;
-        }
-        let max_idx = self.filtered_indices.len() as i32;
-        self.selected_rows = self.selected_rows.iter().copied().filter(|i| *i >= 0 && *i < max_idx).collect();
-        if self.sel_idx >= max_idx { self.sel_idx = if max_idx > 0 { max_idx - 1 } else { -1 }; }
+        let grouping_enabled = self.settings.grouping_enabled;
+        let items = if self.list.tab_index == 0 {
+            &self.records
+        } else {
+            &self.phrases
+        };
+        self.list.refilter_with(items, grouping_enabled);
         self.clamp_scroll();
     }
 
     fn clear_selection(&mut self) {
-        self.sel_idx = -1;
-        self.hover_idx = -1;
+        self.list.clear_selection();
         self.down_row = -1;
         self.down_x = 0;
         self.down_y = 0;
-        self.selected_rows.clear();
-        self.selection_anchor = -1;
     }
 
     fn row_is_selected(&self, visible_idx: i32) -> bool {
-        visible_idx >= 0 && (self.sel_idx == visible_idx || self.selected_rows.contains(&visible_idx))
-    }
-
-    fn selected_visible_rows(&self) -> Vec<i32> {
-        let mut rows: Vec<i32> = self.selected_rows.iter().copied().collect();
-        if self.sel_idx >= 0 && !rows.contains(&self.sel_idx) {
-            rows.push(self.sel_idx);
-        }
-        rows.sort_unstable();
-        rows
+        self.list.row_is_selected(visible_idx)
     }
 
     fn selected_source_indices(&self) -> Vec<usize> {
-        let mut src: Vec<usize> = self.selected_visible_rows().into_iter().filter_map(|v| self.filtered_indices.get(v as usize).copied()).collect();
-        src.sort_unstable();
-        src.dedup();
-        src
+        self.list.selected_source_indices()
     }
 
     fn delete_selected_rows(&mut self) {
@@ -845,13 +675,8 @@ impl AppState {
         self.selected_source_indices().into_iter().filter_map(|i| self.active_items().get(i).cloned()).collect()
     }
 
-    fn selected_count(&self) -> usize {
-        self.selected_source_indices().len()
-    }
-
     fn context_selection_count(&self) -> usize {
-        let n = self.selected_count();
-        if n == 0 && self.context_row >= 0 { 1 } else { n }
+        self.list.context_selection_count()
     }
 
     fn context_selection_has_unpinned(&self) -> bool {
@@ -916,145 +741,56 @@ impl AppState {
 
 
     fn list_view_height(&self) -> i32 {
-        LIST_H - 2 * LIST_PAD
+        MAIN_UI_LAYOUT.list_view_height()
     }
 
     fn total_content_height(&self) -> i32 {
-        self.filtered_indices.len() as i32 * ROW_H
-    }
-
-    fn max_scroll(&self) -> i32 {
-        max(0, self.total_content_height() - self.list_view_height())
+        MAIN_UI_LAYOUT.total_content_height(self.filtered_indices.len())
     }
 
     fn clamp_scroll(&mut self) {
-        self.scroll_y = min(max(0, self.scroll_y), self.max_scroll());
+        self.scroll_y = MAIN_UI_LAYOUT.clamp_scroll(self.scroll_y, self.filtered_indices.len());
     }
 
     fn ensure_visible(&mut self, idx: i32) {
-        if idx < 0 {
-            return;
-        }
-        let top = idx * ROW_H;
-        let bottom = top + ROW_H;
-        let view_top = self.scroll_y;
-        let view_bottom = self.scroll_y + self.list_view_height();
-        if top < view_top {
-            self.scroll_y = top;
-        } else if bottom > view_bottom {
-            self.scroll_y = bottom - self.list_view_height();
-        }
-        self.clamp_scroll();
+        self.scroll_y = MAIN_UI_LAYOUT.ensure_visible(self.scroll_y, idx, self.filtered_indices.len());
     }
 
     fn row_rect(&self, visible_idx: i32) -> Option<RECT> {
-        if visible_idx < 0 || visible_idx >= self.filtered_indices.len() as i32 {
-            return None;
-        }
-        let inner_l = LIST_X + LIST_PAD;
-        let inner_t = LIST_Y + LIST_PAD;
-        let y0 = inner_t + visible_idx * ROW_H - self.scroll_y;
-        Some(RECT {
-            left: inner_l,
-            top: y0,
-            right: inner_l + LIST_W - 2 * LIST_PAD,
-            bottom: y0 + ROW_H,
-        })
+        MAIN_UI_LAYOUT
+            .row_rect(visible_idx, self.filtered_indices.len(), self.scroll_y)
+            .map(Into::into)
     }
 
     fn quick_delete_rect(&self, visible_idx: i32) -> Option<RECT> {
-        let row = self.row_rect(visible_idx)?;
-        let size = 16;
-        let l = row.right - 10 - size - 12;
-        let t = row.top + (ROW_H - size) / 2;
-        Some(RECT {
-            left: l,
-            top: t,
-            right: l + size,
-            bottom: t + size,
-        })
+        MAIN_UI_LAYOUT
+            .quick_delete_rect(visible_idx, self.filtered_indices.len(), self.scroll_y)
+            .map(Into::into)
     }
 
     fn search_rect(&self) -> RECT {
-        RECT {
-            left: SEARCH_LEFT,
-            top: SEARCH_TOP,
-            right: SEARCH_LEFT + SEARCH_W,
-            bottom: SEARCH_TOP + SEARCH_H,
-        }
+        MAIN_UI_LAYOUT.search_rect().into()
     }
 
     fn title_button_rect(&self, key: &str) -> RECT {
-        let x_close = WIN_W - 4 - BTN_W;
-        let x_min = x_close - BTN_GAP - BTN_W;
-        let x_set = x_min - BTN_GAP - BTN_W;
-        let x_search = x_set - BTN_GAP - BTN_W;
-        let x = match key {
-            "search" => x_search,
-            "setting" => x_set,
-            "min" => x_min,
-            _ => x_close,
-        };
-        let top = (TITLE_H - BTN_W) / 2;
-        RECT {
-            left: x,
-            top,
-            right: x + BTN_W,
-            bottom: top + BTN_W,
-        }
+        MAIN_UI_LAYOUT.title_button_rect(key).into()
     }
 
     fn segment_rects(&self) -> (RECT, RECT) {
-        let inner_l = SEG_X + 1;
-        let inner_t = SEG_Y + 1;
-        let inner_w = SEG_W - 2;
-        let inner_h = SEG_H - 2;
-        let gap = 1;
-        let btn_w = (inner_w - gap) / 2;
-        (
-            RECT {
-                left: inner_l,
-                top: inner_t,
-                right: inner_l + btn_w,
-                bottom: inner_t + inner_h,
-            },
-            RECT {
-                left: inner_l + btn_w + gap,
-                top: inner_t,
-                right: inner_l + inner_w,
-                bottom: inner_t + inner_h,
-            },
-        )
+        let (left, right) = MAIN_UI_LAYOUT.segment_rects();
+        (left.into(), right.into())
     }
 
     fn scrollbar_track_rect(&self) -> Option<RECT> {
-        let total_h = self.total_content_height();
-        let view_h = self.list_view_height();
-        if total_h <= view_h {
-            return None;
-        }
-        Some(RECT {
-            left: LIST_X + LIST_W - LIST_PAD - 8 - 2,
-            top: LIST_Y + LIST_PAD + 2,
-            right: LIST_X + LIST_W - LIST_PAD - 2,
-            bottom: LIST_Y + LIST_H - LIST_PAD - 2,
-        })
+        MAIN_UI_LAYOUT
+            .scrollbar_track_rect(self.filtered_indices.len())
+            .map(Into::into)
     }
 
     fn scrollbar_thumb_rect(&self) -> Option<RECT> {
-        let track = self.scrollbar_track_rect()?;
-        let track_h = track.bottom - track.top;
-        let total_h = self.total_content_height();
-        let view_h = self.list_view_height();
-        let thumb_h = max(28, (track_h as f32 * (view_h as f32 / total_h as f32)) as i32);
-        let max_scroll = max(1, self.max_scroll());
-        let thumb_y = track.top + ((track_h - thumb_h) as f32 * (self.scroll_y as f32 / max_scroll as f32)) as i32;
-        Some(RECT {
-            left: track.left + 1,
-            top: thumb_y,
-            right: track.right - 1,
-            bottom: thumb_y + thumb_h,
-        })
+        MAIN_UI_LAYOUT
+            .scrollbar_thumb_rect(self.filtered_indices.len(), self.scroll_y)
+            .map(Into::into)
     }
 
     fn delete_selected(&mut self) {
@@ -3783,7 +3519,7 @@ pub fn run() -> AppResult<()> {
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // 已有实例：找到主窗口并激活
             use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SetForegroundWindow, SW_RESTORE};
-            let cls = crate::app::to_wide("ZsClipMain");
+            let cls = to_wide("ZsClipMain");
             let hwnd = FindWindowW(cls.as_ptr(), core::ptr::null());
             if !hwnd.is_null() {
                 ShowWindow(hwnd, SW_RESTORE);
@@ -3862,18 +3598,6 @@ pub fn run() -> AppResult<()> {
     Ok(())
 }
 
-
-pub(crate) unsafe fn apply_window_corner_preference(hwnd: HWND) {
-    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
-    const DWMWCP_ROUND: u32 = 2;
-    let pref: u32 = DWMWCP_ROUND;
-    let _ = DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_WINDOW_CORNER_PREFERENCE,
-        &pref as *const _ as *const core::ffi::c_void,
-        core::mem::size_of::<u32>() as u32,
-    );
-}
 
 unsafe fn apply_main_window_region(hwnd: HWND) {
     apply_window_corner_preference(hwnd);
@@ -4270,8 +3994,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         }
         IDM_GROUP_FILTER_ALL => {
             state.current_group_filter = 0;
-            if state.tab_index < state.tab_group_filters.len() {
-                state.tab_group_filters[state.tab_index] = 0;
+            let tab_index = state.tab_index;
+            if tab_index < state.tab_group_filters.len() {
+                state.tab_group_filters[tab_index] = 0;
             }
             state.scroll_y = 0;
             state.clear_selection();
@@ -4297,8 +4022,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             let idx = cmd - IDM_GROUP_FILTER_BASE;
             if let Some(group_id) = state.groups.get(idx).map(|g| g.id) {
                 state.current_group_filter = group_id;
-                if state.tab_index < state.tab_group_filters.len() {
-                    state.tab_group_filters[state.tab_index] = group_id;
+                let tab_index = state.tab_index;
+                if tab_index < state.tab_group_filters.len() {
+                    state.tab_group_filters[tab_index] = group_id;
                 }
                 state.scroll_y = 0;
                 state.clear_selection();
@@ -5080,12 +4806,12 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
         item_ref
     };
 
-    let mut clipboard = match Clipboard::new() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
     let ok = match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
+            let mut clipboard = match Clipboard::new() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
             if let Some(text) = &item.text {
                 clipboard.set_text(text.clone()).is_ok()
             } else {
@@ -5093,6 +4819,10 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
             }
         }
         ClipKind::Image => {
+            let mut clipboard = match Clipboard::new() {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
             if let Some((bytes, width, height)) = ensure_item_image_bytes(item) {
                 clipboard
                     .set_image(ImageData {
@@ -5107,8 +4837,12 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
         }
         ClipKind::Files => {
             if let Some(paths) = &item.file_paths {
-                clipboard.set_text(paths.join("\n")).is_ok()
+                set_file_paths_to_clipboard(paths)
             } else if let Some(text) = &item.text {
+                let mut clipboard = match Clipboard::new() {
+                    Ok(c) => c,
+                    Err(_) => return false,
+                };
                 clipboard.set_text(text.clone()).is_ok()
             } else {
                 false
@@ -5128,92 +4862,6 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     state.clear_selection();
     clear_main_hover_state(hwnd);
     paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
-}
-
-unsafe extern "system" fn drop_source_query_interface(
-    this: *mut core::ffi::c_void,
-    riid: *const windows_sys::core::GUID,
-    out: *mut *mut core::ffi::c_void,
-) -> windows_sys::core::HRESULT {
-    if out.is_null() {
-        return E_POINTER_HR;
-    }
-    *out = null_mut();
-    if riid.is_null() {
-        return E_NOINTERFACE_HR;
-    }
-    if guid_eq(&*riid, &IID_IUNKNOWN_RAW) || guid_eq(&*riid, &IID_IDROPSOURCE_RAW) {
-        *out = this;
-        drop_source_add_ref(this);
-        S_OK_HR
-    } else {
-        E_NOINTERFACE_HR
-    }
-}
-
-unsafe extern "system" fn drop_source_add_ref(this: *mut core::ffi::c_void) -> u32 {
-    let obj = this as *mut SimpleDropSource;
-    (*obj).refs.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-unsafe extern "system" fn drop_source_release(this: *mut core::ffi::c_void) -> u32 {
-    let obj = this as *mut SimpleDropSource;
-    let remain = (*obj).refs.fetch_sub(1, Ordering::Release) - 1;
-    if remain == 0 {
-        std::sync::atomic::fence(Ordering::Acquire);
-        drop(Box::from_raw(obj));
-    }
-    remain
-}
-
-unsafe extern "system" fn drop_source_query_continue_drag(
-    _this: *mut core::ffi::c_void,
-    escape_pressed: i32,
-    key_state: u32,
-) -> windows_sys::core::HRESULT {
-    if escape_pressed != 0 {
-        return DRAGDROP_S_CANCEL_HR;
-    }
-    if key_state & MK_LBUTTON_FLAG == 0 {
-        return DRAGDROP_S_DROP_HR;
-    }
-    S_OK_HR
-}
-
-unsafe extern "system" fn drop_source_give_feedback(
-    _this: *mut core::ffi::c_void,
-    _effect: DROPEFFECT,
-) -> windows_sys::core::HRESULT {
-    DRAGDROP_S_USEDEFAULTCURSORS_HR
-}
-
-static DROP_SOURCE_VTBL: RawDropSourceVtbl = RawDropSourceVtbl {
-    base: RawIUnknownVtbl {
-        query_interface: drop_source_query_interface,
-        add_ref: drop_source_add_ref,
-        release: drop_source_release,
-    },
-    query_continue_drag: drop_source_query_continue_drag,
-    give_feedback: drop_source_give_feedback,
-};
-
-fn guid_eq(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
-    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
-}
-
-unsafe fn release_raw_com(ptr: *mut core::ffi::c_void) {
-    if ptr.is_null() {
-        return;
-    }
-    let unk = ptr as *mut RawIUnknown;
-    ((*(*unk).vtbl).release)(ptr);
-}
-
-unsafe fn create_drop_source() -> *mut core::ffi::c_void {
-    Box::into_raw(Box::new(SimpleDropSource {
-        vtbl: &DROP_SOURCE_VTBL,
-        refs: AtomicU32::new(1),
-    })) as *mut core::ffi::c_void
 }
 
 unsafe fn create_shell_data_object(paths: &[PathBuf]) -> Option<*mut core::ffi::c_void> {
@@ -5841,6 +5489,67 @@ fn output_image_path() -> PathBuf {
     base.join(format!("zsclip_{}.png", ts))
 }
 
+unsafe fn set_file_paths_to_clipboard(paths: &[String]) -> bool {
+    let cleaned: Vec<String> = paths
+        .iter()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect();
+    if cleaned.is_empty() {
+        return false;
+    }
+
+    let mut wide_paths: Vec<Vec<u16>> = cleaned
+        .iter()
+        .map(|p| {
+            let mut w: Vec<u16> = p.encode_utf16().collect();
+            w.push(0);
+            w
+        })
+        .collect();
+    let chars_len: usize = wide_paths.iter().map(|w| w.len()).sum::<usize>() + 1;
+    let bytes_len = size_of::<DropFiles>() + chars_len * size_of::<u16>();
+    let mem = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, bytes_len);
+    if mem.is_null() {
+        return false;
+    }
+    let locked = GlobalLock(mem);
+    if locked.is_null() {
+        GlobalFree(mem);
+        return false;
+    }
+
+    let header = locked as *mut DropFiles;
+    (*header).p_files = size_of::<DropFiles>() as u32;
+    (*header).pt = POINT { x: 0, y: 0 };
+    (*header).f_nc = 0;
+    (*header).f_wide = 1;
+
+    let mut cursor = (locked as *mut u8).add(size_of::<DropFiles>()) as *mut u16;
+    for path in wide_paths.drain(..) {
+        std::ptr::copy_nonoverlapping(path.as_ptr(), cursor, path.len());
+        cursor = cursor.add(path.len());
+    }
+    *cursor = 0;
+    GlobalUnlock(mem);
+
+    if OpenClipboard(null_mut()) == 0 {
+        GlobalFree(mem);
+        return false;
+    }
+    let ok = if EmptyClipboard() == 0 {
+        false
+    } else {
+        !SetClipboardData(CF_HDROP, mem).is_null()
+    };
+    CloseClipboard();
+    if !ok {
+        GlobalFree(mem);
+    }
+    ok
+}
+
 fn write_image_bytes_to_output_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
     use std::fs::File;
     use std::io::BufWriter;
@@ -5967,14 +5676,6 @@ fn trim_process_working_set() {
     }
 }
 
-
-
-
-pub(crate) fn to_wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-
 pub(crate) unsafe fn get_state_ptr(hwnd: HWND) -> *mut AppState {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
 }
@@ -5988,31 +5689,12 @@ unsafe fn get_state_mut(hwnd: HWND) -> Option<&'static mut AppState> {
     }
 }
 
-pub(crate) unsafe fn get_window_text(hwnd: HWND) -> String {
-    let len = GetWindowTextLengthW(hwnd);
-    let mut buf = vec![0u16; (len as usize) + 1];
-    if !buf.is_empty() {
-        GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
-    }
-    String::from_utf16_lossy(&buf)
-        .trim_end_matches('\0')
-        .to_string()
-}
-
 fn loword(v: u32) -> u16 {
     (v & 0xffff) as u16
 }
 
 fn hiword(v: u32) -> u16 {
     ((v >> 16) & 0xffff) as u16
-}
-
-pub(crate) fn get_x_lparam(lp: LPARAM) -> i32 {
-    (lp as i16) as i32
-}
-
-pub(crate) fn get_y_lparam(lp: LPARAM) -> i32 {
-    ((lp >> 16) as i16) as i32
 }
 
 fn pt_in_rect(x: i32, y: i32, rc: &RECT) -> bool {

@@ -16,10 +16,12 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::app::{apply_dark_mode_to_window, apply_window_corner_preference, get_window_text, to_wide};
 use crate::shell::load_icons;
-use crate::settings_ui_host::{create_settings_component, draw_settings_button_component, SettingsComponentKind};
 use crate::ui::{draw_round_rect, draw_text_ex, Theme};
+use crate::win_system_ui::{
+    apply_dark_mode_to_window, apply_window_corner_preference, create_settings_component,
+    draw_settings_button_component, get_window_text, to_wide, SettingsComponentKind,
+};
 
 unsafe extern "system" {
     fn EnableWindow(hwnd: HWND, benable: i32) -> i32;

@@ -10,6 +10,7 @@ use windows_sys::Win32::{
 };
 
 use crate::app::{AppState, ClipItem, ClipKind, Icons};
+use crate::win_system_ui::to_wide;
 
 // ── 图标数据嵌入二进制（无需外部文件）──────────────────────────────────────
 static ICO_CLIPBOARD: &[u8] = include_bytes!("../assets/icons/clipboard.ico");
@@ -25,8 +26,8 @@ static ICO_TOP:       &[u8] = include_bytes!("../assets/icons/top.ico");
 static ICO_DEL:       &[u8] = include_bytes!("../assets/icons/del.ico");
 
 pub(crate) unsafe fn open_path_with_shell(path: &str) {
-    let op = crate::app::to_wide("open");
-    let wp = crate::app::to_wide(path);
+    let op = to_wide("open");
+    let wp = to_wide(path);
     ShellExecuteW(std::ptr::null_mut(), op.as_ptr(), wp.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
 }
 

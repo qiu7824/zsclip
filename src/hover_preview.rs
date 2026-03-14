@@ -14,8 +14,9 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    app::{apply_window_corner_preference, ensure_item_preview_rgba, to_wide, ClipItem, ClipKind},
+    app::{ensure_item_preview_rgba, ClipItem, ClipKind},
     ui::{draw_round_rect, draw_text, draw_text_ex, Theme},
+    win_system_ui::{apply_window_corner_preference, to_wide},
 };
 
 const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";

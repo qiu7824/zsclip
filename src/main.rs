@@ -3,6 +3,8 @@
 mod gdiplus;
 mod ui;
 mod ui_core;
+mod win_system_ui;
+mod win_system_params;
 mod settings_ui_host;
 mod settings_model;
 mod settings_render;
