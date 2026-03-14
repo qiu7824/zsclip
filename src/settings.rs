@@ -1,5 +1,5 @@
 use windows_sys::Win32::Foundation::RECT;
-use crate::settings_layout::{settings_card_rect, CARD_DATA_H, CARD_DATA_Y, CARD_GENERAL_H, CARD_GENERAL_Y, CARD_MAINTAIN_H, CARD_MAINTAIN_Y, CARD_POSITION_H, CARD_POSITION_Y};
+use crate::settings_model::{settings_cards_for_page, settings_page_scrollable, SettingsSection};
 use crate::ui::{draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect, Theme, SETTINGS_NAV_GLYPHS, SETTINGS_PAGES, SETTINGS_NAV_W};
 
 pub const SETTINGS_CLASS: &str = "ZsClipSettings";

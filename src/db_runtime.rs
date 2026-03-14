@@ -10,6 +10,12 @@ thread_local! {
 static DB_MIGRATED: OnceLock<()> = OnceLock::new();
 
 fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
+    let _ = conn.pragma_update(None, "journal_mode", "WAL");
+    let _ = conn.pragma_update(None, "synchronous", "NORMAL");
+    let _ = conn.pragma_update(None, "temp_store", "MEMORY");
+    let _ = conn.pragma_update(None, "foreign_keys", "ON");
+    let _ = conn.pragma_update(None, "cache_size", -8192i32);
+    let _ = conn.pragma_update(None, "mmap_size", 134_217_728i64);
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS items(
@@ -20,6 +26,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             text_data TEXT,
             file_paths TEXT,
             image_data BLOB,
+            image_path TEXT,
             image_width INTEGER NOT NULL DEFAULT 0,
             image_height INTEGER NOT NULL DEFAULT 0,
             pinned INTEGER NOT NULL DEFAULT 0,
@@ -32,9 +39,13 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE INDEX IF NOT EXISTS idx_items_category_pinned_id ON items(category, pinned, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_items_group_id ON items(group_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_clip_groups_sort ON clip_groups(sort_order, id);
         ",
     )?;
     let _ = conn.execute("ALTER TABLE items ADD COLUMN file_paths TEXT", []);
+    let _ = conn.execute("ALTER TABLE items ADD COLUMN image_path TEXT", []);
     let _ = conn.execute("ALTER TABLE items ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0", []);
     Ok(())
 }

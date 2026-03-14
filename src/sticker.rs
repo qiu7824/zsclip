@@ -13,7 +13,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    app::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide, ClipItem},
+    app::{apply_window_corner_preference, ensure_item_image_bytes, get_x_lparam, get_y_lparam, to_wide, ClipItem},
     ui::{draw_round_rect, draw_text, draw_text_ex, rgb},
 };
 
@@ -264,15 +264,15 @@ unsafe fn ensure_sticker_class() {
 }
 
 pub(crate) unsafe fn show_image_sticker(item: &ClipItem) {
-    let Some(bytes) = &item.image_bytes else { return; };
+    let Some((bytes, width, height)) = ensure_item_image_bytes(item) else { return; };
     ensure_sticker_class();
-    let mut bgra = bytes.clone();
+    let mut bgra = bytes;
     for px in bgra.chunks_exact_mut(4) { px.swap(0,2); }
-    let data = Box::new(StickerData { width: item.image_width as i32, height: item.image_height as i32, bgra, zoom_pct: 100, hover_btn: 0, down_btn: 0 });
+    let data = Box::new(StickerData { width: width as i32, height: height as i32, bgra, zoom_pct: 100, hover_btn: 0, down_btn: 0 });
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
-    let w = min(760, max(260, item.image_width as i32 + 24));
-    let h = min(760, max(180, item.image_height as i32 + STICKER_BAR_H + 24));
+    let w = min(760, max(260, width as i32 + 24));
+    let h = min(760, max(180, height as i32 + STICKER_BAR_H + 24));
     let hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, to_wide(STICKER_CLASS).as_ptr(), to_wide("").as_ptr(), WS_POPUP | WS_VISIBLE | WS_THICKFRAME, pt.x + 16, pt.y + 16, w, h, null_mut(), null_mut(), GetModuleHandleW(null()), Box::into_raw(data) as _);
     if !hwnd.is_null() { ShowWindow(hwnd, SW_SHOW); InvalidateRect(hwnd, null(), 0); }
 }

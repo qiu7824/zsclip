@@ -1,19 +1,18 @@
-// BUILD_MARKER: v17_settings_framework_direct_paint_dropdown
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect, PAINTSTRUCT,
+        BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, InvalidateRect,
+        PAINTSTRUCT, ReleaseDC, SelectObject,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
 };
 
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme,
-    SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
 };
 
 pub const SETTINGS_VIEWPORT_MASK_H: i32 = 14;
@@ -21,6 +20,20 @@ pub const WM_SETTINGS_DROPDOWN_SELECTED: u32 = WM_APP + 91;
 const DROPDOWN_CLASS: &str = "ZsClipDropdownPopup";
 const DROPDOWN_ITEM_H: i32 = 38;
 const DROPDOWN_PAD: i32 = 6;
+const DT_LEFT_FLAG: u32 = 0x0000;
+const DT_WORDBREAK_FLAG: u32 = 0x0010;
+const DT_NOPREFIX_FLAG: u32 = 0x0800;
+const DT_EDITCONTROL_FLAG: u32 = 0x2000;
+const EM_SETMARGINS_MSG: u32 = 0x00D3;
+const EM_SETPASSWORDCHAR_MSG: u32 = 0x00CC;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsComponentKind {
+    Toggle,
+    Dropdown,
+    Button,
+    AccentButton,
+}
 
 #[link(name = "dwmapi")]
 unsafe extern "system" {
@@ -129,15 +142,6 @@ pub fn settings_dropdown_pos_mode_from_label(label: &str) -> String {
     }
 }
 
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingsComponentKind {
-    Toggle,
-    Dropdown,
-    Button,
-    AccentButton,
-}
-
 pub unsafe fn create_settings_component(
     parent: HWND,
     text: &str,
@@ -150,14 +154,20 @@ pub unsafe fn create_settings_component(
     font: *mut c_void,
 ) -> HWND {
     let class_name = match kind {
-        SettingsComponentKind::Toggle | SettingsComponentKind::Dropdown | SettingsComponentKind::Button | SettingsComponentKind::AccentButton => "BUTTON",
+        SettingsComponentKind::Toggle
+        | SettingsComponentKind::Dropdown
+        | SettingsComponentKind::Button
+        | SettingsComponentKind::AccentButton => "BUTTON",
     };
     let hwnd = CreateWindowExW(
         0,
         to_wide(class_name).as_ptr(),
         to_wide(text).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
-        x, y, w, h,
+        x,
+        y,
+        w,
+        h,
         parent,
         id as usize as _,
         GetModuleHandleW(null()),
@@ -165,6 +175,162 @@ pub unsafe fn create_settings_component(
     );
     if !hwnd.is_null() {
         SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+    }
+    hwnd
+}
+
+pub unsafe fn create_settings_label(
+    parent: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    font: *mut c_void,
+) -> HWND {
+    let hwnd = CreateWindowExW(
+        0,
+        to_wide("STATIC").as_ptr(),
+        to_wide(text).as_ptr(),
+        WS_CHILD | WS_VISIBLE,
+        x,
+        y,
+        w,
+        h,
+        parent,
+        null_mut(),
+        GetModuleHandleW(null()),
+        null(),
+    );
+    if !hwnd.is_null() {
+        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+    }
+    hwnd
+}
+
+pub unsafe fn settings_measure_text_height(
+    parent: HWND,
+    text: &str,
+    w: i32,
+    font: *mut c_void,
+    min_h: i32,
+) -> i32 {
+    let hdc = GetDC(parent);
+    if hdc.is_null() {
+        return min_h.max(24);
+    }
+    let old = if !font.is_null() { SelectObject(hdc, font) } else { null_mut() };
+    let mut rc = RECT { left: 0, top: 0, right: w.max(1), bottom: 0 };
+    let wt = to_wide(text);
+    DrawTextW(
+        hdc,
+        wt.as_ptr(),
+        -1,
+        &mut rc,
+        DT_LEFT_FLAG | DT_WORDBREAK_FLAG | DT_NOPREFIX_FLAG | DT_EDITCONTROL_FLAG,
+    );
+    if !old.is_null() {
+        SelectObject(hdc, old);
+    }
+    ReleaseDC(parent, hdc);
+    (min_h).max((rc.bottom - rc.top) + 4)
+}
+
+pub unsafe fn create_settings_label_auto(
+    parent: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    min_h: i32,
+    font: *mut c_void,
+) -> (HWND, i32) {
+    let h = settings_measure_text_height(parent, text, w, font, min_h);
+    let hwnd = create_settings_label(parent, text, x, y, w, h, font);
+    (hwnd, h)
+}
+
+pub unsafe fn create_settings_edit(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> HWND {
+    let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | (ES_AUTOHSCROLL as u32);
+    let hwnd = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        to_wide("EDIT").as_ptr(),
+        to_wide(text).as_ptr(),
+        style,
+        x,
+        y,
+        w,
+        28,
+        parent,
+        id as usize as _,
+        GetModuleHandleW(null()),
+        null(),
+    );
+    if !hwnd.is_null() {
+        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+        let theme = if crate::ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+        SetWindowTheme(hwnd, to_wide(theme).as_ptr(), null());
+        SendMessageW(
+            hwnd,
+            EM_SETMARGINS_MSG,
+            (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
+            ((6 & 0xffff) | ((6 & 0xffff) << 16)) as LPARAM,
+        );
+    }
+    hwnd
+}
+
+pub unsafe fn create_settings_password_edit(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> HWND {
+    let hwnd = create_settings_edit(parent, text, id, x, y, w, font);
+    if !hwnd.is_null() {
+        SendMessageW(hwnd, EM_SETPASSWORDCHAR_MSG, '*' as usize, 0);
+        InvalidateRect(hwnd, null(), 1);
+    }
+    hwnd
+}
+
+pub unsafe fn create_settings_listbox(
+    parent: HWND,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    font: *mut c_void,
+) -> HWND {
+    let hwnd = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        to_wide("LISTBOX").as_ptr(),
+        to_wide("").as_ptr(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (LBS_NOTIFY as u32) | (WS_VSCROLL as u32),
+        x,
+        y,
+        w,
+        h,
+        parent,
+        id as usize as _,
+        GetModuleHandleW(null()),
+        null(),
+    );
+    if !hwnd.is_null() {
+        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+        SetWindowTheme(hwnd, to_wide("Explorer").as_ptr(), null());
     }
     hwnd
 }
@@ -180,22 +346,22 @@ pub unsafe fn draw_settings_toggle_component(
     FillRect(hdc, rc, bg);
     DeleteObject(bg as _);
 
-    let tw = 40i32;
-    let thh = 20i32;
+    let tw = 40;
+    let thh = 20;
     let cx = rc.left + (rc.right - rc.left - tw) / 2;
     let cy = rc.top + (rc.bottom - rc.top - thh) / 2;
     let track = RECT { left: cx, top: cy, right: cx + tw, bottom: cy + thh };
 
     if checked {
         draw_round_rect(hdc, &track, th.accent, th.accent, 10);
-        let k = 14i32;
+        let k = 14;
         let ky = cy + (thh - k) / 2;
         let krc = RECT { left: cx + tw - k - 3, top: ky, right: cx + tw - 3, bottom: ky + k };
         draw_round_rect(hdc, &krc, rgb(255, 255, 255), rgb(255, 255, 255), 7);
     } else {
         let border = if hover { rgb(28, 28, 28) } else { rgb(136, 136, 136) };
         draw_round_rect(hdc, &track, th.bg, border, 10);
-        let k = 12i32;
+        let k = 12;
         let ky = cy + (thh - k) / 2;
         let krc = RECT { left: cx + 4, top: ky, right: cx + 16, bottom: ky + k };
         let knob_color = if hover { rgb(28, 28, 28) } else { rgb(102, 102, 102) };
@@ -246,31 +412,15 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rc.right - 1,
         bottom: rc.bottom - 1,
     };
-    let fill = if pressed {
-        th.button_pressed
-    } else if hover {
-        th.button_hover
-    } else {
-        th.surface
-    };
+    let fill = if pressed { th.button_pressed } else if hover { th.button_hover } else { th.surface };
     let border = if hover { th.accent } else { th.control_stroke };
     draw_round_rect(hdc, &rr, fill, border, 6);
 
-    let text_rc = RECT {
-        left: rr.left + 12,
-        top: rr.top,
-        right: rr.right - 28,
-        bottom: rr.bottom,
-    };
+    let text_rc = RECT { left: rr.left + 12, top: rr.top, right: rr.right - 28, bottom: rr.bottom };
     draw_text_ex(hdc, text, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
 
-    let arrow_rc = RECT {
-        left: rr.right - 24,
-        top: rr.top,
-        right: rr.right - 8,
-        bottom: rr.bottom,
-    };
-    draw_text_ex(hdc, "", &arrow_rc, th.text_muted, 12, false, true, "Segoe Fluent Icons");
+    let arrow_rc = RECT { left: rr.right - 24, top: rr.top, right: rr.right - 8, bottom: rr.bottom };
+    draw_text_ex(hdc, "▼", &arrow_rc, th.text_muted, 10, false, true, "Segoe UI Symbol");
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
@@ -278,11 +428,8 @@ unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
         let val: u32 = 1;
         let _ = DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
     }
-    let _ = SetWindowTheme(
-        hwnd,
-        to_wide(if crate::ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" }).as_ptr(),
-        null(),
-    );
+    let theme_name = if crate::ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+    let _ = SetWindowTheme(hwnd, to_wide(theme_name).as_ptr(), null());
 }
 
 unsafe fn apply_window_corner_preference(hwnd: HWND) {
@@ -295,47 +442,6 @@ unsafe fn apply_window_corner_preference(hwnd: HWND) {
         &pref as *const _ as *const c_void,
         core::mem::size_of::<u32>() as u32,
     );
-}
-
-#[allow(dead_code)]
-unsafe fn apply_theme_to_menu(_hmenu: *mut c_void) {
-    // 预留：后续如果需要给原生菜单补主题，可以在这里恢复 uxtheme 动态调用。
-}
-
-#[allow(dead_code)]
-pub unsafe fn show_settings_dropdown_menu(
-    parent: HWND,
-    anchor: HWND,
-    items: &[&str],
-    selected: usize,
-) -> Option<usize> {
-    let menu = CreatePopupMenu();
-    if menu.is_null() { return None; }
-    apply_theme_to_menu(menu as _);
-    const BASE_ID: usize = 53000;
-    for (idx, item) in items.iter().enumerate() {
-        let flags = if idx == selected { MF_STRING | MF_CHECKED } else { MF_STRING };
-        AppendMenuW(menu, flags, BASE_ID + idx, to_wide(item).as_ptr());
-    }
-    let mut rc: RECT = std::mem::zeroed();
-    GetWindowRect(anchor, &mut rc);
-    SetForegroundWindow(parent);
-    let cmd = TrackPopupMenu(
-        menu,
-        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
-        rc.left,
-        rc.bottom + 6,
-        0,
-        parent,
-        null(),
-    ) as usize;
-    PostMessageW(parent, WM_NULL, 0, 0);
-    DestroyMenu(menu);
-    if cmd >= BASE_ID && cmd < BASE_ID + items.len() {
-        Some(cmd - BASE_ID)
-    } else {
-        None
-    }
 }
 
 struct DropdownPopupState {
@@ -368,7 +474,9 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
         WM_MOUSEACTIVATE => MA_NOACTIVATE as isize,
         WM_MOUSEMOVE => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
-            if ptr.is_null() { return 0; }
+            if ptr.is_null() {
+                return 0;
+            }
             let st = &mut *ptr;
             let y = ((lparam >> 16) & 0xffff) as u16 as i16 as i32;
             let hover = dropdown_index_from_y(st, y);
@@ -420,7 +528,13 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                         let hovered = st.hover == idx as i32;
                         let selected = st.selected == idx as i32;
                         if hovered || selected {
-                            let fill = if selected { th.nav_sel_fill } else if crate::ui::is_dark_mode() { rgb(60, 60, 60) } else { rgb(245, 245, 245) };
+                            let fill = if selected {
+                                th.nav_sel_fill
+                            } else if crate::ui::is_dark_mode() {
+                                rgb(60, 60, 60)
+                            } else {
+                                rgb(245, 245, 245)
+                            };
                             draw_round_fill(hdc as _, &item_rc, fill, 6);
                         }
                         if selected {

@@ -1,2 +1,7 @@
 /target
 /data/clipboard_history.json
+/target
+**/*.pdb
+**/*.exe
+.DS_Store
+.vscode/

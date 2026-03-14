@@ -1,4 +1,4 @@
-// BUILD_MARKER: v26b_hotkey_status_group_layout_registry_cleanup
+﻿// BUILD_MARKER: v26b_hotkey_status_group_layout_registry_cleanup
 // BUILD_MARKER: v24_hotkey_registry_autolayout
 // BUILD_MARKER: v25_settings_ui_framework_registry_lazy_pages
 // BUILD_MARKER: v21_tab_style_title_align_warning_cleanup
@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::process::Command;
 use rusqlite::params;
@@ -28,17 +29,19 @@ unsafe extern "system" {
     fn UnregisterHotKey(hwnd: HWND, id: i32) -> i32;
     fn EnableWindow(hwnd: HWND, benable: i32) -> i32;
     fn IsWindow(hwnd: HWND) -> i32;
-    fn GetDC(hwnd: HWND) -> *mut core::ffi::c_void;
-    fn ReleaseDC(hwnd: HWND, hdc: *mut core::ffi::c_void) -> i32;
     fn TrackMouseEvent(lpeventtrack: *mut TRACKMOUSEEVENT) -> i32;
     fn SendInput(cinputs: u32, pinputs: *const INPUT, cbsize: i32) -> u32;
-    fn GetGUIThreadInfo(idthread: u32, lpgui: *mut GUITHREADINFO) -> i32;
-    fn GetWindowThreadProcessId(hwnd: HWND, lpdwprocessid: *mut u32) -> u32;
 }
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLastError() -> u32;
+    fn GetCurrentProcess() -> *mut core::ffi::c_void;
+}
+
+#[link(name = "psapi")]
+unsafe extern "system" {
+    fn EmptyWorkingSet(hprocess: *mut core::ffi::c_void) -> i32;
 }
 
 // Registry API for autostart
@@ -156,29 +159,18 @@ struct INPUT {
     anonymous: INPUT_UNION,
 }
 
-#[repr(C)]
-struct GUITHREADINFO {
-    cb_size: u32,
-    flags: u32,
-    hwnd_active: HWND,
-    hwnd_focus: HWND,
-    hwnd_capture: HWND,
-    hwnd_menu_owner: HWND,
-    hwnd_move_size: HWND,
-    hwnd_caret: HWND,
-    rc_caret: RECT,
-}
-
 const INPUT_KEYBOARD: u32 = 1;
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, Theme, SETTINGS_CONTENT_W, SETTINGS_CONTENT_X, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell};
 use crate::sticker::show_image_sticker;
+use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
 use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
-use crate::settings::{draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x, settings_title_rect, SETTINGS_CLASS, IDC_SET_SAVE, IDC_SET_CLOSE, IDC_SET_AUTOSTART, IDC_SET_CLOSETRAY, IDC_SET_CLICK_HIDE, IDC_SET_EDGEHIDE, IDC_SET_HOVERPREVIEW, IDC_SET_MAX, IDC_SET_POSMODE, IDC_SET_DX, IDC_SET_DY, IDC_SET_FX, IDC_SET_FY, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_ADD, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_UP, IDC_SET_GROUP_DOWN};
-use crate::settings_framework::{create_settings_component, draw_settings_button_component, draw_settings_toggle_component, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind, WM_SETTINGS_DROPDOWN_SELECTED};
-use crate::settings_layout::{general_toggle_y, MAINTAIN_BTN_Y, MAX_ITEMS_Y, MOUSE_DXY_Y, FIXED_XY_Y, POSMODE_Y, SETTINGS_CONTENT_TOTAL_H, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE};
+use crate::settings_model::{settings_section_body_rect, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::settings_render::{draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x, settings_title_rect_win as settings_title_rect, SETTINGS_CLASS, IDC_SET_SAVE, IDC_SET_CLOSE, IDC_SET_AUTOSTART, IDC_SET_CLOSETRAY, IDC_SET_CLICK_HIDE, IDC_SET_EDGEHIDE, IDC_SET_HOVERPREVIEW, IDC_SET_MAX, IDC_SET_POSMODE, IDC_SET_DX, IDC_SET_DY, IDC_SET_FX, IDC_SET_FY, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_ADD, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_UP, IDC_SET_GROUP_DOWN, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_PLUGIN_MAILMERGE};
+use crate::settings_ui_host::{create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_toggle_component, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::settings_layout::{SETTINGS_CONTENT_TOTAL_H, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE};
 
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
 use crate::time_utils::{format_created_at_local, format_local_time_for_image_preview, now_utc_sqlite};
@@ -197,15 +189,16 @@ use windows_sys::Win32::{
     System::{
         DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData},
         LibraryLoader::GetModuleHandleW,
+        Ole::{DoDragDrop, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY},
     },
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
         Input::KeyboardAndMouse::{
-            GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture,
-            KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_PRIOR, VK_NEXT, VK_SPACE,
+            GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture, keybd_event,
+            KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_LBUTTON, VK_MENU, VK_PRIOR, VK_NEXT, VK_SPACE,
             VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT,
         },
-        Shell::DragQueryFileW,
+        Shell::{DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject},
         WindowsAndMessaging::*,
     },
 };
@@ -265,10 +258,47 @@ const IDM_ROW_GROUP_REMOVE: usize = 41011;
 const IDM_ROW_EDIT: usize = 41012;
 const IDM_ROW_QUICK_SEARCH: usize = 41013;
 const IDM_ROW_EXPORT_FILE: usize = 41014;
+const IDM_ROW_MAIL_MERGE: usize = 41015;
 const IDM_ROW_GROUP_BASE: usize = 41100;
 const IDM_GROUP_FILTER_ALL: usize = 41200;
 const IDM_GROUP_FILTER_BASE: usize = 41210;
 const HOTKEY_ID: i32 = 1;
+const MK_LBUTTON_FLAG: u32 = 0x0001;
+const S_OK_HR: i32 = 0;
+const E_NOINTERFACE_HR: i32 = 0x80004002u32 as i32;
+const E_POINTER_HR: i32 = 0x80004003u32 as i32;
+const DRAGDROP_S_DROP_HR: i32 = 0x00040100;
+const DRAGDROP_S_CANCEL_HR: i32 = 0x00040101;
+const DRAGDROP_S_USEDEFAULTCURSORS_HR: i32 = 0x00040102;
+const RPC_E_CHANGED_MODE_HR: i32 = 0x80010106u32 as i32;
+const IID_IUNKNOWN_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
+const IID_IDROPSOURCE_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x00000121_0000_0000_c000_000000000046);
+const IID_IDATAOBJECT_RAW: windows_sys::core::GUID = windows_sys::core::GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
+
+#[repr(C)]
+struct RawIUnknown {
+    vtbl: *const RawIUnknownVtbl,
+}
+
+#[repr(C)]
+struct RawIUnknownVtbl {
+    query_interface: unsafe extern "system" fn(*mut core::ffi::c_void, *const windows_sys::core::GUID, *mut *mut core::ffi::c_void) -> windows_sys::core::HRESULT,
+    add_ref: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
+    release: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
+}
+
+#[repr(C)]
+struct RawDropSourceVtbl {
+    base: RawIUnknownVtbl,
+    query_continue_drag: unsafe extern "system" fn(*mut core::ffi::c_void, i32, u32) -> windows_sys::core::HRESULT,
+    give_feedback: unsafe extern "system" fn(*mut core::ffi::c_void, DROPEFFECT) -> windows_sys::core::HRESULT,
+}
+
+#[repr(C)]
+struct SimpleDropSource {
+    vtbl: *const RawDropSourceVtbl,
+    refs: AtomicU32,
+}
 
 const EN_CHANGE_CODE: u16 = 0x0300;
 const MOD_ALT: u32 = 0x0001;
@@ -320,6 +350,13 @@ pub(crate) struct AppSettings {
     pub(crate) ai_clean_enabled: bool,
     pub(crate) super_mail_merge_enabled: bool,
     pub(crate) grouping_enabled: bool,
+    pub(crate) cloud_sync_enabled: bool,
+    pub(crate) cloud_sync_interval: String,
+    pub(crate) cloud_webdav_url: String,
+    pub(crate) cloud_webdav_user: String,
+    pub(crate) cloud_webdav_pass: String,
+    pub(crate) cloud_remote_dir: String,
+    pub(crate) cloud_last_sync_status: String,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
 }
@@ -347,6 +384,13 @@ impl Default for AppSettings {
             ai_clean_enabled: false,
             super_mail_merge_enabled: true,
             grouping_enabled: true,
+            cloud_sync_enabled: false,
+            cloud_sync_interval: "1小时".to_string(),
+            cloud_webdav_url: String::new(),
+            cloud_webdav_user: String::new(),
+            cloud_webdav_pass: String::new(),
+            cloud_remote_dir: "ZSClip".to_string(),
+            cloud_last_sync_status: "未同步".to_string(),
             last_window_x: -1,
             last_window_y: -1,
         }
@@ -470,10 +514,6 @@ fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
     set_disabled_hotkeys_text(&new_text)
 }
 
-unsafe fn settings_refresh_clipboard_history_status(_st: &SettingsWndState) {
-    // 已取消实时状态读取，避免进入设置页时因同步查询导致卡顿。
-}
-
 fn restart_explorer_shell() -> Result<(), String> {
     let _ = Command::new("taskkill").args(["/f", "/im", "explorer.exe"]).output();
     Command::new("explorer.exe").spawn().map(|_| ()).map_err(|e| e.to_string())
@@ -511,6 +551,7 @@ struct DbItem {
     text: Option<String>,
     file_paths: Option<String>,
     image_bytes: Option<Vec<u8>>,
+    image_path: Option<String>,
     image_width: i64,
     image_height: i64,
     pinned: i64,
@@ -542,6 +583,7 @@ pub(crate) struct ClipItem {
     pub(crate) text: Option<String>,
     pub(crate) file_paths: Option<Vec<String>>,
     pub(crate) image_bytes: Option<Vec<u8>>,
+    pub(crate) image_path: Option<String>,
     pub(crate) image_width: usize,
     pub(crate) image_height: usize,
     pub(crate) pinned: bool,
@@ -607,6 +649,8 @@ pub(crate) struct AppState {
     pub(crate) hover_btn: &'static str,
     pub(crate) down_btn: &'static str,
     pub(crate) down_row: i32,
+    pub(crate) down_x: i32,
+    pub(crate) down_y: i32,
     pub(crate) hover_tab: i32,
     pub(crate) current_group_filter: i64,
     pub(crate) tab_group_filters: [i64; 2],
@@ -645,6 +689,8 @@ impl AppState {
             hover_btn: "",
             down_btn: "",
             down_row: -1,
+            down_x: 0,
+            down_y: 0,
             hover_tab: -1,
             current_group_filter: 0,
             tab_group_filters: [0, 0],
@@ -734,6 +780,8 @@ impl AppState {
         self.sel_idx = -1;
         self.hover_idx = -1;
         self.down_row = -1;
+        self.down_x = 0;
+        self.down_y = 0;
         self.selected_rows.clear();
         self.selection_anchor = -1;
     }
@@ -1178,6 +1226,7 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
         text: row.text,
         file_paths: row.file_paths.map(|v| v.split("\n").map(|s| s.to_string()).collect()),
         image_bytes: row.image_bytes,
+        image_path: row.image_path,
         image_width: row.image_width.max(0) as usize,
         image_height: row.image_height.max(0) as usize,
         pinned: row.pinned == 1,
@@ -1189,7 +1238,7 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
 fn db_load_items(category: i64) -> Vec<ClipItem> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, kind, preview, text_data, file_paths, image_width, image_height, pinned, group_id, \
+            "SELECT id, kind, preview, text_data, file_paths, image_path, image_width, image_height, pinned, group_id, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE category=? ORDER BY pinned DESC, id DESC"
         )?;
@@ -1200,12 +1249,13 @@ fn db_load_items(category: i64) -> Vec<ClipItem> {
                 preview: r.get(2)?,
                 text: r.get(3)?,
                 file_paths: r.get(4)?,
+                image_path: r.get(5)?,
                 image_bytes: None,
-                image_width: r.get(5)?,
-                image_height: r.get(6)?,
-                pinned: r.get(7)?,
-                group_id: r.get(8)?,
-                created_at: r.get(9)?,
+                image_width: r.get(6)?,
+                image_height: r.get(7)?,
+                pinned: r.get(8)?,
+                group_id: r.get(9)?,
+                created_at: r.get(10)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok().map(row_to_clip_item)).collect())
@@ -1216,7 +1266,7 @@ fn db_load_items(category: i64) -> Vec<ClipItem> {
 fn db_load_item_full(id: i64) -> Option<ClipItem> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id, kind, preview, text_data, file_paths, image_data, image_width, image_height, pinned, group_id, \
+            "SELECT id, kind, preview, text_data, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE id=?",
             params![id],
@@ -1227,11 +1277,12 @@ fn db_load_item_full(id: i64) -> Option<ClipItem> {
                 text: r.get(3)?,
                 file_paths: r.get(4)?,
                 image_bytes: r.get(5)?,
+                image_path: r.get(10)?,
                 image_width: r.get(6)?,
                 image_height: r.get(7)?,
                 pinned: r.get(8)?,
                 group_id: r.get(9)?,
-                created_at: r.get(10)?,
+                created_at: r.get(11)?,
             }))
         )
     }).ok()
@@ -1248,12 +1299,13 @@ fn db_insert_item(category: i64, item: &ClipItem) -> rusqlite::Result<i64> {
     let text_data = item.text.clone();
     let file_paths = item.file_paths.as_ref().map(|v| v.join("\n"));
     let image_data = item.image_bytes.clone();
+    let image_path = item.image_path.clone();
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO items(category, kind, preview, text_data, file_paths, image_data, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
-                category, kind, preview, text_data, file_paths, image_data,
+                category, kind, preview, text_data, file_paths, image_data, image_path,
                 item.image_width as i64, item.image_height as i64, if item.pinned { 1 } else { 0 }, item.group_id,
             ],
         )?;
@@ -1443,7 +1495,6 @@ struct SettingsWndState {
     cb_hk_mod: HWND,
     cb_hk_key: HWND,
     lb_hk_preview: HWND,
-    lb_clip_hist: HWND,
     btn_clip_hist_block: HWND,
     btn_clip_hist_restore: HWND,
     btn_restart_explorer: HWND,
@@ -1452,6 +1503,13 @@ struct SettingsWndState {
     ed_tpl: HWND,
     chk_ai: HWND,
     chk_mm: HWND,
+    chk_cloud_enable: HWND,
+    cb_cloud_interval: HWND,
+    ed_cloud_url: HWND,
+    ed_cloud_user: HWND,
+    ed_cloud_pass: HWND,
+    ed_cloud_dir: HWND,
+    lb_cloud_status: HWND,
     cb_max: HWND,
     cb_pos: HWND,
     ed_dx: HWND,
@@ -1523,7 +1581,16 @@ unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
             let gid = if pst.is_null() { 0 } else { (&*pst).current_group_filter };
             settings_groups_refresh_list(st, gid);
         }
-        SettingsPage::Cloud | SettingsPage::About => {}
+        SettingsPage::Cloud => {
+            let s = &st.draft;
+            settings_set_text(st.cb_cloud_interval, &s.cloud_sync_interval);
+            settings_set_text(st.ed_cloud_url, &s.cloud_webdav_url);
+            settings_set_text(st.ed_cloud_user, &s.cloud_webdav_user);
+            settings_set_text(st.ed_cloud_pass, &s.cloud_webdav_pass);
+            settings_set_text(st.ed_cloud_dir, &s.cloud_remote_dir);
+            settings_set_text(st.lb_cloud_status, &format!("上次同步：{}", s.cloud_last_sync_status));
+        }
+        SettingsPage::About => {}
     }
     settings_invalidate_page_ctrls(st.parent_hwnd, st, page);
 }
@@ -1547,42 +1614,11 @@ unsafe fn settings_set_font(hwnd: HWND, hfont: *mut core::ffi::c_void) {
 }
 
 unsafe fn settings_create_label(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
-    let hwnd = CreateWindowExW(
-        0,
-        to_wide("STATIC").as_ptr(),
-        to_wide(text).as_ptr(),
-        WS_CHILD | WS_VISIBLE,
-        x,
-        y,
-        w,
-        h,
-        parent,
-        null_mut(),
-        GetModuleHandleW(null()),
-        null(),
-    );
-    settings_set_font(hwnd, font);
-    hwnd
-}
-
-unsafe fn settings_measure_text_height(parent: HWND, text: &str, w: i32, font: *mut core::ffi::c_void, min_h: i32) -> i32 {
-    let hdc = GetDC(parent);
-    if hdc.is_null() {
-        return min_h.max(24);
-    }
-    let old = if !font.is_null() { SelectObject(hdc, font) } else { null_mut() };
-    let mut rc = RECT { left: 0, top: 0, right: w.max(1), bottom: 0 };
-    let wt = to_wide(text);
-    DrawTextW(hdc, wt.as_ptr(), -1, &mut rc, DT_LEFT | 0x0010 | 0x0800 | 0x0400);
-    if !old.is_null() { SelectObject(hdc, old); }
-    ReleaseDC(parent, hdc);
-    max(min_h, (rc.bottom - rc.top) + 4)
+    host_create_settings_label(parent, text, x, y, w, h, font)
 }
 
 unsafe fn settings_create_label_auto(parent: HWND, text: &str, x: i32, y: i32, w: i32, min_h: i32, font: *mut core::ffi::c_void) -> (HWND, i32) {
-    let h = settings_measure_text_height(parent, text, w, font, min_h);
-    let hwnd = settings_create_label(parent, text, x, y, w, h, font);
-    (hwnd, h)
+    host_create_settings_label_auto(parent, text, x, y, w, min_h, font)
 }
 
 unsafe fn settings_create_btn(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
@@ -1631,26 +1667,11 @@ unsafe fn settings_create_toggle(parent: HWND, st: &mut SettingsWndState, text: 
 
 
 unsafe fn settings_create_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    // 设置页输入框：保持原生 EDIT，显式保留边框和内边距，避免与卡片背景融在一起。
-    let style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | (ES_AUTOHSCROLL as u32);
-    let hwnd = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        to_wide("EDIT").as_ptr(),
-        to_wide(text).as_ptr(),
-        style,
-        x, y, w, 28,
-        parent,
-        id as usize as _,
-        GetModuleHandleW(null()),
-        null(),
-    );
-    settings_set_font(hwnd, font);
-    if !hwnd.is_null() {
-        let theme = if is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
-        SetWindowTheme(hwnd, to_wide(theme).as_ptr(), null());
-        SendMessageW(hwnd, EM_SETMARGINS, (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM, ((6 & 0xffff) | ((6 & 0xffff) << 16)) as LPARAM);
-    }
-    hwnd
+    host_create_settings_edit(parent, text, id, x, y, w, font)
+}
+
+unsafe fn settings_create_password_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
+    host_create_settings_password_edit(parent, text, id, x, y, w, font)
 }
 
 
@@ -1691,7 +1712,12 @@ unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) {
     let hdwp = BeginDeferWindowPos(st.ui.scroll_ctrls().len() as i32);
     if hdwp.is_null() { return; }
     let mut hdwp = hdwp;
-    for &(hchild, ox, oy, ow, oh) in st.ui.scroll_ctrls() {
+    for slot in st.ui.scroll_ctrls() {
+        let hchild = slot.hwnd;
+        let ox = slot.bounds.left;
+        let oy = slot.bounds.top;
+        let ow = slot.bounds.right - slot.bounds.left;
+        let oh = slot.bounds.bottom - slot.bounds.top;
         if hchild.is_null() { continue; }
 
         let mut wr: RECT = core::mem::zeroed();
@@ -1715,7 +1741,10 @@ unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) {
     EndDeferWindowPos(hdwp);
 
     // 立即刷新当前页子控件，避免滚动过程先出现白框、结束后才补画
-    for &(hchild, _ox, oy, _ow, oh) in st.ui.scroll_ctrls() {
+    for slot in st.ui.scroll_ctrls() {
+        let hchild = slot.hwnd;
+        let oy = slot.bounds.top;
+        let oh = slot.bounds.bottom - slot.bounds.top;
         if hchild.is_null() { continue; }
         let new_y = oy - st.content_scroll_y;
         if settings_child_visible(new_y, oh, &viewport) {
@@ -1852,6 +1881,7 @@ unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     if st.ui.is_built(SettingsPage::Hotkey.index()) { settings_sync_page_state(st, SettingsPage::Hotkey.index()); }
     if st.ui.is_built(SettingsPage::Plugin.index()) { settings_sync_page_state(st, SettingsPage::Plugin.index()); }
     if st.ui.is_built(SettingsPage::Group.index()) { settings_sync_page_state(st, SettingsPage::Group.index()); }
+    if st.ui.is_built(SettingsPage::Cloud.index()) { settings_sync_page_state(st, SettingsPage::Cloud.index()); }
 }
 
 unsafe fn settings_sync_pos_fields_enabled(st: &SettingsWndState) {
@@ -1879,6 +1909,17 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     st.draft.search_template = {
         let tpl = get_window_text(st.ed_tpl);
         if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
+    };
+    st.draft.cloud_sync_interval = {
+        let label = get_window_text(st.cb_cloud_interval);
+        if label.trim().is_empty() { "1小时".to_string() } else { label }
+    };
+    st.draft.cloud_webdav_url = get_window_text(st.ed_cloud_url);
+    st.draft.cloud_webdav_user = get_window_text(st.ed_cloud_user);
+    st.draft.cloud_webdav_pass = get_window_text(st.ed_cloud_pass);
+    st.draft.cloud_remote_dir = {
+        let dir = get_window_text(st.ed_cloud_dir);
+        if dir.trim().is_empty() { "ZSClip".to_string() } else { dir }
     };
     let app = &mut *pst;
     let grouping_old = app.settings.grouping_enabled;
@@ -1920,6 +1961,7 @@ unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
+        IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled,
         7102 => st.draft.quick_search_enabled,
         7101 => st.draft.ai_clean_enabled,
@@ -1936,6 +1978,7 @@ unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
+        IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled = !st.draft.hotkey_enabled,
         7102 => st.draft.quick_search_enabled = !st.draft.quick_search_enabled,
         7101 => st.draft.ai_clean_enabled = !st.draft.ai_clean_enabled,
@@ -1956,54 +1999,53 @@ unsafe fn settings_create_fonts() -> (*mut core::ffi::c_void, *mut core::ffi::c_
 }
 
 unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let gx = SETTINGS_CONTENT_X;
-    let gw = SETTINGS_CONTENT_W;
-    let tw = gw - 36;
     let ui_font = st.ui_font;
+    let sec0 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 0, 0);
+    let sec1 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 1, 130);
+    let sec2 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 2, 138);
+    let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 0);
 
-    macro_rules! add_ctrl {
-        // add_ctrl!(hwnd_expr, x, y, w, h)  — 同时记录坐标到 ctrl_origins
-        ($expr:expr, $cx:expr, $cy:expr, $cw:expr, $ch:expr) => {{
-            let hh: HWND = $expr;
-            settings_page0_push_ctrl(st, hh, $cx, $cy, $cw, $ch);
-            hh
-        }};
-    }
+    st.chk_autostart = settings_create_toggle(hwnd, st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
+    st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
+    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
+    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
+    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
 
-    // 布局基准: CONTENT_Y=84
-    // 卡片header=48px(12+24+12), 每行ROW=36px, 卡片内容下padding=12px
-    // toggle/控件在 card_top + 48(header) + 12(pad) = card_top + 60
-
-    // 启动与显示 card: 预留更多入口，先保留 UI 和配置位，后续再补运行逻辑
-    st.chk_autostart      = settings_create_toggle(hwnd, st, "开机自启",               IDC_SET_AUTOSTART,     gx+18, general_toggle_y(0),  tw, ui_font);
-    st.chk_close_tray     = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）",  IDC_SET_CLOSETRAY,     gx+18, general_toggle_y(1), tw, ui_font);
-    st.chk_click_hide     = settings_create_toggle(hwnd, st, "单击后隐藏主窗口",       IDC_SET_CLICK_HIDE,    gx+18, general_toggle_y(2), tw, ui_font);
-    st.chk_edge_hide      = settings_create_toggle(hwnd, st, "贴边自动隐藏（预留）",    IDC_SET_EDGEHIDE,      gx+18, general_toggle_y(3), tw, ui_font);
-    st.chk_hover_preview  = settings_create_toggle(hwnd, st, "悬停预览（预留）",        IDC_SET_HOVERPREVIEW,  gx+18, general_toggle_y(4), tw, ui_font);
-
-    // 数据 card
-    add_ctrl!(settings_create_label(hwnd, "最大保存条数：", gx+18, SETTINGS_CONTENT_Y+328, 120, 28, ui_font), gx+18, SETTINGS_CONTENT_Y+328, 120, 28);
-    st.cb_max = add_ctrl!(settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, gx+148, MAX_ITEMS_Y, 140, ui_font), gx+148, MAX_ITEMS_Y, 140, 32);
+    let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
+    st.cb_max = settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), 150, ui_font);
+    settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), 150, 32);
     if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
 
-    // 显示位置 card
-    add_ctrl!(settings_create_label(hwnd, "弹出位置：",       gx+18, SETTINGS_CONTENT_Y+436, 90,  28, ui_font), gx+18, SETTINGS_CONTENT_Y+436, 90, 28);
-    st.cb_pos = add_ctrl!(settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, gx+116, POSMODE_Y, 160, ui_font), gx+116, POSMODE_Y, 160, 32);
+    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec2.left(), sec2.label_y(0, 24), sec2.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_pos, sec2.left(), sec2.label_y(0, 24), sec2.label_w, 24);
+    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec2.field_x(), sec2.row_y(0), 170, ui_font);
+    settings_page0_push_ctrl(st, st.cb_pos, sec2.field_x(), sec2.row_y(0), 170, 32);
     if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
 
-    add_ctrl!(settings_create_label(hwnd, "鼠标偏移 dx/dy：", gx+18, MOUSE_DXY_Y, 130, 28, ui_font), gx+18, MOUSE_DXY_Y, 130, 28);
-    st.ed_dx = add_ctrl!(settings_create_edit(hwnd, "", IDC_SET_DX, gx+160, MOUSE_DXY_Y, 56, ui_font), gx+160, MOUSE_DXY_Y, 56, 28);
-    st.ed_dy = add_ctrl!(settings_create_edit(hwnd, "", IDC_SET_DY, gx+224, MOUSE_DXY_Y, 56, ui_font), gx+224, MOUSE_DXY_Y, 56, 28);
+    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec2.left(), sec2.label_y(1, 24), sec2.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_mouse, sec2.left(), sec2.label_y(1, 24), sec2.label_w, 24);
+    let mouse_x = sec2.field_x();
+    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec2.row_y(1), 64, ui_font);
+    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + 74, sec2.row_y(1), 64, ui_font);
+    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec2.row_y(1), 64, 28);
+    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + 74, sec2.row_y(1), 64, 28);
 
-    add_ctrl!(settings_create_label(hwnd, "固定位置 x/y：",   gx+18, FIXED_XY_Y, 110, 28, ui_font), gx+18, FIXED_XY_Y, 110, 28);
-    st.ed_fx = add_ctrl!(settings_create_edit(hwnd, "", IDC_SET_FX, gx+160, FIXED_XY_Y, 56, ui_font), gx+160, FIXED_XY_Y, 56, 28);
-    st.ed_fy = add_ctrl!(settings_create_edit(hwnd, "", IDC_SET_FY, gx+224, FIXED_XY_Y, 56, ui_font), gx+224, FIXED_XY_Y, 56, 28);
+    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec2.left(), sec2.label_y(2, 24), sec2.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_fixed, sec2.left(), sec2.label_y(2, 24), sec2.label_w, 24);
+    let fixed_x = sec2.field_x();
+    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec2.row_y(2), 64, ui_font);
+    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + 74, sec2.row_y(2), 64, ui_font);
+    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec2.row_y(2), 64, 28);
+    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + 74, sec2.row_y(2), 64, 28);
 
-    // 维护 card
-    let btn_y2 = MAINTAIN_BTN_Y;
-    st.btn_open_cfg   = add_ctrl!(settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, gx+18,  btn_y2, 130, ui_font), gx+18, btn_y2, 130, 32);
-    st.btn_open_db = add_ctrl!(settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB,  gx+162, btn_y2, 130, ui_font), gx+162, btn_y2, 130, 32);
-    st.btn_open_data  = add_ctrl!(settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, gx+306, btn_y2, 130, ui_font), gx+306, btn_y2, 130, 32);
+    let btn_y = sec3.row_y(0);
+    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec3.action_x(0, 130), btn_y, 130, ui_font);
+    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec3.action_x(1, 130), btn_y, 130, ui_font);
+    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec3.action_x(2, 130), btn_y, 130, ui_font);
+    settings_page0_push_ctrl(st, st.btn_open_cfg, sec3.action_x(0, 130), btn_y, 130, 32);
+    settings_page0_push_ctrl(st, st.btn_open_db, sec3.action_x(1, 130), btn_y, 130, 32);
+    settings_page0_push_ctrl(st, st.btn_open_data, sec3.action_x(2, 130), btn_y, 130, 32);
     for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
@@ -2011,23 +2053,7 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
 }
 
 unsafe fn settings_create_listbox(parent: HWND, id: isize, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
-    let hwnd = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
-        to_wide("LISTBOX").as_ptr(),
-        to_wide("").as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (LBS_NOTIFY as u32) | (WS_VSCROLL as u32),
-        x,
-        y,
-        w,
-        h,
-        parent,
-        id as usize as _,
-        GetModuleHandleW(null()),
-        null(),
-    );
-    settings_set_font(hwnd, font);
-    if !hwnd.is_null() { SetWindowTheme(hwnd, to_wide("Explorer").as_ptr(), null()); }
-    hwnd
+    host_create_settings_listbox(parent, id, x, y, w, h, font)
 }
 
 unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, select_gid: i64) {
@@ -2710,6 +2736,30 @@ struct SettingsPageBuilder {
     font: *mut core::ffi::c_void,
 }
 
+#[derive(Clone, Copy)]
+struct SettingsFormSectionLayout {
+    body: RECT,
+    label_w: i32,
+}
+
+impl SettingsFormSectionLayout {
+    fn new(page: usize, index: usize, label_w: i32) -> Self {
+        Self {
+            body: settings_section_body_rect(page, index, 18).into(),
+            label_w,
+        }
+    }
+
+    fn left(&self) -> i32 { self.body.left }
+    fn full_w(&self) -> i32 { self.body.right - self.body.left }
+    fn row_y(&self, row: i32) -> i32 { self.body.top + row * (SETTINGS_FORM_ROW_H + SETTINGS_FORM_ROW_GAP) }
+    fn label_y(&self, row: i32, h: i32) -> i32 { self.row_y(row) + ((SETTINGS_FORM_ROW_H - h).max(0) / 2) }
+    fn field_x(&self) -> i32 { self.body.left + self.label_w }
+    fn field_w(&self) -> i32 { (self.body.right - self.field_x()).max(40) }
+    fn field_w_from(&self, x: i32) -> i32 { (self.body.right - x).max(40) }
+    fn action_x(&self, slot: i32, w: i32) -> i32 { self.body.left + slot * (w + 14) }
+}
+
 impl SettingsPageBuilder {
     unsafe fn add(&self, st: &mut SettingsWndState, hwnd: HWND) -> HWND {
         if !hwnd.is_null() { settings_page_push_ctrl(st, self.page, hwnd); }
@@ -2757,97 +2807,97 @@ unsafe fn draw_text_wide(hdc: *mut core::ffi::c_void, text_w: &[u16], rc: &RECT,
 
 unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Hotkey.index();
-    let gx = SETTINGS_CONTENT_X;
-    let gw = SETTINGS_CONTENT_W;
-    let tw = gw - 64;
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 86);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
 
-    let (_hk_lbl, hk_btn) = b.toggle_row(st, "启用快捷键", 6101, gx + 18, SETTINGS_CONTENT_Y + 72, tw);
+    let (_hk_lbl, hk_btn) = b.toggle_row(st, "启用快捷键", 6101, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_hk_enable = hk_btn;
     if !st.chk_hk_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_hk_enable); }
 
-    b.label(st, "修饰键：", gx + 18, SETTINGS_CONTENT_Y + 104, 70, 24);
-    st.cb_hk_mod = b.dropdown(st, "Win", 6102, gx + 90, SETTINGS_CONTENT_Y + 100, 170);
+    b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, 24), 70, 24);
+    st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), 170);
     if !st.cb_hk_mod.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_mod); }
-    b.label(st, "按键：", gx + 272, SETTINGS_CONTENT_Y + 104, 50, 24);
-    st.cb_hk_key = b.dropdown(st, "V", 6103, gx + 322, SETTINGS_CONTENT_Y + 100, 140);
+    let key_label_x = sec0.field_x() + 186;
+    b.label(st, "按键：", key_label_x, sec0.label_y(1, 24), 50, 24);
+    st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + 50, sec0.row_y(1), 120);
     if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", gx + 18, SETTINGS_CONTENT_Y + 136, 520, 24);
+    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
 
-    let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽/恢复 Win+V。为避免设置页卡顿，这里不再实时读取系统状态；修改后通常需重启资源管理器或重新登录。", gx + 18, SETTINGS_CONTENT_Y + 216, gw - 36, 40);
-    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, gx + 18, SETTINGS_CONTENT_Y + 274, 110);
-    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, gx + 138, SETTINGS_CONTENT_Y + 274, 110);
-    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, gx + 258, SETTINGS_CONTENT_Y + 274, 130);
+    let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
+    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, 110), sec1.row_y(1), 110);
+    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, 110), sec1.row_y(1), 110);
+    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, 130), sec1.row_y(1), 130);
     for &hh in &[st.btn_clip_hist_block, st.btn_clip_hist_restore, st.btn_restart_explorer] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
 
-    let (_desc1, d1h) = b.label_auto(st, "说明：当前已支持主快捷键启用/组合切换，保存后会立即重新注册。", gx + 18, SETTINGS_CONTENT_Y + 396, gw - 36, 24);
-    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", gx + 18, SETTINGS_CONTENT_Y + 396 + d1h + 6, gw - 36, 24);
+    let (_desc1, d1h) = b.label_auto(st, "说明：保存后会立即重新注册主快捷键。", sec2.left(), sec2.row_y(0), sec2.full_w(), 24);
+    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", sec2.left(), sec2.row_y(0) + d1h + 6, sec2.full_w(), 24);
 
     st.ui.mark_built(page);
 }
 
 unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Plugin.index();
-    let gx = SETTINGS_CONTENT_X;
-    let gw = SETTINGS_CONTENT_W;
-    let tw = gw - 64;
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
 
-    let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, gx + 18, SETTINGS_CONTENT_Y + 72, tw);
+    let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_qs = qs_btn;
     if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
-    b.label(st, "搜索引擎：", gx + 18, SETTINGS_CONTENT_Y + 106, 90, 24);
-    st.cb_engine = b.dropdown(st, "筑森搜索（jzxx.vip）", 7201, gx + 110, SETTINGS_CONTENT_Y + 102, 240);
+    b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24);
+    st.cb_engine = b.dropdown(st, "筑森搜索（jzxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), 240);
     if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
-    b.label(st, "URL 模板：", gx + 18, SETTINGS_CONTENT_Y + 140, 90, 24);
-    st.ed_tpl = b.edit(st, "", 7202, gx + 110, SETTINGS_CONTENT_Y + 138, gw - 140);
-    b.label(st, "占位符：{q}=编码后关键字，{raw}=原文", gx + 110, SETTINGS_CONTENT_Y + 172, 420, 24);
-    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, gx + 18, SETTINGS_CONTENT_Y + 206, 130);
+    b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, 24), sec0.label_w, 24);
+    st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
+    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), 130);
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗（预留）", 7101, gx + 18, SETTINGS_CONTENT_Y + 356, tw);
+    let _ = b.label_auto(st, "占位符：{q}=编码后关键字，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
+    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗（预留）", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
-    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并（预留）", 7103, gx + 18, SETTINGS_CONTENT_Y + 494, tw);
+    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(0), sec2.full_w());
     st.chk_mm = mm_btn;
     if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
+    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(1), 170);
+    if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
     st.ui.mark_built(page);
 }
 
 unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
     let ui_font = st.ui_font;
     let page = SettingsPage::Group.index();
-    let gx = SETTINGS_CONTENT_X;
-    let gw = SETTINGS_CONTENT_W;
-    let card2_top = SETTINGS_CONTENT_Y + 124;
-    let body_x = gx + 18;
-    let body_w = gw - 36;
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 0);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
 
     let push = |st: &mut SettingsWndState, hh: HWND| {
         if !hh.is_null() { settings_page_push_ctrl(st, page, hh); }
     };
 
-    let (group_lbl, group_btn, _lx, _ly, _lw, _lh, _bx, _by) = settings_create_toggle_plain(hwnd, "启用分组功能", IDC_SET_GROUP_ENABLE, gx + 18, SETTINGS_CONTENT_Y + 70, gw - 36, ui_font);
+    let (group_lbl, group_btn, _lx, _ly, _lw, _lh, _bx, _by) = settings_create_toggle_plain(hwnd, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
     push(st, group_lbl);
     st.chk_group_enable = group_btn;
     settings_set_font(st.chk_group_enable, ui_font);
     push(st, st.chk_group_enable);
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
-    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", body_x, card2_top + 46, body_w - 18, 24, ui_font);
+    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(0), sec1.full_w(), 24, ui_font);
     push(st, st.lb_group_current);
 
-    let lbl3 = settings_create_label(hwnd, "分组列表：", body_x, card2_top + 82, 220, 22, ui_font);
+    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(1), 220, 22, ui_font);
     push(st, lbl3);
 
-    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, body_x, card2_top + 110, body_w, 210, ui_font);
+    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(2), sec1.full_w(), 210, ui_font);
     if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups); }
 
-    let btn_y = card2_top + 336;
+    let btn_y = sec1.row_y(2) + 226;
     let bw = 90;
     let gap = 10;
-    let x0 = body_x;
+    let x0 = sec1.left();
     st.btn_group_add = settings_create_small_btn(hwnd, "新建分组", IDC_SET_GROUP_ADD, x0 + (bw + gap) * 0, btn_y, bw, ui_font);
     st.btn_group_rename = settings_create_small_btn(hwnd, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap) * 1, btn_y, bw, ui_font);
     st.btn_group_delete = settings_create_small_btn(hwnd, "删除", IDC_SET_GROUP_DELETE, x0 + (bw + gap) * 2, btn_y, bw, ui_font);
@@ -2863,15 +2913,63 @@ unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
     st.ui.mark_built(page);
 }
 
-unsafe fn settings_create_placeholder_page(hwnd: HWND, st: &mut SettingsWndState, page: usize, lines: &[&str]) {
-    let gx = SETTINGS_CONTENT_X;
-    let ui_font = st.ui_font;
-    for (idx, line) in lines.iter().enumerate() {
-        let y = SETTINGS_CONTENT_Y + 72 + (idx as i32) * 34;
-        let hh = settings_create_label(hwnd, line, gx + 18, y, SETTINGS_CONTENT_W - 36, 24, ui_font);
+unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
+    let page = SettingsPage::Cloud.index();
+    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
+
+    let (_, toggle) = b.toggle_row(st, "启用自动同步", IDC_SET_CLOUD_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
+    st.chk_cloud_enable = toggle;
+    if !st.chk_cloud_enable.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_cloud_enable);
+    }
+    b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24);
+    st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), 150);
+    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
+
+    b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
+    st.ed_cloud_url = b.edit(st, "", IDC_SET_CLOUD_URL, sec1.field_x(), sec1.row_y(0), sec1.field_w());
+    b.label(st, "用户名：", sec1.left(), sec1.label_y(1, 24), sec1.label_w, 24);
+    st.ed_cloud_user = b.edit(st, "", IDC_SET_CLOUD_USER, sec1.field_x(), sec1.row_y(1), sec1.field_w());
+    b.label(st, "密码：", sec1.left(), sec1.label_y(2, 24), sec1.label_w, 24);
+    st.ed_cloud_pass = b.add(st, settings_create_password_edit(hwnd, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w(), st.ui_font));
+    b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, 24), sec1.label_w, 24);
+    st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
+
+    let btn_w = 130;
+    let gap = 14;
+    let x0 = sec2.left();
+    let x1 = x0 + btn_w + gap;
+    let btn_sync = b.button(st, "立即同步", IDC_SET_CLOUD_SYNC_NOW, x0, sec2.row_y(0), btn_w);
+    let btn_upload = b.button(st, "上传配置", IDC_SET_CLOUD_UPLOAD_CFG, x1, sec2.row_y(0), btn_w);
+    let btn_apply = b.button(st, "应用云端配置", IDC_SET_CLOUD_APPLY_CFG, x0, sec2.row_y(1), btn_w);
+    let btn_restore = b.button(st, "云备份恢复", IDC_SET_CLOUD_RESTORE_BACKUP, x1, sec2.row_y(1), btn_w);
+    for &hh in &[btn_sync, btn_upload, btn_apply, btn_restore] {
         if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh);
+            st.ownerdraw_ctrls.push(hh);
         }
+    }
+
+    st.ui.mark_built(page);
+}
+
+unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
+    let page = SettingsPage::About.index();
+    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let sec = SettingsFormSectionLayout::new(page, 0, 0);
+    let lines = [
+        format!("版本：{}", env!("CARGO_PKG_VERSION")),
+        "设置界面现在统一使用同一套 section/form 布局。".to_string(),
+        "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
+        format!("数据目录：{}", data_dir().to_string_lossy()),
+        format!("数据库：{}", db_file().to_string_lossy()),
+    ];
+    let mut y = sec.row_y(0);
+    for line in lines.iter() {
+        let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), 24);
+        y += h + 10;
     }
     st.ui.mark_built(page);
 }
@@ -2896,18 +2994,8 @@ unsafe fn settings_ensure_page(hwnd: HWND, st: &mut SettingsWndState, page: usiz
         SettingsPage::Hotkey => settings_create_hotkey_page(hwnd, st),
         SettingsPage::Plugin => settings_create_plugin_page(hwnd, st),
         SettingsPage::Group => settings_create_group_page(hwnd, st),
-        SettingsPage::Cloud => {
-            settings_create_placeholder_page(hwnd, st, page, &[
-                "云同步入口已保留。",
-                "后续可继续接入 WebDAV 或其他同步方式。",
-            ]);
-        }
-        SettingsPage::About => {
-            settings_create_placeholder_page(hwnd, st, page, &[
-                "关于页入口已保留。",
-                "后续可继续补版本信息、更新日志、项目说明。",
-            ]);
-        }
+        SettingsPage::Cloud => settings_create_cloud_page(hwnd, st),
+        SettingsPage::About => settings_create_about_page(hwnd, st),
     }
 }
 
@@ -2923,6 +3011,7 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_CLOSETRAY
         || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_GROUP_ENABLE
+        || cid == IDC_SET_CLOUD_ENABLE
         || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103
     {
         let checked = settings_toggle_get(st, cid);
@@ -2930,7 +3019,7 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
         return;
     }
 
-    let kind = if cid == IDC_SET_MAX || cid == IDC_SET_POSMODE || cid == 6102 || cid == 6103 || cid == 7201 {
+    let kind = if cid == IDC_SET_MAX || cid == IDC_SET_POSMODE || cid == IDC_SET_CLOUD_INTERVAL || cid == 6102 || cid == 6103 || cid == 7201 {
         SettingsComponentKind::Dropdown
     } else if cid == IDC_SET_SAVE {
         SettingsComponentKind::AccentButton
@@ -2980,7 +3069,6 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 cb_hk_mod: null_mut(),
                 cb_hk_key: null_mut(),
                 lb_hk_preview: null_mut(),
-                lb_clip_hist: null_mut(),
                 btn_clip_hist_block: null_mut(),
                 btn_clip_hist_restore: null_mut(),
                 btn_restart_explorer: null_mut(),
@@ -2989,6 +3077,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 ed_tpl: null_mut(),
                 chk_ai: null_mut(),
                 chk_mm: null_mut(),
+                chk_cloud_enable: null_mut(),
+                cb_cloud_interval: null_mut(),
+                ed_cloud_url: null_mut(),
+                ed_cloud_user: null_mut(),
+                ed_cloud_pass: null_mut(),
+                ed_cloud_dir: null_mut(),
+                lb_cloud_status: null_mut(),
                 cb_max: null_mut(),
                 cb_pos: null_mut(),
                 ed_dx: null_mut(),
@@ -3194,6 +3289,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         settings_sync_pos_fields_enabled(st);
                     }
                 }
+                IDC_SET_CLOUD_INTERVAL => {
+                    let items = ["15分钟", "30分钟", "1小时", "6小时", "12小时", "24小时"];
+                    if let Some(label) = items.get(idx) {
+                        settings_set_text(st.cb_cloud_interval, label);
+                        InvalidateRect(st.cb_cloud_interval, null(), 1);
+                    }
+                }
                 6102 => {
                     if let Some(label) = HOTKEY_MOD_OPTIONS.get(idx) {
                         settings_set_text(st.cb_hk_mod, label);
@@ -3233,7 +3335,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -3254,7 +3356,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_GROUP_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
@@ -3323,6 +3425,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let current = settings_dropdown_index_for_pos_mode(&settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos)));
                     st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_POSMODE, &rc, &["跟随鼠标", "固定位置", "上次位置"], current, 180);
                 }
+                IDC_SET_CLOUD_INTERVAL => {
+                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_cloud_interval, &mut rc);
+                    let items = ["15分钟", "30分钟", "1小时", "6小时", "12小时", "24小时"];
+                    let current = items.iter().position(|x| *x == get_window_text(st.cb_cloud_interval)).unwrap_or(2);
+                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_CLOUD_INTERVAL, &rc, &items, current, 180);
+                }
                 6102 => {
                     if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
                     let mut rc: RECT = zeroed();
@@ -3349,6 +3459,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let key = search_engine_key_from_display(&get_window_text(st.cb_engine));
                     settings_set_text(st.ed_tpl, search_engine_template(key));
                 }
+                IDC_SET_PLUGIN_MAILMERGE => {
+                    launch_mail_merge_window(hwnd);
+                }
                 6111 => {
                     if let Err(e) = toggle_disabled_hotkey_char('V', true) {
                         MessageBoxW(hwnd, to_wide(&format!("屏蔽 Win+V 失败：{}", e)).as_ptr(), to_wide("系统剪贴板历史").as_ptr(), MB_OK | MB_ICONERROR);
@@ -3363,6 +3476,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     if let Err(e) = restart_explorer_shell() {
                         MessageBoxW(hwnd, to_wide(&format!("重启资源管理器失败：{}", e)).as_ptr(), to_wide("系统剪贴板历史").as_ptr(), MB_OK | MB_ICONERROR);
                     }
+                }
+                IDC_SET_CLOUD_SYNC_NOW | IDC_SET_CLOUD_UPLOAD_CFG | IDC_SET_CLOUD_APPLY_CFG | IDC_SET_CLOUD_RESTORE_BACKUP => {
+                    let msg = match cmd {
+                        IDC_SET_CLOUD_SYNC_NOW => "云同步执行入口已经迁到统一框架，下一步继续接真实同步逻辑。",
+                        IDC_SET_CLOUD_UPLOAD_CFG => "上传配置入口已经迁到统一框架，下一步继续接真实上传逻辑。",
+                        IDC_SET_CLOUD_APPLY_CFG => "应用云端配置入口已经迁到统一框架，下一步继续接真实下载逻辑。",
+                        _ => "云备份恢复入口已经迁到统一框架，下一步继续接数据库与资源恢复逻辑。",
+                    };
+                    MessageBoxW(hwnd, to_wide(msg).as_ptr(), to_wide("云同步").as_ptr(), MB_OK | MB_ICONINFORMATION);
                 }
                 IDC_SET_SAVE => {
                     settings_collect_to_app(st);
@@ -4105,6 +4227,21 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                 }
             }
         }
+        IDM_ROW_MAIL_MERGE => {
+            if !state.settings.super_mail_merge_enabled {
+                return;
+            }
+            if state.context_row >= 0 {
+                state.sel_idx = state.context_row;
+                if let Some(item) = state.current_item() {
+                    if let Some(path) = item.file_paths.as_ref().and_then(|v| v.first()) {
+                        launch_mail_merge_window_with_excel(hwnd, Some(path));
+                    } else {
+                        launch_mail_merge_window(hwnd);
+                    }
+                }
+            }
+        }
         IDM_ROW_EDIT => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
@@ -4198,7 +4335,7 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
         IDM_TRAY_EXIT => {
             DestroyWindow(hwnd);
         }
-        IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_GROUP_FILTER_ALL => {
+        IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
             execute_row_command(hwnd, state, id);
         }
         _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&id) || (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&id) => {
@@ -4252,6 +4389,21 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
     let state = &mut *ptr;
     let x = get_x_lparam(lparam);
     let y = get_y_lparam(lparam);
+
+    if state.down_row >= 0 && (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
+        let dx = (x - state.down_x).abs();
+        let dy = (y - state.down_y).abs();
+        let drag_cx = GetSystemMetrics(SM_CXDRAG).max(4);
+        let drag_cy = GetSystemMetrics(SM_CYDRAG).max(4);
+        if dx >= drag_cx || dy >= drag_cy {
+            let drag_row = state.down_row;
+            state.down_row = -1;
+            if begin_row_drag_export(hwnd, state, drag_row) {
+                InvalidateRect(hwnd, null(), 0);
+                return;
+            }
+        }
+    }
 
     let old_btn = state.hover_btn;
     let old_tab = state.hover_tab;
@@ -4325,7 +4477,7 @@ unsafe fn clear_main_hover_state(hwnd: HWND) {
     if !state.hover_btn.is_empty() { state.hover_btn = ""; dirty = true; }
     if state.hover_tab != -1 { state.hover_tab = -1; dirty = true; }
     if state.hover_idx != -1 { state.hover_idx = -1; dirty = true; }
-    if state.down_row != -1 { state.down_row = -1; dirty = true; }
+    if state.down_row != -1 { state.down_row = -1; state.down_x = 0; state.down_y = 0; dirty = true; }
     if dirty {
         InvalidateRect(hwnd, null(), 0);
     }
@@ -4389,6 +4541,8 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
         state.sel_idx = idx;
         state.ensure_visible(idx);
         state.down_row = idx;
+        state.down_x = x;
+        state.down_y = y;
         InvalidateRect(hwnd, null(), 0);
     }
 }
@@ -4444,6 +4598,8 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
 
     let down_row = state.down_row;
     state.down_row = -1;
+    state.down_x = 0;
+    state.down_y = 0;
     if down_row < 0 {
         return;
     }
@@ -4492,21 +4648,7 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
     }
     state.clear_selection();
     clear_main_hover_state(hwnd);
-    state.paste_return_to_main = !state.settings.click_hide;
-    let target = find_next_paste_target(hwnd);
-    if !target.is_null() {
-        if state.settings.click_hide {
-            ShowWindow(hwnd, SW_HIDE);
-        }
-        SetForegroundWindow(target);
-        SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
-    } else {
-        SetForegroundWindow(hwnd);
-        if state.search_on {
-            SetFocus(state.search_hwnd);
-        }
-        state.paste_return_to_main = false;
-    }
+    paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
     InvalidateRect(hwnd, null(), 0);
 }
 
@@ -4605,7 +4747,26 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     let current_item = state.current_item().cloned();
     let current_kind = current_item.as_ref().map(|it| it.kind).unwrap_or(ClipKind::Text);
     let current_is_dir = current_item.as_ref().map(|it| is_directory_item(it)).unwrap_or(false);
-    let cmd = show_row_menu(hwnd, x, y, state, state.context_selection_count(), state.context_selection_has_unpinned(), current_kind, current_is_dir);
+    let current_is_excel = current_item
+        .as_ref()
+        .and_then(|it| it.file_paths.as_ref())
+        .and_then(|paths| paths.first())
+        .map(|path| {
+            let lower = path.to_ascii_lowercase();
+            lower.ends_with(".xls") || lower.ends_with(".xlsx") || lower.ends_with(".xlsm") || lower.ends_with(".csv")
+        })
+        .unwrap_or(false);
+    let cmd = show_row_menu(
+        hwnd,
+        x,
+        y,
+        state,
+        state.context_selection_count(),
+        state.context_selection_has_unpinned(),
+        current_kind,
+        current_is_dir,
+        current_is_excel,
+    );
     if cmd != 0 {
         execute_row_command(hwnd, state, cmd);
     }
@@ -4664,18 +4825,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
             if state.context_selection_count() > 1 {
                 copy_selected_rows_combined(state);
                 state.clear_selection();
-                state.paste_return_to_main = false;
-                let target = find_next_paste_target(hwnd);
-                if !target.is_null() {
-                    ShowWindow(hwnd, SW_HIDE);
-                    SetForegroundWindow(target);
-                    SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
-                } else {
-                    SetForegroundWindow(hwnd);
-                    if state.search_on {
-                        SetFocus(state.search_hwnd);
-                    }
-                }
+                paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
             } else {
                 paste_selected(hwnd, state);
             }
@@ -4794,6 +4944,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                     text: Some(normalized),
                     file_paths: None,
                     image_bytes: None,
+                    image_path: None,
                     image_width: 0,
                     image_height: 0,
                     pinned: false,
@@ -4809,6 +4960,8 @@ unsafe fn capture_clipboard(hwnd: HWND) {
 
     if let Ok(img) = clipboard.get_image() {
         let bytes = img.bytes.into_owned();
+        let image_path = write_image_bytes_to_output_path(&bytes, img.width as u32, img.height as u32);
+        let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
         let sig = format!(
             "img:{}:{}:{}",
             img.width,
@@ -4824,7 +4977,8 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                 preview,
                 text: None,
                 file_paths: None,
-                image_bytes: Some(bytes),
+                image_bytes,
+                image_path: image_path.map(|p| p.to_string_lossy().to_string()),
                 image_width: img.width,
                 image_height: img.height,
                 pinned: false,
@@ -4833,6 +4987,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             },
             sig,
         );
+        trim_process_working_set();
         InvalidateRect(hwnd, null(), 1);
         return;
     }
@@ -4848,6 +5003,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                 text: Some(paths.join("\n")),
                 file_paths: Some(paths),
                 image_bytes: None,
+                image_path: None,
                 image_width: 0,
                 image_height: 0,
                 pinned: false,
@@ -4937,12 +5093,12 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
             }
         }
         ClipKind::Image => {
-            if let Some(bytes) = &item.image_bytes {
+            if let Some((bytes, width, height)) = ensure_item_image_bytes(item) {
                 clipboard
                     .set_image(ImageData {
-                        width: item.image_width,
-                        height: item.image_height,
-                        bytes: Cow::Owned(bytes.clone()),
+                        width,
+                        height,
+                        bytes: Cow::Owned(bytes),
                     })
                     .is_ok()
             } else {
@@ -4971,18 +5127,170 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     }
     state.clear_selection();
     clear_main_hover_state(hwnd);
-    state.paste_return_to_main = false;
-    let target = find_next_paste_target(hwnd);
-    if !target.is_null() {
-        ShowWindow(hwnd, SW_HIDE);
-        SetForegroundWindow(target);
-        SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
+    paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
+}
+
+unsafe extern "system" fn drop_source_query_interface(
+    this: *mut core::ffi::c_void,
+    riid: *const windows_sys::core::GUID,
+    out: *mut *mut core::ffi::c_void,
+) -> windows_sys::core::HRESULT {
+    if out.is_null() {
+        return E_POINTER_HR;
+    }
+    *out = null_mut();
+    if riid.is_null() {
+        return E_NOINTERFACE_HR;
+    }
+    if guid_eq(&*riid, &IID_IUNKNOWN_RAW) || guid_eq(&*riid, &IID_IDROPSOURCE_RAW) {
+        *out = this;
+        drop_source_add_ref(this);
+        S_OK_HR
     } else {
-        SetForegroundWindow(hwnd);
-        if state.search_on {
-            SetFocus(state.search_hwnd);
+        E_NOINTERFACE_HR
+    }
+}
+
+unsafe extern "system" fn drop_source_add_ref(this: *mut core::ffi::c_void) -> u32 {
+    let obj = this as *mut SimpleDropSource;
+    (*obj).refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+unsafe extern "system" fn drop_source_release(this: *mut core::ffi::c_void) -> u32 {
+    let obj = this as *mut SimpleDropSource;
+    let remain = (*obj).refs.fetch_sub(1, Ordering::Release) - 1;
+    if remain == 0 {
+        std::sync::atomic::fence(Ordering::Acquire);
+        drop(Box::from_raw(obj));
+    }
+    remain
+}
+
+unsafe extern "system" fn drop_source_query_continue_drag(
+    _this: *mut core::ffi::c_void,
+    escape_pressed: i32,
+    key_state: u32,
+) -> windows_sys::core::HRESULT {
+    if escape_pressed != 0 {
+        return DRAGDROP_S_CANCEL_HR;
+    }
+    if key_state & MK_LBUTTON_FLAG == 0 {
+        return DRAGDROP_S_DROP_HR;
+    }
+    S_OK_HR
+}
+
+unsafe extern "system" fn drop_source_give_feedback(
+    _this: *mut core::ffi::c_void,
+    _effect: DROPEFFECT,
+) -> windows_sys::core::HRESULT {
+    DRAGDROP_S_USEDEFAULTCURSORS_HR
+}
+
+static DROP_SOURCE_VTBL: RawDropSourceVtbl = RawDropSourceVtbl {
+    base: RawIUnknownVtbl {
+        query_interface: drop_source_query_interface,
+        add_ref: drop_source_add_ref,
+        release: drop_source_release,
+    },
+    query_continue_drag: drop_source_query_continue_drag,
+    give_feedback: drop_source_give_feedback,
+};
+
+fn guid_eq(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
+unsafe fn release_raw_com(ptr: *mut core::ffi::c_void) {
+    if ptr.is_null() {
+        return;
+    }
+    let unk = ptr as *mut RawIUnknown;
+    ((*(*unk).vtbl).release)(ptr);
+}
+
+unsafe fn create_drop_source() -> *mut core::ffi::c_void {
+    Box::into_raw(Box::new(SimpleDropSource {
+        vtbl: &DROP_SOURCE_VTBL,
+        refs: AtomicU32::new(1),
+    })) as *mut core::ffi::c_void
+}
+
+unsafe fn create_shell_data_object(paths: &[PathBuf]) -> Option<*mut core::ffi::c_void> {
+    if paths.is_empty() {
+        return None;
+    }
+    let parent = paths.first()?.parent()?.to_path_buf();
+    if paths.iter().any(|p| p.parent() != Some(parent.as_path())) {
+        return None;
+    }
+
+    let parent_wide = to_wide(parent.to_string_lossy().as_ref());
+    let parent_pidl = ILCreateFromPathW(parent_wide.as_ptr());
+    if parent_pidl.is_null() {
+        return None;
+    }
+
+    let mut child_pidls: Vec<*mut windows_sys::Win32::UI::Shell::Common::ITEMIDLIST> = Vec::new();
+    for path in paths {
+        let wide = to_wide(path.to_string_lossy().as_ref());
+        let abs_pidl = ILCreateFromPathW(wide.as_ptr());
+        if abs_pidl.is_null() {
+            continue;
+        }
+        let child = ILClone(ILFindLastID(abs_pidl));
+        ILFree(abs_pidl);
+        if !child.is_null() {
+            child_pidls.push(child);
         }
     }
+
+    if child_pidls.is_empty() {
+        ILFree(parent_pidl);
+        return None;
+    }
+
+    let mut data_obj: *mut core::ffi::c_void = null_mut();
+    let hr = SHCreateDataObject(
+        parent_pidl,
+        child_pidls.len() as u32,
+        child_pidls.as_ptr() as *const *const windows_sys::Win32::UI::Shell::Common::ITEMIDLIST,
+        null_mut(),
+        &IID_IDATAOBJECT_RAW,
+        &mut data_obj,
+    );
+    for child in child_pidls {
+        ILFree(child);
+    }
+    ILFree(parent_pidl);
+    if hr >= 0 && !data_obj.is_null() {
+        Some(data_obj)
+    } else {
+        None
+    }
+}
+
+unsafe fn begin_file_drag(_hwnd: HWND, paths: &[PathBuf]) -> bool {
+    let Some(data_obj) = create_shell_data_object(paths) else {
+        return false;
+    };
+    let drop_source = create_drop_source();
+    let init_hr = OleInitialize(null());
+    if init_hr < 0 && init_hr != RPC_E_CHANGED_MODE_HR {
+        release_raw_com(data_obj);
+        release_raw_com(drop_source);
+        return false;
+    }
+
+    let mut effect: DROPEFFECT = 0;
+    let drag_hr = DoDragDrop(data_obj, drop_source, DROPEFFECT_COPY, &mut effect);
+    release_raw_com(data_obj);
+    release_raw_com(drop_source);
+    if init_hr >= 0 {
+        OleUninitialize();
+    }
+    let _ = effect;
+    drag_hr >= 0
 }
 
 
@@ -5002,33 +5310,67 @@ fn sanitize_export_name(name: &str, fallback: &str) -> String {
 
 fn materialize_item_as_file(item: &ClipItem) -> Option<PathBuf> {
     let base = export_dir();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let suffix = if item.id > 0 { item.id.to_string() } else { ts.to_string() };
     match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             let name = sanitize_export_name(&item.preview, "text");
-            let path = base.join(format!("{}_{}.txt", name, ts));
+            let path = base.join(format!("{}_{}_{}.txt", name, ts, suffix));
             let text = item.text.as_ref().map(|s| s.as_str()).unwrap_or(&item.preview);
             fs::write(&path, text).ok()?;
             Some(path)
         }
         ClipKind::Image => {
             let name = sanitize_export_name(&item.preview, "image");
-            let path = base.join(format!("{}_{}.png", name, ts));
-            let bytes = item.image_bytes.as_ref()?;
-            let file = fs::File::create(&path).ok()?;
-            let bw = io::BufWriter::new(file);
-            let mut enc = png::Encoder::new(bw, item.image_width as u32, item.image_height as u32);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().ok()?;
-            writer.write_image_data(bytes).ok()?;
+            let path = base.join(format!("{}_{}_{}.png", name, ts, suffix));
+            if let Some(existing) = save_image_item(item) {
+                if existing != path {
+                    fs::copy(existing, &path).ok()?;
+                }
+            } else {
+                return None;
+            }
             Some(path)
         }
         ClipKind::Files => item.file_paths.as_ref().and_then(|v| v.first()).map(PathBuf::from),
     }
 }
 
-unsafe fn show_row_menu(hwnd: HWND, x: i32, y: i32, state: &AppState, selected_count: usize, has_unpinned: bool, current_kind: ClipKind, current_is_dir: bool) -> usize {
+fn drag_export_paths_for_item(item: &ClipItem) -> Vec<PathBuf> {
+    match item.kind {
+        ClipKind::Text | ClipKind::Phrase | ClipKind::Image => materialize_item_as_file(item).into_iter().collect(),
+        ClipKind::Files => Vec::new(),
+    }
+}
+
+unsafe fn begin_row_drag_export(hwnd: HWND, state: &mut AppState, visible_idx: i32) -> bool {
+    if visible_idx < 0 {
+        return false;
+    }
+    let Some(src_idx) = state.filtered_indices.get(visible_idx as usize).copied() else {
+        return false;
+    };
+    let Some(item) = state.active_items().get(src_idx).cloned() else {
+        return false;
+    };
+    let paths = drag_export_paths_for_item(&item);
+    if paths.is_empty() {
+        return false;
+    }
+    begin_file_drag(hwnd, &paths)
+}
+
+unsafe fn show_row_menu(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    state: &AppState,
+    selected_count: usize,
+    has_unpinned: bool,
+    current_kind: ClipKind,
+    current_is_dir: bool,
+    current_is_excel: bool,
+) -> usize {
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return 0;
@@ -5076,6 +5418,9 @@ unsafe fn show_row_menu(hwnd: HWND, x: i32, y: i32, state: &AppState, selected_c
                 AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_PATH, to_wide(open_text).as_ptr());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_FOLDER, to_wide("打开所在文件夹").as_ptr());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PATH, to_wide("复制路径").as_ptr());
+                if current_is_excel && state.settings.super_mail_merge_enabled {
+                    AppendMenuW(menu, MF_STRING, IDM_ROW_MAIL_MERGE, to_wide("超级邮件合并").as_ptr());
+                }
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
                 AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
@@ -5160,13 +5505,47 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
 
 
 unsafe fn send_ctrl_v() {
+    keybd_event(VK_CONTROL as u8, 0, 0, 0);
+    keybd_event(VK_V as u8, 0, 0, 0);
+    keybd_event(VK_V as u8, 0, KEYEVENTF_KEYUP, 0);
+    keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+}
+
+unsafe fn send_alt_tap() {
     let inputs = [
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_CONTROL as u16, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 } } },
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_V as u16, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 } } },
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_V as u16, w_scan: 0, dw_flags: KEYEVENTF_KEYUP, time: 0, dw_extra_info: 0 } } },
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_CONTROL as u16, w_scan: 0, dw_flags: KEYEVENTF_KEYUP, time: 0, dw_extra_info: 0 } } },
+        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_MENU as u16, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 } } },
+        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_MENU as u16, w_scan: 0, dw_flags: KEYEVENTF_KEYUP, time: 0, dw_extra_info: 0 } } },
     ];
     let _ = SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
+}
+
+unsafe fn force_foreground_window(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    if SetForegroundWindow(hwnd) != 0 {
+        return true;
+    }
+    send_alt_tap();
+    SetForegroundWindow(hwnd) != 0
+}
+
+unsafe fn paste_after_clipboard_ready(hwnd: HWND, state: &mut AppState, hide_main: bool) {
+    state.paste_return_to_main = false;
+    let target = find_next_paste_target(hwnd);
+    if !target.is_null() {
+        if hide_main {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        let _ = force_foreground_window(target);
+        KillTimer(hwnd, ID_TIMER_PASTE);
+        SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
+    } else {
+        SetForegroundWindow(hwnd);
+        if state.search_on {
+            SetFocus(state.search_hwnd);
+        }
+    }
 }
 
 unsafe fn is_window_enabled_compat(hwnd: HWND) -> bool {
@@ -5197,30 +5576,28 @@ unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool {
 }
 
 unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
-    let fg = GetForegroundWindow();
-    if is_viable_paste_window(fg, app_hwnd) {
-        let thread_id = GetWindowThreadProcessId(fg, null_mut());
-        let mut info: GUITHREADINFO = zeroed();
-        info.cb_size = size_of::<GUITHREADINFO>() as u32;
-        if GetGUIThreadInfo(thread_id, &mut info) != 0 {
-            let focus_root = GetAncestor(info.hwnd_focus, GA_ROOT);
-            if is_viable_paste_window(focus_root, app_hwnd) {
-                return focus_root;
-            }
-            let active_root = GetAncestor(info.hwnd_active, GA_ROOT);
-            if is_viable_paste_window(active_root, app_hwnd) {
-                return active_root;
-            }
-        }
-        return fg;
-    }
-
     let mut wins: Vec<HWND> = Vec::new();
     EnumWindows(Some(enum_visible_windows), &mut wins as *mut _ as LPARAM);
-    for h in wins {
-        if is_viable_paste_window(h, app_hwnd) {
-            return h;
+
+    let fg = GetForegroundWindow();
+    let start = wins
+        .iter()
+        .position(|&h| h == fg)
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+
+    for &h in wins.iter().skip(start) {
+        if !is_viable_paste_window(h, app_hwnd) {
+            continue;
         }
+        let title = get_window_text(h);
+        if matches!(
+            title.trim(),
+            "" | "开始" | "dummyLayeredWnd" | "Float" | "屏幕录制" | "RecBackgroundForm"
+        ) {
+            continue;
+        }
+        return h;
     }
     null_mut()
 }
@@ -5460,8 +5837,62 @@ fn file_paths_signature(paths: &[String]) -> String {
 fn output_image_path() -> PathBuf {
     let base = data_dir().join("images");
     let _ = fs::create_dir_all(&base);
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     base.join(format!("zsclip_{}.png", ts))
+}
+
+fn write_image_bytes_to_output_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    let out = output_image_path();
+    let file = File::create(&out).ok()?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder.write_header().ok()?;
+    png_writer.write_image_data(bytes).ok()?;
+    Some(out)
+}
+
+fn load_image_bytes_from_path(path: &str) -> Option<(Vec<u8>, usize, usize)> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let file = File::open(path).ok()?;
+    let decoder = png::Decoder::new(BufReader::new(file));
+    let mut reader = decoder.read_info().ok()?;
+    let out_size = reader.output_buffer_size();
+    let mut buf = vec![0; out_size];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let bytes = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => bytes.to_vec(),
+        png::ColorType::Rgb => {
+            let mut out = Vec::with_capacity((info.width as usize) * (info.height as usize) * 4);
+            for chunk in bytes.chunks_exact(3) {
+                out.extend_from_slice(&[chunk[0], chunk[1], chunk[2], 255]);
+            }
+            out
+        }
+        png::ColorType::GrayscaleAlpha => {
+            let mut out = Vec::with_capacity((info.width as usize) * (info.height as usize) * 4);
+            for chunk in bytes.chunks_exact(2) {
+                out.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
+            }
+            out
+        }
+        png::ColorType::Grayscale => {
+            let mut out = Vec::with_capacity((info.width as usize) * (info.height as usize) * 4);
+            for v in bytes {
+                out.extend_from_slice(&[*v, *v, *v, 255]);
+            }
+            out
+        }
+        _ => return None,
+    };
+    Some((rgba, info.width as usize, info.height as usize))
 }
 
 unsafe fn clipboard_file_paths() -> Option<Vec<String>> {
@@ -5492,27 +5923,48 @@ unsafe fn clipboard_file_paths() -> Option<Vec<String>> {
 
 
 fn save_image_item(item: &ClipItem) -> Option<PathBuf> {
-    use std::fs::File;
-    use std::io::BufWriter;
-
-    let bytes = item.image_bytes.as_ref()?;
-    let width = item.image_width as u32;
-    let height = item.image_height as u32;
-    let out = output_image_path();
-
-    let file = File::create(&out).ok()?;
-    let writer = BufWriter::new(file);
-    let mut encoder = png::Encoder::new(writer, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = encoder.write_header().ok()?;
-    png_writer.write_image_data(bytes).ok()?;
-    Some(out)
+    if let Some(path) = item.image_path.as_ref() {
+        let src = PathBuf::from(path);
+        if src.exists() {
+            return Some(src);
+        }
+    }
+    let (bytes, width, height) = ensure_item_image_bytes(item)?;
+    write_image_bytes_to_output_path(&bytes, width as u32, height as u32)
 }
+
+pub(crate) fn ensure_item_image_bytes(item: &ClipItem) -> Option<(Vec<u8>, usize, usize)> {
+    if let Some(bytes) = &item.image_bytes {
+        return Some((bytes.clone(), item.image_width, item.image_height));
+    }
+    if let Some(path) = item.image_path.as_ref() {
+        if let Some(loaded) = load_image_bytes_from_path(path) {
+            return Some(loaded);
+        }
+    }
+    if item.kind != ClipKind::Image || item.id <= 0 {
+        return None;
+    }
+    let full = db_load_item_full(item.id)?;
+    if let Some(bytes) = full.image_bytes {
+        return Some((bytes, full.image_width, full.image_height));
+    }
+    full.image_path.as_deref().and_then(load_image_bytes_from_path)
+}
+
 fn hash_bytes(data: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     data.hash(&mut hasher);
     hasher.finish()
+}
+
+fn trim_process_working_set() {
+    unsafe {
+        let process = GetCurrentProcess();
+        if !process.is_null() {
+            let _ = EmptyWorkingSet(process);
+        }
+    }
 }
 
 

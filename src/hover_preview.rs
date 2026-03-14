@@ -1,0 +1,218 @@
+use std::mem::{size_of, zeroed};
+use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
+
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{
+        BeginPaint, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint,
+        FillRect, InvalidateRect, SelectObject, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT,
+        SRCCOPY,
+    },
+    System::LibraryLoader::GetModuleHandleW,
+    UI::WindowsAndMessaging::*,
+};
+
+use crate::{
+    app::{apply_window_corner_preference, ensure_item_preview_rgba, to_wide, ClipItem, ClipKind},
+    ui::{draw_round_rect, draw_text, draw_text_ex, Theme},
+};
+
+const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";
+const PREVIEW_W_TEXT: i32 = 420;
+const PREVIEW_H_TEXT: i32 = 220;
+const PREVIEW_W_IMAGE: i32 = 520;
+const PREVIEW_H_IMAGE: i32 = 360;
+
+struct HoverPreviewData {
+    header: String,
+    body: String,
+    image: Option<(Vec<u8>, usize, usize)>,
+}
+
+static HOVER_HWND: OnceLock<isize> = OnceLock::new();
+
+unsafe extern "system" fn preview_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_NCCREATE => {
+            let cs = &*(lparam as *const CREATESTRUCTW);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
+            apply_window_corner_preference(hwnd);
+            1
+        }
+        WM_PAINT => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            let mut ps: PAINTSTRUCT = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            if !hdc.is_null() && !ptr.is_null() {
+                let th = Theme::default();
+                let data = &*ptr;
+                let mut rc: RECT = zeroed();
+                GetClientRect(hwnd, &mut rc);
+                let bg = CreateSolidBrush(th.surface);
+                FillRect(hdc, &rc, bg);
+                DeleteObject(bg as _);
+                draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 10);
+
+                let header_rc = RECT { left: 14, top: 10, right: rc.right - 14, bottom: 34 };
+                draw_text_ex(hdc as _, &data.header, &header_rc, th.text_muted, 12, true, false, "Segoe UI Variable Text");
+
+                if let Some((bytes, width, height)) = &data.image {
+                    let content = RECT { left: 12, top: 40, right: rc.right - 12, bottom: rc.bottom - 12 };
+                    let avail_w = (content.right - content.left).max(1);
+                    let avail_h = (content.bottom - content.top).max(1);
+                    let scale = (avail_w as f32 / *width as f32).min(avail_h as f32 / *height as f32).min(1.0);
+                    let dw = ((*width as f32) * scale).max(1.0) as i32;
+                    let dh = ((*height as f32) * scale).max(1.0) as i32;
+                    let dx = content.left + (avail_w - dw) / 2;
+                    let dy = content.top + (avail_h - dh) / 2;
+
+                    let mut bmi: BITMAPINFO = zeroed();
+                    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                    bmi.bmiHeader.biWidth = *width as i32;
+                    bmi.bmiHeader.biHeight = -(*height as i32);
+                    bmi.bmiHeader.biPlanes = 1;
+                    bmi.bmiHeader.biBitCount = 32;
+                    bmi.bmiHeader.biCompression = BI_RGB;
+
+                    let mut bits = null_mut();
+                    let hbmp = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+                    if !hbmp.is_null() && !bits.is_null() {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), bits as *mut u8, bytes.len());
+                        let memdc = CreateCompatibleDC(hdc);
+                        if !memdc.is_null() {
+                            let old = SelectObject(memdc, hbmp as _);
+                            StretchDIBits(
+                                hdc,
+                                dx,
+                                dy,
+                                dw,
+                                dh,
+                                0,
+                                0,
+                                *width as i32,
+                                *height as i32,
+                                bytes.as_ptr() as _,
+                                &bmi,
+                                DIB_RGB_COLORS,
+                                SRCCOPY,
+                            );
+                            SelectObject(memdc, old);
+                            DeleteDC(memdc);
+                        }
+                        DeleteObject(hbmp as _);
+                    }
+                } else {
+                    let body_rc = RECT { left: 14, top: 42, right: rc.right - 14, bottom: rc.bottom - 14 };
+                    draw_text(hdc as _, &data.body, &body_rc, th.text, 12, false, false);
+                }
+            }
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_NCDESTROY => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            if !ptr.is_null() {
+                drop(Box::from_raw(ptr));
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            }
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, 0, lparam),
+    }
+}
+
+unsafe fn ensure_preview_class() {
+    let hinstance = GetModuleHandleW(null());
+    let cname = to_wide(HOVER_PREVIEW_CLASS);
+    let mut wc: WNDCLASSEXW = zeroed();
+    wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+    wc.lpfnWndProc = Some(preview_wnd_proc);
+    wc.hInstance = hinstance;
+    wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+    wc.hbrBackground = null_mut();
+    wc.lpszClassName = cname.as_ptr();
+    RegisterClassExW(&wc);
+}
+
+unsafe fn create_preview_window() -> HWND {
+    ensure_preview_class();
+    let hwnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        to_wide(HOVER_PREVIEW_CLASS).as_ptr(),
+        to_wide("").as_ptr(),
+        WS_POPUP,
+        0,
+        0,
+        PREVIEW_W_TEXT,
+        PREVIEW_H_TEXT,
+        null_mut(),
+        null_mut(),
+        GetModuleHandleW(null()),
+        Box::into_raw(Box::new(HoverPreviewData { header: String::new(), body: String::new(), image: None })) as _,
+    );
+    hwnd
+}
+
+unsafe fn preview_hwnd() -> HWND {
+    let raw = *HOVER_HWND.get_or_init(|| create_preview_window() as isize);
+    raw as HWND
+}
+
+unsafe fn work_area() -> RECT {
+    let mut rc: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rc as *mut _ as _, 0);
+    rc
+}
+
+pub(crate) unsafe fn hide_hover_preview() {
+    let hwnd = preview_hwnd();
+    if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+        if !ptr.is_null() {
+            (*ptr).image = None;
+            (*ptr).body.clear();
+        }
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y: i32) {
+    let hwnd = preview_hwnd();
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return;
+    }
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+    if ptr.is_null() {
+        return;
+    }
+    let data = &mut *ptr;
+    data.header = match item.kind {
+        ClipKind::Image => "图片预览".to_string(),
+        ClipKind::Files => "文件预览".to_string(),
+        ClipKind::Phrase => "短语预览".to_string(),
+        ClipKind::Text => "文本预览".to_string(),
+    };
+    data.body = match item.kind {
+        ClipKind::Text | ClipKind::Phrase => item.text.clone().unwrap_or_else(|| item.preview.clone()),
+        ClipKind::Files => item.file_paths.as_ref().map(|v| v.join("\n")).unwrap_or_else(|| item.preview.clone()),
+        ClipKind::Image => String::new(),
+    };
+    data.image = if item.kind == ClipKind::Image {
+        ensure_item_preview_rgba(item, 520, 360)
+    } else {
+        None
+    };
+
+    let (w, h) = if data.image.is_some() { (PREVIEW_W_IMAGE, PREVIEW_H_IMAGE) } else { (PREVIEW_W_TEXT, PREVIEW_H_TEXT) };
+    let wa = work_area();
+    let mut x = cursor_x + 16;
+    let mut y = cursor_y + 22;
+    if x + w > wa.right { x = wa.right - w; }
+    if y + h > wa.bottom { y = wa.bottom - h; }
+    x = x.max(wa.left);
+    y = y.max(wa.top);
+
+    SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(hwnd, null(), 1);
+}

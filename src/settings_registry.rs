@@ -1,5 +1,7 @@
 use windows_sys::Win32::Foundation::HWND;
 
+use crate::ui_core::UiRect;
+
 pub const SETTINGS_PAGE_COUNT: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,24 +45,32 @@ impl SettingsPage {
 pub struct SettingsCtrlReg {
     pub hwnd: HWND,
     pub page: usize,
-    pub x: i32,
-    pub y: i32,
-    pub w: i32,
-    pub h: i32,
+    pub bounds: UiRect,
     pub scrollable: bool,
 }
 
 impl SettingsCtrlReg {
     pub const fn new(hwnd: HWND, page: usize, x: i32, y: i32, w: i32, h: i32, scrollable: bool) -> Self {
-        Self { hwnd, page, x, y, w, h, scrollable }
+        Self {
+            hwnd,
+            page,
+            bounds: UiRect::new(x, y, x + w, y + h),
+            scrollable,
+        }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SettingsCtrlSlot {
+    pub hwnd: HWND,
+    pub bounds: UiRect,
 }
 
 pub struct SettingsUiRegistry {
     built_pages: [bool; SETTINGS_PAGE_COUNT],
     page_ctrls: Vec<Vec<HWND>>,
     regs: Vec<SettingsCtrlReg>,
-    scroll_ctrls: Vec<(HWND, i32, i32, i32, i32)>,
+    scroll_ctrls: Vec<SettingsCtrlSlot>,
 }
 
 impl SettingsUiRegistry {
@@ -90,11 +100,10 @@ impl SettingsUiRegistry {
             list.push(reg.hwnd);
         }
         if page == SettingsPage::General.index() && reg.scrollable {
-            self.scroll_ctrls.push((reg.hwnd, reg.x, reg.y, reg.w, reg.h));
+            self.scroll_ctrls.push(SettingsCtrlSlot { hwnd: reg.hwnd, bounds: reg.bounds });
         }
     }
 
-    pub fn regs(&self) -> &[SettingsCtrlReg] { &self.regs }
     #[allow(dead_code)]
     pub fn page_ctrls(&self, page: usize) -> &[HWND] {
         self.page_ctrls.get(page).map(|v| v.as_slice()).unwrap_or(&[])
@@ -102,5 +111,5 @@ impl SettingsUiRegistry {
     pub fn page_regs(&self, page: usize) -> impl Iterator<Item = &SettingsCtrlReg> {
         self.regs.iter().filter(move |reg| reg.page == page)
     }
-    pub fn scroll_ctrls(&self) -> &[(HWND, i32, i32, i32, i32)] { &self.scroll_ctrls }
+    pub fn scroll_ctrls(&self) -> &[SettingsCtrlSlot] { &self.scroll_ctrls }
 }

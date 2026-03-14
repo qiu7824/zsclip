@@ -214,6 +214,7 @@ pub fn settings_nav_item_rect(index: usize) -> RECT {
 
 
 
+#[allow(dead_code)]
 pub unsafe fn draw_pill_fill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32) {
     let w = rc.right - rc.left;
     let h = rc.bottom - rc.top;
@@ -237,6 +238,7 @@ pub unsafe fn draw_pill_fill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32) 
     DeleteObject(br as _);
 }
 
+#[allow(dead_code)]
 pub unsafe fn draw_pill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32, border: u32) {
     if border != 0 && border != fill {
         draw_pill_fill(hdc, rc, border);
