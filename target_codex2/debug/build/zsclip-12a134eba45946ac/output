@@ -1,4 +1,0 @@
-Microsoft (R) Windows (R) Resource Compiler Version 10.0.10011.16384
-Copyright (C) Microsoft Corporation.  All rights reserved.
-
-cargo:rustc-link-arg-bins=E:\rust\zsclip\target_codex2\debug\build\zsclip-12a134eba45946ac\out\app.lib
