@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 
 use crate::gdiplus;
+use crate::ui_core::UiRect;
 
 use windows_sys::Win32::{
     Foundation::RECT,
@@ -210,6 +212,305 @@ pub fn settings_nav_item_rect(index: usize) -> RECT {
     let x = 10;
     let y = SETTINGS_NAV_Y + 8 + (index as i32) * 44;
     RECT { left: x, top: y, right: SETTINGS_NAV_W - 10, bottom: y + 36 }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ClipGroup {
+    pub(crate) id: i64,
+    pub(crate) name: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipKind {
+    Text,
+    Image,
+    Phrase,
+    Files,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ClipItem {
+    pub(crate) id: i64,
+    pub(crate) kind: ClipKind,
+    pub(crate) preview: String,
+    pub(crate) text: Option<String>,
+    pub(crate) file_paths: Option<Vec<String>>,
+    pub(crate) image_bytes: Option<Vec<u8>>,
+    pub(crate) image_path: Option<String>,
+    pub(crate) image_width: usize,
+    pub(crate) image_height: usize,
+    pub(crate) pinned: bool,
+    pub(crate) group_id: i64,
+    pub(crate) created_at: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ClipListState {
+    pub(crate) filtered_indices: Vec<usize>,
+    pub(crate) tab_index: usize,
+    pub(crate) search_on: bool,
+    pub(crate) search_text: String,
+    pub(crate) hover_idx: i32,
+    pub(crate) sel_idx: i32,
+    pub(crate) scroll_y: i32,
+    pub(crate) current_group_filter: i64,
+    pub(crate) tab_group_filters: [i64; 2],
+    pub(crate) selected_rows: BTreeSet<i32>,
+    pub(crate) selection_anchor: i32,
+    pub(crate) context_row: i32,
+}
+
+impl Default for ClipListState {
+    fn default() -> Self {
+        Self {
+            filtered_indices: Vec::new(),
+            tab_index: 0,
+            search_on: false,
+            search_text: String::new(),
+            hover_idx: -1,
+            sel_idx: -1,
+            scroll_y: 0,
+            current_group_filter: 0,
+            tab_group_filters: [0, 0],
+            selected_rows: BTreeSet::new(),
+            selection_anchor: -1,
+            context_row: -1,
+        }
+    }
+}
+
+impl ClipListState {
+    pub(crate) fn refilter_with(&mut self, items: &[ClipItem], grouping_enabled: bool) {
+        let key = self.search_text.trim().to_lowercase();
+        let group_filter = if grouping_enabled { self.current_group_filter } else { 0 };
+        self.filtered_indices = items
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, item)| {
+                let group_ok = group_filter == 0 || item.group_id == group_filter;
+                let search_ok = key.is_empty() || item.preview.to_lowercase().contains(&key);
+                if group_ok && search_ok { Some(idx) } else { None }
+            })
+            .collect();
+
+        if self.sel_idx >= self.filtered_indices.len() as i32 {
+            self.sel_idx = if self.filtered_indices.is_empty() { -1 } else { 0 };
+        }
+        if self.hover_idx >= self.filtered_indices.len() as i32 {
+            self.hover_idx = -1;
+        }
+        let max_idx = self.filtered_indices.len() as i32;
+        self.selected_rows = self.selected_rows.iter().copied().filter(|i| *i >= 0 && *i < max_idx).collect();
+        if self.sel_idx >= max_idx {
+            self.sel_idx = if max_idx > 0 { max_idx - 1 } else { -1 };
+        }
+    }
+
+    pub(crate) fn clear_selection(&mut self) {
+        self.sel_idx = -1;
+        self.hover_idx = -1;
+        self.selected_rows.clear();
+        self.selection_anchor = -1;
+        self.context_row = -1;
+    }
+
+    pub(crate) fn row_is_selected(&self, visible_idx: i32) -> bool {
+        visible_idx >= 0 && (self.sel_idx == visible_idx || self.selected_rows.contains(&visible_idx))
+    }
+
+    pub(crate) fn selected_visible_rows(&self) -> Vec<i32> {
+        let mut rows: Vec<i32> = self.selected_rows.iter().copied().collect();
+        if self.sel_idx >= 0 && !rows.contains(&self.sel_idx) {
+            rows.push(self.sel_idx);
+        }
+        rows.sort_unstable();
+        rows
+    }
+
+    pub(crate) fn selected_source_indices(&self) -> Vec<usize> {
+        let mut src: Vec<usize> = self
+            .selected_visible_rows()
+            .into_iter()
+            .filter_map(|v| self.filtered_indices.get(v as usize).copied())
+            .collect();
+        src.sort_unstable();
+        src.dedup();
+        src
+    }
+
+    pub(crate) fn selected_count(&self) -> usize {
+        self.selected_source_indices().len()
+    }
+
+    pub(crate) fn context_selection_count(&self) -> usize {
+        let n = self.selected_count();
+        if n == 0 && self.context_row >= 0 { 1 } else { n }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MainUiLayout {
+    pub(crate) win_w: i32,
+    pub(crate) title_h: i32,
+    pub(crate) seg_x: i32,
+    pub(crate) seg_y: i32,
+    pub(crate) seg_w: i32,
+    pub(crate) seg_h: i32,
+    pub(crate) list_x: i32,
+    pub(crate) list_y: i32,
+    pub(crate) list_w: i32,
+    pub(crate) list_h: i32,
+    pub(crate) list_pad: i32,
+    pub(crate) row_h: i32,
+    pub(crate) btn_w: i32,
+    pub(crate) btn_gap: i32,
+    pub(crate) search_left: i32,
+    pub(crate) search_top: i32,
+    pub(crate) search_w: i32,
+    pub(crate) search_h: i32,
+}
+
+impl MainUiLayout {
+    pub(crate) const fn zsclip() -> Self {
+        Self {
+            win_w: 300,
+            title_h: 35,
+            seg_x: 6,
+            seg_y: 36,
+            seg_w: 288,
+            seg_h: 30,
+            list_x: 6,
+            list_y: 70,
+            list_w: 288,
+            list_h: 538,
+            list_pad: 4,
+            row_h: 44,
+            btn_w: 32,
+            btn_gap: 2,
+            search_left: 58,
+            search_top: 4,
+            search_w: 112,
+            search_h: 30,
+        }
+    }
+
+    pub(crate) fn list_view_height(self) -> i32 {
+        self.list_h - 2 * self.list_pad
+    }
+
+    pub(crate) fn total_content_height(self, filtered_len: usize) -> i32 {
+        filtered_len as i32 * self.row_h
+    }
+
+    pub(crate) fn max_scroll(self, filtered_len: usize) -> i32 {
+        (self.total_content_height(filtered_len) - self.list_view_height()).max(0)
+    }
+
+    pub(crate) fn clamp_scroll(self, scroll_y: i32, filtered_len: usize) -> i32 {
+        scroll_y.clamp(0, self.max_scroll(filtered_len))
+    }
+
+    pub(crate) fn ensure_visible(self, scroll_y: i32, idx: i32, filtered_len: usize) -> i32 {
+        if idx < 0 {
+            return self.clamp_scroll(scroll_y, filtered_len);
+        }
+        let top = idx * self.row_h;
+        let bottom = top + self.row_h;
+        let view_top = scroll_y;
+        let view_bottom = scroll_y + self.list_view_height();
+        let next = if top < view_top {
+            top
+        } else if bottom > view_bottom {
+            bottom - self.list_view_height()
+        } else {
+            scroll_y
+        };
+        self.clamp_scroll(next, filtered_len)
+    }
+
+    pub(crate) fn row_rect(self, visible_idx: i32, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+        if visible_idx < 0 || visible_idx >= filtered_len as i32 {
+            return None;
+        }
+        let inner_l = self.list_x + self.list_pad;
+        let inner_t = self.list_y + self.list_pad;
+        let y0 = inner_t + visible_idx * self.row_h - scroll_y;
+        Some(UiRect::new(
+            inner_l,
+            y0,
+            inner_l + self.list_w - 2 * self.list_pad,
+            y0 + self.row_h,
+        ))
+    }
+
+    pub(crate) fn quick_delete_rect(self, visible_idx: i32, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+        let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
+        let size = 16;
+        let left = row.right - 10 - size - 12;
+        let top = row.top + (self.row_h - size) / 2;
+        Some(UiRect::new(left, top, left + size, top + size))
+    }
+
+    pub(crate) fn search_rect(self) -> UiRect {
+        UiRect::new(
+            self.search_left,
+            self.search_top,
+            self.search_left + self.search_w,
+            self.search_top + self.search_h,
+        )
+    }
+
+    pub(crate) fn title_button_rect(self, key: &str) -> UiRect {
+        let x_close = self.win_w - 4 - self.btn_w;
+        let x_min = x_close - self.btn_gap - self.btn_w;
+        let x_set = x_min - self.btn_gap - self.btn_w;
+        let x_search = x_set - self.btn_gap - self.btn_w;
+        let x = match key {
+            "search" => x_search,
+            "setting" => x_set,
+            "min" => x_min,
+            _ => x_close,
+        };
+        let top = (self.title_h - self.btn_w) / 2;
+        UiRect::new(x, top, x + self.btn_w, top + self.btn_w)
+    }
+
+    pub(crate) fn segment_rects(self) -> (UiRect, UiRect) {
+        let inner_l = self.seg_x + 1;
+        let inner_t = self.seg_y + 1;
+        let inner_w = self.seg_w - 2;
+        let inner_h = self.seg_h - 2;
+        let gap = 1;
+        let btn_w = (inner_w - gap) / 2;
+        (
+            UiRect::new(inner_l, inner_t, inner_l + btn_w, inner_t + inner_h),
+            UiRect::new(inner_l + btn_w + gap, inner_t, inner_l + inner_w, inner_t + inner_h),
+        )
+    }
+
+    pub(crate) fn scrollbar_track_rect(self, filtered_len: usize) -> Option<UiRect> {
+        if self.total_content_height(filtered_len) <= self.list_view_height() {
+            return None;
+        }
+        Some(UiRect::new(
+            self.list_x + self.list_w - self.list_pad - 8 - 2,
+            self.list_y + self.list_pad + 2,
+            self.list_x + self.list_w - self.list_pad - 2,
+            self.list_y + self.list_h - self.list_pad - 2,
+        ))
+    }
+
+    pub(crate) fn scrollbar_thumb_rect(self, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+        let track = self.scrollbar_track_rect(filtered_len)?;
+        let track_h = track.bottom - track.top;
+        let total_h = self.total_content_height(filtered_len);
+        let view_h = self.list_view_height();
+        let thumb_h = ((track_h as f32) * (view_h as f32 / total_h as f32)) as i32;
+        let thumb_h = thumb_h.max(28);
+        let max_scroll = self.max_scroll(filtered_len).max(1);
+        let thumb_y = track.top + ((track_h - thumb_h) as f32 * (scroll_y as f32 / max_scroll as f32)) as i32;
+        Some(UiRect::new(track.left + 1, thumb_y, track.right - 1, thumb_y + thumb_h))
+    }
 }
 
 

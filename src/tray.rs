@@ -11,6 +11,7 @@ use windows_sys::Win32::{
 };
 
 use crate::app::{AppSettings, IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
+use crate::win_system_ui::{apply_theme_to_menu, to_wide};
 use crate::window_position::resolve_main_window_position;
 
 pub(crate) unsafe fn handle_tray(hwnd: HWND, msg: u32) {
@@ -73,10 +74,10 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
 pub(crate) unsafe fn show_tray_menu(hwnd: HWND) {
     let menu = CreatePopupMenu();
     if menu.is_null() { return; }
-    crate::app::apply_theme_to_menu(menu as _);
-    AppendMenuW(menu, MF_STRING, IDM_TRAY_TOGGLE, crate::app::to_wide("显示/隐藏").as_ptr());
+    apply_theme_to_menu(menu as _);
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_TOGGLE, to_wide("显示/隐藏").as_ptr());
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, crate::app::to_wide("退出").as_ptr());
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, to_wide("退出").as_ptr());
 
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
@@ -94,7 +95,7 @@ pub(crate) unsafe fn add_tray_icon(hwnd: HWND, icon: isize) {
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = WM_TRAYICON;
     nid.hIcon = icon as _;
-    let tip = crate::app::to_wide("剪贴板");
+    let tip = to_wide("剪贴板");
     let n = core::cmp::min(tip.len(), nid.szTip.len());
     nid.szTip[..n].copy_from_slice(&tip[..n]);
     Shell_NotifyIconW(NIM_ADD, &mut nid);

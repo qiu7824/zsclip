@@ -13,8 +13,9 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    app::{apply_window_corner_preference, ensure_item_image_bytes, get_x_lparam, get_y_lparam, to_wide, ClipItem},
+    app::{ensure_item_image_bytes, ClipItem},
     ui::{draw_round_rect, draw_text, draw_text_ex, rgb},
+    win_system_ui::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide},
 };
 
 #[repr(C)]

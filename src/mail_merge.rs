@@ -12,7 +12,9 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
-use crate::app::{apply_dark_mode_to_window, apply_window_corner_preference, get_window_text, to_wide};
+use crate::win_system_ui::{
+    apply_dark_mode_to_window, apply_window_corner_preference, get_window_text, to_wide,
+};
 
 const CLASS_NAME: &str = "ZsClipMailMerge";
 const IDC_EXCEL: isize = 1001;
