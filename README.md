@@ -5,7 +5,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/v0.1.0>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/v0.2.0>
 - 蓝奏云下载: <https://tcnzy.lanzout.com/b01887awxg>
 - 下载密码: `7dvb`
 
