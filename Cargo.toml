@@ -2,6 +2,7 @@
 name = "zsclip"
 version = "0.1.0"
 edition = "2021"
+repository = "https://github.com/qiu7824/zsclip/"
 
 [dependencies]
 arboard = "3.4"

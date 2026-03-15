@@ -11,6 +11,7 @@ mod settings_render;
 mod settings_layout;
 mod settings_registry;
 mod shell;
+mod hover_preview;
 mod mail_merge_native;
 mod sticker;
 mod tray;
