@@ -35,6 +35,8 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
     let pst = crate::app::get_state_ptr(hwnd);
     if !pst.is_null() {
         position_main_window(hwnd, &(*pst).settings, by_hotkey);
+        (*pst).edge_hidden = false;
+        (*pst).edge_hidden_side = -1;
     }
     ShowWindow(hwnd, SW_SHOW);
     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);

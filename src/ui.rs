@@ -443,12 +443,30 @@ impl MainUiLayout {
         ))
     }
 
-    pub(crate) fn quick_delete_rect(self, visible_idx: i32, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+    pub(crate) fn quick_action_rect(
+        self,
+        visible_idx: i32,
+        filtered_len: usize,
+        scroll_y: i32,
+        slot: i32,
+    ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
         let size = 16;
-        let left = row.right - 10 - size - 12;
+        let gap = 8;
+        let left = row.right - 10 - size - 12 - slot.max(0) * (size + gap);
         let top = row.top + (self.row_h - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
+    }
+
+    pub(crate) fn scroll_to_top_button_rect(self) -> UiRect {
+        let size = 36;
+        let margin = 10;
+        UiRect::new(
+            self.list_x + self.list_w - self.list_pad - size - margin,
+            self.list_y + self.list_h - self.list_pad - size - margin,
+            self.list_x + self.list_w - self.list_pad - margin,
+            self.list_y + self.list_h - self.list_pad - margin,
+        )
     }
 
     pub(crate) fn search_rect(self) -> UiRect {

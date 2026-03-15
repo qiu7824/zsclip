@@ -110,13 +110,14 @@ const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
 use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell};
+use crate::hover_preview::{hide_hover_preview, show_hover_preview};
 use crate::sticker::show_image_sticker;
 use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
 use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
 use crate::time_utils::{format_created_at_local, format_local_time_for_image_preview, now_utc_sqlite};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_MAX, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_SAVE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, nav_divider_x, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -125,7 +126,7 @@ use windows_sys::Win32::{
         BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
         CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
         FillRect, GetStockObject, InvalidateRect, IntersectClipRect, LineTo, MoveToEx, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, RestoreDC, RoundRect, SaveDC, ScreenToClient,
-        SelectObject, SetBkColor, SetBkMode, SetTextColor,
+        SelectObject, SetBkColor, SetBkMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
         DEFAULT_GUI_FONT, NULL_PEN, SRCCOPY,
     },
     System::{
@@ -180,6 +181,7 @@ const ID_TIMER_CARET: usize = 1;
 const ID_TIMER_PASTE: usize = 2;
 const ID_TIMER_SCROLL_FADE: usize = 3;
 const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
+const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -230,6 +232,13 @@ const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 6] = [
     ("sogou",  "搜狗",                 "https://www.sogou.com/web?query={q}"),
     ("custom", "自定义",               "https://example.com/search?q={q}"),
 ];
+const EDGE_AUTO_HIDE_PEEK: i32 = 6;
+const EDGE_AUTO_HIDE_MARGIN: i32 = 8;
+const EDGE_AUTO_HIDE_NONE: i32 = -1;
+const EDGE_AUTO_HIDE_LEFT: i32 = 0;
+const EDGE_AUTO_HIDE_RIGHT: i32 = 1;
+const EDGE_AUTO_HIDE_TOP: i32 = 2;
+const EDGE_AUTO_HIDE_BOTTOM: i32 = 3;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -249,6 +258,8 @@ pub(crate) struct AppSettings {
     pub(crate) show_fixed_x: i32,
     pub(crate) show_fixed_y: i32,
     pub(crate) quick_search_enabled: bool,
+    pub(crate) image_preview_enabled: bool,
+    pub(crate) quick_delete_button: bool,
     pub(crate) search_engine: String,
     pub(crate) search_template: String,
     pub(crate) ai_clean_enabled: bool,
@@ -277,16 +288,18 @@ impl Default for AppSettings {
             auto_start: false,
             close_without_exit: true,
             max_items: 200,
-            show_pos_mode: "last".to_string(),
+            show_pos_mode: "mouse".to_string(),
             show_mouse_dx: 12,
             show_mouse_dy: 12,
             show_fixed_x: 120,
             show_fixed_y: 120,
-            quick_search_enabled: true,
+            quick_search_enabled: false,
+            image_preview_enabled: false,
+            quick_delete_button: true,
             search_engine: "jzxx".to_string(),
             search_template: search_engine_template("jzxx").to_string(),
             ai_clean_enabled: false,
-            super_mail_merge_enabled: true,
+            super_mail_merge_enabled: false,
             grouping_enabled: true,
             cloud_sync_enabled: false,
             cloud_sync_interval: "1小时".to_string(),
@@ -325,6 +338,22 @@ fn normalize_hotkey_key(s: &str) -> String {
 
 fn hotkey_preview_text(mod_label: &str, key_label: &str) -> String {
     format!("当前设置：{} + {}", normalize_hotkey_mod(mod_label), normalize_hotkey_key(key_label))
+}
+
+fn open_source_url() -> &'static str {
+    option_env!("CARGO_PKG_REPOSITORY").unwrap_or("")
+}
+
+fn open_source_url_display() -> &'static str {
+    if open_source_url().trim().is_empty() {
+        "未配置（可在 Cargo.toml 的 package.repository 中配置）"
+    } else {
+        open_source_url()
+    }
+}
+
+fn title_button_visible(settings: &AppSettings, key: &str) -> bool {
+    key != "search" || settings.quick_search_enabled
 }
 
 fn hotkey_mods_from_label(label: &str) -> u32 {
@@ -527,7 +556,13 @@ pub(crate) struct AppState {
     pub(crate) hover_scroll: bool,   // 鼠标是否在滚动条区域
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
+    pub(crate) hover_to_top: bool,
+    pub(crate) down_to_top: bool,
     pub(crate) paste_return_to_main: bool,
+    pub(crate) edge_hidden: bool,
+    pub(crate) edge_hidden_side: i32,
+    pub(crate) edge_restore_x: i32,
+    pub(crate) edge_restore_y: i32,
 }
 
 impl Deref for AppState {
@@ -570,7 +605,13 @@ impl AppState {
             hover_scroll: false,
             scroll_fade_alpha: 0,
             scroll_fade_timer: false,
+            hover_to_top: false,
+            down_to_top: false,
             paste_return_to_main: false,
+            edge_hidden: false,
+            edge_hidden_side: EDGE_AUTO_HIDE_NONE,
+            edge_restore_x: 0,
+            edge_restore_y: 0,
         };
         s.refilter();
         s
@@ -762,9 +803,9 @@ impl AppState {
             .map(Into::into)
     }
 
-    fn quick_delete_rect(&self, visible_idx: i32) -> Option<RECT> {
+    fn quick_action_rect_slot(&self, visible_idx: i32, slot: i32) -> Option<RECT> {
         MAIN_UI_LAYOUT
-            .quick_delete_rect(visible_idx, self.filtered_indices.len(), self.scroll_y)
+            .quick_action_rect(visible_idx, self.filtered_indices.len(), self.scroll_y, slot)
             .map(Into::into)
     }
 
@@ -791,6 +832,10 @@ impl AppState {
         MAIN_UI_LAYOUT
             .scrollbar_thumb_rect(self.filtered_indices.len(), self.scroll_y)
             .map(Into::into)
+    }
+
+    fn scroll_to_top_rect(&self) -> RECT {
+        MAIN_UI_LAYOUT.scroll_to_top_button_rect().into()
     }
 
     fn delete_selected(&mut self) {
@@ -1661,10 +1706,17 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     let grouping_old = app.settings.grouping_enabled;
     let autostart_old = app.settings.auto_start;
     let hotkey_old = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
+    let edge_hide_old = app.settings.edge_auto_hide;
     app.settings = st.draft.clone();
     if !app.settings.grouping_enabled {
         app.current_group_filter = 0;
         app.tab_group_filters = [0, 0];
+    }
+    if !app.settings.quick_search_enabled {
+        app.search_on = false;
+        app.search_text.clear();
+        SetWindowTextW(app.search_hwnd, to_wide("").as_ptr());
+        layout_children(st.parent_hwnd);
     }
     save_settings(&app.settings);
     // 开机自启：同步写注册表
@@ -1685,6 +1737,9 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         // 同步刷新内存列表
         reload_state_from_db(app);
     }
+    if edge_hide_old && !app.settings.edge_auto_hide {
+        restore_edge_hidden_window(st.parent_hwnd, app);
+    }
     app.refilter();
     InvalidateRect(st.parent_hwnd, null(), 1);
 }
@@ -1696,6 +1751,8 @@ unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
         IDC_SET_CLICK_HIDE   => st.draft.click_hide,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
+        IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled,
+        IDC_SET_QUICK_DELETE => st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled,
@@ -1713,6 +1770,8 @@ unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
         IDC_SET_CLICK_HIDE   => st.draft.click_hide = !st.draft.click_hide,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
+        IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled = !st.draft.image_preview_enabled,
+        IDC_SET_QUICK_DELETE => st.draft.quick_delete_button = !st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled = !st.draft.hotkey_enabled,
@@ -1746,6 +1805,8 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
     st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
     st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
 
     let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
     settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
@@ -2699,6 +2760,7 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
         format!("版本：{}", env!("CARGO_PKG_VERSION")),
         "设置界面现在统一使用同一套 section/form 布局。".to_string(),
         "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
+        format!("开源地址：{}", open_source_url_display()),
         format!("数据目录：{}", data_dir().to_string_lossy()),
         format!("数据库：{}", db_file().to_string_lossy()),
     ];
@@ -2706,6 +2768,10 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     for line in lines.iter() {
         let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), 24);
         y += h + 10;
+    }
+    let btn = b.button(st, "打开开源地址", IDC_SET_OPEN_SOURCE, sec.left(), y + 6, 150);
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
     }
     st.ui.mark_built(page);
 }
@@ -2746,7 +2812,8 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
 
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_CLOSETRAY
         || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_EDGEHIDE
-        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_GROUP_ENABLE
+        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_IMAGE_PREVIEW
+        || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
         || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103
     {
@@ -3071,7 +3138,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -3092,7 +3159,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
@@ -3197,6 +3264,18 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 IDC_SET_PLUGIN_MAILMERGE => {
                     launch_mail_merge_window(hwnd);
+                }
+                IDC_SET_OPEN_SOURCE => {
+                    if open_source_url().trim().is_empty() {
+                        MessageBoxW(
+                            hwnd,
+                            to_wide("当前还没有配置开源地址，请先在 Cargo.toml 的 package.repository 中填写。").as_ptr(),
+                            to_wide("开源地址").as_ptr(),
+                            MB_OK | MB_ICONINFORMATION,
+                        );
+                    } else {
+                        open_path_with_shell(open_source_url());
+                    }
                 }
                 6111 => {
                     if let Err(e) = toggle_disabled_hotkey_char('V', true) {
@@ -3580,6 +3659,7 @@ pub fn run() -> AppResult<()> {
 
         ShowWindow(hwnd, SW_SHOW);
         SetTimer(hwnd, ID_TIMER_CARET, 500, None);
+        SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
 
         let mut msg: MSG = zeroed();
         loop {
@@ -3653,6 +3733,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 return 0;
             }
+            if wparam as usize == ID_TIMER_EDGE_AUTO_HIDE {
+                handle_edge_auto_hide_tick(hwnd);
+                return 0;
+            }
             InvalidateRect(hwnd, null(), 0);
             0
         }
@@ -3721,6 +3805,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_DESTROY => {
             KillTimer(hwnd, ID_TIMER_CARET);
             KillTimer(hwnd, ID_TIMER_PASTE);
+            KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
             RemoveClipboardFormatListener(hwnd);
             if let Some(state) = unsafe { get_state_mut(hwnd) } {
                 unregister_hotkey_for(hwnd, state);
@@ -4106,6 +4191,150 @@ unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
     TrackMouseEvent(&mut tme);
 }
 
+unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
+    if !state.settings.hover_preview || state.edge_hidden {
+        hide_hover_preview();
+        return;
+    }
+    let Some(item) = hovered_item_clone(state) else {
+        hide_hover_preview();
+        return;
+    };
+    if let Some(rc) = row_quick_delete_rect(state, state.hover_idx, &item) {
+        if pt_in_rect(x, y, &rc) {
+            hide_hover_preview();
+            return;
+        }
+    }
+    if scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect()) {
+        hide_hover_preview();
+        return;
+    }
+    let mut win_rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut win_rc) == 0 {
+        hide_hover_preview();
+        return;
+    }
+    show_hover_preview(&item, win_rc.left + x, win_rc.top + y);
+}
+
+unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
+    if !state.edge_hidden {
+        return;
+    }
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        state.edge_restore_x,
+        state.edge_restore_y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    state.edge_hidden = false;
+    state.edge_hidden_side = EDGE_AUTO_HIDE_NONE;
+}
+
+unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() || IsWindowVisible(hwnd) == 0 {
+        return;
+    }
+    let state = &mut *ptr;
+    if !state.settings.edge_auto_hide {
+        restore_edge_hidden_window(hwnd, state);
+        return;
+    }
+
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 {
+        return;
+    }
+    let mut cursor: POINT = zeroed();
+    GetCursorPos(&mut cursor);
+    let sw = GetSystemMetrics(SM_CXSCREEN);
+    let sh = GetSystemMetrics(SM_CYSCREEN);
+    let width = (rc.right - rc.left).max(1);
+    let height = (rc.bottom - rc.top).max(1);
+
+    if state.edge_hidden {
+        let hot = match state.edge_hidden_side {
+            EDGE_AUTO_HIDE_LEFT => RECT {
+                left: 0,
+                top: state.edge_restore_y,
+                right: EDGE_AUTO_HIDE_MARGIN,
+                bottom: state.edge_restore_y + height,
+            },
+            EDGE_AUTO_HIDE_RIGHT => RECT {
+                left: sw - EDGE_AUTO_HIDE_MARGIN,
+                top: state.edge_restore_y,
+                right: sw,
+                bottom: state.edge_restore_y + height,
+            },
+            EDGE_AUTO_HIDE_TOP => RECT {
+                left: state.edge_restore_x,
+                top: 0,
+                right: state.edge_restore_x + width,
+                bottom: EDGE_AUTO_HIDE_MARGIN,
+            },
+            EDGE_AUTO_HIDE_BOTTOM => RECT {
+                left: state.edge_restore_x,
+                top: sh - EDGE_AUTO_HIDE_MARGIN,
+                right: state.edge_restore_x + width,
+                bottom: sh,
+            },
+            _ => rc,
+        };
+        if pt_in_rect_screen(&cursor, &hot) || GetForegroundWindow() == hwnd {
+            restore_edge_hidden_window(hwnd, state);
+            InvalidateRect(hwnd, null(), 0);
+        }
+        return;
+    }
+
+    if GetForegroundWindow() == hwnd || pt_in_rect_screen(&cursor, &rc) {
+        return;
+    }
+
+    let side = if rc.left.abs() <= EDGE_AUTO_HIDE_MARGIN {
+        EDGE_AUTO_HIDE_LEFT
+    } else if (sw - rc.right).abs() <= EDGE_AUTO_HIDE_MARGIN {
+        EDGE_AUTO_HIDE_RIGHT
+    } else if rc.top.abs() <= EDGE_AUTO_HIDE_MARGIN {
+        EDGE_AUTO_HIDE_TOP
+    } else if (sh - rc.bottom).abs() <= EDGE_AUTO_HIDE_MARGIN {
+        EDGE_AUTO_HIDE_BOTTOM
+    } else {
+        EDGE_AUTO_HIDE_NONE
+    };
+    if side == EDGE_AUTO_HIDE_NONE {
+        return;
+    }
+
+    state.edge_restore_x = rc.left;
+    state.edge_restore_y = rc.top;
+    let (hide_x, hide_y) = match side {
+        EDGE_AUTO_HIDE_LEFT => (EDGE_AUTO_HIDE_PEEK - width, rc.top),
+        EDGE_AUTO_HIDE_RIGHT => (sw - EDGE_AUTO_HIDE_PEEK, rc.top),
+        EDGE_AUTO_HIDE_TOP => (rc.left, EDGE_AUTO_HIDE_PEEK - height),
+        EDGE_AUTO_HIDE_BOTTOM => (rc.left, sh - EDGE_AUTO_HIDE_PEEK),
+        _ => (rc.left, rc.top),
+    };
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        hide_x,
+        hide_y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    state.edge_hidden = true;
+    state.edge_hidden_side = side;
+    hide_hover_preview();
+    InvalidateRect(hwnd, null(), 0);
+}
+
 unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
@@ -4134,8 +4363,12 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
     let old_btn = state.hover_btn;
     let old_tab = state.hover_tab;
     let old_scroll = state.hover_scroll;
+    let old_to_top = state.hover_to_top;
     state.hover_btn = "";
     for key in ["search", "setting", "min", "close"] {
+        if !title_button_visible(&state.settings, key) {
+            continue;
+        }
         if pt_in_rect(x, y, &state.title_button_rect(key)) {
             state.hover_btn = key;
             break;
@@ -4168,10 +4401,13 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
         }
     }
 
-    let old_hover = state.hover_idx;
-    state.hover_idx = hit_test_row(state, x, y);
+    state.hover_to_top = scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
 
-    if old_btn != state.hover_btn || old_hover != state.hover_idx || old_tab != state.hover_tab || old_scroll != state.hover_scroll {
+    let old_hover = state.hover_idx;
+    state.hover_idx = if state.hover_to_top { -1 } else { hit_test_row(state, x, y) };
+    refresh_hover_preview(hwnd, state, x, y);
+
+    if old_btn != state.hover_btn || old_hover != state.hover_idx || old_tab != state.hover_tab || old_scroll != state.hover_scroll || old_to_top != state.hover_to_top {
         InvalidateRect(hwnd, null(), 0);
     }
 }
@@ -4187,6 +4423,8 @@ unsafe fn handle_mouse_leave_main(hwnd: HWND) {
     if state.hover_tab != -1 { state.hover_tab = -1; dirty = true; }
     if state.hover_idx != -1 { state.hover_idx = -1; dirty = true; }
     if state.hover_scroll { state.hover_scroll = false; dirty = true; }
+    if state.hover_to_top { state.hover_to_top = false; dirty = true; }
+    hide_hover_preview();
     // 保留当前选择集，避免右键菜单弹出时因为 WM_MOUSELEAVE 把多选清空。
     if dirty {
         InvalidateRect(hwnd, null(), 0);
@@ -4203,7 +4441,10 @@ unsafe fn clear_main_hover_state(hwnd: HWND) {
     if !state.hover_btn.is_empty() { state.hover_btn = ""; dirty = true; }
     if state.hover_tab != -1 { state.hover_tab = -1; dirty = true; }
     if state.hover_idx != -1 { state.hover_idx = -1; dirty = true; }
+    if state.hover_to_top { state.hover_to_top = false; dirty = true; }
+    if state.down_to_top { state.down_to_top = false; dirty = true; }
     if state.down_row != -1 { state.down_row = -1; state.down_x = 0; state.down_y = 0; dirty = true; }
+    hide_hover_preview();
     if dirty {
         InvalidateRect(hwnd, null(), 0);
     }
@@ -4221,6 +4462,9 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
     if 0 <= y && y < TITLE_H {
         let mut blocked = false;
         for key in ["search", "setting", "min", "close"] {
+            if !title_button_visible(&state.settings, key) {
+                continue;
+            }
             if pt_in_rect(x, y, &state.title_button_rect(key)) {
                 blocked = true;
                 break;
@@ -4234,11 +4478,20 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
 
     state.down_btn = "";
     for key in ["search", "setting", "min", "close"] {
+        if !title_button_visible(&state.settings, key) {
+            continue;
+        }
         if pt_in_rect(x, y, &state.title_button_rect(key)) {
             state.down_btn = key;
             InvalidateRect(hwnd, null(), 0);
             return;
         }
+    }
+
+    state.down_to_top = scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
+    if state.down_to_top {
+        InvalidateRect(hwnd, null(), 0);
+        return;
     }
 
     let (tab0, tab1) = state.segment_rects();
@@ -4322,6 +4575,21 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
         return;
     }
 
+    if state.down_to_top {
+        let activate = pt_in_rect(x, y, &state.scroll_to_top_rect());
+        state.down_to_top = false;
+        if activate {
+            state.scroll_y = 0;
+            state.scroll_fade_alpha = 255;
+            if !state.scroll_fade_timer {
+                state.scroll_fade_timer = true;
+                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
+            }
+        }
+        InvalidateRect(hwnd, null(), 0);
+        return;
+    }
+
     let down_row = state.down_row;
     state.down_row = -1;
     state.down_x = 0;
@@ -4335,11 +4603,15 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
         return;
     }
     state.sel_idx = idx;
-    if let Some(del_rc) = state.quick_delete_rect(idx) {
-        if pt_in_rect(x, y, &del_rc) {
-            state.delete_selected();
-            InvalidateRect(hwnd, null(), 1);
-            return;
+    if let Some(src_idx) = state.filtered_indices.get(idx as usize).copied() {
+        if let Some(item) = state.active_items().get(src_idx).cloned() {
+            if let Some(del_rc) = row_quick_delete_rect(state, idx, &item) {
+                if pt_in_rect(x, y, &del_rc) {
+                    state.delete_selected();
+                    InvalidateRect(hwnd, null(), 1);
+                    return;
+                }
+            }
         }
     }
     let ctrl = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
@@ -4403,6 +4675,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
         return;
     }
     let state = &mut *ptr;
+    hide_hover_preview();
     let x = get_x_lparam(lparam);
     let y = get_y_lparam(lparam);
     let (tab0, tab1) = state.segment_rects();
@@ -4602,7 +4875,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
             InvalidateRect(hwnd, null(), 1);
         }
         // Ctrl+F: 搜索
-        0x46 if ctrl => {
+        0x46 if ctrl && state.settings.quick_search_enabled => {
             state.search_on = true;
             layout_children(hwnd);
             SetFocus(state.search_hwnd);
@@ -4626,10 +4899,13 @@ unsafe fn handle_nchittest(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     ScreenToClient(hwnd, &mut pt);
 
     if pt.y >= 0 && pt.y < TITLE_H {
-        if pt_in_rect(pt.x, pt.y, &state.search_rect()) {
+        if state.search_on && pt_in_rect(pt.x, pt.y, &state.search_rect()) {
             return HTCLIENT as LRESULT;
         }
         for key in ["search", "setting", "min", "close"] {
+            if !title_button_visible(&state.settings, key) {
+                continue;
+            }
             if pt_in_rect(pt.x, pt.y, &state.title_button_rect(key)) {
                 return HTCLIENT as LRESULT;
             }
@@ -5081,7 +5357,9 @@ unsafe fn show_row_menu(
             _ => {
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
                 AppendMenuW(menu, MF_STRING, IDM_ROW_EDIT, to_wide("编辑").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide("快速搜索").as_ptr());
+                if state.settings.quick_search_enabled {
+                    AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide("快速搜索").as_ptr());
+                }
                 AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide("导出为文件").as_ptr());
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
@@ -5282,6 +5560,9 @@ unsafe fn paint(hwnd: HWND) {
         draw_icon_tinted(memdc as _, 10, 9, state.icons.app, 18, 18, dark);
     }
     for key in ["search", "setting", "min", "close"] {
+        if !title_button_visible(&state.settings, key) {
+            continue;
+        }
         let rc = state.title_button_rect(key);
         let hover = state.hover_btn == key;
         let down = state.down_btn == key;
@@ -5395,18 +5676,24 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            if i == state.hover_idx {
-                if let Some(del_rc) = state.quick_delete_rect(i) {
-                    let bg = inflate_rect(&del_rc, 2, 2);
-                    draw_round_rect(memdc as _, &bg, th.surface, th.stroke, 10);
-                    if state.icons.del != 0 {
-                        draw_icon_tinted(memdc as _, del_rc.left, del_rc.top, state.icons.del, 16, 16, dark);
-                    }
+            if let Some(del_rc) = row_quick_delete_rect(state, i, &item) {
+                let bg = inflate_rect(&del_rc, 2, 2);
+                draw_round_rect(memdc as _, &bg, th.surface, th.stroke, 10);
+                if state.icons.del != 0 {
+                    draw_icon_tinted(memdc as _, del_rc.left, del_rc.top, state.icons.del, 16, 16, dark);
                 }
             }
 
             row_rc.left += 40;
-            row_rc.right -= 42;
+            row_rc.right -= row_text_right_padding(state, i);
+            if let Some(preview_rc) = row_inline_preview_rect(&row_rc, &item, &state.settings) {
+                let bg = inflate_rect(&preview_rc, 2, 2);
+                draw_round_rect(memdc as _, &bg, th.surface2, th.stroke, 8);
+                if let Some((bytes, width, height)) = ensure_item_image_bytes(&item) {
+                    draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc);
+                }
+                row_rc.left = preview_rc.right + 10;
+            }
             // 图片条目：显示截图时间（本地时间），让用户快速识别
             let display_preview: String;
             let preview_str = if item.kind == ClipKind::Image {
@@ -5434,6 +5721,19 @@ unsafe fn paint(hwnd: HWND) {
                 let thumb_color = rgb(c, c, c);
                 draw_round_fill(memdc as _, &thumb_rc, thumb_color, 3);
             }
+        }
+
+        if scroll_to_top_visible(state) {
+            let top_rc = state.scroll_to_top_rect();
+            let fill = if state.down_to_top {
+                th.button_pressed
+            } else if state.hover_to_top {
+                th.button_hover
+            } else {
+                th.surface
+            };
+            draw_round_rect(memdc as _, &top_rc, fill, th.stroke, 10);
+            draw_text_ex(memdc as _, "↑", &top_rc, th.text, 18, true, true, "Segoe UI Variable Display");
         }
     }
     RestoreDC(memdc, saved_clip);
@@ -5701,6 +6001,10 @@ fn pt_in_rect(x: i32, y: i32, rc: &RECT) -> bool {
     x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
 }
 
+fn pt_in_rect_screen(pt: &POINT, rc: &RECT) -> bool {
+    pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom
+}
+
 fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
     let inner = RECT {
         left: LIST_X + LIST_PAD,
@@ -5720,6 +6024,47 @@ fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
     }
 }
 
+fn row_supports_image_preview(item: &ClipItem, settings: &AppSettings) -> bool {
+    settings.image_preview_enabled && item.kind == ClipKind::Image
+}
+
+fn row_shows_delete_button(state: &AppState, visible_idx: i32) -> bool {
+    state.settings.quick_delete_button && state.hover_idx == visible_idx
+}
+
+fn row_text_right_padding(state: &AppState, visible_idx: i32) -> i32 {
+    if row_shows_delete_button(state, visible_idx) { 42 } else { 18 }
+}
+
+fn row_quick_delete_rect(state: &AppState, visible_idx: i32, _item: &ClipItem) -> Option<RECT> {
+    if !row_shows_delete_button(state, visible_idx) {
+        return None;
+    }
+    state.quick_action_rect_slot(visible_idx, 0)
+}
+
+fn row_inline_preview_rect(row_rc: &RECT, item: &ClipItem, settings: &AppSettings) -> Option<RECT> {
+    if !row_supports_image_preview(item, settings) {
+        return None;
+    }
+    let size = 30;
+    let left = row_rc.left + 2;
+    let top = row_rc.top + ((row_rc.bottom - row_rc.top - size) / 2);
+    Some(RECT { left, top, right: left + size, bottom: top + size })
+}
+
+fn scroll_to_top_visible(state: &AppState) -> bool {
+    state.scroll_y > ROW_H
+}
+
+unsafe fn hovered_item_clone(state: &AppState) -> Option<ClipItem> {
+    if state.hover_idx < 0 {
+        return None;
+    }
+    let src_idx = *state.filtered_indices.get(state.hover_idx as usize)?;
+    state.active_items().get(src_idx).cloned()
+}
+
 fn inflate_rect(rc: &RECT, dx: i32, dy: i32) -> RECT {
     RECT {
         left: rc.left - dx,
@@ -5727,4 +6072,49 @@ fn inflate_rect(rc: &RECT, dx: i32, dy: i32) -> RECT {
         right: rc.right + dx,
         bottom: rc.bottom + dy,
     }
+}
+
+unsafe fn draw_rgba_image_fit(
+    hdc: *mut core::ffi::c_void,
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    dest: &RECT,
+) {
+    if bytes.is_empty() || width == 0 || height == 0 {
+        return;
+    }
+    let avail_w = (dest.right - dest.left).max(1);
+    let avail_h = (dest.bottom - dest.top).max(1);
+    let scale = (avail_w as f32 / width as f32)
+        .min(avail_h as f32 / height as f32)
+        .max(0.01);
+    let draw_w = ((width as f32) * scale).round().max(1.0) as i32;
+    let draw_h = ((height as f32) * scale).round().max(1.0) as i32;
+    let draw_x = dest.left + (avail_w - draw_w) / 2;
+    let draw_y = dest.top + (avail_h - draw_h) / 2;
+
+    let mut bmi: BITMAPINFO = zeroed();
+    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = width as i32;
+    bmi.bmiHeader.biHeight = -(height as i32);
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    StretchDIBits(
+        hdc as _,
+        draw_x,
+        draw_y,
+        draw_w,
+        draw_h,
+        0,
+        0,
+        width as i32,
+        height as i32,
+        bytes.as_ptr() as _,
+        &bmi,
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    );
 }
