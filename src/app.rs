@@ -18,6 +18,7 @@ use std::io;
 use std::mem::{size_of, zeroed};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::process::Command;
 use rusqlite::params;
@@ -37,10 +38,16 @@ unsafe extern "system" {
 unsafe extern "system" {
     fn GetLastError() -> u32;
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
+    fn GetCurrentProcessId() -> u32;
     fn GlobalAlloc(uflags: u32, dwbytes: usize) -> *mut core::ffi::c_void;
     fn GlobalLock(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     fn GlobalUnlock(hmem: *mut core::ffi::c_void) -> i32;
     fn GlobalFree(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+}
+
+#[link(name = "imm32")]
+unsafe extern "system" {
+    fn ImmGetDefaultIMEWnd(hwnd: HWND) -> HWND;
 }
 
 #[link(name = "psapi")]
@@ -117,7 +124,7 @@ use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_win
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
 use crate::time_utils::{format_created_at_local, format_local_time_for_image_preview, now_utc_sqlite};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_VV_MODE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, nav_divider_x, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -139,7 +146,7 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture, keybd_event,
             KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_LBUTTON, VK_MENU, VK_PRIOR, VK_NEXT, VK_SPACE,
-            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT,
+            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_NUMPAD1, VK_NUMPAD9,
         },
         Shell::{DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject},
         WindowsAndMessaging::*,
@@ -182,6 +189,10 @@ const ID_TIMER_PASTE: usize = 2;
 const ID_TIMER_SCROLL_FADE: usize = 3;
 const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
 const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
+const ID_TIMER_VV_SHOW: usize = 6;
+const WM_VV_SHOW: u32 = WM_APP + 20;
+const WM_VV_HIDE: u32 = WM_APP + 21;
+const WM_VV_SELECT: u32 = WM_APP + 22;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -239,6 +250,52 @@ const EDGE_AUTO_HIDE_LEFT: i32 = 0;
 const EDGE_AUTO_HIDE_RIGHT: i32 = 1;
 const EDGE_AUTO_HIDE_TOP: i32 = 2;
 const EDGE_AUTO_HIDE_BOTTOM: i32 = 3;
+const VV_POPUP_CLASS: &str = "ZsClipVvPopup";
+const VV_POPUP_MAX_ITEMS: usize = 9;
+const VV_POPUP_W: i32 = 360;
+const VV_POPUP_HEADER_H: i32 = 48;
+const VV_POPUP_ROW_H: i32 = 30;
+const LLKHF_INJECTED_FLAG: u32 = 0x00000010;
+const VV_TRIGGER_TIMEOUT_MS: u128 = 900;
+const VV_SHOW_RETRY_DELAY_MS: u32 = 30;
+const VV_SHOW_RETRY_MAX: u8 = 10;
+const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
+const IMC_GETCOMPOSITIONWINDOW: WPARAM = 0x000B;
+const CFS_RECT_V: u32 = 0x0001;
+const CFS_POINT_V: u32 = 0x0002;
+const CFS_FORCE_POSITION_V: u32 = 0x0020;
+const CFS_CANDIDATEPOS_V: u32 = 0x0040;
+const CFS_EXCLUDE_V: u32 = 0x0080;
+
+#[repr(C)]
+struct CandidateForm {
+    dw_index: u32,
+    dw_style: u32,
+    pt_current_pos: POINT,
+    rc_area: RECT,
+}
+
+#[repr(C)]
+struct CompositionForm {
+    dw_style: u32,
+    pt_current_pos: POINT,
+    rc_area: RECT,
+}
+
+#[derive(Copy, Clone)]
+struct VvOverlayAnchor {
+    left: i32,
+    edge_y: i32,
+    align_bottom: bool,
+}
+
+fn vv_choose_overlay_edge(top: i32, bottom: i32, popup_height: i32, work_area: &RECT) -> (i32, bool) {
+    let below_space = work_area.bottom - bottom;
+    let above_space = top - work_area.top;
+    let align_bottom = below_space < popup_height && above_space > below_space;
+    let edge_y = if align_bottom { top } else { bottom };
+    (edge_y, align_bottom)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -258,6 +315,7 @@ pub(crate) struct AppSettings {
     pub(crate) show_fixed_x: i32,
     pub(crate) show_fixed_y: i32,
     pub(crate) quick_search_enabled: bool,
+    pub(crate) vv_mode_enabled: bool,
     pub(crate) image_preview_enabled: bool,
     pub(crate) quick_delete_button: bool,
     pub(crate) search_engine: String,
@@ -294,6 +352,7 @@ impl Default for AppSettings {
             show_fixed_x: 120,
             show_fixed_y: 120,
             quick_search_enabled: false,
+            vv_mode_enabled: false,
             image_preview_enabled: false,
             quick_delete_button: true,
             search_engine: "jzxx".to_string(),
@@ -352,8 +411,565 @@ fn open_source_url_display() -> &'static str {
     }
 }
 
-fn title_button_visible(settings: &AppSettings, key: &str) -> bool {
-    key != "search" || settings.quick_search_enabled
+fn title_button_visible(_settings: &AppSettings, _key: &str) -> bool {
+    true
+}
+
+#[derive(Default)]
+struct VvHookState {
+    main_hwnd: isize,
+    enabled: bool,
+    last_v_target: isize,
+    last_was_v: bool,
+    last_v_at: Option<Instant>,
+    popup_active: bool,
+    popup_target: isize,
+}
+
+#[derive(Clone)]
+struct VvPopupEntry {
+    index: usize,
+    item: ClipItem,
+}
+
+static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
+static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
+
+fn vv_hook_state() -> &'static Mutex<VvHookState> {
+    VV_HOOK_STATE.get_or_init(|| Mutex::new(VvHookState::default()))
+}
+
+fn vv_hook_handle() -> &'static Mutex<isize> {
+    VV_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
+}
+
+unsafe fn vv_popup_row_rect(row: usize) -> RECT {
+    let top = VV_POPUP_HEADER_H + 10 + row as i32 * VV_POPUP_ROW_H;
+    RECT { left: 12, top, right: VV_POPUP_W - 12, bottom: top + VV_POPUP_ROW_H - 2 }
+}
+
+unsafe fn ensure_vv_popup_class() {
+    let hinstance = GetModuleHandleW(null());
+    let cname = to_wide(VV_POPUP_CLASS);
+    let mut wc: WNDCLASSEXW = zeroed();
+    wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
+    wc.lpfnWndProc = Some(vv_popup_wnd_proc);
+    wc.hInstance = hinstance;
+    wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+    wc.hbrBackground = null_mut();
+    wc.lpszClassName = cname.as_ptr();
+    RegisterClassExW(&wc);
+}
+
+unsafe fn vv_popup_hwnd(main_hwnd: HWND) -> HWND {
+    let raw = *VV_POPUP_HWND.get_or_init(|| {
+        ensure_vv_popup_class();
+        CreateWindowExW(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            to_wide(VV_POPUP_CLASS).as_ptr(),
+            to_wide("").as_ptr(),
+            WS_POPUP,
+            0,
+            0,
+            VV_POPUP_W,
+            VV_POPUP_HEADER_H + 24,
+            null_mut(),
+            null_mut(),
+            GetModuleHandleW(null()),
+            main_hwnd as _,
+        ) as isize
+    });
+    raw as HWND
+}
+
+fn current_vv_popup_hwnd() -> HWND {
+    VV_POPUP_HWND.get().copied().unwrap_or(0) as HWND
+}
+
+unsafe fn vv_popup_height(rows: usize) -> i32 {
+    VV_POPUP_HEADER_H + 20 + rows.max(1) as i32 * VV_POPUP_ROW_H
+}
+
+fn vv_rect_has_area(rc: &RECT) -> bool {
+    rc.right > rc.left && rc.bottom > rc.top
+}
+
+fn vv_rect_has_point(rc: &RECT) -> bool {
+    rc.left != 0 || rc.top != 0 || rc.right != 0 || rc.bottom != 0
+}
+
+unsafe fn vv_point_to_screen(hwnd: HWND, pt: &mut POINT) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    ClientToScreen(hwnd, pt) != 0
+}
+
+unsafe fn vv_client_rect_to_screen(hwnd: HWND, rc: &RECT) -> Option<RECT> {
+    let mut tl = POINT { x: rc.left, y: rc.top };
+    let mut br = POINT { x: rc.right, y: rc.bottom };
+    if vv_point_to_screen(hwnd, &mut tl) && vv_point_to_screen(hwnd, &mut br) {
+        return Some(RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y });
+    }
+    None
+}
+
+unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
+    if target.is_null() || IsWindow(target) == 0 {
+        return None;
+    }
+    let mut pid = 0u32;
+    let thread_id = GetWindowThreadProcessId(target, &mut pid);
+    if thread_id == 0 {
+        return None;
+    }
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if GetGUIThreadInfo(thread_id, &mut info) == 0 || !vv_rect_has_point(&info.rcCaret) {
+        return None;
+    }
+    let anchor_hwnd = if !info.hwndCaret.is_null() {
+        info.hwndCaret
+    } else if !info.hwndFocus.is_null() {
+        info.hwndFocus
+    } else {
+        target
+    };
+    if anchor_hwnd.is_null() || IsWindow(anchor_hwnd) == 0 {
+        return None;
+    }
+
+    let mut top_left = POINT { x: info.rcCaret.left, y: info.rcCaret.top };
+    let mut bottom_left = POINT {
+        x: info.rcCaret.left,
+        y: if info.rcCaret.bottom > info.rcCaret.top {
+            info.rcCaret.bottom
+        } else {
+            info.rcCaret.top + 24
+        },
+    };
+    if !vv_point_to_screen(anchor_hwnd, &mut top_left) || !vv_point_to_screen(anchor_hwnd, &mut bottom_left) {
+        return None;
+    }
+
+    let below_space = work_area.bottom - bottom_left.y;
+    let above_space = top_left.y - work_area.top;
+    let align_bottom = below_space < popup_height && above_space > below_space;
+    let edge_y = if align_bottom { top_left.y } else { bottom_left.y };
+    Some(VvOverlayAnchor {
+        left: top_left.x,
+        edge_y,
+        align_bottom,
+    })
+}
+
+unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
+    if focus_hwnd.is_null() || IsWindow(focus_hwnd) == 0 {
+        return None;
+    }
+    let ime_hwnd = ImmGetDefaultIMEWnd(focus_hwnd);
+    if ime_hwnd.is_null() || IsWindow(ime_hwnd) == 0 {
+        return None;
+    }
+
+    for index in 0..=3 {
+        let mut cand = CandidateForm {
+            dw_index: index,
+            dw_style: 0,
+            pt_current_pos: POINT { x: 0, y: 0 },
+            rc_area: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        };
+        if SendMessageW(ime_hwnd, WM_IME_CONTROL, IMC_GETCANDIDATEPOS, &mut cand as *mut _ as LPARAM) != 0 {
+            continue;
+        }
+        let mut pt = cand.pt_current_pos;
+        let pt_ok = vv_point_to_screen(focus_hwnd, &mut pt);
+        if cand.dw_style == CFS_CANDIDATEPOS_V && pt_ok {
+            return Some(VvOverlayAnchor { left: pt.x, edge_y: pt.y, align_bottom: false });
+        }
+        if cand.dw_style == CFS_EXCLUDE_V && vv_rect_has_area(&cand.rc_area) {
+            if let Some(exclude_rc) = vv_client_rect_to_screen(focus_hwnd, &cand.rc_area) {
+                let left = if pt_ok { pt.x } else { exclude_rc.left };
+                let (edge_y, align_bottom) =
+                    vv_choose_overlay_edge(exclude_rc.top, exclude_rc.bottom, popup_height, work_area);
+                return Some(VvOverlayAnchor { left, edge_y, align_bottom });
+            }
+        }
+    }
+
+    let mut comp = CompositionForm {
+        dw_style: 0,
+        pt_current_pos: POINT { x: 0, y: 0 },
+        rc_area: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+    };
+    if SendMessageW(ime_hwnd, WM_IME_CONTROL, IMC_GETCOMPOSITIONWINDOW, &mut comp as *mut _ as LPARAM) == 0 {
+        let mut pt = comp.pt_current_pos;
+        let pt_ok = vv_point_to_screen(focus_hwnd, &mut pt);
+        if (comp.dw_style == CFS_POINT_V || comp.dw_style == CFS_FORCE_POSITION_V) && pt_ok {
+            let (edge_y, align_bottom) =
+                vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
+            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom });
+        }
+        if comp.dw_style == CFS_RECT_V && vv_rect_has_area(&comp.rc_area) {
+            if let Some(rc) = vv_client_rect_to_screen(focus_hwnd, &comp.rc_area) {
+                let (edge_y, align_bottom) =
+                    vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
+                return Some(VvOverlayAnchor { left: rc.left, edge_y, align_bottom });
+            }
+        }
+    }
+
+    None
+}
+
+unsafe fn vv_focus_hwnd_for_target(target: HWND) -> HWND {
+    if target.is_null() {
+        return null_mut();
+    }
+    let mut pid = 0u32;
+    let thread_id = GetWindowThreadProcessId(target, &mut pid);
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if thread_id != 0 && GetGUIThreadInfo(thread_id, &mut info) != 0 {
+        if !info.hwndFocus.is_null() {
+            return info.hwndFocus;
+        }
+    }
+    target
+}
+
+unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
+    if popup.is_null() || IsWindow(popup) == 0 {
+        return false;
+    }
+    let focus_hwnd = vv_focus_hwnd_for_target(state.vv_popup_target);
+    if focus_hwnd.is_null() {
+        return false;
+    }
+    let mut wa: RECT = zeroed();
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as _, 0);
+    let height = vv_popup_height(state.vv_popup_items.len());
+    let anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
+        .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa));
+    let Some(anchor) = anchor else {
+        return false;
+    };
+    let mut x = anchor.left;
+    let mut y = if anchor.align_bottom {
+        anchor.edge_y - height
+    } else {
+        anchor.edge_y
+    };
+    if x + VV_POPUP_W > wa.right {
+        x = wa.right - VV_POPUP_W;
+    }
+    if x < wa.left {
+        x = wa.left;
+    }
+    if y < wa.top {
+        y = wa.top;
+    }
+    if y + height > wa.bottom {
+        y = wa.bottom - height;
+    }
+    SetWindowPos(
+        popup,
+        HWND_TOPMOST,
+        x,
+        y,
+        VV_POPUP_W,
+        height,
+        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    true
+}
+
+unsafe fn vv_popup_sync_hook_state(visible: bool, target: HWND) {
+    if let Ok(mut guard) = vv_hook_state().lock() {
+        guard.popup_active = visible;
+        guard.popup_target = if visible { target as isize } else { 0 };
+        if !visible {
+            guard.last_was_v = false;
+            guard.last_v_target = 0;
+            guard.last_v_at = None;
+        }
+    }
+}
+
+unsafe fn send_escape_key() {
+    keybd_event(VK_ESCAPE as u8, 0, 0, 0);
+    keybd_event(VK_ESCAPE as u8, 0, KEYEVENTF_KEYUP, 0);
+}
+
+unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
+    state.vv_popup_visible = false;
+    state.vv_popup_pending_target = null_mut();
+    state.vv_popup_pending_retries = 0;
+    state.vv_popup_target = null_mut();
+    state.vv_popup_replaces_ime = false;
+    state.vv_popup_items.clear();
+    vv_popup_sync_hook_state(false, null_mut());
+    let popup = current_vv_popup_hwnd();
+    if !popup.is_null() && IsWindow(popup) != 0 {
+        ShowWindow(popup, SW_HIDE);
+    }
+}
+
+unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool {
+    state.vv_popup_items = state.records.iter().take(VV_POPUP_MAX_ITEMS).cloned().enumerate().map(|(i, item)| VvPopupEntry {
+        index: i + 1,
+        item,
+    }).collect();
+    if state.vv_popup_items.is_empty() {
+        vv_popup_hide(hwnd, state);
+        return false;
+    }
+    state.vv_popup_target = target;
+    state.vv_popup_pending_retries = 0;
+    state.vv_popup_visible = true;
+    state.vv_popup_replaces_ime = false;
+    vv_popup_sync_hook_state(true, target);
+    let popup = vv_popup_hwnd(hwnd);
+    if !vv_popup_move_near_target(state, popup) {
+        vv_popup_hide(hwnd, state);
+        return false;
+    }
+    send_escape_key();
+    state.vv_popup_replaces_ime = true;
+    InvalidateRect(popup, null(), 1);
+    ShowWindow(popup, SW_SHOWNOACTIVATE);
+    true
+}
+
+unsafe fn vv_digit_index_from_vk(vk: u32) -> Option<usize> {
+    match vk {
+        0x31..=0x39 => Some((vk - 0x31) as usize),
+        x if x >= VK_NUMPAD1 as u32 && x <= VK_NUMPAD9 as u32 => Some((x - VK_NUMPAD1 as u32) as usize),
+        _ => None,
+    }
+}
+
+unsafe fn vv_is_modifier_vk(vk: u32) -> bool {
+    matches!(vk, x if x == VK_SHIFT as u32 || x == VK_CONTROL as u32 || x == VK_MENU as u32 || x == VK_LWIN as u32 || x == VK_RWIN as u32)
+}
+
+unsafe fn vv_target_is_ignored(hwnd: HWND, main_hwnd: HWND) -> bool {
+    if hwnd.is_null() || hwnd == main_hwnd {
+        return true;
+    }
+    let popup = current_vv_popup_hwnd();
+    if hwnd == popup {
+        return true;
+    }
+    let mut pid = 0u32;
+    let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+    pid == GetCurrentProcessId()
+}
+
+unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code < 0 || (wparam as u32 != WM_KEYDOWN && wparam as u32 != WM_SYSKEYDOWN) {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+    let data = &*(lparam as *const KBDLLHOOKSTRUCT);
+    if (data.flags & LLKHF_INJECTED_FLAG) != 0 {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    let Ok(mut hook) = vv_hook_state().lock() else {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    };
+    if !hook.enabled || hook.main_hwnd == 0 {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+    let main_hwnd = hook.main_hwnd as HWND;
+
+    let fg = GetForegroundWindow();
+    if vv_target_is_ignored(fg, main_hwnd) {
+        hook.last_was_v = false;
+        hook.last_v_target = 0;
+        hook.last_v_at = None;
+        if hook.popup_active {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            PostMessageW(main_hwnd, WM_VV_HIDE, 0, 0);
+        }
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    let has_mod = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_MENU as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_LWIN as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_RWIN as i32) as u16 & 0x8000) != 0;
+
+    if hook.popup_active {
+        if fg as isize != hook.popup_target {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_HIDE, 0, 0);
+            return CallNextHookEx(null_mut(), code, wparam, lparam);
+        }
+        if let Some(idx) = vv_digit_index_from_vk(data.vkCode) {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_was_v = false;
+            hook.last_v_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_SELECT, idx, 0);
+            return 1;
+        }
+        if data.vkCode == VK_ESCAPE as u32 {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_was_v = false;
+            hook.last_v_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_HIDE, 0, 0);
+            return 1;
+        }
+        if data.vkCode == VK_BACK as u32 {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_HIDE, 0, 0);
+            return CallNextHookEx(null_mut(), code, wparam, lparam);
+        }
+        if !vv_is_modifier_vk(data.vkCode) {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_was_v = false;
+            hook.last_v_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_HIDE, 0, 0);
+        }
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    if has_mod {
+        hook.last_was_v = false;
+        hook.last_v_target = 0;
+        hook.last_v_at = None;
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    if data.vkCode == 0x56 {
+        let within_timeout = hook
+            .last_v_at
+            .map(|t| t.elapsed().as_millis() <= VV_TRIGGER_TIMEOUT_MS)
+            .unwrap_or(false);
+        if hook.last_was_v && hook.last_v_target == fg as isize && within_timeout {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_was_v = false;
+            hook.last_v_target = 0;
+            hook.last_v_at = None;
+            PostMessageW(main_hwnd, WM_VV_SHOW, fg as usize, 0);
+        } else {
+            hook.last_was_v = true;
+            hook.last_v_target = fg as isize;
+            hook.last_v_at = Some(Instant::now());
+        }
+    } else if !vv_is_modifier_vk(data.vkCode) {
+        hook.last_was_v = false;
+        hook.last_v_target = 0;
+        hook.last_v_at = None;
+    }
+
+    CallNextHookEx(null_mut(), code, wparam, lparam)
+}
+
+unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
+    if let Ok(mut hook_state) = vv_hook_state().lock() {
+        hook_state.main_hwnd = main_hwnd as isize;
+        hook_state.enabled = enabled;
+        if !enabled {
+            hook_state.last_was_v = false;
+            hook_state.last_v_target = 0;
+            hook_state.last_v_at = None;
+            hook_state.popup_active = false;
+            hook_state.popup_target = 0;
+        }
+    }
+    let Ok(mut handle) = vv_hook_handle().lock() else {
+        return;
+    };
+    if enabled {
+        if *handle == 0 {
+            *handle = SetWindowsHookExW(WH_KEYBOARD_LL, Some(vv_keyboard_hook_proc), GetModuleHandleW(null()), 0) as isize;
+        }
+    } else if *handle != 0 {
+        UnhookWindowsHookEx(*handle as _);
+        *handle = 0;
+    }
+}
+
+unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    match msg {
+        WM_NCCREATE => {
+            let cs = &*(lparam as *const CREATESTRUCTW);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
+            apply_window_corner_preference(hwnd);
+            1
+        }
+        WM_PAINT => {
+            let main_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+            let ptr = get_state_ptr(main_hwnd);
+            let mut ps: PAINTSTRUCT = zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            if !hdc.is_null() && !ptr.is_null() {
+                let state = &*ptr;
+                let th = Theme::default();
+                let mut rc: RECT = zeroed();
+                GetClientRect(hwnd, &mut rc);
+                let bg = CreateSolidBrush(th.surface);
+                FillRect(hdc, &rc, bg);
+                DeleteObject(bg as _);
+                draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 12);
+
+                let title_rc = RECT { left: 14, top: 10, right: rc.right - 14, bottom: 30 };
+                draw_text_ex(hdc as _, "VV 模式", &title_rc, th.text, 13, true, false, "Segoe UI Variable Display");
+                let sub_rc = RECT { left: 14, top: 28, right: rc.right - 14, bottom: 44 };
+                draw_text_ex(hdc as _, "输入 1-9 直接粘贴，Esc 取消", &sub_rc, th.text_muted, 11, false, false, "Segoe UI Variable Text");
+
+                for (row, entry) in state.vv_popup_items.iter().enumerate() {
+                    let row_rc = vv_popup_row_rect(row);
+                    let bubble = RECT { left: row_rc.left, top: row_rc.top + 4, right: row_rc.left + 24, bottom: row_rc.top + 24 };
+                    draw_round_fill(hdc as _, &bubble, th.accent, 8);
+                    draw_text_ex(hdc as _, &entry.index.to_string(), &bubble, rgb(255, 255, 255), 11, true, true, "Segoe UI Variable Text");
+
+                    let mut text_rc = row_rc;
+                    text_rc.left += 34;
+                    let label = if entry.item.kind == ClipKind::Image {
+                        format_created_at_local(&entry.item.created_at, &entry.item.preview)
+                    } else {
+                        entry.item.preview.clone()
+                    };
+                    draw_text_ex(hdc as _, &label, &text_rc, th.text, 12, false, false, "Segoe UI Variable Text");
+                }
+            }
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_LBUTTONUP => {
+            let main_hwnd = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as HWND;
+            let ptr = get_state_ptr(main_hwnd);
+            if ptr.is_null() {
+                return 0;
+            }
+            let state = &*ptr;
+            let y = get_y_lparam(lparam);
+            for row in 0..state.vv_popup_items.len() {
+                let row_rc = vv_popup_row_rect(row);
+                if y >= row_rc.top && y < row_rc.bottom {
+                    PostMessageW(main_hwnd, WM_VV_SELECT, row, 0);
+                    break;
+                }
+            }
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, 0, lparam),
+    }
 }
 
 fn hotkey_mods_from_label(label: &str) -> u32 {
@@ -558,7 +1174,15 @@ pub(crate) struct AppState {
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
     pub(crate) hover_to_top: bool,
     pub(crate) down_to_top: bool,
+    pub(crate) vv_popup_visible: bool,
+    pub(crate) vv_popup_pending_target: HWND,
+    pub(crate) vv_popup_pending_retries: u8,
+    pub(crate) vv_popup_target: HWND,
+    pub(crate) vv_popup_replaces_ime: bool,
+    vv_popup_items: Vec<VvPopupEntry>,
     pub(crate) paste_return_to_main: bool,
+    pub(crate) paste_target_override: HWND,
+    pub(crate) paste_backspace_count: u8,
     pub(crate) edge_hidden: bool,
     pub(crate) edge_hidden_side: i32,
     pub(crate) edge_restore_x: i32,
@@ -607,7 +1231,15 @@ impl AppState {
             scroll_fade_timer: false,
             hover_to_top: false,
             down_to_top: false,
+            vv_popup_visible: false,
+            vv_popup_pending_target: null_mut(),
+            vv_popup_pending_retries: 0,
+            vv_popup_target: null_mut(),
+            vv_popup_replaces_ime: false,
+            vv_popup_items: Vec::new(),
             paste_return_to_main: false,
+            paste_target_override: null_mut(),
+            paste_backspace_count: 0,
             edge_hidden: false,
             edge_hidden_side: EDGE_AUTO_HIDE_NONE,
             edge_restore_x: 0,
@@ -1707,16 +2339,11 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     let autostart_old = app.settings.auto_start;
     let hotkey_old = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
     let edge_hide_old = app.settings.edge_auto_hide;
+    let vv_mode_old = app.settings.vv_mode_enabled;
     app.settings = st.draft.clone();
     if !app.settings.grouping_enabled {
         app.current_group_filter = 0;
         app.tab_group_filters = [0, 0];
-    }
-    if !app.settings.quick_search_enabled {
-        app.search_on = false;
-        app.search_text.clear();
-        SetWindowTextW(app.search_hwnd, to_wide("").as_ptr());
-        layout_children(st.parent_hwnd);
     }
     save_settings(&app.settings);
     // 开机自启：同步写注册表
@@ -1729,6 +2356,12 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     let hotkey_new = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
     if hotkey_old != hotkey_new {
         register_hotkey_for(st.parent_hwnd, app);
+    }
+    if vv_mode_old != app.settings.vv_mode_enabled {
+        update_vv_mode_hook(st.parent_hwnd, app.settings.vv_mode_enabled);
+        if !app.settings.vv_mode_enabled {
+            vv_popup_hide(st.parent_hwnd, app);
+        }
     }
     // 保存后按新的上限清理 DB 中多余条目（0=无限制不清理）
     let new_max = app.settings.max_items;
@@ -1751,6 +2384,7 @@ unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
         IDC_SET_CLICK_HIDE   => st.draft.click_hide,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
+        IDC_SET_VV_MODE => st.draft.vv_mode_enabled,
         IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled,
         IDC_SET_QUICK_DELETE => st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
@@ -1770,6 +2404,7 @@ unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
         IDC_SET_CLICK_HIDE   => st.draft.click_hide = !st.draft.click_hide,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
+        IDC_SET_VV_MODE => st.draft.vv_mode_enabled = !st.draft.vv_mode_enabled,
         IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled = !st.draft.image_preview_enabled,
         IDC_SET_QUICK_DELETE => st.draft.quick_delete_button = !st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
@@ -1805,8 +2440,9 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
     st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
     st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
 
     let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
     settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
@@ -2812,7 +3448,7 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
 
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_CLOSETRAY
         || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_EDGEHIDE
-        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_IMAGE_PREVIEW
+        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
         || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
         || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103
@@ -3138,7 +3774,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -3159,7 +3795,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
@@ -3701,10 +4337,48 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_TIMER => {
+            if wparam as usize == ID_TIMER_CARET {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    if state.vv_popup_visible {
+                        if GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0 {
+                            vv_popup_hide(hwnd, state);
+                        }
+                    }
+                }
+                return 0;
+            }
+            if wparam as usize == ID_TIMER_VV_SHOW {
+                KillTimer(hwnd, ID_TIMER_VV_SHOW);
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    let target = state.vv_popup_pending_target;
+                    if !target.is_null() && GetForegroundWindow() == target && IsWindow(target) != 0 {
+                        state.vv_popup_pending_target = null_mut();
+                        if !vv_popup_show(hwnd, state, target) && state.vv_popup_pending_retries > 0 {
+                            state.vv_popup_pending_target = target;
+                            state.vv_popup_pending_retries -= 1;
+                            SetTimer(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS, None);
+                        }
+                    } else {
+                        state.vv_popup_pending_target = null_mut();
+                        state.vv_popup_pending_retries = 0;
+                    }
+                }
+                return 0;
+            }
             if wparam as usize == ID_TIMER_PASTE {
                 KillTimer(hwnd, ID_TIMER_PASTE);
-                send_ctrl_v();
                 let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    send_backspace_times(state.paste_backspace_count);
+                    state.paste_backspace_count = 0;
+                    state.paste_target_override = null_mut();
+                }
+                send_ctrl_v();
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     if state.paste_return_to_main {
@@ -3787,6 +4461,31 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_VV_SHOW => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.vv_popup_pending_target = wparam as HWND;
+                state.vv_popup_pending_retries = VV_SHOW_RETRY_MAX;
+                KillTimer(hwnd, ID_TIMER_VV_SHOW);
+                SetTimer(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS, None);
+            }
+            0
+        }
+        WM_VV_HIDE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                vv_popup_hide(hwnd, &mut *ptr);
+            }
+            0
+        }
+        WM_VV_SELECT => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                handle_vv_select(hwnd, &mut *ptr, wparam as usize);
+            }
+            0
+        }
         WM_ACTIVATEAPP => {
             if wparam == 0 {
                 clear_main_hover_state(hwnd);
@@ -3804,8 +4503,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_NCHITTEST => handle_nchittest(hwnd, lparam),
         WM_DESTROY => {
             KillTimer(hwnd, ID_TIMER_CARET);
+            KillTimer(hwnd, ID_TIMER_VV_SHOW);
             KillTimer(hwnd, ID_TIMER_PASTE);
             KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
+            let popup = current_vv_popup_hwnd();
+            if !popup.is_null() && IsWindow(popup) != 0 {
+                DestroyWindow(popup);
+            }
+            update_vv_mode_hook(hwnd, false);
             RemoveClipboardFormatListener(hwnd);
             if let Some(state) = unsafe { get_state_mut(hwnd) } {
                 unregister_hotkey_for(hwnd, state);
@@ -3868,6 +4573,7 @@ unsafe fn on_create(hwnd: HWND) -> AppResult<()> {
         ensure_db();
         reload_state_from_db(state);
         register_hotkey_for(hwnd, state);
+        update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
         position_main_window(hwnd, &state.settings, false);
     }
 
@@ -4875,7 +5581,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
             InvalidateRect(hwnd, null(), 1);
         }
         // Ctrl+F: 搜索
-        0x46 if ctrl && state.settings.quick_search_enabled => {
+        0x46 if ctrl => {
             state.search_on = true;
             layout_children(hwnd);
             SetFocus(state.search_hwnd);
@@ -5063,10 +5769,7 @@ unsafe fn copy_selected_rows_combined(state: &mut AppState) -> bool {
     ok
 }
 
-unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
-    let Some(item_ref) = state.current_item() else {
-        return false;
-    };
+unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> bool {
     let item_id = item_ref.id;
     let item_kind = item_ref.kind;
 
@@ -5131,6 +5834,13 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
     ok
 }
 
+unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
+    let Some(item_ref) = state.current_item().cloned() else {
+        return false;
+    };
+    apply_item_to_clipboard(state, &item_ref)
+}
+
 unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     if !apply_selected_to_clipboard(state) {
         return;
@@ -5138,6 +5848,23 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     state.clear_selection();
     clear_main_hover_state(hwnd);
     paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
+}
+
+unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
+    if !state.vv_popup_visible {
+        return;
+    }
+    let target = state.vv_popup_target;
+    let backspaces = if state.vv_popup_replaces_ime { 0 } else { 2 };
+    let item = state.vv_popup_items.get(index).map(|entry| entry.item.clone());
+    vv_popup_hide(hwnd, state);
+    let Some(item) = item else {
+        return;
+    };
+    if !apply_item_to_clipboard(state, &item) {
+        return;
+    }
+    paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
 }
 
 unsafe fn create_shell_data_object(paths: &[PathBuf]) -> Option<*mut core::ffi::c_void> {
@@ -5437,6 +6164,13 @@ unsafe fn send_ctrl_v() {
     keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
 }
 
+unsafe fn send_backspace_times(count: u8) {
+    for _ in 0..count {
+        keybd_event(VK_BACK as u8, 0, 0, 0);
+        keybd_event(VK_BACK as u8, 0, KEYEVENTF_KEYUP, 0);
+    }
+}
+
 unsafe fn send_alt_tap() {
     let inputs = [
         INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_MENU as u16, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 } } },
@@ -5457,8 +6191,14 @@ unsafe fn force_foreground_window(hwnd: HWND) -> bool {
 }
 
 unsafe fn paste_after_clipboard_ready(hwnd: HWND, state: &mut AppState, hide_main: bool) {
-    state.paste_return_to_main = false;
     let target = find_next_paste_target(hwnd);
+    paste_after_clipboard_ready_to_target(hwnd, state, target, hide_main, 0);
+}
+
+unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState, target: HWND, hide_main: bool, backspaces: u8) {
+    state.paste_return_to_main = false;
+    state.paste_target_override = target;
+    state.paste_backspace_count = backspaces;
     if !target.is_null() {
         if hide_main {
             ShowWindow(hwnd, SW_HIDE);

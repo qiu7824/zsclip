@@ -44,6 +44,7 @@ pub const IDC_SET_PLUGIN_MAILMERGE: isize = 5050;
 pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
 pub const IDC_SET_QUICK_DELETE: isize = 5052;
 pub const IDC_SET_OPEN_SOURCE: isize = 5053;
+pub const IDC_SET_VV_MODE: isize = 5054;
 
 unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();
