@@ -10,7 +10,7 @@
 use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
 use std::cmp::{max, min};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -21,7 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::process::Command;
-use rusqlite::params;
+use rusqlite::{params, params_from_iter};
+use rusqlite::types::Value as SqlValue;
 use serde::{Deserialize, Serialize};
 use std::ptr::{null, null_mut};
 #[link(name = "user32")]
@@ -115,17 +116,17 @@ const INPUT_KEYBOARD: u32 = 1;
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, parse_search_query, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell};
 use crate::hover_preview::{hide_hover_preview, show_hover_preview};
 use crate::sticker::show_image_sticker;
 use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
 use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
-use crate::time_utils::{format_created_at_local, format_local_time_for_image_preview, now_utc_sqlite};
+use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_VV_MODE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, nav_divider_x, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -193,6 +194,7 @@ const ID_TIMER_VV_SHOW: usize = 6;
 const WM_VV_SHOW: u32 = WM_APP + 20;
 const WM_VV_HIDE: u32 = WM_APP + 21;
 const WM_VV_SELECT: u32 = WM_APP + 22;
+const WM_ITEMS_PAGE_READY: u32 = WM_APP + 30;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -225,7 +227,10 @@ const MOD_SHIFT: u32 = 0x0004;
 const MOD_WIN: u32 = 0x0008;
 const MOD_NOREPEAT: u32 = 0x4000;
 const TME_LEAVE: u32 = 0x00000002;
+const TME_HOVER: u32 = 0x00000001;
+const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const SPI_GETMOUSEHOVERTIME_V: u32 = 0x0066;
 
 type AppResult<T> = Result<T, io::Error>;
 
@@ -235,12 +240,18 @@ const HOTKEY_KEY_OPTIONS: [&str; 51] = [
     "0","1","2","3","4","5","6","7","8","9",
     "Space","Enter","Tab","Esc","Backspace","Delete","Insert","Up","Down","Left","Right","Home","End","PageUp","PageDown",
 ];
-const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 6] = [
+const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
     ("jzxx",   "筑森搜索（jzxx.vip）", "https://jzxx.vip/search/more.html?type=11&key={q}&se=2"),
     ("bing",   "必应",                 "https://www.bing.com/search?q={q}"),
     ("baidu",  "百度",                 "https://www.baidu.com/s?wd={q}"),
     ("google", "Google",              "https://www.google.com/search?q={q}"),
     ("sogou",  "搜狗",                 "https://www.sogou.com/web?query={q}"),
+    ("360",    "360搜索",              "https://www.so.com/s?q={q}"),
+    ("quark",  "夸克",                 "https://quark.sm.cn/s?q={q}"),
+    ("sm",     "神马",                 "https://m.sm.cn/s?q={q}"),
+    ("ddg",    "DuckDuckGo",          "https://duckduckgo.com/?q={q}"),
+    ("yahoo",  "Yahoo",               "https://search.yahoo.com/search?p={q}"),
+    ("yandex", "Yandex",              "https://yandex.com/search/?text={q}"),
     ("custom", "自定义",               "https://example.com/search?q={q}"),
 ];
 const EDGE_AUTO_HIDE_PEEK: i32 = 6;
@@ -249,16 +260,19 @@ const EDGE_AUTO_HIDE_NONE: i32 = -1;
 const EDGE_AUTO_HIDE_LEFT: i32 = 0;
 const EDGE_AUTO_HIDE_RIGHT: i32 = 1;
 const EDGE_AUTO_HIDE_TOP: i32 = 2;
+const ITEMS_PAGE_SIZE: usize = 200;
+const ITEMS_LOAD_AHEAD_ROWS: i32 = 18;
 const EDGE_AUTO_HIDE_BOTTOM: i32 = 3;
 const VV_POPUP_CLASS: &str = "ZsClipVvPopup";
 const VV_POPUP_MAX_ITEMS: usize = 9;
 const VV_POPUP_W: i32 = 360;
-const VV_POPUP_HEADER_H: i32 = 48;
+const VV_POPUP_HEADER_H: i32 = 58;
 const VV_POPUP_ROW_H: i32 = 30;
 const LLKHF_INJECTED_FLAG: u32 = 0x00000010;
 const VV_TRIGGER_TIMEOUT_MS: u128 = 900;
 const VV_SHOW_RETRY_DELAY_MS: u32 = 30;
 const VV_SHOW_RETRY_MAX: u8 = 10;
+const VV_POPUP_MENU_GRACE_MS: u64 = 450;
 const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
 const IMC_GETCOMPOSITIONWINDOW: WPARAM = 0x000B;
 const CFS_RECT_V: u32 = 0x0001;
@@ -316,6 +330,8 @@ pub(crate) struct AppSettings {
     pub(crate) show_fixed_y: i32,
     pub(crate) quick_search_enabled: bool,
     pub(crate) vv_mode_enabled: bool,
+    pub(crate) vv_source_tab: usize,
+    pub(crate) vv_group_id: i64,
     pub(crate) image_preview_enabled: bool,
     pub(crate) quick_delete_button: bool,
     pub(crate) search_engine: String,
@@ -353,6 +369,8 @@ impl Default for AppSettings {
             show_fixed_y: 120,
             quick_search_enabled: false,
             vv_mode_enabled: false,
+            vv_source_tab: 0,
+            vv_group_id: 0,
             image_preview_enabled: false,
             quick_delete_button: true,
             search_engine: "jzxx".to_string(),
@@ -383,6 +401,29 @@ fn search_engine_display(key: &str) -> &'static str {
 
 fn search_engine_key_from_display(label: &str) -> &'static str {
     SEARCH_ENGINE_PRESETS.iter().find(|(_,name,_)| *name == label).map(|(k,_,_)| *k).unwrap_or("jzxx")
+}
+
+fn group_name_for_display(groups: &[ClipGroup], group_id: i64, all_label: &str) -> String {
+    if group_id == 0 {
+        return all_label.to_string();
+    }
+    groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| all_label.to_string())
+}
+
+fn normalize_source_tab(tab: usize) -> usize {
+    if tab == 1 { 1 } else { 0 }
+}
+
+fn source_tab_label(tab: usize) -> &'static str {
+    if normalize_source_tab(tab) == 1 {
+        "常用短语"
+    } else {
+        "复制记录"
+    }
 }
 
 fn normalize_hotkey_mod(s: &str) -> String {
@@ -424,6 +465,88 @@ struct VvHookState {
     last_v_at: Option<Instant>,
     popup_active: bool,
     popup_target: isize,
+    popup_menu_active: bool,
+    popup_menu_grace_until: Option<Instant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ItemsQuery {
+    category: i64,
+    group_id: i64,
+    search_text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ItemsCursor {
+    pinned: bool,
+    id: i64,
+}
+
+struct TabLoadState {
+    query: Option<ItemsQuery>,
+    next_cursor: Option<ItemsCursor>,
+    has_more: bool,
+    loading: bool,
+    request_seq: u64,
+    error: Option<String>,
+}
+
+impl Default for TabLoadState {
+    fn default() -> Self {
+        Self {
+            query: None,
+            next_cursor: None,
+            has_more: true,
+            loading: false,
+            request_seq: 0,
+            error: None,
+        }
+    }
+}
+
+const ITEM_PAYLOAD_CACHE_LIMIT: usize = 256;
+
+#[derive(Default)]
+struct ItemPayloadCache {
+    entries: HashMap<i64, ClipItem>,
+    order: VecDeque<i64>,
+}
+
+impl ItemPayloadCache {
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
+    fn remove(&mut self, id: i64) {
+        self.entries.remove(&id);
+        self.order.retain(|cached| *cached != id);
+    }
+
+    fn get(&mut self, id: i64) -> Option<ClipItem> {
+        let item = self.entries.get(&id).cloned()?;
+        self.touch(id);
+        Some(item)
+    }
+
+    fn put(&mut self, item: ClipItem) {
+        let id = item.id;
+        if id <= 0 {
+            return;
+        }
+        self.entries.insert(id, item);
+        self.touch(id);
+        while self.order.len() > ITEM_PAYLOAD_CACHE_LIMIT {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
+    }
+
+    fn touch(&mut self, id: i64) {
+        self.order.retain(|cached| *cached != id);
+        self.order.push_back(id);
+    }
 }
 
 #[derive(Clone)]
@@ -432,9 +555,22 @@ struct VvPopupEntry {
     item: ClipItem,
 }
 
+#[derive(Clone)]
+struct PageLoadResult {
+    tab: usize,
+    request_seq: u64,
+    query: ItemsQuery,
+    reset: bool,
+    items: Vec<ClipItem>,
+    next_cursor: Option<ItemsCursor>,
+    has_more: bool,
+    error: Option<String>,
+}
+
 static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
 static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
+static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
 
 fn vv_hook_state() -> &'static Mutex<VvHookState> {
     VV_HOOK_STATE.get_or_init(|| Mutex::new(VvHookState::default()))
@@ -444,9 +580,116 @@ fn vv_hook_handle() -> &'static Mutex<isize> {
     VV_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
 
+fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
+    PAGE_LOAD_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn vv_popup_menu_active() -> bool {
+    vv_hook_state()
+        .lock()
+        .ok()
+        .map(|guard| {
+            guard.popup_menu_active
+                || guard
+                    .popup_menu_grace_until
+                    .map(|until| until > Instant::now())
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false)
+}
+
+fn vv_set_popup_menu_active(active: bool) {
+    if let Ok(mut guard) = vv_hook_state().lock() {
+        guard.popup_menu_active = active;
+        guard.popup_menu_grace_until = if active {
+            None
+        } else {
+            Some(Instant::now() + std::time::Duration::from_millis(VV_POPUP_MENU_GRACE_MS))
+        };
+    }
+}
+
 unsafe fn vv_popup_row_rect(row: usize) -> RECT {
     let top = VV_POPUP_HEADER_H + 10 + row as i32 * VV_POPUP_ROW_H;
     RECT { left: 12, top, right: VV_POPUP_W - 12, bottom: top + VV_POPUP_ROW_H - 2 }
+}
+
+unsafe fn vv_popup_group_rect() -> RECT {
+    RECT {
+        left: VV_POPUP_W - 150,
+        top: 10,
+        right: VV_POPUP_W - 14,
+        bottom: 34,
+    }
+}
+
+fn vv_popup_resolved_group_id(state: &AppState, group_id: i64) -> i64 {
+    if group_id > 0 && state.groups.iter().any(|g| g.id == group_id) {
+        group_id
+    } else {
+        0
+    }
+}
+
+fn vv_popup_group_name(state: &AppState) -> String {
+    group_name_for_display(&state.groups, state.vv_popup_group_id, "全部记录")
+}
+
+fn vv_popup_rebuild_items(state: &mut AppState) {
+    let group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
+    state.vv_popup_group_id = group_id;
+    let source_tab = normalize_source_tab(state.settings.vv_source_tab);
+    state.vv_popup_items = db_load_vv_popup_items(source_tab as i64, group_id, VV_POPUP_MAX_ITEMS)
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| VvPopupEntry {
+            index: i + 1,
+            item,
+        })
+        .collect();
+}
+
+unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> {
+    let menu = CreatePopupMenu();
+    if menu.is_null() {
+        return None;
+    }
+    apply_theme_to_menu(menu as _);
+    let current_group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
+    let all_flags = if current_group_id == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
+    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide("全部记录").as_ptr());
+    if !state.groups.is_empty() {
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        for (idx, g) in state.groups.iter().enumerate() {
+            let flags = if current_group_id == g.id { MF_STRING | MF_CHECKED } else { MF_STRING };
+            AppendMenuW(menu, flags, IDM_GROUP_FILTER_BASE + idx, to_wide(&g.name).as_ptr());
+        }
+    }
+    let rect = vv_popup_group_rect();
+    let mut pt = POINT {
+        x: rect.left,
+        y: rect.bottom + 4,
+    };
+    ClientToScreen(hwnd, &mut pt);
+    vv_set_popup_menu_active(true);
+    let cmd = TrackPopupMenu(
+        menu,
+        TPM_RIGHTBUTTON | TPM_TOPALIGN | TPM_LEFTALIGN | TPM_RETURNCMD,
+        pt.x,
+        pt.y,
+        0,
+        hwnd,
+        null(),
+    ) as usize;
+    vv_set_popup_menu_active(false);
+    DestroyMenu(menu);
+    if cmd == IDM_GROUP_FILTER_ALL {
+        Some(0)
+    } else if (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&cmd) {
+        state.groups.get(cmd - IDM_GROUP_FILTER_BASE).map(|g| g.id)
+    } else {
+        None
+    }
 }
 
 unsafe fn ensure_vv_popup_class() {
@@ -564,6 +807,24 @@ unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RE
     })
 }
 
+unsafe fn vv_accessible_caret_anchor(
+    focus_hwnd: HWND,
+    popup_height: i32,
+    work_area: &RECT,
+) -> Option<VvOverlayAnchor> {
+    let rc = caret_accessible_rect(focus_hwnd)?;
+    if !vv_rect_has_area(&rc) {
+        return None;
+    }
+    let (edge_y, align_bottom) =
+        vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
+    Some(VvOverlayAnchor {
+        left: rc.left,
+        edge_y,
+        align_bottom,
+    })
+}
+
 unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
     if focus_hwnd.is_null() || IsWindow(focus_hwnd) == 0 {
         return None;
@@ -647,14 +908,18 @@ unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
     if focus_hwnd.is_null() {
         return false;
     }
-    let mut wa: RECT = zeroed();
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as _, 0);
+    let mut wa = nearest_monitor_work_rect_for_window(focus_hwnd);
     let height = vv_popup_height(state.vv_popup_items.len());
     let anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
+        .or_else(|| vv_accessible_caret_anchor(focus_hwnd, height, &wa))
         .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa));
     let Some(anchor) = anchor else {
         return false;
     };
+    wa = nearest_monitor_work_rect_for_point(POINT {
+        x: anchor.left,
+        y: anchor.edge_y,
+    });
     let mut x = anchor.left;
     let mut y = if anchor.align_bottom {
         anchor.edge_y - height
@@ -690,6 +955,8 @@ unsafe fn vv_popup_sync_hook_state(visible: bool, target: HWND) {
         guard.popup_active = visible;
         guard.popup_target = if visible { target as isize } else { 0 };
         if !visible {
+            guard.popup_menu_active = false;
+            guard.popup_menu_grace_until = None;
             guard.last_was_v = false;
             guard.last_v_target = 0;
             guard.last_v_at = None;
@@ -708,6 +975,7 @@ unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
     state.vv_popup_pending_retries = 0;
     state.vv_popup_target = null_mut();
     state.vv_popup_replaces_ime = false;
+    state.vv_popup_group_id = 0;
     state.vv_popup_items.clear();
     vv_popup_sync_hook_state(false, null_mut());
     let popup = current_vv_popup_hwnd();
@@ -717,14 +985,8 @@ unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
 }
 
 unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool {
-    state.vv_popup_items = state.records.iter().take(VV_POPUP_MAX_ITEMS).cloned().enumerate().map(|(i, item)| VvPopupEntry {
-        index: i + 1,
-        item,
-    }).collect();
-    if state.vv_popup_items.is_empty() {
-        vv_popup_hide(hwnd, state);
-        return false;
-    }
+    state.vv_popup_group_id = vv_popup_resolved_group_id(state, state.settings.vv_group_id);
+    vv_popup_rebuild_items(state);
     state.vv_popup_target = target;
     state.vv_popup_pending_retries = 0;
     state.vv_popup_visible = true;
@@ -783,9 +1045,17 @@ unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lpara
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
     let main_hwnd = hook.main_hwnd as HWND;
+    let menu_active = hook.popup_menu_active
+        || hook
+            .popup_menu_grace_until
+            .map(|until| until > Instant::now())
+            .unwrap_or(false);
 
     let fg = GetForegroundWindow();
     if vv_target_is_ignored(fg, main_hwnd) {
+        if hook.popup_active && menu_active {
+            return CallNextHookEx(null_mut(), code, wparam, lparam);
+        }
         hook.last_was_v = false;
         hook.last_v_target = 0;
         hook.last_v_at = None;
@@ -803,6 +1073,9 @@ unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lpara
         || (GetAsyncKeyState(VK_RWIN as i32) as u16 & 0x8000) != 0;
 
     if hook.popup_active {
+        if menu_active {
+            return CallNextHookEx(null_mut(), code, wparam, lparam);
+        }
         if fg as isize != hook.popup_target {
             hook.popup_active = false;
             hook.popup_target = 0;
@@ -889,6 +1162,8 @@ unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
             hook_state.last_v_at = None;
             hook_state.popup_active = false;
             hook_state.popup_target = 0;
+            hook_state.popup_menu_active = false;
+            hook_state.popup_menu_grace_until = None;
         }
     }
     let Ok(mut handle) = vv_hook_handle().lock() else {
@@ -927,25 +1202,68 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
                 DeleteObject(bg as _);
                 draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 12);
 
-                let title_rc = RECT { left: 14, top: 10, right: rc.right - 14, bottom: 30 };
+                let title_rc = RECT { left: 14, top: 10, right: 150, bottom: 30 };
                 draw_text_ex(hdc as _, "VV 模式", &title_rc, th.text, 13, true, false, "Segoe UI Variable Display");
-                let sub_rc = RECT { left: 14, top: 28, right: rc.right - 14, bottom: 44 };
+                let group_rc = vv_popup_group_rect();
+                draw_round_fill(hdc as _, &group_rc, th.bg, 10);
+                draw_round_rect(hdc as _, &group_rc, th.bg, th.stroke, 10);
+                let mut group_text_rc = group_rc;
+                group_text_rc.left += 10;
+                group_text_rc.right -= 20;
+                draw_text_ex(
+                    hdc as _,
+                    &vv_popup_group_name(state),
+                    &group_text_rc,
+                    th.text,
+                    11,
+                    false,
+                    true,
+                    "Segoe UI Variable Text",
+                );
+                let arrow_rc = RECT {
+                    left: group_rc.right - 18,
+                    top: group_rc.top,
+                    right: group_rc.right - 4,
+                    bottom: group_rc.bottom,
+                };
+                draw_text_ex(hdc as _, "v", &arrow_rc, th.text_muted, 11, true, true, "Segoe UI Variable Text");
+
+                let sub_rc = RECT { left: 14, top: 34, right: rc.right - 14, bottom: 52 };
                 draw_text_ex(hdc as _, "输入 1-9 直接粘贴，Esc 取消", &sub_rc, th.text_muted, 11, false, false, "Segoe UI Variable Text");
 
-                for (row, entry) in state.vv_popup_items.iter().enumerate() {
-                    let row_rc = vv_popup_row_rect(row);
-                    let bubble = RECT { left: row_rc.left, top: row_rc.top + 4, right: row_rc.left + 24, bottom: row_rc.top + 24 };
-                    draw_round_fill(hdc as _, &bubble, th.accent, 8);
-                    draw_text_ex(hdc as _, &entry.index.to_string(), &bubble, rgb(255, 255, 255), 11, true, true, "Segoe UI Variable Text");
-
-                    let mut text_rc = row_rc;
-                    text_rc.left += 34;
-                    let label = if entry.item.kind == ClipKind::Image {
-                        format_created_at_local(&entry.item.created_at, &entry.item.preview)
-                    } else {
-                        entry.item.preview.clone()
+                if state.vv_popup_items.is_empty() {
+                    let empty_rc = RECT {
+                        left: 16,
+                        top: VV_POPUP_HEADER_H + 16,
+                        right: rc.right - 16,
+                        bottom: VV_POPUP_HEADER_H + 48,
                     };
-                    draw_text_ex(hdc as _, &label, &text_rc, th.text, 12, false, false, "Segoe UI Variable Text");
+                    draw_text_ex(
+                        hdc as _,
+                        "当前分组暂无记录",
+                        &empty_rc,
+                        th.text_muted,
+                        12,
+                        true,
+                        false,
+                        "Segoe UI Variable Text",
+                    );
+                } else {
+                    for (row, entry) in state.vv_popup_items.iter().enumerate() {
+                        let row_rc = vv_popup_row_rect(row);
+                        let bubble = RECT { left: row_rc.left, top: row_rc.top + 4, right: row_rc.left + 24, bottom: row_rc.top + 24 };
+                        draw_round_fill(hdc as _, &bubble, th.accent, 8);
+                        draw_text_ex(hdc as _, &entry.index.to_string(), &bubble, rgb(255, 255, 255), 11, true, true, "Segoe UI Variable Text");
+
+                        let mut text_rc = row_rc;
+                        text_rc.left += 34;
+                        let label = if entry.item.kind == ClipKind::Image {
+                            format_created_at_local(&entry.item.created_at, &entry.item.preview)
+                        } else {
+                            entry.item.preview.clone()
+                        };
+                        draw_text_ex(hdc as _, &label, &text_rc, th.text, 12, false, false, "Segoe UI Variable Text");
+                    }
                 }
             }
             EndPaint(hwnd, &ps);
@@ -957,8 +1275,21 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
             if ptr.is_null() {
                 return 0;
             }
-            let state = &*ptr;
+            let state = &mut *ptr;
+            let x = get_x_lparam(lparam);
             let y = get_y_lparam(lparam);
+            if pt_in_rect(x, y, &vv_popup_group_rect()) {
+                if let Some(group_id) = vv_popup_show_group_menu(hwnd, state) {
+                    state.vv_popup_group_id = vv_popup_resolved_group_id(state, group_id);
+                    vv_popup_rebuild_items(state);
+                    let _ = force_foreground_window(state.vv_popup_target);
+                    vv_popup_sync_hook_state(true, state.vv_popup_target);
+                    vv_popup_move_near_target(state, hwnd);
+                    InvalidateRect(hwnd, null(), 1);
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                }
+                return 0;
+            }
             for row in 0..state.vv_popup_items.len() {
                 let row_rc = vv_popup_row_rect(row);
                 if y >= row_rc.top && y < row_rc.bottom {
@@ -1150,6 +1481,7 @@ impl Icons {
 }
 
 pub(crate) struct AppState {
+    pub(crate) hwnd: HWND,
     pub(crate) search_hwnd: HWND,
     pub(crate) theme: Theme,
     pub(crate) icons: Icons,
@@ -1174,11 +1506,14 @@ pub(crate) struct AppState {
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
     pub(crate) hover_to_top: bool,
     pub(crate) down_to_top: bool,
+    tab_loads: [TabLoadState; 2],
+    payload_cache: ItemPayloadCache,
     pub(crate) vv_popup_visible: bool,
     pub(crate) vv_popup_pending_target: HWND,
     pub(crate) vv_popup_pending_retries: u8,
     pub(crate) vv_popup_target: HWND,
     pub(crate) vv_popup_replaces_ime: bool,
+    pub(crate) vv_popup_group_id: i64,
     vv_popup_items: Vec<VvPopupEntry>,
     pub(crate) paste_return_to_main: bool,
     pub(crate) paste_target_override: HWND,
@@ -1187,6 +1522,10 @@ pub(crate) struct AppState {
     pub(crate) edge_hidden_side: i32,
     pub(crate) edge_restore_x: i32,
     pub(crate) edge_restore_y: i32,
+    pub(crate) edge_docked_left: i32,
+    pub(crate) edge_docked_top: i32,
+    pub(crate) edge_docked_right: i32,
+    pub(crate) edge_docked_bottom: i32,
 }
 
 impl Deref for AppState {
@@ -1205,8 +1544,9 @@ impl DerefMut for AppState {
 
 
 impl AppState {
-    fn new(_hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
-        let mut s = Self {
+    fn new(hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
+        Self {
+            hwnd,
             search_hwnd,
             theme: Theme::default(),
             icons,
@@ -1231,11 +1571,14 @@ impl AppState {
             scroll_fade_timer: false,
             hover_to_top: false,
             down_to_top: false,
+            tab_loads: [TabLoadState::default(), TabLoadState::default()],
+            payload_cache: ItemPayloadCache::default(),
             vv_popup_visible: false,
             vv_popup_pending_target: null_mut(),
             vv_popup_pending_retries: 0,
             vv_popup_target: null_mut(),
             vv_popup_replaces_ime: false,
+            vv_popup_group_id: 0,
             vv_popup_items: Vec::new(),
             paste_return_to_main: false,
             paste_target_override: null_mut(),
@@ -1244,25 +1587,36 @@ impl AppState {
             edge_hidden_side: EDGE_AUTO_HIDE_NONE,
             edge_restore_x: 0,
             edge_restore_y: 0,
-        };
-        s.refilter();
-        s
+            edge_docked_left: 0,
+            edge_docked_top: 0,
+            edge_docked_right: 0,
+            edge_docked_bottom: 0,
+        }
+    }
+
+    fn items_for_tab(&self, tab: usize) -> &Vec<ClipItem> {
+        if tab == 0 { &self.records } else { &self.phrases }
+    }
+
+    fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {
+        if tab == 0 { &mut self.records } else { &mut self.phrases }
     }
 
     fn active_items(&self) -> &Vec<ClipItem> {
-        if self.tab_index == 0 {
-            &self.records
-        } else {
-            &self.phrases
-        }
+        self.items_for_tab(self.tab_index)
     }
 
-    fn active_items_mut(&mut self) -> &mut Vec<ClipItem> {
-        if self.tab_index == 0 {
-            &mut self.records
-        } else {
-            &mut self.phrases
-        }
+    fn load_state_for_tab(&self, tab: usize) -> &TabLoadState {
+        &self.tab_loads[tab.min(self.tab_loads.len() - 1)]
+    }
+
+    fn load_state_for_tab_mut(&mut self, tab: usize) -> &mut TabLoadState {
+        let idx = tab.min(self.tab_loads.len() - 1);
+        &mut self.tab_loads[idx]
+    }
+
+    fn active_load_state(&self) -> &TabLoadState {
+        self.load_state_for_tab(self.tab_index)
     }
 
     fn current_item(&self) -> Option<&ClipItem> {
@@ -1274,24 +1628,159 @@ impl AppState {
         self.active_items().get(src_idx)
     }
 
-    fn current_item_mut(&mut self) -> Option<&mut ClipItem> {
-        if self.sel_idx < 0 {
-            return None;
-        }
-        let visible_idx = self.sel_idx as usize;
-        let src_idx = *self.filtered_indices.get(visible_idx)?;
-        self.active_items_mut().get_mut(src_idx)
+    fn current_item_owned(&self) -> Option<ClipItem> {
+        self.current_item().cloned()
     }
 
     fn refilter(&mut self) {
-        let grouping_enabled = self.settings.grouping_enabled;
-        let items = if self.list.tab_index == 0 {
-            &self.records
-        } else {
-            &self.phrases
-        };
-        self.list.refilter_with(items, grouping_enabled);
+        self.ensure_tab_query_loaded(self.list.tab_index);
+        let visible_len = self.active_items().len();
+        self.list.apply_visible_len(visible_len);
         self.clamp_scroll();
+        self.maybe_request_more_for_active_tab();
+    }
+
+    fn desired_query_for_tab(&self, tab: usize) -> ItemsQuery {
+        let group_id = if self.settings.grouping_enabled {
+            self.tab_group_filters.get(tab).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        ItemsQuery {
+            category: tab as i64,
+            group_id,
+            search_text: self.search_text.trim().to_string(),
+        }
+    }
+
+    fn invalidate_tab_query(&mut self, tab: usize, clear_items: bool) {
+        if tab >= self.tab_loads.len() {
+            return;
+        }
+        let load = self.load_state_for_tab_mut(tab);
+        load.request_seq = load.request_seq.wrapping_add(1);
+        load.query = None;
+        load.next_cursor = None;
+        load.has_more = true;
+        load.loading = false;
+        load.error = None;
+        if clear_items {
+            self.items_for_tab_mut(tab).clear();
+        }
+    }
+
+    fn invalidate_all_queries(&mut self) {
+        self.invalidate_tab_query(0, true);
+        self.invalidate_tab_query(1, true);
+    }
+
+    fn ensure_tab_query_loaded(&mut self, tab: usize) {
+        let desired = self.desired_query_for_tab(tab);
+        let load = self.load_state_for_tab(tab);
+        if load.query.as_ref() == Some(&desired) {
+            return;
+        }
+        self.request_tab_page(tab, desired, None, true);
+    }
+
+    fn request_tab_page(&mut self, tab: usize, query: ItemsQuery, cursor: Option<ItemsCursor>, reset: bool) {
+        if tab >= self.tab_loads.len() {
+            return;
+        }
+
+        let request_seq = {
+            let load = self.load_state_for_tab_mut(tab);
+            load.request_seq = load.request_seq.wrapping_add(1);
+            load.query = Some(query.clone());
+            load.loading = true;
+            load.error = None;
+            if reset {
+                load.next_cursor = None;
+                load.has_more = true;
+            }
+            load.request_seq
+        };
+
+        if reset {
+            self.items_for_tab_mut(tab).clear();
+            if tab == self.tab_index {
+                self.list.apply_visible_len(0);
+                self.clamp_scroll();
+            }
+        }
+
+        spawn_items_page_load(self.hwnd, tab, request_seq, query, cursor, reset);
+    }
+
+    fn maybe_request_more_for_active_tab(&mut self) {
+        let tab = self.tab_index;
+        let (query, cursor, loading, has_more) = {
+            let load = self.load_state_for_tab(tab);
+            (
+                load.query.clone(),
+                load.next_cursor,
+                load.loading,
+                load.has_more,
+            )
+        };
+        if loading || !has_more {
+            return;
+        }
+        let Some(query) = query else {
+            return;
+        };
+        let loaded = self.active_items().len();
+        if loaded == 0 {
+            return;
+        }
+        let last_visible = ((self.scroll_y + self.list_view_height()) / ROW_H).max(0) as usize
+            + ITEMS_LOAD_AHEAD_ROWS as usize;
+        if last_visible >= loaded {
+            self.request_tab_page(tab, query, cursor, false);
+        }
+    }
+
+    fn apply_page_load_result(&mut self, result: PageLoadResult) -> bool {
+        if result.tab >= self.tab_loads.len() {
+            return false;
+        }
+
+        let should_apply = {
+            let load = self.load_state_for_tab(result.tab);
+            load.request_seq == result.request_seq && load.query.as_ref() == Some(&result.query)
+        };
+        if !should_apply {
+            return false;
+        }
+
+        {
+            let load = self.load_state_for_tab_mut(result.tab);
+            load.loading = false;
+            load.error = result.error.clone();
+            load.next_cursor = result.next_cursor;
+            load.has_more = result.has_more;
+        }
+
+        if result.error.is_none() {
+            let target = self.items_for_tab_mut(result.tab);
+            if result.reset {
+                *target = result.items;
+            } else {
+                for item in result.items {
+                    if !target.iter().any(|loaded| loaded.id == item.id) {
+                        target.push(item);
+                    }
+                }
+            }
+        }
+
+        if result.tab == self.tab_index {
+            self.list.apply_visible_len(self.active_items().len());
+            self.clamp_scroll();
+            self.maybe_request_more_for_active_tab();
+        }
+
+        true
     }
 
     fn clear_selection(&mut self) {
@@ -1310,20 +1799,17 @@ impl AppState {
     }
 
     fn delete_selected_rows(&mut self) {
-        let mut src = self.selected_source_indices();
-        if src.is_empty() {
+        let ids = self.selected_db_ids();
+        if ids.is_empty() {
             self.delete_selected();
             return;
         }
-        src.sort_unstable_by(|a,b| b.cmp(a));
-        for src_idx in src {
-            if src_idx < self.active_items().len() {
-                let iid = self.active_items()[src_idx].id;
-                if iid > 0 { let _ = db_delete_item(iid); }
-                self.active_items_mut().remove(src_idx);
-            }
+        for id in ids {
+            let _ = db_delete_item(id);
+            self.remove_cached_item(id);
         }
         self.clear_selection();
+        self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
     }
 
@@ -1334,18 +1820,77 @@ impl AppState {
             return;
         }
         let make_pinned = src.iter().filter_map(|&i| self.active_items().get(i)).any(|it| !it.pinned);
+        let mut invalidate_ids = Vec::new();
         for src_idx in src {
-            if let Some(it) = self.active_items_mut().get_mut(src_idx) {
-                it.pinned = make_pinned;
-                if it.id > 0 { let _ = db_update_item_pinned(it.id, it.pinned); }
+            if let Some(it) = self.active_items().get(src_idx) {
+                if it.id > 0 {
+                    let _ = db_update_item_pinned(it.id, make_pinned);
+                    invalidate_ids.push(it.id);
+                }
             }
         }
-        self.sort_active_items();
+        for id in invalidate_ids {
+            self.remove_cached_item(id);
+        }
+        self.clear_selection();
+        self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
     }
 
     fn selected_items_owned(&self) -> Vec<ClipItem> {
         self.selected_source_indices().into_iter().filter_map(|i| self.active_items().get(i).cloned()).collect()
+    }
+
+    fn clear_payload_cache(&mut self) {
+        self.payload_cache.clear();
+    }
+
+    fn cache_full_item(&mut self, item: ClipItem) {
+        self.payload_cache.put(item);
+    }
+
+    fn remove_cached_item(&mut self, id: i64) {
+        self.payload_cache.remove(id);
+    }
+
+    fn load_item_full_cached(&mut self, id: i64) -> Option<ClipItem> {
+        if id <= 0 {
+            return None;
+        }
+        if let Some(item) = self.payload_cache.get(id) {
+            return Some(item);
+        }
+        let item = db_load_item_full(id)?;
+        self.payload_cache.put(item.clone());
+        Some(item)
+    }
+
+    fn resolve_item_for_use(&mut self, item: &ClipItem) -> Option<ClipItem> {
+        if item.id <= 0 {
+            return Some(item.clone());
+        }
+        let payload_missing = match item.kind {
+            ClipKind::Text | ClipKind::Phrase => item.text.is_none(),
+            ClipKind::Files => item.file_paths.is_none() && item.text.is_none(),
+            ClipKind::Image => item.image_bytes.is_none() && item.image_path.is_none(),
+        };
+        if payload_missing {
+            self.load_item_full_cached(item.id)
+        } else {
+            Some(item.clone())
+        }
+    }
+
+    fn current_item_for_use(&mut self) -> Option<ClipItem> {
+        let item = self.current_item_owned()?;
+        self.resolve_item_for_use(&item)
+    }
+
+    fn selected_items_for_use(&mut self) -> Vec<ClipItem> {
+        let items = self.selected_items_owned();
+        items.into_iter()
+            .filter_map(|item| self.resolve_item_for_use(&item))
+            .collect()
     }
 
     fn context_selection_count(&self) -> usize {
@@ -1361,18 +1906,13 @@ impl AppState {
         }
     }
 
-    fn sort_active_items(&mut self) {
-        self.active_items_mut().sort_by(|a, b| b.pinned.cmp(&a.pinned));
-    }
-
     fn add_clip_item(&mut self, mut item: ClipItem, signature: String) {
         if self.tab_index == 0 && self.last_signature == signature {
             return;
         }
         self.last_signature = signature;
 
-        let records = &mut self.records;
-        if let Some(first) = records.first() {
+        if let Some(first) = self.records.first() {
             if first.preview == item.preview && first.kind == item.kind {
                 return;
             }
@@ -1382,29 +1922,23 @@ impl AppState {
         if item.created_at.is_empty() {
             item.created_at = now_utc_sqlite();
         }
-        records.insert(0, item);
+        if item.id > 0 {
+            self.cache_full_item(item.clone());
+        }
+        let summary = clip_item_to_summary(&item);
+        let visible_query = self.load_state_for_tab(0).query.clone();
+        if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty()) {
+            self.records.insert(0, summary);
+            if self.tab_index == 0 {
+                self.list.apply_visible_len(self.records.len());
+            }
+        } else {
+            self.invalidate_tab_query(0, self.tab_index == 0);
+        }
         let max_items = self.settings.max_items; // 0 = 无限制；仅限制非置顶条目
         if max_items > 0 {
-            let unpinned_count = records.iter().filter(|r| !r.pinned).count();
-            if unpinned_count > max_items {
-                let mut need_remove = unpinned_count - max_items;
-                let mut to_remove = Vec::new();
-                for rec in records.iter().rev() {
-                    if need_remove == 0 {
-                        break;
-                    }
-                    if !rec.pinned {
-                        to_remove.push(rec.id);
-                        need_remove -= 1;
-                    }
-                }
-                if !to_remove.is_empty() {
-                    for id in &to_remove {
-                        let _ = db_delete_item(*id);
-                    }
-                    records.retain(|r| !to_remove.contains(&r.id));
-                }
-            }
+            db_prune_items(max_items);
+            self.invalidate_tab_query(0, self.tab_index == 0);
         }
         if self.tab_index == 0 {
             self.sel_idx = 0;
@@ -1474,31 +2008,26 @@ impl AppState {
         if self.sel_idx < 0 {
             return;
         }
-        let visible_idx = self.sel_idx as usize;
-        if let Some(src_idx) = self.filtered_indices.get(visible_idx).copied() {
-            if src_idx < self.active_items().len() {
-                let iid = self.active_items()[src_idx].id;
-                if iid > 0 {
-                    let _ = db_delete_item(iid);
-                }
-                self.active_items_mut().remove(src_idx);
-                self.refilter();
-                if self.sel_idx >= self.filtered_indices.len() as i32 {
-                    self.sel_idx = self.filtered_indices.len() as i32 - 1;
-                }
+        if let Some(item) = self.current_item_owned() {
+            if item.id > 0 {
+                let _ = db_delete_item(item.id);
+                self.remove_cached_item(item.id);
             }
+            self.clear_selection();
+            self.invalidate_tab_query(self.tab_index, true);
+            self.refilter();
         }
     }
 
     fn toggle_pin_selected(&mut self) {
-        if let Some(it) = self.current_item_mut() {
-            it.pinned = !it.pinned;
+        if let Some(it) = self.current_item_owned() {
             if it.id > 0 {
-                let _ = db_update_item_pinned(it.id, it.pinned);
+                let _ = db_update_item_pinned(it.id, !it.pinned);
+                self.remove_cached_item(it.id);
             }
+            self.invalidate_tab_query(self.tab_index, true);
+            self.refilter();
         }
-        self.sort_active_items();
-        self.refilter();
     }
 
     fn selected_db_ids(&self) -> Vec<i64> {
@@ -1514,12 +2043,43 @@ fn current_exe_path() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
+fn local_app_data_dir() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).map(|p| p.join("ZSClip").join("data"))
+}
+
+fn dir_is_writable(dir: &Path) -> bool {
+    if fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".zsclip_write_test");
+    match fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn data_dir() -> PathBuf {
-    let dir = current_exe_path()
-        .and_then(|p| p.parent().map(|d| d.join("data")))
-        .unwrap_or_else(|| PathBuf::from("data"));
-    let _ = fs::create_dir_all(&dir);
-    dir
+    static DATA_DIR_CACHE: OnceLock<PathBuf> = OnceLock::new();
+    DATA_DIR_CACHE
+        .get_or_init(|| {
+            if let Some(exe_dir) = current_exe_path().and_then(|p| p.parent().map(|d| d.join("data"))) {
+                if dir_is_writable(&exe_dir) {
+                    return exe_dir;
+                }
+            }
+            let fallback = local_app_data_dir().unwrap_or_else(|| PathBuf::from("data"));
+            let _ = fs::create_dir_all(&fallback);
+            fallback
+        })
+        .clone()
 }
 
 pub(crate) fn db_file() -> PathBuf {
@@ -1648,31 +2208,209 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
     }
 }
 
-fn db_load_items(category: i64) -> Vec<ClipItem> {
+fn row_to_clip_item_summary(row: DbItem) -> ClipItem {
+    ClipItem {
+        id: row.id,
+        kind: match row.kind.as_str() {
+            "image" => ClipKind::Image,
+            "phrase" => ClipKind::Phrase,
+            "files" => ClipKind::Files,
+            _ => ClipKind::Text,
+        },
+        preview: row.preview,
+        text: None,
+        file_paths: None,
+        image_bytes: None,
+        image_path: row.image_path,
+        image_width: row.image_width.max(0) as usize,
+        image_height: row.image_height.max(0) as usize,
+        pinned: row.pinned == 1,
+        group_id: row.group_id,
+        created_at: row.created_at,
+    }
+}
+
+fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
+    ClipItem {
+        id: item.id,
+        kind: item.kind,
+        preview: item.preview.clone(),
+        text: None,
+        file_paths: None,
+        image_bytes: None,
+        image_path: item.image_path.clone(),
+        image_width: item.image_width,
+        image_height: item.image_height,
+        pinned: item.pinned,
+        group_id: item.group_id,
+        created_at: item.created_at.clone(),
+    }
+}
+
+fn current_local_day_value() -> i64 {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + local_offset_secs();
+    let (y, m, d, _, _, _) = unix_secs_to_parts(now_secs);
+    gregorian_to_days(y, m, d)
+}
+
+fn db_load_items_page(
+    query: &ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    limit: usize,
+) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
+    let (search_terms, time_filter) = parse_search_query(query.search_text.trim());
     with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, kind, preview, text_data, file_paths, image_path, image_width, image_height, pinned, group_id, \
+        let mut sql = String::from(
+            "SELECT id, kind, preview, image_path, image_width, image_height, pinned, group_id, \
              COALESCE(created_at, '') as created_at \
-             FROM items WHERE category=? ORDER BY pinned DESC, id DESC"
-        )?;
-        let rows = stmt.query_map(params![category], |r| {
+             FROM items WHERE category=?",
+        );
+        let mut bind_values = vec![SqlValue::from(query.category)];
+
+        if query.group_id > 0 {
+            sql.push_str(" AND group_id=?");
+            bind_values.push(SqlValue::from(query.group_id));
+        }
+
+        for term in search_terms {
+            let like = format!("%{}%", term);
+            sql.push_str(
+                " AND (LOWER(preview) LIKE ? \
+                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
+            );
+            bind_values.push(SqlValue::from(like.clone()));
+            bind_values.push(SqlValue::from(like));
+        }
+
+        match time_filter {
+            Some(SearchTimeFilter::ExactDay(day)) => {
+                sql.push_str(" AND date(created_at, 'localtime') = ?");
+                bind_values.push(SqlValue::from(days_to_sqlite_date(day)));
+            }
+            Some(SearchTimeFilter::RecentDays(days)) => {
+                let end_day = current_local_day_value();
+                let start_day = end_day - (days.max(1) - 1);
+                sql.push_str(" AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?");
+                bind_values.push(SqlValue::from(days_to_sqlite_date(start_day)));
+                bind_values.push(SqlValue::from(days_to_sqlite_date(end_day)));
+            }
+            None => {}
+        }
+
+        if let Some(cursor) = cursor {
+            let pinned = if cursor.pinned { 1_i64 } else { 0_i64 };
+            sql.push_str(" AND (pinned < ? OR (pinned = ? AND id < ?))");
+            bind_values.push(SqlValue::from(pinned));
+            bind_values.push(SqlValue::from(pinned));
+            bind_values.push(SqlValue::from(cursor.id));
+        }
+
+        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
+        bind_values.push(SqlValue::from(limit.max(1) as i64 + 1));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(bind_values.iter()), |r| {
             Ok(DbItem {
                 id: r.get(0)?,
                 kind: r.get(1)?,
                 preview: r.get(2)?,
-                text: r.get(3)?,
-                file_paths: r.get(4)?,
-                image_path: r.get(5)?,
+                text: None,
+                file_paths: None,
+                image_path: r.get(3)?,
                 image_bytes: None,
-                image_width: r.get(6)?,
-                image_height: r.get(7)?,
-                pinned: r.get(8)?,
-                group_id: r.get(9)?,
-                created_at: r.get(10)?,
+                image_width: r.get(4)?,
+                image_height: r.get(5)?,
+                pinned: r.get(6)?,
+                group_id: r.get(7)?,
+                created_at: r.get(8)?,
             })
         })?;
-        Ok(rows.filter_map(|r| r.ok().map(row_to_clip_item)).collect())
-    }).unwrap_or_default()
+
+        let mut items: Vec<ClipItem> = rows
+            .filter_map(|row| row.ok().map(row_to_clip_item_summary))
+            .collect();
+        let has_more = items.len() > limit.max(1);
+        if has_more {
+            items.truncate(limit.max(1));
+        }
+        let next_cursor = items.last().map(|item| ItemsCursor {
+            pinned: item.pinned,
+            id: item.id,
+        });
+        Ok((items, next_cursor, has_more))
+    })
+}
+
+fn db_load_vv_popup_items(category: i64, group_id: i64, limit: usize) -> Vec<ClipItem> {
+    let query = ItemsQuery {
+        category,
+        group_id,
+        search_text: String::new(),
+    };
+    db_load_items_page(&query, None, limit)
+        .map(|(items, _, _)| items)
+        .unwrap_or_default()
+}
+
+fn spawn_items_page_load(
+    hwnd: HWND,
+    tab: usize,
+    request_seq: u64,
+    query: ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    reset: bool,
+) {
+    let hwnd_value = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = match db_load_items_page(&query, cursor, ITEMS_PAGE_SIZE) {
+            Ok((items, next_cursor, has_more)) => PageLoadResult {
+                tab,
+                request_seq,
+                query,
+                reset,
+                items,
+                next_cursor,
+                has_more,
+                error: None,
+            },
+            Err(err) => PageLoadResult {
+                tab,
+                request_seq,
+                query,
+                reset,
+                items: Vec::new(),
+                next_cursor: cursor,
+                has_more: false,
+                error: Some(err.to_string()),
+            },
+        };
+
+        if let Ok(mut queue) = page_load_results().lock() {
+            queue.push_back(result);
+        }
+
+        unsafe {
+            if hwnd_value != 0 {
+                let _ = PostMessageW(hwnd_value as HWND, WM_ITEMS_PAGE_READY, 0, 0);
+            }
+        }
+    });
+}
+
+unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
+    let mut changed = false;
+    if let Ok(mut queue) = page_load_results().lock() {
+        while let Some(result) = queue.pop_front() {
+            changed |= state.apply_page_load_result(result);
+        }
+    }
+    if changed {
+        InvalidateRect(hwnd, null(), 1);
+    }
 }
 
 /// 按需加载完整数据（粘贴/复制时调用）
@@ -1914,6 +2652,13 @@ struct SettingsWndState {
     chk_qs: HWND,
     cb_engine: HWND,
     ed_tpl: HWND,
+    cb_vv_source: HWND,
+    cb_vv_group: HWND,
+    vv_source_selected: usize,
+    vv_group_selected: i64,
+    group_view_tab: usize,
+    btn_group_view_records: HWND,
+    btn_group_view_phrases: HWND,
     chk_ai: HWND,
     chk_mm: HWND,
     chk_cloud_enable: HWND,
@@ -1953,11 +2698,91 @@ unsafe fn settings_group_current_filter_text(st: &SettingsWndState) -> String {
     let pst = get_state_ptr(st.parent_hwnd);
     if pst.is_null() { return "全部记录".to_string(); }
     let app = &*pst;
-    let gid = app.current_group_filter;
+    let view_tab = normalize_source_tab(st.group_view_tab);
+    let gid = app.tab_group_filters.get(view_tab).copied().unwrap_or(0);
     if gid == 0 {
-        return if app.tab_index == 0 { "全部记录".to_string() } else { "全部短语".to_string() };
+        return if view_tab == 0 { "全部记录".to_string() } else { "全部短语".to_string() };
     }
     app.groups.iter().find(|g| g.id == gid).map(|g| g.name.clone()).unwrap_or_else(|| format!("分组 #{}", gid))
+}
+
+unsafe fn settings_sync_vv_source_display(st: &mut SettingsWndState) {
+    st.vv_source_selected = normalize_source_tab(st.vv_source_selected);
+    if !st.cb_vv_source.is_null() {
+        settings_set_text(st.cb_vv_source, source_tab_label(st.vv_source_selected));
+    }
+}
+
+unsafe fn settings_sync_vv_group_display(st: &mut SettingsWndState) {
+    if st.vv_group_selected > 0 && !st.groups_cache.iter().any(|g| g.id == st.vv_group_selected) {
+        st.vv_group_selected = 0;
+    }
+    if !st.cb_vv_group.is_null() {
+        settings_set_text(st.cb_vv_group, &group_name_for_display(&st.groups_cache, st.vv_group_selected, "全部记录"));
+    }
+}
+
+unsafe fn settings_sync_group_view_tabs(st: &SettingsWndState) {
+    if !st.btn_group_view_records.is_null() {
+        InvalidateRect(st.btn_group_view_records, null(), 1);
+    }
+    if !st.btn_group_view_phrases.is_null() {
+        InvalidateRect(st.btn_group_view_phrases, null(), 1);
+    }
+}
+
+unsafe fn settings_sync_group_overview(st: &mut SettingsWndState) {
+    st.group_view_tab = normalize_source_tab(st.group_view_tab);
+    let text = format!(
+        "当前分组（{}）：{}",
+        source_tab_label(st.group_view_tab),
+        settings_group_current_filter_text(st)
+    );
+    if !st.lb_group_current.is_null() {
+        settings_set_text(st.lb_group_current, &text);
+    }
+    let pst = get_state_ptr(st.parent_hwnd);
+    let gid = if pst.is_null() {
+        0
+    } else {
+        (&*pst)
+            .tab_group_filters
+            .get(st.group_view_tab)
+            .copied()
+            .unwrap_or(0)
+    };
+    settings_groups_refresh_list(st, gid);
+    settings_sync_group_view_tabs(st);
+}
+
+fn settings_vv_source_current(st: &SettingsWndState) -> usize {
+    normalize_source_tab(st.vv_source_selected)
+}
+
+fn settings_group_view_current(st: &SettingsWndState) -> usize {
+    normalize_source_tab(st.group_view_tab)
+}
+
+unsafe fn settings_vv_source_from_app(st: &mut SettingsWndState) {
+    st.vv_source_selected = normalize_source_tab(st.draft.vv_source_tab);
+}
+
+unsafe fn settings_group_view_from_app(st: &mut SettingsWndState) {
+    let pst = get_state_ptr(st.parent_hwnd);
+    st.group_view_tab = if pst.is_null() {
+        0
+    } else {
+        normalize_source_tab((&*pst).tab_index)
+    };
+}
+
+unsafe fn settings_sync_group_page(st: &mut SettingsWndState) {
+    settings_vv_source_from_app(st);
+    settings_sync_vv_source_display(st);
+    st.vv_group_selected = st.draft.vv_group_id;
+    settings_sync_vv_group_display(st);
+    settings_group_view_from_app(st);
+    settings_sync_group_overview(st);
 }
 
 unsafe fn settings_invalidate_page_ctrls(hwnd: HWND, st: &SettingsWndState, page: usize) {
@@ -1988,11 +2813,7 @@ unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
             settings_set_text(st.ed_tpl, &s.search_template);
         }
         SettingsPage::Group => {
-            let text = format!("当前分组：{}", settings_group_current_filter_text(st));
-            settings_set_text(st.lb_group_current, &text);
-            let pst = get_state_ptr(st.parent_hwnd);
-            let gid = if pst.is_null() { 0 } else { (&*pst).current_group_filter };
-            settings_groups_refresh_list(st, gid);
+            settings_sync_group_page(st);
         }
         SettingsPage::Cloud => {
             let s = &st.draft;
@@ -2283,6 +3104,9 @@ unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     // 每次打开设置时，从注册表同步自启状态（避免外部修改不一致）
     app.settings.auto_start = is_autostart_enabled();
     st.draft = app.settings.clone();
+    st.vv_source_selected = normalize_source_tab(st.draft.vv_source_tab);
+    st.vv_group_selected = st.draft.vv_group_id;
+    st.group_view_tab = normalize_source_tab(app.tab_index);
     let s = &st.draft;
     settings_set_text(st.cb_max, settings_dropdown_label_for_max_items(s.max_items));
     settings_set_text(st.ed_dx, &s.show_mouse_dx.to_string());
@@ -2322,6 +3146,12 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     st.draft.search_template = {
         let tpl = get_window_text(st.ed_tpl);
         if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
+    };
+    st.draft.vv_source_tab = settings_vv_source_current(st);
+    st.draft.vv_group_id = if st.vv_group_selected > 0 && st.groups_cache.iter().any(|g| g.id == st.vv_group_selected) {
+        st.vv_group_selected
+    } else {
+        0
     };
     st.draft.cloud_sync_interval = {
         let label = get_window_text(st.cb_cloud_interval);
@@ -2506,6 +3336,7 @@ unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, select_gid: i6
     if sel_idx >= 0 {
         SendMessageW(st.lb_groups, LB_SETCURSEL, sel_idx as WPARAM, 0);
     }
+    settings_sync_vv_group_display(st);
 }
 
 unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(usize, ClipGroup)> {
@@ -3290,7 +4121,7 @@ unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWndState) {
     let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), 130);
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
     let _ = b.label_auto(st, "占位符：{q}=编码后关键字，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗（预留）", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
+    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
     let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(0), sec2.full_w());
@@ -3304,7 +4135,7 @@ unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWndState) {
 unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
     let ui_font = st.ui_font;
     let page = SettingsPage::Group.index();
-    let sec0 = SettingsFormSectionLayout::new(page, 0, 0);
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 104);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
 
     let push = |st: &mut SettingsWndState, hh: HWND| {
@@ -3318,16 +4149,42 @@ unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
     push(st, st.chk_group_enable);
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
-    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(0), sec1.full_w(), 24, ui_font);
+    let lbl_vv_source = settings_create_label(hwnd, "VV 来源：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24, ui_font);
+    push(st, lbl_vv_source);
+    st.cb_vv_source = settings_create_dropdown_btn(hwnd, "复制记录", IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), 180, ui_font);
+    if !st.cb_vv_source.is_null() {
+        settings_page_push_ctrl(st, page, st.cb_vv_source);
+        st.ownerdraw_ctrls.push(st.cb_vv_source);
+    }
+
+    let lbl_vv_group = settings_create_label(hwnd, "VV 默认分组：", sec0.left(), sec0.label_y(2, 24), sec0.label_w, 24, ui_font);
+    push(st, lbl_vv_group);
+    st.cb_vv_group = settings_create_dropdown_btn(hwnd, "全部记录", IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), 220, ui_font);
+    if !st.cb_vv_group.is_null() {
+        settings_page_push_ctrl(st, page, st.cb_vv_group);
+        st.ownerdraw_ctrls.push(st.cb_vv_group);
+    }
+
+    let tab_w = 118;
+    st.btn_group_view_records = settings_create_small_btn(hwnd, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w, ui_font);
+    st.btn_group_view_phrases = settings_create_small_btn(hwnd, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + 10, sec1.row_y(0), tab_w, ui_font);
+    for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
+        if !hh.is_null() {
+            settings_page_push_ctrl(st, page, hh);
+            st.ownerdraw_ctrls.push(hh);
+        }
+    }
+
+    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), 24, ui_font);
     push(st, st.lb_group_current);
 
-    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(1), 220, 22, ui_font);
+    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), 220, 22, ui_font);
     push(st, lbl3);
 
-    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(2), sec1.full_w(), 210, ui_font);
+    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), 170, ui_font);
     if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups); }
 
-    let btn_y = sec1.row_y(2) + 226;
+    let btn_y = sec1.row_y(3) + 186;
     let bw = 90;
     let gap = 10;
     let x0 = sec1.left();
@@ -3396,18 +4253,33 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
         format!("版本：{}", env!("CARGO_PKG_VERSION")),
         "设置界面现在统一使用同一套 section/form 布局。".to_string(),
         "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
-        format!("开源地址：{}", open_source_url_display()),
-        format!("数据目录：{}", data_dir().to_string_lossy()),
-        format!("数据库：{}", db_file().to_string_lossy()),
     ];
     let mut y = sec.row_y(0);
     for line in lines.iter() {
         let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), 24);
         y += h + 10;
     }
-    let btn = b.button(st, "打开开源地址", IDC_SET_OPEN_SOURCE, sec.left(), y + 6, 150);
-    if !btn.is_null() {
-        st.ownerdraw_ctrls.push(btn);
+
+    let (_, label_h) = b.label_auto(st, "开源地址：", sec.left(), y, 72, 24);
+    let link = b.button(
+        st,
+        open_source_url_display(),
+        IDC_SET_OPEN_SOURCE,
+        sec.left() + 64,
+        y - 4,
+        sec.full_w() - 64,
+    );
+    if !link.is_null() {
+        st.ownerdraw_ctrls.push(link);
+    }
+    y += label_h.max(32) + 10;
+
+    for line in [
+        format!("数据目录：{}", data_dir().to_string_lossy()),
+        format!("数据库：{}", db_file().to_string_lossy()),
+    ] {
+        let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), 24);
+        y += h + 10;
     }
     st.ui.mark_built(page);
 }
@@ -3458,8 +4330,63 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
         return;
     }
 
-    let kind = if cid == IDC_SET_MAX || cid == IDC_SET_POSMODE || cid == IDC_SET_CLOUD_INTERVAL || cid == 6102 || cid == 6103 || cid == 7201 {
+    if cid == IDC_SET_OPEN_SOURCE {
+        let text_color = if open_source_url().trim().is_empty() {
+            th.text_muted
+        } else if pressed {
+            rgb(22, 78, 180)
+        } else if hover {
+            rgb(14, 111, 214)
+        } else {
+            rgb(24, 92, 189)
+        };
+        let font = CreateFontW(
+            -14,
+            0,
+            0,
+            0,
+            400,
+            0,
+            1,
+            0,
+            1,
+            0,
+            0,
+            5,
+            0,
+            to_wide("Segoe UI").as_ptr(),
+        ) as *mut core::ffi::c_void;
+        let old_font = if !font.is_null() {
+            SelectObject(hdc, font)
+        } else {
+            null_mut()
+        };
+        SetBkMode(hdc, 1);
+        SetTextColor(hdc, text_color);
+        let mut text_rc = rc;
+        text_rc.left += if pressed { 5 } else { 4 };
+        text_rc.top += if pressed { 1 } else { 0 };
+        let text_w = to_wide(&text);
+        DrawTextW(
+            hdc,
+            text_w.as_ptr(),
+            -1,
+            &mut text_rc,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+        );
+        if !font.is_null() {
+            SelectObject(hdc, old_font);
+            DeleteObject(font as _);
+        }
+        return;
+    }
+
+    let kind = if cid == IDC_SET_MAX || cid == IDC_SET_POSMODE || cid == IDC_SET_CLOUD_INTERVAL || cid == IDC_SET_VV_GROUP || cid == IDC_SET_VV_SOURCE || cid == 6102 || cid == 6103 || cid == 7201 {
         SettingsComponentKind::Dropdown
+    } else if (cid == IDC_SET_GROUP_VIEW_RECORDS && settings_group_view_current(st) == 0)
+        || (cid == IDC_SET_GROUP_VIEW_PHRASES && settings_group_view_current(st) == 1)
+    {
+        SettingsComponentKind::AccentButton
     } else if cid == IDC_SET_SAVE {
         SettingsComponentKind::AccentButton
     } else {
@@ -3514,6 +4441,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 chk_qs: null_mut(),
                 cb_engine: null_mut(),
                 ed_tpl: null_mut(),
+                cb_vv_source: null_mut(),
+                cb_vv_group: null_mut(),
+                vv_source_selected: 0,
+                vv_group_selected: 0,
+                group_view_tab: 0,
+                btn_group_view_records: null_mut(),
+                btn_group_view_phrases: null_mut(),
                 chk_ai: null_mut(),
                 chk_mm: null_mut(),
                 chk_cloud_enable: null_mut(),
@@ -3751,12 +4685,30 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 7201 => {
                     if let Some((_, label, tpl)) = SEARCH_ENGINE_PRESETS.get(idx) {
+                        let old_engine = get_window_text(st.cb_engine);
+                        let old_key = search_engine_key_from_display(&old_engine);
+                        let old_tpl = search_engine_template(old_key).to_string();
+                        let current_tpl = get_window_text(st.ed_tpl);
                         settings_set_text(st.cb_engine, label);
-                        if get_window_text(st.ed_tpl).trim().is_empty() || get_window_text(st.ed_tpl) == search_engine_template(search_engine_key_from_display(&get_window_text(st.cb_engine))) {
+                        if current_tpl.trim().is_empty() || current_tpl == old_tpl {
                             settings_set_text(st.ed_tpl, tpl);
                         }
                         InvalidateRect(st.cb_engine, null(), 1);
                     }
+                }
+                IDC_SET_VV_SOURCE => {
+                    st.vv_source_selected = normalize_source_tab(idx);
+                    settings_sync_vv_source_display(st);
+                    InvalidateRect(st.cb_vv_source, null(), 1);
+                }
+                IDC_SET_VV_GROUP => {
+                    if idx == 0 {
+                        st.vv_group_selected = 0;
+                    } else if let Some(group) = st.groups_cache.get(idx - 1) {
+                        st.vv_group_selected = group.id;
+                    }
+                    settings_sync_vv_group_display(st);
+                    InvalidateRect(st.cb_vv_group, null(), 1);
                 }
                 _ => {}
             }
@@ -3774,7 +4726,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -3850,6 +4802,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         settings_groups_sync_name(st);
                     }
                 }
+                IDC_SET_GROUP_VIEW_RECORDS => {
+                    st.group_view_tab = 0;
+                    settings_sync_group_overview(st);
+                }
+                IDC_SET_GROUP_VIEW_PHRASES => {
+                    st.group_view_tab = 1;
+                    settings_sync_group_overview(st);
+                }
                 IDC_SET_MAX => {
                     if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
                     let mut rc: RECT = zeroed();
@@ -3893,6 +4853,32 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let current = SEARCH_ENGINE_PRESETS.iter().position(|(_,name,_)| *name == get_window_text(st.cb_engine)).unwrap_or(0);
                     let labels: Vec<&str> = SEARCH_ENGINE_PRESETS.iter().map(|(_,name,_)| *name).collect();
                     st.dropdown_popup = show_settings_dropdown_popup(hwnd, 7201, &rc, &labels, current, 260);
+                }
+                IDC_SET_VV_SOURCE => {
+                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_vv_source, &mut rc);
+                    let current = settings_vv_source_current(st);
+                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_VV_SOURCE, &rc, &["复制记录", "常用短语"], current, 200);
+                }
+                IDC_SET_VV_GROUP => {
+                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_vv_group, &mut rc);
+                    let labels_owned: Vec<String> = std::iter::once("全部记录".to_string())
+                        .chain(st.groups_cache.iter().map(|g| g.name.clone()))
+                        .collect();
+                    let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
+                    let current = if st.vv_group_selected == 0 {
+                        0
+                    } else {
+                        st.groups_cache
+                            .iter()
+                            .position(|g| g.id == st.vv_group_selected)
+                            .map(|idx| idx + 1)
+                            .unwrap_or(0)
+                    };
+                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_VV_GROUP, &rc, &labels, current, 260);
                 }
                 7203 => {
                     let key = search_engine_key_from_display(&get_window_text(st.cb_engine));
@@ -4205,9 +5191,16 @@ unsafe fn open_settings_window(hwnd: HWND) {
 
 fn reload_state_from_db(state: &mut AppState) {
     ensure_db();
+    state.clear_payload_cache();
     state.groups = db_load_groups();
-    state.records = db_load_items(0);
-    state.phrases = db_load_items(1);
+    if state.settings.vv_source_tab > 1 {
+        state.settings.vv_source_tab = 0;
+        save_settings(&state.settings);
+    }
+    if state.settings.vv_group_id > 0 && !state.groups.iter().any(|g| g.id == state.settings.vv_group_id) {
+        state.settings.vv_group_id = 0;
+        save_settings(&state.settings);
+    }
     for i in 0..state.tab_group_filters.len() {
         let gid = state.tab_group_filters[i];
         if gid > 0 && !state.groups.iter().any(|g| g.id == gid) {
@@ -4217,6 +5210,9 @@ fn reload_state_from_db(state: &mut AppState) {
     if state.tab_index < state.tab_group_filters.len() {
         state.current_group_filter = state.tab_group_filters[state.tab_index];
     }
+    state.clear_selection();
+    state.scroll_y = 0;
+    state.invalidate_all_queries();
     state.refilter();
 }
 
@@ -4244,6 +5240,7 @@ pub fn run() -> AppResult<()> {
         }
     }
     unsafe {
+        init_dpi_awareness_for_process();
         // 进程级深色模式初始化：让系统菜单、滚动条、控件跟随主题
         init_dark_mode_for_process();
 
@@ -4342,7 +5339,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     if state.vv_popup_visible {
-                        if GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0 {
+                        if !vv_popup_menu_active()
+                            && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
+                        {
                             vv_popup_hide(hwnd, state);
                         }
                     }
@@ -4430,6 +5429,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             handle_mouse_move(hwnd, lparam);
             0
         }
+        WM_MOUSEHOVER => {
+            handle_mouse_hover_main(hwnd, lparam);
+            0
+        }
         WM_MOUSELEAVE => {
             handle_mouse_leave_main(hwnd);
             0
@@ -4483,6 +5486,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 handle_vv_select(hwnd, &mut *ptr, wparam as usize);
+            }
+            0
+        }
+        WM_ITEMS_PAGE_READY => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                apply_ready_page_loads(hwnd, &mut *ptr);
             }
             0
         }
@@ -4642,26 +5652,29 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_TO_PHRASE => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                let items = state.selected_items_owned();
+                let items = state.selected_items_for_use();
                 if items.is_empty() {
-                    if let Some(item) = state.current_item() {
-                        let _ = db_add_phrase_from_item(item);
+                    if let Some(item) = state.current_item_for_use() {
+                        let _ = db_add_phrase_from_item(&item);
                     }
                 } else {
                     for item in &items {
                         let _ = db_add_phrase_from_item(item);
                     }
                 }
-                state.phrases = db_load_items(1);
+                state.invalidate_tab_query(1, state.tab_index == 1);
+                if state.tab_index == 1 {
+                    state.refilter();
+                }
                 InvalidateRect(hwnd, null(), 1);
             }
         }
         IDM_ROW_STICKER => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     if item.kind == ClipKind::Image {
-                        show_image_sticker(item);
+                        show_image_sticker(&item);
                     }
                 }
             }
@@ -4669,9 +5682,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_SAVE_IMAGE => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     if item.kind == ClipKind::Image {
-                        if let Some(path) = save_image_item(item) {
+                        if let Some(path) = save_image_item(&item) {
                             if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
                                 open_path_with_shell(parent);
                             }
@@ -4683,7 +5696,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_OPEN_PATH => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
                         for p in paths { open_path_with_shell(p); }
                     }
@@ -4693,7 +5706,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_OPEN_FOLDER => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
                         for p in paths { open_parent_folder(p); }
                     }
@@ -4703,10 +5716,10 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_COPY_PATH => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                let items = state.selected_items_owned();
+                let items = state.selected_items_for_use();
                 let mut lines = Vec::new();
                 if items.is_empty() {
-                    if let Some(item) = state.current_item() {
+                    if let Some(item) = state.current_item_for_use() {
                         if let Some(paths) = &item.file_paths { lines.extend(paths.clone()); }
                     }
                 } else {
@@ -4722,7 +5735,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_QUICK_SEARCH => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     let text = match item.kind {
                         ClipKind::Text | ClipKind::Phrase => item.text.clone().unwrap_or_else(|| item.preview.clone()),
                         ClipKind::Files => item.file_paths.as_ref().map(|v| v.join(" ")).unwrap_or_else(|| item.preview.clone()),
@@ -4735,8 +5748,8 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_EXPORT_FILE => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
-                    if let Some(path) = materialize_item_as_file(item) {
+                if let Some(item) = state.current_item_for_use() {
+                    if let Some(path) = materialize_item_as_file(&item) {
                         if let Some(parent) = path.parent().and_then(|p| p.to_str()) { open_path_with_shell(parent); }
                     }
                 }
@@ -4748,7 +5761,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_for_use() {
                     if let Some(path) = item.file_paths.as_ref().and_then(|v| v.first()) {
                         launch_mail_merge_window_with_excel(hwnd, Some(path));
                     } else {
@@ -4760,7 +5773,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         IDM_ROW_EDIT => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
-                if let Some(item) = state.current_item() {
+                if let Some(item) = state.current_item_owned() {
                     let item_id = item.id;
                     let title = format!("编辑 — {}", item.preview.chars().take(40).collect::<String>());
                     let saved = show_edit_item_dialog(hwnd, item_id, &title);
@@ -4878,6 +5891,7 @@ unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
         state.scroll_y += SCROLL_STEP;
     }
     state.clamp_scroll();
+    state.maybe_request_more_for_active_tab();
     // 显示滚动条并启动渐隐 timer
     state.scroll_fade_alpha = 255;
     if !state.scroll_fade_timer {
@@ -4890,11 +5904,39 @@ unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
 unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
     let mut tme = TRACKMOUSEEVENT {
         cb_size: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-        dw_flags: TME_LEAVE,
+        dw_flags: TME_LEAVE | TME_HOVER,
         hwnd_track: hwnd,
-        dw_hover_time: 0,
+        dw_hover_time: system_mouse_hover_time_ms(),
     };
     TrackMouseEvent(&mut tme);
+}
+
+unsafe fn system_mouse_hover_time_ms() -> u32 {
+    let mut hover_ms = 0u32;
+    if SystemParametersInfoW(
+        SPI_GETMOUSEHOVERTIME_V,
+        0,
+        &mut hover_ms as *mut _ as _,
+        0,
+    ) != 0
+        && hover_ms > 0
+    {
+        hover_ms
+    } else {
+        400
+    }
+}
+
+unsafe fn hover_preview_blocked_at_point(state: &AppState, x: i32, y: i32) -> bool {
+    if scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect()) {
+        return true;
+    }
+    let Some(item) = hovered_item_clone(state) else {
+        return false;
+    };
+    row_quick_delete_rect(state, state.hover_idx, &item)
+        .map(|rc| pt_in_rect(x, y, &rc))
+        .unwrap_or(false)
 }
 
 unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
@@ -4906,13 +5948,7 @@ unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
         hide_hover_preview();
         return;
     };
-    if let Some(rc) = row_quick_delete_rect(state, state.hover_idx, &item) {
-        if pt_in_rect(x, y, &rc) {
-            hide_hover_preview();
-            return;
-        }
-    }
-    if scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect()) {
+    if hover_preview_blocked_at_point(state, x, y) {
         hide_hover_preview();
         return;
     }
@@ -4922,6 +5958,78 @@ unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
         return;
     }
     show_hover_preview(&item, win_rc.left + x, win_rc.top + y);
+}
+
+unsafe fn handle_mouse_hover_main(hwnd: HWND, lparam: LPARAM) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    let state = &*ptr;
+    refresh_hover_preview(hwnd, state, get_x_lparam(lparam), get_y_lparam(lparam));
+}
+
+fn clear_edge_dock_state(state: &mut AppState) {
+    state.edge_hidden = false;
+    state.edge_hidden_side = EDGE_AUTO_HIDE_NONE;
+    state.edge_docked_left = 0;
+    state.edge_docked_top = 0;
+    state.edge_docked_right = 0;
+    state.edge_docked_bottom = 0;
+}
+
+fn set_edge_docked_rect(state: &mut AppState, rc: &RECT) {
+    state.edge_docked_left = rc.left;
+    state.edge_docked_top = rc.top;
+    state.edge_docked_right = rc.right;
+    state.edge_docked_bottom = rc.bottom;
+}
+
+fn edge_docked_rect(state: &AppState) -> RECT {
+    RECT {
+        left: state.edge_docked_left,
+        top: state.edge_docked_top,
+        right: state.edge_docked_right,
+        bottom: state.edge_docked_bottom,
+    }
+}
+
+fn edge_detect_margin_v() -> i32 {
+    EDGE_AUTO_HIDE_MARGIN.max(12)
+}
+
+fn edge_detect_margin_h() -> i32 {
+    edge_detect_margin_v().max(24)
+}
+
+unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
+    let margin_v = edge_detect_margin_v();
+    let margin_h = edge_detect_margin_h();
+
+    let candidates = [
+        ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT, work, margin_h),
+        ((rc.left - monitor.left).abs(), EDGE_AUTO_HIDE_LEFT, monitor, margin_h),
+        ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, work, margin_h),
+        ((monitor.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, monitor, margin_h),
+        ((rc.top - work.top).abs(), EDGE_AUTO_HIDE_TOP, work, margin_v),
+        ((rc.top - monitor.top).abs(), EDGE_AUTO_HIDE_TOP, monitor, margin_v),
+        ((work.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, work, margin_v),
+        ((monitor.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, monitor, margin_v),
+    ];
+
+    let mut best: Option<(i32, i32, RECT)> = None;
+    for (dist, side, base, limit) in candidates {
+        if dist > limit {
+            continue;
+        }
+        match best {
+            Some((best_dist, _, _)) if best_dist <= dist => {}
+            _ => best = Some((dist, side, base)),
+        }
+    }
+    best.map(|(_, side, base)| (side, base))
 }
 
 unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
@@ -4938,7 +6046,6 @@ unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     state.edge_hidden = false;
-    state.edge_hidden_side = EDGE_AUTO_HIDE_NONE;
 }
 
 unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
@@ -4949,45 +6056,75 @@ unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     let state = &mut *ptr;
     if !state.settings.edge_auto_hide {
         restore_edge_hidden_window(hwnd, state);
+        clear_edge_dock_state(state);
         return;
     }
 
-    let mut rc: RECT = zeroed();
-    if GetWindowRect(hwnd, &mut rc) == 0 {
-        return;
-    }
+    let rc = window_rect_for_dock(hwnd);
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
-    let sw = GetSystemMetrics(SM_CXSCREEN);
-    let sh = GetSystemMetrics(SM_CYSCREEN);
     let width = (rc.right - rc.left).max(1);
     let height = (rc.bottom - rc.top).max(1);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
+    let docked = edge_docked_rect(state);
+
+    if state.edge_hidden_side != EDGE_AUTO_HIDE_NONE {
+        let margin_v = edge_detect_margin_v();
+        let margin_h = edge_detect_margin_h();
+        let still_docked = match state.edge_hidden_side {
+            EDGE_AUTO_HIDE_LEFT => (rc.left - docked.left).abs() <= margin_h || state.edge_hidden,
+            EDGE_AUTO_HIDE_RIGHT => (rc.right - docked.right).abs() <= margin_h || state.edge_hidden,
+            EDGE_AUTO_HIDE_TOP => (rc.top - docked.top).abs() <= margin_v || state.edge_hidden,
+            EDGE_AUTO_HIDE_BOTTOM => (rc.bottom - docked.bottom).abs() <= margin_v || state.edge_hidden,
+            _ => false,
+        };
+        if !still_docked {
+            clear_edge_dock_state(state);
+            return;
+        }
+    } else if let Some((side, base)) = edge_choose_dock_side(hwnd, &rc) {
+        state.edge_hidden_side = side;
+        set_edge_docked_rect(state, &base);
+        state.edge_restore_x = rc.left;
+        state.edge_restore_y = rc.top;
+    } else {
+        return;
+    }
+
+    if !pt_in_rect_screen(&cursor, &RECT {
+        left: monitor.left - 2,
+        top: monitor.top - 2,
+        right: monitor.right + 2,
+        bottom: monitor.bottom + 2,
+    }) {
+        return;
+    }
 
     if state.edge_hidden {
         let hot = match state.edge_hidden_side {
             EDGE_AUTO_HIDE_LEFT => RECT {
-                left: 0,
+                left: docked.left,
                 top: state.edge_restore_y,
-                right: EDGE_AUTO_HIDE_MARGIN,
+                right: docked.left + EDGE_AUTO_HIDE_MARGIN,
                 bottom: state.edge_restore_y + height,
             },
             EDGE_AUTO_HIDE_RIGHT => RECT {
-                left: sw - EDGE_AUTO_HIDE_MARGIN,
+                left: docked.right - EDGE_AUTO_HIDE_MARGIN,
                 top: state.edge_restore_y,
-                right: sw,
+                right: docked.right,
                 bottom: state.edge_restore_y + height,
             },
             EDGE_AUTO_HIDE_TOP => RECT {
                 left: state.edge_restore_x,
-                top: 0,
+                top: docked.top,
                 right: state.edge_restore_x + width,
-                bottom: EDGE_AUTO_HIDE_MARGIN,
+                bottom: docked.top + EDGE_AUTO_HIDE_MARGIN,
             },
             EDGE_AUTO_HIDE_BOTTOM => RECT {
                 left: state.edge_restore_x,
-                top: sh - EDGE_AUTO_HIDE_MARGIN,
+                top: docked.bottom - EDGE_AUTO_HIDE_MARGIN,
                 right: state.edge_restore_x + width,
-                bottom: sh,
+                bottom: docked.bottom,
             },
             _ => rc,
         };
@@ -4998,32 +6135,17 @@ unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
 
-    if GetForegroundWindow() == hwnd || pt_in_rect_screen(&cursor, &rc) {
-        return;
-    }
-
-    let side = if rc.left.abs() <= EDGE_AUTO_HIDE_MARGIN {
-        EDGE_AUTO_HIDE_LEFT
-    } else if (sw - rc.right).abs() <= EDGE_AUTO_HIDE_MARGIN {
-        EDGE_AUTO_HIDE_RIGHT
-    } else if rc.top.abs() <= EDGE_AUTO_HIDE_MARGIN {
-        EDGE_AUTO_HIDE_TOP
-    } else if (sh - rc.bottom).abs() <= EDGE_AUTO_HIDE_MARGIN {
-        EDGE_AUTO_HIDE_BOTTOM
-    } else {
-        EDGE_AUTO_HIDE_NONE
-    };
-    if side == EDGE_AUTO_HIDE_NONE {
+    if GetForegroundWindow() == hwnd || cursor_over_window_tree(hwnd, cursor) {
         return;
     }
 
     state.edge_restore_x = rc.left;
     state.edge_restore_y = rc.top;
-    let (hide_x, hide_y) = match side {
-        EDGE_AUTO_HIDE_LEFT => (EDGE_AUTO_HIDE_PEEK - width, rc.top),
-        EDGE_AUTO_HIDE_RIGHT => (sw - EDGE_AUTO_HIDE_PEEK, rc.top),
-        EDGE_AUTO_HIDE_TOP => (rc.left, EDGE_AUTO_HIDE_PEEK - height),
-        EDGE_AUTO_HIDE_BOTTOM => (rc.left, sh - EDGE_AUTO_HIDE_PEEK),
+    let (hide_x, hide_y) = match state.edge_hidden_side {
+        EDGE_AUTO_HIDE_LEFT => (docked.left + EDGE_AUTO_HIDE_PEEK - width, rc.top),
+        EDGE_AUTO_HIDE_RIGHT => (docked.right - EDGE_AUTO_HIDE_PEEK, rc.top),
+        EDGE_AUTO_HIDE_TOP => (rc.left, docked.top + EDGE_AUTO_HIDE_PEEK - height),
+        EDGE_AUTO_HIDE_BOTTOM => (rc.left, docked.bottom - EDGE_AUTO_HIDE_PEEK),
         _ => (rc.left, rc.top),
     };
     SetWindowPos(
@@ -5036,7 +6158,6 @@ unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     state.edge_hidden = true;
-    state.edge_hidden_side = side;
     hide_hover_preview();
     InvalidateRect(hwnd, null(), 0);
 }
@@ -5111,9 +6232,16 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
 
     let old_hover = state.hover_idx;
     state.hover_idx = if state.hover_to_top { -1 } else { hit_test_row(state, x, y) };
-    refresh_hover_preview(hwnd, state, x, y);
+    let preview_target_changed = old_btn != state.hover_btn
+        || old_hover != state.hover_idx
+        || old_tab != state.hover_tab
+        || old_scroll != state.hover_scroll
+        || old_to_top != state.hover_to_top;
+    if preview_target_changed || hover_preview_blocked_at_point(state, x, y) {
+        hide_hover_preview();
+    }
 
-    if old_btn != state.hover_btn || old_hover != state.hover_idx || old_tab != state.hover_tab || old_scroll != state.hover_scroll || old_to_top != state.hover_to_top {
+    if preview_target_changed {
         InvalidateRect(hwnd, null(), 0);
     }
 }
@@ -5449,7 +6577,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
 
     state.context_row = idx;
     state.ensure_visible(idx);
-    let current_item = state.current_item().cloned();
+    let current_item = state.current_item_for_use();
     let current_kind = current_item.as_ref().map(|it| it.kind).unwrap_or(ClipKind::Text);
     let current_is_dir = current_item.as_ref().map(|it| is_directory_item(it)).unwrap_or(false);
     let current_is_excel = current_item
@@ -5582,9 +6710,17 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
         }
         // Ctrl+F: 搜索
         0x46 if ctrl => {
-            state.search_on = true;
+            state.search_on = !state.search_on;
+            if !state.search_on {
+                state.search_text.clear();
+                SetWindowTextW(state.search_hwnd, to_wide("").as_ptr());
+                state.clear_selection();
+                state.refilter();
+            }
             layout_children(hwnd);
-            SetFocus(state.search_hwnd);
+            if state.search_on {
+                SetFocus(state.search_hwnd);
+            }
             InvalidateRect(hwnd, null(), 1);
         }
         _ => {}
@@ -5725,7 +6861,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
 }
 
 unsafe fn copy_selected_rows_combined(state: &mut AppState) -> bool {
-    let items = state.selected_items_owned();
+    let items = state.selected_items_for_use();
     if items.is_empty() {
         return apply_selected_to_clipboard(state);
     }
@@ -5770,19 +6906,12 @@ unsafe fn copy_selected_rows_combined(state: &mut AppState) -> bool {
 }
 
 unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> bool {
-    let item_id = item_ref.id;
-    let item_kind = item_ref.kind;
-
-    // 对图片类型，image_bytes 在列表中为 None，需按需从 DB 加载完整数据
     let full_item;
-    let item: &ClipItem = if item_kind == ClipKind::Image && item_ref.image_bytes.is_none() {
-        match db_load_item_full(item_id) {
-            Some(fi) => { full_item = fi; &full_item }
-            None => return false,
-        }
+    let item: &ClipItem = if let Some(resolved) = state.resolve_item_for_use(item_ref) {
+        full_item = resolved;
+        &full_item
     } else {
-        // text/phrase/files 的 text 字段已在初始加载中包含
-        item_ref
+        return false;
     };
 
     let ok = match item.kind {
@@ -5792,7 +6921,7 @@ unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> 
                 Err(_) => return false,
             };
             if let Some(text) = &item.text {
-                clipboard.set_text(text.clone()).is_ok()
+                clipboard.set_text(maybe_ai_clean_text(state, text)).is_ok()
             } else {
                 false
             }
@@ -5822,7 +6951,7 @@ unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> 
                     Ok(c) => c,
                     Err(_) => return false,
                 };
-                clipboard.set_text(text.clone()).is_ok()
+                clipboard.set_text(maybe_ai_clean_text(state, text)).is_ok()
             } else {
                 false
             }
@@ -5865,6 +6994,40 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
         return;
     }
     paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
+}
+
+fn ai_clean_text(input: &str) -> String {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut output = Vec::new();
+    let mut blank = 0usize;
+    for line in normalized.lines() {
+        let trimmed = line.trim_end().to_string();
+        if trimmed.trim().is_empty() {
+            blank += 1;
+            if blank <= 2 {
+                output.push(String::new());
+            }
+        } else {
+            blank = 0;
+            output.push(trimmed);
+        }
+    }
+    output.join("\n").trim().to_string()
+}
+
+unsafe fn maybe_ai_clean_text(state: &AppState, input: &str) -> String {
+    if !state.settings.ai_clean_enabled {
+        return input.to_string();
+    }
+    let shift_down = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
+    if shift_down {
+        return input.to_string();
+    }
+    if input.matches('\n').count() >= 8 || input.contains("```") || input.chars().count() >= 600 {
+        ai_clean_text(input)
+    } else {
+        input.to_string()
+    }
 }
 
 unsafe fn create_shell_data_object(paths: &[PathBuf]) -> Option<*mut core::ffi::c_void> {
@@ -6002,6 +7165,9 @@ unsafe fn begin_row_drag_export(hwnd: HWND, state: &mut AppState, visible_idx: i
         return false;
     };
     let Some(item) = state.active_items().get(src_idx).cloned() else {
+        return false;
+    };
+    let Some(item) = state.resolve_item_for_use(&item) else {
         return false;
     };
     let paths = drag_export_paths_for_item(&item);
@@ -6274,6 +7440,7 @@ unsafe fn paint(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
+    state.maybe_request_more_for_active_tab();
     let th = state.theme;
     let dark = is_dark_mode();
 
@@ -6363,7 +7530,11 @@ unsafe fn paint(hwnd: HWND) {
             right: LIST_X + LIST_W - 20,
             bottom: LIST_Y + LIST_H - 20,
         };
-        let msg = if state.settings.grouping_enabled && state.current_group_filter != 0 {
+        let msg = if state.active_load_state().loading {
+            "正在加载..."
+        } else if state.active_load_state().error.is_some() {
+            "加载失败，请稍后重试"
+        } else if state.settings.grouping_enabled && state.current_group_filter != 0 {
             "当前分组暂无记录"
         } else if state.tab_index == 0 {
             "暂无剪贴板记录"
@@ -6443,6 +7614,16 @@ unsafe fn paint(hwnd: HWND) {
                 &item.preview
             };
             draw_text(memdc as _, preview_str, &row_rc, th.text, 12, false, false);
+        }
+
+        if state.active_load_state().loading {
+            let loading_rc = RECT {
+                left: LIST_X + 18,
+                top: LIST_Y + LIST_H - 36,
+                right: LIST_X + LIST_W - 18,
+                bottom: LIST_Y + LIST_H - 12,
+            };
+            draw_text(memdc as _, "继续加载中...", &loading_rc, th.text_muted, 11, false, true);
         }
 
         if state.scroll_fade_alpha > 0 && state.total_content_height() > state.list_view_height() {

@@ -66,7 +66,7 @@ pub(crate) unsafe fn remember_window_pos(hwnd: HWND) {
 }
 
 pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
-    if IsWindowVisible(hwnd) != 0 && GetForegroundWindow() == hwnd {
+    if IsWindowVisible(hwnd) != 0 {
         ShowWindow(hwnd, SW_HIDE);
     } else {
         show_main_window(hwnd, true);

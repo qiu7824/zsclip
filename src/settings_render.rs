@@ -45,6 +45,10 @@ pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
 pub const IDC_SET_QUICK_DELETE: isize = 5052;
 pub const IDC_SET_OPEN_SOURCE: isize = 5053;
 pub const IDC_SET_VV_MODE: isize = 5054;
+pub const IDC_SET_VV_GROUP: isize = 5055;
+pub const IDC_SET_VV_SOURCE: isize = 5056;
+pub const IDC_SET_GROUP_VIEW_RECORDS: isize = 5057;
+pub const IDC_SET_GROUP_VIEW_PHRASES: isize = 5058;
 
 unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();

@@ -2,8 +2,10 @@ use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
+use crate::time_utils::{gregorian_to_days, local_offset_secs, unix_secs_to_parts};
 use crate::ui_core::UiRect;
 
 use windows_sys::Win32::{
@@ -260,6 +262,105 @@ pub(crate) struct ClipListState {
     pub(crate) context_row: i32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SearchTimeFilter {
+    ExactDay(i64),
+    RecentDays(i64),
+}
+
+fn current_local_day() -> i64 {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + local_offset_secs();
+    let (y, m, d, _, _, _) = unix_secs_to_parts(now_secs);
+    gregorian_to_days(y, m, d)
+}
+
+fn current_local_year() -> i32 {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + local_offset_secs();
+    let (y, _, _, _, _, _) = unix_secs_to_parts(now_secs);
+    y
+}
+
+fn parse_time_filter(raw: &str) -> Option<SearchTimeFilter> {
+    let value = raw.trim().to_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    match value.as_str() {
+        "today" | "今天" => Some(SearchTimeFilter::ExactDay(current_local_day())),
+        "yesterday" | "昨天" => Some(SearchTimeFilter::ExactDay(current_local_day() - 1)),
+        "week" | "本周" | "最近7天" => Some(SearchTimeFilter::RecentDays(7)),
+        "month" | "本月" | "最近30天" => Some(SearchTimeFilter::RecentDays(30)),
+        _ => {
+            if let Some(days) = value
+                .strip_suffix('d')
+                .or_else(|| value.strip_suffix("day"))
+                .or_else(|| value.strip_suffix("days"))
+                .or_else(|| value.strip_suffix('天'))
+                .and_then(|v| v.trim().parse::<i64>().ok())
+            {
+                return Some(SearchTimeFilter::RecentDays(days.max(1)));
+            }
+
+            if let Some((y, m, d)) = value
+                .split_once('-')
+                .and_then(|(a, rest)| rest.split_once('-').map(|(b, c)| (a, b, c)))
+                .and_then(|(y, m, d)| Some((y.parse::<i32>().ok()?, m.parse::<i32>().ok()?, d.parse::<i32>().ok()?)))
+            {
+                return Some(SearchTimeFilter::ExactDay(gregorian_to_days(y, m, d)));
+            }
+
+            if let Some((m, d)) = value
+                .split_once('-')
+                .and_then(|(m, d)| Some((m.parse::<i32>().ok()?, d.parse::<i32>().ok()?)))
+            {
+                return Some(SearchTimeFilter::ExactDay(gregorian_to_days(
+                    current_local_year(),
+                    m,
+                    d,
+                )));
+            }
+
+            None
+        }
+    }
+}
+
+pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTimeFilter>) {
+    let mut text_terms = Vec::new();
+    let mut time_filter = None;
+
+    for token in query.split_whitespace() {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_lowercase();
+        let time_value = lower
+            .strip_prefix("time:")
+            .or_else(|| lower.strip_prefix("date:"))
+            .map(|v| v.to_string())
+            .or_else(|| token.strip_prefix("时间:").map(|v| v.to_string()))
+            .or_else(|| token.strip_prefix("日期:").map(|v| v.to_string()));
+        if let Some(value) = time_value {
+            if let Some(filter) = parse_time_filter(&value) {
+                time_filter = Some(filter);
+                continue;
+            }
+        }
+        text_terms.push(lower);
+    }
+
+    (text_terms, time_filter)
+}
+
 impl Default for ClipListState {
     fn default() -> Self {
         Self {
@@ -280,19 +381,12 @@ impl Default for ClipListState {
 }
 
 impl ClipListState {
-    pub(crate) fn refilter_with(&mut self, items: &[ClipItem], grouping_enabled: bool) {
-        let key = self.search_text.trim().to_lowercase();
-        let group_filter = if grouping_enabled { self.current_group_filter } else { 0 };
-        self.filtered_indices = items
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                let group_ok = group_filter == 0 || item.group_id == group_filter;
-                let search_ok = key.is_empty() || item.preview.to_lowercase().contains(&key);
-                if group_ok && search_ok { Some(idx) } else { None }
-            })
-            .collect();
+    pub(crate) fn apply_visible_len(&mut self, len: usize) {
+        self.filtered_indices = (0..len).collect();
+        self.sync_visible_state();
+    }
 
+    fn sync_visible_state(&mut self) {
         if self.sel_idx >= self.filtered_indices.len() as i32 {
             self.sel_idx = if self.filtered_indices.is_empty() { -1 } else { 0 };
         }
@@ -300,7 +394,12 @@ impl ClipListState {
             self.hover_idx = -1;
         }
         let max_idx = self.filtered_indices.len() as i32;
-        self.selected_rows = self.selected_rows.iter().copied().filter(|i| *i >= 0 && *i < max_idx).collect();
+        self.selected_rows = self
+            .selected_rows
+            .iter()
+            .copied()
+            .filter(|i| *i >= 0 && *i < max_idx)
+            .collect();
         if self.sel_idx >= max_idx {
             self.sel_idx = if max_idx > 0 { max_idx - 1 } else { -1 };
         }
