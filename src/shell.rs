@@ -1,4 +1,8 @@
+use std::collections::BTreeSet;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use windows_sys::Win32::{
     UI::{
@@ -10,7 +14,26 @@ use windows_sys::Win32::{
 };
 
 use crate::app::{AppState, ClipItem, ClipKind, Icons};
+use crate::i18n::tr;
 use crate::win_system_ui::to_wide;
+
+const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
+
+#[derive(Default, Clone)]
+pub(crate) struct UpdateCheckState {
+    pub(crate) started: bool,
+    pub(crate) checking: bool,
+    pub(crate) available: bool,
+    pub(crate) latest_tag: String,
+    pub(crate) latest_url: String,
+    pub(crate) error: String,
+}
+
+static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
+
+fn update_check_state() -> &'static Mutex<UpdateCheckState> {
+    UPDATE_CHECK_STATE.get_or_init(|| Mutex::new(UpdateCheckState::default()))
+}
 
 // ── 图标数据嵌入二进制（无需外部文件）──────────────────────────────────────
 static ICO_CLIPBOARD: &[u8] = include_bytes!("../assets/icons/clipboard.ico");
@@ -39,6 +62,284 @@ pub(crate) unsafe fn open_parent_folder(path: &str) {
         if let Some(s) = parent.to_str() {
             open_path_with_shell(s);
         }
+    }
+}
+
+pub(crate) fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+    cmd
+}
+
+pub(crate) fn open_source_url() -> &'static str {
+    option_env!("CARGO_PKG_REPOSITORY").unwrap_or("")
+}
+
+pub(crate) fn open_source_url_display() -> &'static str {
+    if open_source_url().trim().is_empty() {
+        tr(
+            "未配置（可在 Cargo.toml 的 package.repository 中配置）",
+            "Not configured (set package.repository in Cargo.toml)",
+        )
+    } else {
+        open_source_url()
+    }
+}
+
+pub(crate) fn latest_release_url() -> String {
+    format!("{}/latest", releases_url())
+}
+
+pub(crate) fn update_check_state_snapshot() -> UpdateCheckState {
+    update_check_state()
+        .lock()
+        .ok()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+pub(crate) fn update_check_latest_url_or_default() -> String {
+    update_check_state()
+        .lock()
+        .ok()
+        .and_then(|state| {
+            if !state.latest_url.trim().is_empty() {
+                Some(state.latest_url.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(latest_release_url)
+}
+
+pub(crate) fn update_check_available() -> bool {
+    update_check_state()
+        .lock()
+        .ok()
+        .map(|state| state.available)
+        .unwrap_or(false)
+}
+
+pub(crate) fn start_update_check<F>(notify: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let should_start = {
+        let Ok(mut state) = update_check_state().lock() else {
+            return;
+        };
+        if state.checking || open_source_url().trim().is_empty() {
+            false
+        } else {
+            state.started = true;
+            state.checking = true;
+            state.error.clear();
+            true
+        }
+    };
+    if !should_start {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let api = if let Some(path) = releases_url().strip_prefix("https://github.com/") {
+            format!(
+                "https://api.github.com/repos/{}/releases/latest",
+                path.trim_end_matches("/releases")
+            )
+        } else {
+            String::new()
+        };
+
+        let result = if api.is_empty() {
+            Err("missing repository".to_string())
+        } else {
+            hidden_command("curl.exe")
+                .args([
+                    "-sL",
+                    "-H",
+                    "User-Agent: zsclip",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    &api,
+                ])
+                .output()
+                .map_err(|e| e.to_string())
+                .and_then(|out| {
+                    if !out.status.success() {
+                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+                    } else {
+                        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+                    }
+                })
+        };
+
+        let mut next = UpdateCheckState {
+            started: true,
+            checking: false,
+            available: false,
+            latest_tag: String::new(),
+            latest_url: latest_release_url(),
+            error: String::new(),
+        };
+
+        match result {
+            Ok(body) => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    next.latest_tag = json
+                        .get("tag_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    next.latest_url = json
+                        .get("html_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(next.latest_url.as_str())
+                        .to_string();
+                    next.available = !next.latest_tag.trim().is_empty()
+                        && version_is_newer(&next.latest_tag, env!("CARGO_PKG_VERSION"));
+                } else {
+                    next.error = "invalid response".to_string();
+                }
+            }
+            Err(err) => {
+                next.error = err;
+            }
+        }
+
+        if let Ok(mut state) = update_check_state().lock() {
+            *state = next;
+        }
+
+        notify();
+    });
+}
+
+pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
+    if !ch.is_ascii_alphanumeric() {
+        return Err("无效按键".to_string());
+    }
+    let mut chars: BTreeSet<char> = read_disabled_hotkeys_text()
+        .unwrap_or_default()
+        .to_uppercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let up = ch.to_ascii_uppercase();
+    if disable {
+        chars.insert(up);
+    } else {
+        chars.remove(&up);
+    }
+    let new_text: String = chars.into_iter().collect();
+    set_disabled_hotkeys_text(&new_text)
+}
+
+pub(crate) fn restart_explorer_shell() -> Result<(), String> {
+    let _ = hidden_command("taskkill")
+        .args(["/f", "/im", "explorer.exe"])
+        .output();
+    Command::new("explorer.exe")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn releases_url() -> String {
+    let repo = open_source_url().trim().trim_end_matches('/');
+    if repo.is_empty() {
+        "https://github.com/qiu7824/zsclip/releases".to_string()
+    } else {
+        format!("{repo}/releases")
+    }
+}
+
+fn parse_version_parts(value: &str) -> Vec<u32> {
+    value
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|part| part.parse::<u32>().ok().unwrap_or(0))
+        .collect()
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let mut a = parse_version_parts(latest);
+    let mut b = parse_version_parts(current);
+    let max_len = a.len().max(b.len()).max(3);
+    a.resize(max_len, 0);
+    b.resize(max_len, 0);
+    a > b
+}
+
+fn read_disabled_hotkeys_text() -> Option<String> {
+    let out = hidden_command("reg")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+            "/v",
+            "DisabledHotkeys",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return Some(String::new());
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        if line.contains("DisabledHotkeys") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if let Some(v) = parts.last() {
+                return Some((*v).trim().to_string());
+            }
+        }
+    }
+    Some(String::new())
+}
+
+fn set_disabled_hotkeys_text(txt: &str) -> Result<(), String> {
+    if txt.trim().is_empty() {
+        let out = hidden_command("reg")
+            .args([
+                "delete",
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+                "/v",
+                "DisabledHotkeys",
+                "/f",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        if stderr.contains("Unable to find") || stderr.contains("系统找不到指定") {
+            return Ok(());
+        }
+        return Err(if stderr.trim().is_empty() {
+            "删除注册表值失败".to_string()
+        } else {
+            stderr
+        });
+    }
+    let out = hidden_command("reg")
+        .args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
+            "/v",
+            "DisabledHotkeys",
+            "/t",
+            "REG_SZ",
+            "/d",
+            txt,
+            "/f",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).to_string())
     }
 }
 
