@@ -16,6 +16,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::mem::{size_of, zeroed};
+use std::os::windows::process::CommandExt;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -123,10 +124,11 @@ use crate::hover_preview::{hide_hover_preview, show_hover_preview};
 use crate::sticker::show_image_sticker;
 use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
 use crate::tray::{add_tray_icon_localized, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
-use crate::db_runtime::{ensure_db, with_db, with_db_mut};
+use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction, CloudSyncConfig, CloudSyncOutcome, CloudSyncPaths};
+use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -192,10 +194,14 @@ const ID_TIMER_SCROLL_FADE: usize = 3;
 const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
 const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
 const ID_TIMER_VV_SHOW: usize = 6;
+const ID_TIMER_CLOUD_SYNC: usize = 7;
 const WM_VV_SHOW: u32 = WM_APP + 20;
 const WM_VV_HIDE: u32 = WM_APP + 21;
 const WM_VV_SELECT: u32 = WM_APP + 22;
 const WM_ITEMS_PAGE_READY: u32 = WM_APP + 30;
+const WM_UPDATE_CHECK_READY: u32 = WM_APP + 31;
+const WM_OUTSIDE_CLICK_HIDE: u32 = WM_APP + 32;
+const WM_CLOUD_SYNC_READY: u32 = WM_APP + 33;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -234,6 +240,7 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 const SPI_GETMOUSEHOVERTIME_V: u32 = 0x0066;
 
 type AppResult<T> = Result<T, io::Error>;
+const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
 
 const HOTKEY_MOD_OPTIONS: [&str; 8] = ["Win", "Ctrl", "Alt", "Shift", "Ctrl+Alt", "Ctrl+Shift", "Alt+Shift", "Ctrl+Alt+Shift"];
 const HOTKEY_KEY_OPTIONS: [&str; 51] = [
@@ -255,6 +262,12 @@ const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
     ("yandex", "Yandex",              "https://yandex.com/search/?text={q}"),
     ("custom", "自定义",               "https://example.com/search?q={q}"),
 ];
+
+fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+    cmd
+}
 const EDGE_AUTO_HIDE_PEEK: i32 = 6;
 const EDGE_AUTO_HIDE_MARGIN: i32 = 8;
 
@@ -322,6 +335,19 @@ fn window_host_hwnds() -> [HWND; 2] {
         .unwrap_or([null_mut(), null_mut()])
 }
 
+unsafe fn set_ignore_clipboard_for_all_hosts(duration_ms: u64) {
+    let until = Instant::now() + std::time::Duration::from_millis(duration_ms);
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() {
+            continue;
+        }
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() {
+            (*ptr).ignore_clipboard_until = Some(until);
+        }
+    }
+}
+
 fn is_app_window(hwnd: HWND) -> bool {
     if hwnd.is_null() {
         return false;
@@ -331,12 +357,237 @@ fn is_app_window(hwnd: HWND) -> bool {
         .any(|host| !host.is_null() && host == hwnd)
 }
 
+unsafe fn window_contains_screen_point(hwnd: HWND, pt: POINT) -> bool {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
+        return false;
+    }
+    let mut rc = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 {
+        return false;
+    }
+    pt_in_rect_screen(&pt, &rc)
+}
+
+unsafe fn any_visible_window_requires_outside_hide() -> bool {
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
+            continue;
+        }
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
+            return true;
+        }
+    }
+    false
+}
+
+unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
+    for hwnd in window_host_hwnds() {
+        if window_contains_screen_point(hwnd, pt) {
+            return true;
+        }
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && window_contains_screen_point((*ptr).settings_hwnd, pt) {
+            return true;
+        }
+    }
+    let popup = current_vv_popup_hwnd();
+    window_contains_screen_point(popup, pt)
+}
+
+unsafe extern "system" fn outside_hide_mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0
+        && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN)
+        && any_visible_window_requires_outside_hide()
+    {
+        let data = &*(lparam as *const MSLLHOOKSTRUCT);
+        let pt = data.pt;
+        if !should_ignore_outside_click_for_point(pt) {
+            for hwnd in window_host_hwnds() {
+                if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
+                    continue;
+                }
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
+                    let _ = PostMessageW(hwnd, WM_OUTSIDE_CLICK_HIDE, 0, 0);
+                }
+            }
+        }
+    }
+    CallNextHookEx(null_mut(), code, wparam, lparam)
+}
+
+unsafe fn ensure_outside_hide_mouse_hook() {
+    let Ok(mut handle) = outside_hide_mouse_hook_handle().lock() else {
+        return;
+    };
+    if *handle == 0 {
+        *handle = SetWindowsHookExW(WH_MOUSE_LL, Some(outside_hide_mouse_hook_proc), GetModuleHandleW(null()), 0) as isize;
+    }
+}
+
+pub(crate) fn main_window_hwnd() -> HWND {
+    window_hosts()
+        .lock()
+        .ok()
+        .map(|hosts| hosts.main as HWND)
+        .unwrap_or(null_mut())
+}
+
 pub(crate) fn quick_window_hwnd() -> HWND {
     window_hosts()
         .lock()
         .ok()
         .map(|hosts| hosts.quick as HWND)
         .unwrap_or(null_mut())
+}
+
+unsafe fn sync_main_tray_icon(hwnd: HWND, state: &AppState) {
+    remove_tray_icon(hwnd);
+    if tray_mode_enabled(&state.settings) && state.icons.app != 0 {
+        add_tray_icon_localized(hwnd, state.icons.app);
+    }
+}
+
+#[derive(Default, Clone)]
+struct UpdateCheckState {
+    started: bool,
+    checking: bool,
+    available: bool,
+    latest_tag: String,
+    latest_url: String,
+    error: String,
+}
+
+static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
+
+fn update_check_state() -> &'static Mutex<UpdateCheckState> {
+    UPDATE_CHECK_STATE.get_or_init(|| Mutex::new(UpdateCheckState::default()))
+}
+
+fn parse_version_parts(value: &str) -> Vec<u32> {
+    value
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split('.')
+        .map(|part| part.parse::<u32>().ok().unwrap_or(0))
+        .collect()
+}
+
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let mut a = parse_version_parts(latest);
+    let mut b = parse_version_parts(current);
+    let max_len = a.len().max(b.len()).max(3);
+    a.resize(max_len, 0);
+    b.resize(max_len, 0);
+    a > b
+}
+
+unsafe fn notify_update_state_changed() {
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() {
+            continue;
+        }
+        let _ = PostMessageW(hwnd, WM_UPDATE_CHECK_READY, 0, 0);
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0 {
+            InvalidateRect((*ptr).settings_hwnd, null(), 1);
+        }
+    }
+}
+
+fn ensure_update_check_started() {
+    let should_start = {
+        let Ok(mut state) = update_check_state().lock() else {
+            return;
+        };
+        if state.started || open_source_url().trim().is_empty() {
+            false
+        } else {
+            state.started = true;
+            state.checking = true;
+            true
+        }
+    };
+    if !should_start {
+        return;
+    }
+
+    std::thread::spawn(|| {
+        let releases = releases_url();
+        let api = if let Some(path) = releases.strip_prefix("https://github.com/") {
+            format!("https://api.github.com/repos/{}/releases/latest", path.trim_end_matches("/releases"))
+        } else {
+            String::new()
+        };
+
+        let result = if api.is_empty() {
+            Err("missing repository".to_string())
+        } else {
+            hidden_command("powershell")
+                .args([
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &format!(
+                        "$ProgressPreference='SilentlyContinue'; \
+                        [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; \
+                        (Invoke-WebRequest -UseBasicParsing -Headers @{{'User-Agent'='zsclip'}} '{api}').Content"
+                    ),
+                ])
+                .output()
+                .map_err(|e| e.to_string())
+                .and_then(|out| {
+                    if !out.status.success() {
+                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+                    } else {
+                        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+                    }
+                })
+        };
+
+        let mut next = UpdateCheckState {
+            started: true,
+            checking: false,
+            available: false,
+            latest_tag: String::new(),
+            latest_url: latest_release_url(),
+            error: String::new(),
+        };
+
+        match result {
+            Ok(body) => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+                    next.latest_tag = json
+                        .get("tag_name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    next.latest_url = json
+                        .get("html_url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(next.latest_url.as_str())
+                        .to_string();
+                    next.available = !next.latest_tag.trim().is_empty()
+                        && version_is_newer(&next.latest_tag, env!("CARGO_PKG_VERSION"));
+                } else {
+                    next.error = "invalid response".to_string();
+                }
+            }
+            Err(err) => {
+                next.error = err;
+            }
+        }
+
+        if let Ok(mut state) = update_check_state().lock() {
+            *state = next;
+        }
+
+        unsafe {
+            notify_update_state_changed();
+        }
+    });
 }
 const EDGE_AUTO_HIDE_NONE: i32 = -1;
 const EDGE_AUTO_HIDE_LEFT: i32 = 0;
@@ -399,7 +650,10 @@ pub(crate) struct AppSettings {
     pub(crate) hotkey_enabled: bool,
     pub(crate) hotkey_mod: String,
     pub(crate) hotkey_key: String,
+    pub(crate) silent_start: bool,
+    pub(crate) tray_icon_enabled: bool,
     pub(crate) click_hide: bool,
+    pub(crate) auto_hide_on_blur: bool,
     pub(crate) edge_auto_hide: bool,
     pub(crate) hover_preview: bool,
     pub(crate) auto_start: bool,
@@ -438,7 +692,10 @@ impl Default for AppSettings {
             hotkey_enabled: true,
             hotkey_mod: "Win".to_string(),
             hotkey_key: "V".to_string(),
+            silent_start: true,
+            tray_icon_enabled: true,
             click_hide: false,
+            auto_hide_on_blur: false,
             edge_auto_hide: false,
             hover_preview: false,
             auto_start: false,
@@ -550,6 +807,31 @@ fn open_source_url_display() -> &'static str {
     }
 }
 
+fn releases_url() -> String {
+    let repo = open_source_url().trim().trim_end_matches('/');
+    if repo.is_empty() {
+        "https://github.com/qiu7824/zsclip/releases".to_string()
+    } else {
+        format!("{repo}/releases")
+    }
+}
+
+fn latest_release_url() -> String {
+    format!("{}/latest", releases_url())
+}
+
+fn startup_can_hide(settings: &AppSettings) -> bool {
+    settings.silent_start && (settings.tray_icon_enabled || settings.hotkey_enabled)
+}
+
+fn tray_mode_enabled(settings: &AppSettings) -> bool {
+    settings.tray_icon_enabled
+}
+
+fn close_to_tray_enabled(settings: &AppSettings) -> bool {
+    tray_mode_enabled(settings) && settings.close_without_exit
+}
+
 fn title_button_visible(_settings: &AppSettings, _key: &str) -> bool {
     true
 }
@@ -616,6 +898,11 @@ impl ItemPayloadCache {
         self.order.clear();
     }
 
+    fn shrink_to_fit(&mut self) {
+        self.entries.shrink_to_fit();
+        self.order.shrink_to_fit();
+    }
+
     fn remove(&mut self, id: i64) {
         self.entries.remove(&id);
         self.order.retain(|cached| *cached != id);
@@ -666,10 +953,19 @@ struct PageLoadResult {
     error: Option<String>,
 }
 
+struct CloudSyncResult {
+    hwnd: isize,
+    action: CloudSyncAction,
+    auto_triggered: bool,
+    result: Result<CloudSyncOutcome, String>,
+}
+
 static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
 static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+static OUTSIDE_HIDE_MOUSE_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
 static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
+static CLOUD_SYNC_RESULTS: OnceLock<Mutex<VecDeque<CloudSyncResult>>> = OnceLock::new();
 
 fn vv_hook_state() -> &'static Mutex<VvHookState> {
     VV_HOOK_STATE.get_or_init(|| Mutex::new(VvHookState::default()))
@@ -679,8 +975,16 @@ fn vv_hook_handle() -> &'static Mutex<isize> {
     VV_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
 
+fn outside_hide_mouse_hook_handle() -> &'static Mutex<isize> {
+    OUTSIDE_HIDE_MOUSE_HOOK.get_or_init(|| Mutex::new(0))
+}
+
 fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
     PAGE_LOAD_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn cloud_sync_results() -> &'static Mutex<VecDeque<CloudSyncResult>> {
+    CLOUD_SYNC_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
 fn vv_popup_menu_active() -> bool {
@@ -983,6 +1287,44 @@ unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: 
     None
 }
 
+unsafe fn vv_focus_rect_anchor(
+    focus_hwnd: HWND,
+    popup_height: i32,
+    work_area: &RECT,
+) -> Option<VvOverlayAnchor> {
+    if focus_hwnd.is_null() || IsWindow(focus_hwnd) == 0 {
+        return None;
+    }
+    let mut rc = zeroed();
+    if GetWindowRect(focus_hwnd, &mut rc) == 0 || !vv_rect_has_area(&rc) {
+        return None;
+    }
+    let width = rc.right - rc.left;
+    let height = rc.bottom - rc.top;
+    if width <= 0 || height <= 0 || height > 180 || width > (work_area.right - work_area.left) - 40 {
+        return None;
+    }
+    let (edge_y, align_bottom) = vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
+    Some(VvOverlayAnchor {
+        left: rc.left,
+        edge_y,
+        align_bottom,
+    })
+}
+
+unsafe fn vv_cursor_anchor(popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
+    let mut pt = POINT { x: 0, y: 0 };
+    if GetCursorPos(&mut pt) == 0 {
+        return None;
+    }
+    let (edge_y, align_bottom) = vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
+    Some(VvOverlayAnchor {
+        left: pt.x,
+        edge_y,
+        align_bottom,
+    })
+}
+
 unsafe fn vv_focus_hwnd_for_target(target: HWND) -> HWND {
     if target.is_null() {
         return null_mut();
@@ -1011,7 +1353,9 @@ unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
     let height = vv_popup_height(state.vv_popup_items.len());
     let anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
         .or_else(|| vv_accessible_caret_anchor(focus_hwnd, height, &wa))
-        .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa));
+        .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa))
+        .or_else(|| vv_focus_rect_anchor(focus_hwnd, height, &wa))
+        .or_else(|| vv_cursor_anchor(height, &wa));
     let Some(anchor) = anchor else {
         return false;
     };
@@ -1443,7 +1787,7 @@ fn hotkey_vk_from_label(label: &str) -> u32 {
 }
 
 fn read_disabled_hotkeys_text() -> Option<String> {
-    let out = Command::new("reg")
+    let out = hidden_command("reg")
         .args(["query", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "/v", "DisabledHotkeys"])
         .output()
         .ok()?;
@@ -1464,7 +1808,7 @@ fn read_disabled_hotkeys_text() -> Option<String> {
 
 fn set_disabled_hotkeys_text(txt: &str) -> Result<(), String> {
     if txt.trim().is_empty() {
-        let out = Command::new("reg")
+        let out = hidden_command("reg")
             .args(["delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "/v", "DisabledHotkeys", "/f"])
             .output()
             .map_err(|e| e.to_string())?;
@@ -1475,7 +1819,7 @@ fn set_disabled_hotkeys_text(txt: &str) -> Result<(), String> {
         }
         return Err(if stderr.trim().is_empty() { "删除注册表值失败".to_string() } else { stderr });
     }
-    let out = Command::new("reg")
+    let out = hidden_command("reg")
         .args(["add", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced", "/v", "DisabledHotkeys", "/t", "REG_SZ", "/d", txt, "/f"])
         .output()
         .map_err(|e| e.to_string())?;
@@ -1494,7 +1838,7 @@ fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
 }
 
 fn restart_explorer_shell() -> Result<(), String> {
-    let _ = Command::new("taskkill").args(["/f", "/im", "explorer.exe"]).output();
+    let _ = hidden_command("taskkill").args(["/f", "/im", "explorer.exe"]).output();
     Command::new("explorer.exe").spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -1629,6 +1973,8 @@ pub(crate) struct AppState {
     pub(crate) edge_docked_top: i32,
     pub(crate) edge_docked_right: i32,
     pub(crate) edge_docked_bottom: i32,
+    pub(crate) cloud_sync_in_progress: bool,
+    pub(crate) cloud_sync_next_due: Option<Instant>,
 }
 
 impl Deref for AppState {
@@ -1648,6 +1994,13 @@ impl DerefMut for AppState {
 
 impl AppState {
     fn new(role: WindowRole, hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
+        let mut settings = load_settings();
+        settings.auto_start = is_autostart_enabled();
+        let cloud_sync_next_due = if cloud_sync_should_schedule(&settings) {
+            Some(Instant::now() + cloud_sync_interval(&settings.cloud_sync_interval))
+        } else {
+            None
+        };
         Self {
             role,
             hwnd,
@@ -1666,7 +2019,7 @@ impl AppState {
             hover_tab: -1,
             last_signature: String::new(),
             ignore_clipboard_until: None,
-            settings: load_settings(),
+            settings,
             hotkey_registered: false,
             hotkey_conflict_notified: false,
             settings_hwnd: null_mut(),
@@ -1698,11 +2051,27 @@ impl AppState {
             edge_docked_top: 0,
             edge_docked_right: 0,
             edge_docked_bottom: 0,
+            cloud_sync_in_progress: false,
+            cloud_sync_next_due,
         }
     }
 
     fn items_for_tab(&self, tab: usize) -> &Vec<ClipItem> {
         if tab == 0 { &self.records } else { &self.phrases }
+    }
+
+    fn release_list_memory(&mut self) {
+        self.invalidate_all_queries();
+        self.groups.clear();
+        self.vv_popup_items.clear();
+        self.clear_payload_cache();
+        self.clear_selection();
+        self.scroll_y = 0;
+        self.groups.shrink_to_fit();
+        self.records.shrink_to_fit();
+        self.phrases.shrink_to_fit();
+        self.vv_popup_items.shrink_to_fit();
+        self.payload_cache.shrink_to_fit();
     }
 
     fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {
@@ -2153,6 +2522,28 @@ fn local_app_data_dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from).map(|p| p.join("ZSClip").join("data"))
 }
 
+fn preferred_secondary_drive_data_dir() -> Option<PathBuf> {
+    let system_drive = std::env::var("SystemDrive")
+        .unwrap_or_else(|_| "C:".to_string())
+        .trim_end_matches('\\')
+        .to_ascii_uppercase();
+
+    for drive in ('D'..='Z').map(|letter| format!("{letter}:")) {
+        if drive == system_drive {
+            continue;
+        }
+        let root = PathBuf::from(format!("{drive}\\"));
+        if !root.exists() {
+            continue;
+        }
+        let candidate = PathBuf::from(format!("{drive}\\ZSClip\\data"));
+        if dir_is_writable(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn dir_is_writable(dir: &Path) -> bool {
     if fs::create_dir_all(dir).is_err() {
         return false;
@@ -2181,9 +2572,20 @@ fn data_dir() -> PathBuf {
                     return exe_dir;
                 }
             }
-            let fallback = local_app_data_dir().unwrap_or_else(|| PathBuf::from("data"));
-            let _ = fs::create_dir_all(&fallback);
-            fallback
+            let local = local_app_data_dir().unwrap_or_else(|| PathBuf::from("data"));
+            if local.join("clipboard.db").exists()
+                || local.join("settings.json").exists()
+                || local.join("images").exists()
+            {
+                let _ = fs::create_dir_all(&local);
+                return local;
+            }
+            if let Some(secondary) = preferred_secondary_drive_data_dir() {
+                let _ = fs::create_dir_all(&secondary);
+                return secondary;
+            }
+            let _ = fs::create_dir_all(&local);
+            local
         })
         .clone()
 }
@@ -2208,6 +2610,192 @@ pub(crate) fn save_settings(s: &AppSettings) {
     let _ = fs::create_dir_all(data_dir());
     if let Ok(txt) = serde_json::to_string_pretty(s) {
         let _ = fs::write(settings_file(), txt);
+    }
+}
+
+fn current_cloud_sync_paths() -> CloudSyncPaths {
+    CloudSyncPaths {
+        data_dir: data_dir(),
+        settings_file: settings_file(),
+        db_file: db_file(),
+    }
+}
+
+fn cloud_sync_config_from_settings(settings: &AppSettings) -> CloudSyncConfig {
+    CloudSyncConfig {
+        webdav_url: settings.cloud_webdav_url.clone(),
+        webdav_user: settings.cloud_webdav_user.clone(),
+        webdav_pass: settings.cloud_webdav_pass.clone(),
+        remote_dir: settings.cloud_remote_dir.clone(),
+    }
+}
+
+fn cloud_sync_action_label(action: CloudSyncAction) -> &'static str {
+    match action {
+        CloudSyncAction::SyncNow => "云同步",
+        CloudSyncAction::UploadConfig => "上传配置",
+        CloudSyncAction::ApplyRemoteConfig => "应用云端配置",
+        CloudSyncAction::RestoreBackup => "云备份恢复",
+    }
+}
+
+fn cloud_sync_running_text(auto_triggered: bool) -> &'static str {
+    if auto_triggered {
+        "自动云同步执行中..."
+    } else {
+        "云同步执行中..."
+    }
+}
+
+fn cloud_sync_should_schedule(settings: &AppSettings) -> bool {
+    settings.cloud_sync_enabled && !settings.cloud_webdav_url.trim().is_empty()
+}
+
+fn schedule_cloud_sync(state: &mut AppState, immediate: bool) {
+    state.cloud_sync_next_due = if cloud_sync_should_schedule(&state.settings) {
+        Some(if immediate {
+            Instant::now()
+        } else {
+            Instant::now() + cloud_sync_interval(&state.settings.cloud_sync_interval)
+        })
+    } else {
+        None
+    };
+}
+
+unsafe fn refresh_settings_window_from_app(app: &mut AppState) {
+    if app.settings_hwnd.is_null() || IsWindow(app.settings_hwnd) == 0 {
+        return;
+    }
+    let st_ptr = GetWindowLongPtrW(app.settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+    if !st_ptr.is_null() {
+        settings_apply_from_app(&mut *st_ptr);
+        InvalidateRect(app.settings_hwnd, null(), 1);
+    }
+}
+
+unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
+    let old_edge_hide = state.settings.edge_auto_hide;
+    let mut loaded = load_settings();
+    loaded.auto_start = apply_autostart(loaded.auto_start);
+    state.settings = loaded;
+    save_settings(&state.settings);
+    schedule_cloud_sync(state, false);
+    if state.role == WindowRole::Main {
+        sync_main_tray_icon(hwnd, state);
+        register_hotkey_for(hwnd, state);
+        update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+        position_main_window(hwnd, &state.settings, false);
+    }
+    if old_edge_hide && !state.settings.edge_auto_hide {
+        restore_edge_hidden_window(hwnd, state);
+    }
+    reload_state_from_db(state);
+    layout_children(hwnd);
+    InvalidateRect(hwnd, null(), 1);
+    refresh_settings_window_from_app(state);
+}
+
+fn spawn_cloud_sync_job(hwnd: HWND, action: CloudSyncAction, auto_triggered: bool, settings: AppSettings) {
+    let hwnd_value = hwnd as isize;
+    let config = cloud_sync_config_from_settings(&settings);
+    let paths = current_cloud_sync_paths();
+    std::thread::spawn(move || {
+        let result = perform_cloud_sync(action, &config, &paths);
+        if let Ok(mut queue) = cloud_sync_results().lock() {
+            queue.push_back(CloudSyncResult {
+                hwnd: hwnd_value,
+                action,
+                auto_triggered,
+                result,
+            });
+        }
+        unsafe {
+            if hwnd_value != 0 {
+                let _ = PostMessageW(hwnd_value as HWND, WM_CLOUD_SYNC_READY, 0, 0);
+            }
+        }
+    });
+}
+
+unsafe fn queue_cloud_sync(hwnd: HWND, state: &mut AppState, action: CloudSyncAction, auto_triggered: bool) {
+    if state.cloud_sync_in_progress {
+        return;
+    }
+    if state.settings.cloud_webdav_url.trim().is_empty() {
+        state.settings.cloud_last_sync_status = "未配置 WebDAV 地址".to_string();
+        save_settings(&state.settings);
+        refresh_settings_window_from_app(state);
+        if !auto_triggered {
+            MessageBoxW(
+                hwnd,
+                to_wide("请先填写 WebDAV 地址。").as_ptr(),
+                to_wide(cloud_sync_action_label(action)).as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
+        }
+        return;
+    }
+
+    if matches!(action, CloudSyncAction::SyncNow | CloudSyncAction::RestoreBackup) {
+        close_db();
+    }
+
+    state.cloud_sync_in_progress = true;
+    state.settings.cloud_last_sync_status = cloud_sync_running_text(auto_triggered).to_string();
+    save_settings(&state.settings);
+    refresh_settings_window_from_app(state);
+    spawn_cloud_sync_job(hwnd, action, auto_triggered, state.settings.clone());
+}
+
+unsafe fn apply_ready_cloud_syncs(hwnd: HWND, state: &mut AppState) {
+    let mut ready = VecDeque::new();
+    if let Ok(mut queue) = cloud_sync_results().lock() {
+        let mut pending = VecDeque::new();
+        while let Some(result) = queue.pop_front() {
+            if result.hwnd == hwnd as isize {
+                ready.push_back(result);
+            } else {
+                pending.push_back(result);
+            }
+        }
+        *queue = pending;
+    }
+
+    while let Some(ready_item) = ready.pop_front() {
+        state.cloud_sync_in_progress = false;
+        schedule_cloud_sync(state, false);
+        match ready_item.result {
+            Ok(outcome) => {
+                state.settings.cloud_last_sync_status = outcome.status_text;
+                save_settings(&state.settings);
+                if outcome.reload_settings {
+                    apply_loaded_settings(hwnd, state);
+                } else if outcome.reload_data {
+                    reload_state_from_db(state);
+                    layout_children(hwnd);
+                    InvalidateRect(hwnd, null(), 1);
+                } else {
+                    refresh_settings_window_from_app(state);
+                    InvalidateRect(hwnd, null(), 1);
+                }
+                sync_peer_windows_from_settings(hwnd);
+            }
+            Err(err) => {
+                state.settings.cloud_last_sync_status = format!("失败：{err}");
+                save_settings(&state.settings);
+                refresh_settings_window_from_app(state);
+                sync_peer_windows_from_settings(hwnd);
+                if !ready_item.auto_triggered {
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&err).as_ptr(),
+                        to_wide(cloud_sync_action_label(ready_item.action)).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -2267,15 +2855,16 @@ fn is_autostart_enabled() -> bool {
 }
 
 /// 设置/取消开机自启（写 HKCU\Software\Microsoft\Windows\CurrentVersion\Run）
-fn apply_autostart(enabled: bool) {
+fn apply_autostart(enabled: bool) -> bool {
     unsafe {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let val_name = to_wide(app_title());
+        let val_name = to_wide(app_title());
         let mut hkey: isize = 0;
         let flags = KEY_READ_VAL | KEY_SET_VALUE;
         if RegOpenKeyExW(HKEY_CURRENT_USER_VAL, run_key.as_ptr(), 0, flags, &mut hkey) != 0 {
-            return;
+            return false;
         }
+        let mut changed = false;
         if enabled {
             if let Some(cmdline) = autostart_command_for_current_exe() {
                 let wide = to_wide(&cmdline);
@@ -2283,12 +2872,13 @@ fn apply_autostart(enabled: bool) {
                     wide.as_ptr() as *const u8,
                     wide.len() * 2,
                 );
-                RegSetValueExW(hkey, val_name.as_ptr(), 0, REG_SZ, bytes.as_ptr(), bytes.len() as u32);
+                changed = RegSetValueExW(hkey, val_name.as_ptr(), 0, REG_SZ, bytes.as_ptr(), bytes.len() as u32) == 0;
             }
         } else {
-            RegDeleteValueW(hkey, val_name.as_ptr());
+            changed = RegDeleteValueW(hkey, val_name.as_ptr()) == 0 || !is_autostart_enabled();
         }
         RegCloseKey(hkey);
+        changed && is_autostart_enabled() == enabled
     }
 }
 
@@ -2749,8 +3339,11 @@ struct SettingsWndState {
     btn_open_db: HWND,
     btn_open_data: HWND,
     chk_autostart: HWND,
+    chk_silent_start: HWND,
+    chk_tray_icon: HWND,
     chk_close_tray: HWND,
     chk_click_hide: HWND,
+    chk_auto_hide_on_blur: HWND,
     chk_edge_hide: HWND,
     chk_hover_preview: HWND,
     chk_group_enable: HWND,
@@ -2794,6 +3387,7 @@ struct SettingsWndState {
     ed_dy: HWND,
     ed_fx: HWND,
     ed_fy: HWND,
+    btn_open_update: HWND,
     nav_font: *mut core::ffi::c_void,
     ui_font: *mut core::ffi::c_void,
     title_font: *mut core::ffi::c_void,
@@ -3112,7 +3706,7 @@ unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) {
         let visible = settings_child_visible(new_y, oh, &viewport);
         dirty.push(RECT { left: ox, top: new_y, right: ox + ow, bottom: new_y + oh });
 
-        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE
             | if visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
         let r = DeferWindowPos(hdwp, hchild, null_mut(), ox, new_y, ow, oh, flags);
         if !r.is_null() { hdwp = r; }
@@ -3159,7 +3753,6 @@ unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, new_y: i32) 
     // 不再依赖 ScrollWindowEx 复制旧像素，直接重定位子控件并立即精确重绘，避免滚动白框残留
     settings_repos_controls(hwnd, st);
 
-    InvalidateRect(hwnd, &viewport, 0);
     let mask = settings_viewport_mask_rect(&crc);
     InvalidateRect(hwnd, &mask, 0);
     let scroll_strip = RECT {
@@ -3298,20 +3891,31 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     } else {
         0
     };
-    st.draft.cloud_sync_interval = {
-        let label = get_window_text(st.cb_cloud_interval);
-        if label.trim().is_empty() { "1小时".to_string() } else { label }
-    };
-    st.draft.cloud_webdav_url = get_window_text(st.ed_cloud_url);
-    st.draft.cloud_webdav_user = get_window_text(st.ed_cloud_user);
-    st.draft.cloud_webdav_pass = get_window_text(st.ed_cloud_pass);
-    st.draft.cloud_remote_dir = {
-        let dir = get_window_text(st.ed_cloud_dir);
-        if dir.trim().is_empty() { "ZSClip".to_string() } else { dir }
-    };
+    if !st.cb_cloud_interval.is_null() {
+        st.draft.cloud_sync_interval = {
+            let label = get_window_text(st.cb_cloud_interval);
+            if label.trim().is_empty() { "1小时".to_string() } else { label }
+        };
+    }
+    if !st.ed_cloud_url.is_null() {
+        st.draft.cloud_webdav_url = get_window_text(st.ed_cloud_url);
+    }
+    if !st.ed_cloud_user.is_null() {
+        st.draft.cloud_webdav_user = get_window_text(st.ed_cloud_user);
+    }
+    if !st.ed_cloud_pass.is_null() {
+        st.draft.cloud_webdav_pass = get_window_text(st.ed_cloud_pass);
+    }
+    if !st.ed_cloud_dir.is_null() {
+        st.draft.cloud_remote_dir = {
+            let dir = get_window_text(st.ed_cloud_dir);
+            if dir.trim().is_empty() { "ZSClip".to_string() } else { dir }
+        };
+    }
     let app = &mut *pst;
     let grouping_old = app.settings.grouping_enabled;
     let autostart_old = app.settings.auto_start;
+    let tray_icon_old = app.settings.tray_icon_enabled;
     let hotkey_old = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
     let edge_hide_old = app.settings.edge_auto_hide;
     let vv_mode_old = app.settings.vv_mode_enabled;
@@ -3323,7 +3927,15 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     save_settings(&app.settings);
     // 开机自启：同步写注册表
     if autostart_old != app.settings.auto_start {
-        apply_autostart(app.settings.auto_start);
+        app.settings.auto_start = apply_autostart(app.settings.auto_start);
+        st.draft.auto_start = app.settings.auto_start;
+        save_settings(&app.settings);
+    }
+    if tray_icon_old != app.settings.tray_icon_enabled {
+        let main_hwnd = main_window_hwnd();
+        if !main_hwnd.is_null() {
+            sync_main_tray_icon(main_hwnd, app);
+        }
     }
     if grouping_old != app.settings.grouping_enabled {
         app.clear_selection();
@@ -3338,6 +3950,7 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
             vv_popup_hide(st.parent_hwnd, app);
         }
     }
+    schedule_cloud_sync(app, false);
     // 保存后按新的上限清理 DB 中多余条目（0=无限制不清理）
     let new_max = app.settings.max_items;
     if new_max > 0 {
@@ -3349,14 +3962,18 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         restore_edge_hidden_window(st.parent_hwnd, app);
     }
     app.refilter();
+    sync_peer_windows_from_settings(st.parent_hwnd);
     InvalidateRect(st.parent_hwnd, null(), 1);
 }
 
 unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
     match cid {
         IDC_SET_AUTOSTART    => st.draft.auto_start,
+        IDC_SET_SILENTSTART  => st.draft.silent_start,
+        IDC_SET_TRAYICON     => st.draft.tray_icon_enabled,
         IDC_SET_CLOSETRAY    => st.draft.close_without_exit,
         IDC_SET_CLICK_HIDE   => st.draft.click_hide,
+        IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
         IDC_SET_VV_MODE => st.draft.vv_mode_enabled,
@@ -3375,8 +3992,11 @@ unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
 unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
     match cid {
         IDC_SET_AUTOSTART    => st.draft.auto_start = !st.draft.auto_start,
+        IDC_SET_SILENTSTART  => st.draft.silent_start = !st.draft.silent_start,
+        IDC_SET_TRAYICON     => st.draft.tray_icon_enabled = !st.draft.tray_icon_enabled,
         IDC_SET_CLOSETRAY    => st.draft.close_without_exit = !st.draft.close_without_exit,
         IDC_SET_CLICK_HIDE   => st.draft.click_hide = !st.draft.click_hide,
+        IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
         IDC_SET_VV_MODE => st.draft.vv_mode_enabled = !st.draft.vv_mode_enabled,
@@ -3411,13 +4031,16 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 0);
 
     st.chk_autostart = settings_create_toggle(hwnd, st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
-    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
-    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
-    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
+    st.chk_silent_start = settings_create_toggle(hwnd, st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
+    st.chk_tray_icon = settings_create_toggle(hwnd, st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
+    st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
+    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
+    st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
+    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
+    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(10), sec0.full_w(), ui_font);
 
     let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
     settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
@@ -4391,11 +5014,17 @@ unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
 }
 
 unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
+    ensure_update_check_started();
     let page = SettingsPage::About.index();
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec = SettingsFormSectionLayout::new(page, 0, 0);
+    let update_state = update_check_state()
+        .lock()
+        .ok()
+        .map(|guard| guard.clone())
+        .unwrap_or_default();
     let lines = [
-            format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
+        format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
         "设置界面现在统一使用同一套 section/form 布局。".to_string(),
         "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
     ];
@@ -4419,9 +5048,45 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     }
     y += label_h.max(32) + 10;
 
+    let update_text = if update_state.checking {
+        tr("更新检查中…", "Checking for updates...").to_string()
+    } else if update_state.available {
+        format!(
+            "{} {}",
+            tr("发现新版本：", "New version available: "),
+            if update_state.latest_tag.trim().is_empty() {
+                "latest".to_string()
+            } else {
+                update_state.latest_tag.clone()
+            }
+        )
+    } else if !update_state.error.trim().is_empty() {
+        format!("{} {}", tr("更新检查失败：", "Update check failed: "), update_state.error)
+    } else {
+        tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
+    };
+    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), 24);
+    y += update_h + 8;
+    st.btn_open_update = b.button(
+        st,
+        if update_state.available {
+            tr("打开新版本", "Open new version")
+        } else {
+            tr("打开发布页", "Open releases")
+        },
+        IDC_SET_OPEN_UPDATE,
+        sec.left(),
+        y,
+        180,
+    );
+    if !st.btn_open_update.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_open_update);
+    }
+    y += 42;
+
     for line in [
-            format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
-            format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
+        format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
+        format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
     ] {
         let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), 24);
         y += h + 10;
@@ -4463,8 +5128,8 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
     let hover = settings_button_hover(st, dis.hwndItem);
     let text = get_window_text(dis.hwndItem);
 
-    if cid == IDC_SET_AUTOSTART || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_EDGEHIDE
+    if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
+        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
         || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
@@ -4563,8 +5228,11 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 btn_open_db: null_mut(),
                 btn_open_data: null_mut(),
                 chk_autostart: null_mut(),
+                chk_silent_start: null_mut(),
+                chk_tray_icon: null_mut(),
                 chk_close_tray: null_mut(),
                 chk_click_hide: null_mut(),
+                chk_auto_hide_on_blur: null_mut(),
                 chk_edge_hide: null_mut(),
                 chk_hover_preview: null_mut(),
                 chk_group_enable: null_mut(),
@@ -4608,6 +5276,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 ed_dy: null_mut(),
                 ed_fx: null_mut(),
                 ed_fy: null_mut(),
+                btn_open_update: null_mut(),
                 nav_font,
                 ui_font,
                 title_font,
@@ -4871,7 +5540,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
+                let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == 6101 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -4892,7 +5561,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                IDC_SET_AUTOSTART | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
@@ -5069,6 +5738,20 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         open_path_with_shell(open_source_url());
                     }
                 }
+                IDC_SET_OPEN_UPDATE => {
+                    let url = update_check_state()
+                        .lock()
+                        .ok()
+                        .and_then(|state| {
+                            if !state.latest_url.trim().is_empty() {
+                                Some(state.latest_url.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(latest_release_url);
+                    open_path_with_shell(&url);
+                }
                 6111 => {
                     if let Err(e) = toggle_disabled_hotkey_char('V', true) {
                     MessageBoxW(
@@ -5100,18 +5783,18 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     }
                 }
                 IDC_SET_CLOUD_SYNC_NOW | IDC_SET_CLOUD_UPLOAD_CFG | IDC_SET_CLOUD_APPLY_CFG | IDC_SET_CLOUD_RESTORE_BACKUP => {
-                    let msg = match cmd {
-                        IDC_SET_CLOUD_SYNC_NOW => "云同步执行入口已经迁到统一框架，下一步继续接真实同步逻辑。",
-                        IDC_SET_CLOUD_UPLOAD_CFG => "上传配置入口已经迁到统一框架，下一步继续接真实上传逻辑。",
-                        IDC_SET_CLOUD_APPLY_CFG => "应用云端配置入口已经迁到统一框架，下一步继续接真实下载逻辑。",
-                        _ => "云备份恢复入口已经迁到统一框架，下一步继续接数据库与资源恢复逻辑。",
+                    settings_collect_to_app(st);
+                    let action = match cmd {
+                        IDC_SET_CLOUD_SYNC_NOW => CloudSyncAction::SyncNow,
+                        IDC_SET_CLOUD_UPLOAD_CFG => CloudSyncAction::UploadConfig,
+                        IDC_SET_CLOUD_APPLY_CFG => CloudSyncAction::ApplyRemoteConfig,
+                        _ => CloudSyncAction::RestoreBackup,
                     };
-                MessageBoxW(
-                    hwnd,
-                    to_wide(translate(msg).as_ref()).as_ptr(),
-                    to_wide(translate("云同步").as_ref()).as_ptr(),
-                    MB_OK | MB_ICONINFORMATION,
-                );
+                    let pst = get_state_ptr(st.parent_hwnd);
+                    if !pst.is_null() {
+                        queue_cloud_sync(st.parent_hwnd, &mut *pst, action, false);
+                        settings_apply_from_app(st);
+                    }
                 }
                 IDC_SET_SAVE => {
                     settings_collect_to_app(st);
@@ -5221,6 +5904,18 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let selected = !st_ptr.is_null() && (*st_ptr).cur_page == i;
                     let hover = !st_ptr.is_null() && (*st_ptr).nav_hot == i as i32;
                     draw_settings_nav_item(memdc as _, i, selected, hover, th);
+                    if i == SettingsPage::About.index()
+                        && update_check_state().lock().ok().map(|state| state.available).unwrap_or(false)
+                    {
+                        let item_rc = settings_nav_item_rect(i);
+                        let dot = RECT {
+                            left: item_rc.right - 22,
+                            top: item_rc.top + 14,
+                            right: item_rc.right - 12,
+                            bottom: item_rc.top + 24,
+                        };
+                        draw_round_fill(memdc as _, &dot, rgb(228, 60, 60), 5);
+                    }
                 }
 
                 // 内容区裁剪（防止滚动时卡片溢出到标题栏区域）
@@ -5338,7 +6033,11 @@ unsafe fn ensure_settings_class() {
 }
 
 unsafe fn open_settings_window(hwnd: HWND) {
-    let pst = get_state_ptr(hwnd);
+    let owner_hwnd = {
+        let main = main_window_hwnd();
+        if !main.is_null() { main } else { hwnd }
+    };
+    let pst = get_state_ptr(owner_hwnd);
     if pst.is_null() { return; }
     let app = &mut *pst;
     if !app.settings_hwnd.is_null() {
@@ -5361,10 +6060,10 @@ unsafe fn open_settings_window(hwnd: HWND) {
         y,
         SETTINGS_W,
         SETTINGS_H,
-        hwnd,
+        owner_hwnd,
         null_mut(),
         hinstance,
-        hwnd as _,
+        owner_hwnd as _,
     );
     if !whd.is_null() {
         if app.icons.app != 0 {
@@ -5414,6 +6113,11 @@ unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
     let state = &mut *ptr;
     if reload_settings {
         state.settings = load_settings();
+        state.settings.auto_start = is_autostart_enabled();
+        schedule_cloud_sync(state, false);
+        if state.role == WindowRole::Main {
+            sync_main_tray_icon(hwnd, state);
+        }
     }
     reload_state_from_db(state);
     layout_children(hwnd);
@@ -5425,7 +6129,24 @@ unsafe fn sync_peer_windows_from_db(source_hwnd: HWND) {
         if target.is_null() || target == source_hwnd || IsWindow(target) == 0 {
             continue;
         }
+        let ptr = get_state_ptr(target);
+        if !ptr.is_null() && (*ptr).role == WindowRole::Quick && IsWindowVisible(target) == 0 {
+            continue;
+        }
         refresh_window_state(target, false);
+    }
+}
+
+unsafe fn sync_peer_windows_from_settings(source_hwnd: HWND) {
+    for target in window_host_hwnds() {
+        if target.is_null() || target == source_hwnd || IsWindow(target) == 0 {
+            continue;
+        }
+        let ptr = get_state_ptr(target);
+        if !ptr.is_null() && (*ptr).role == WindowRole::Quick && IsWindowVisible(target) == 0 {
+            continue;
+        }
+        refresh_window_state(target, true);
     }
 }
 
@@ -5434,6 +6155,7 @@ pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
 }
 
 pub fn run() -> AppResult<()> {
+    let boot_settings = load_settings();
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     unsafe {
         #[link(name = "kernel32")]
@@ -5446,12 +6168,16 @@ pub fn run() -> AppResult<()> {
         let _mutex = CreateMutexW(core::ptr::null(), 0, name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // 已有实例：找到主窗口并激活
-            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SetForegroundWindow, SW_RESTORE};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, ShowWindow, SetForegroundWindow, SW_RESTORE};
             let cls = to_wide(WindowRole::Main.class_name());
             let hwnd = FindWindowW(cls.as_ptr(), core::ptr::null());
             if !hwnd.is_null() {
-                ShowWindow(hwnd, SW_RESTORE);
-                SetForegroundWindow(hwnd);
+                if !boot_settings.tray_icon_enabled {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                } else {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                }
             }
             return Ok(());
         }
@@ -5528,7 +6254,7 @@ pub fn run() -> AppResult<()> {
             return Err(io::Error::last_os_error());
         }
 
-        ShowWindow(main_hwnd, SW_SHOW);
+        ShowWindow(main_hwnd, if startup_can_hide(&boot_settings) { SW_HIDE } else { SW_SHOW });
         ShowWindow(quick_hwnd, SW_HIDE);
 
         let mut msg: MSG = zeroed();
@@ -5573,6 +6299,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             layout_children(hwnd);
             InvalidateRect(hwnd, null(), 1);
             0
+        }
+        WM_SHOWWINDOW => {
+            if wparam == 0 {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() && (*ptr).role == WindowRole::Quick {
+                    (*ptr).release_list_memory();
+                    trim_process_working_set();
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_TIMER => {
             if wparam as usize == ID_TIMER_CARET {
@@ -5647,6 +6383,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             if wparam as usize == ID_TIMER_EDGE_AUTO_HIDE {
                 handle_edge_auto_hide_tick(hwnd);
+                return 0;
+            }
+            if wparam as usize == ID_TIMER_CLOUD_SYNC {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    if !state.cloud_sync_in_progress
+                        && state.role == WindowRole::Main
+                        && state
+                            .cloud_sync_next_due
+                            .map(|due| due <= Instant::now())
+                            .unwrap_or(false)
+                    {
+                        queue_cloud_sync(hwnd, state, CloudSyncAction::SyncNow, true);
+                    }
+                }
                 return 0;
             }
             InvalidateRect(hwnd, null(), 0);
@@ -5759,6 +6511,28 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_CLOUD_SYNC_READY => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                apply_ready_cloud_syncs(hwnd, &mut *ptr);
+            }
+            0
+        }
+        WM_UPDATE_CHECK_READY => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0 {
+                InvalidateRect((*ptr).settings_hwnd, null(), 1);
+            }
+            0
+        }
+        WM_OUTSIDE_CLICK_HIDE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
+                hide_hover_preview();
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            0
+        }
         WM_ACTIVATEAPP => {
             if wparam == 0 {
                 clear_main_hover_state(hwnd);
@@ -5776,6 +6550,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_CLOSE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if close_to_tray_enabled(&state.settings) {
+                    ShowWindow(hwnd, SW_HIDE);
+                    return 0;
+                }
+            }
+            DestroyWindow(hwnd);
+            0
+        }
         WM_NCHITTEST => handle_nchittest(hwnd, lparam),
         WM_DESTROY => {
             let ptr = get_state_ptr(hwnd);
@@ -5786,11 +6572,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         KillTimer(hwnd, ID_TIMER_VV_SHOW);
                         KillTimer(hwnd, ID_TIMER_PASTE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
+                        KillTimer(hwnd, ID_TIMER_CLOUD_SYNC);
                         let popup = current_vv_popup_hwnd();
                         if !popup.is_null() && IsWindow(popup) != 0 {
                             DestroyWindow(popup);
                         }
                         update_vv_mode_hook(hwnd, false);
+                        if let Ok(mut handle) = outside_hide_mouse_hook_handle().lock() {
+                            if *handle != 0 {
+                                UnhookWindowsHookEx(*handle as _);
+                                *handle = 0;
+                            }
+                        }
                         RemoveClipboardFormatListener(hwnd);
                         unregister_hotkey_for(hwnd, &mut *ptr);
                         remove_tray_icon(hwnd);
@@ -5861,11 +6654,13 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Some(state) = unsafe { get_state_mut(hwnd) } {
         ensure_db();
-        reload_state_from_db(state);
         if role == WindowRole::Main {
+            reload_state_from_db(state);
             register_hotkey_for(hwnd, state);
             update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
+            ensure_update_check_started();
+            ensure_outside_hide_mouse_hook();
         }
     }
 
@@ -5875,7 +6670,11 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     apply_main_window_region(hwnd);
     apply_dark_mode_to_window(hwnd);
     if role == WindowRole::Main {
-        add_tray_icon_localized(hwnd, tray_icon);
+        if let Some(state) = unsafe { get_state_mut(hwnd) } {
+            sync_main_tray_icon(hwnd, state);
+        } else if tray_icon != 0 {
+            add_tray_icon_localized(hwnd, tray_icon);
+        }
     } else {
         set_main_window_noactivate_mode(hwnd, true);
     }
@@ -5885,6 +6684,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     if role == WindowRole::Main {
         SetTimer(hwnd, ID_TIMER_CARET, 500, None);
         SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
+        SetTimer(hwnd, ID_TIMER_CLOUD_SYNC, 5000, None);
     }
     Ok(())
 }
@@ -6727,7 +7527,7 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
                 ShowWindow(hwnd, SW_HIDE);
             }
             _ => {
-                if state.settings.close_without_exit {
+                if close_to_tray_enabled(&state.settings) {
                     ShowWindow(hwnd, SW_HIDE);
                 } else {
                     DestroyWindow(hwnd);
@@ -7223,7 +8023,7 @@ unsafe fn copy_selected_rows_combined(state: &mut AppState) -> bool {
     }
     let ok = clipboard.set_text(merged).is_ok();
     if ok {
-        state.ignore_clipboard_until = Some(Instant::now() + std::time::Duration::from_millis(450));
+        set_ignore_clipboard_for_all_hosts(450);
     }
     ok
 }
@@ -7281,7 +8081,7 @@ unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> 
         }
     };
     if ok {
-        state.ignore_clipboard_until = Some(Instant::now() + std::time::Duration::from_millis(450));
+        set_ignore_clipboard_for_all_hosts(450);
     }
     ok
 }
@@ -7333,7 +8133,7 @@ unsafe fn try_apply_to_explorer_rename(state: &mut AppState, item_ref: &ClipItem
     if ok {
         let caret = text.encode_utf16().count() as isize;
         SendMessageW(state.hotkey_passthrough_edit, EM_SETSEL, caret as usize, caret);
-        state.ignore_clipboard_until = Some(Instant::now() + std::time::Duration::from_millis(250));
+        set_ignore_clipboard_for_all_hosts(250);
         clear_hotkey_passthrough_state(state);
     }
     ok

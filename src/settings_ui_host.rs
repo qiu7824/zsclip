@@ -427,7 +427,7 @@ pub unsafe fn draw_settings_dropdown_button(
     hdc: *mut c_void,
     rc: &RECT,
     text: &str,
-    hover: bool,
+    _hover: bool,
     pressed: bool,
     th: Theme,
 ) {
@@ -437,8 +437,8 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rc.right - 1,
         bottom: rc.bottom - 1,
     };
-    let fill = if pressed { th.button_pressed } else if hover { th.button_hover } else { th.surface };
-    let border = if hover { th.accent } else { th.control_stroke };
+    let fill = if pressed { th.button_pressed } else { th.surface };
+    let border = if pressed { th.accent } else { th.control_stroke };
     draw_round_rect(hdc, &rr, fill, border, 6);
 
     let text_rc = RECT { left: rr.left + 12, top: rr.top, right: rr.right - 28, bottom: rr.bottom };
@@ -550,16 +550,9 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                     for (idx, item) in st.items.iter().enumerate() {
                         let top = DROPDOWN_PAD + idx as i32 * st.item_h;
                         let item_rc = RECT { left: DROPDOWN_PAD, top, right: w - DROPDOWN_PAD, bottom: top + st.item_h };
-                        let hovered = st.hover == idx as i32;
                         let selected = st.selected == idx as i32;
-                        if hovered || selected {
-                            let fill = if selected {
-                                th.nav_sel_fill
-                            } else if crate::ui::is_dark_mode() {
-                                rgb(60, 60, 60)
-                            } else {
-                                rgb(245, 245, 245)
-                            };
+                        if selected {
+                            let fill = th.nav_sel_fill;
                             draw_round_fill(hdc as _, &item_rc, fill, 6);
                         }
                         if selected {

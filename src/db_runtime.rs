@@ -91,3 +91,13 @@ where
         f(conn)
     })
 }
+
+pub(crate) fn close_db() {
+    DB_CONN.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some(conn) = slot.as_mut() {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        *slot = None;
+    });
+}

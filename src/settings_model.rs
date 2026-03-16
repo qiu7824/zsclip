@@ -50,13 +50,13 @@ const GROUP_SECTIONS: [SettingsSection; 2] = [
 ];
 
 const CLOUD_SECTIONS: [SettingsSection; 3] = [
-    SettingsSection { title: "云同步", rect: settings_card_rect(16, 112) },
-    SettingsSection { title: "连接与凭据", rect: settings_card_rect(140, 146) },
-    SettingsSection { title: "操作", rect: settings_card_rect(298, 92) },
+    SettingsSection { title: "同步设置", rect: settings_card_rect(16, 166) },
+    SettingsSection { title: "WebDAV 连接", rect: settings_card_rect(194, 206) },
+    SettingsSection { title: "同步操作", rect: settings_card_rect(412, 118) },
 ];
 
 const ABOUT_SECTIONS: [SettingsSection; 1] = [
-    SettingsSection { title: "关于", rect: settings_card_rect(16, 280) },
+    SettingsSection { title: "关于", rect: settings_card_rect(16, 340) },
 ];
 
 const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
@@ -68,7 +68,7 @@ const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
 const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec { rows: 3 },
     SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 3 },
+    SettingsFormCardSpec { rows: 2 },
 ];
 
 const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
@@ -141,7 +141,7 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
     if page == 4 {
         return settings_form_cards(
             16,
-            ["云同步", "连接与凭据", "操作"],
+            ["同步设置", "WebDAV 连接", "同步操作"],
             CLOUD_FORM_SECTIONS,
         );
     }

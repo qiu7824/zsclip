@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod gdiplus;
+#[path = "i18n_runtime.rs"]
 mod i18n;
 mod ui;
 mod ui_core;
@@ -18,6 +19,7 @@ mod sticker;
 mod tray;
 mod window_position;
 mod db_runtime;
+mod cloud_sync;
 mod time_utils;
 mod win_buffered_paint;
 mod app;
