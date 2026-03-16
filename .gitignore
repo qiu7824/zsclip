@@ -2,6 +2,7 @@
 /target_codex2
 /data/clipboard_history.json
 /target
+/_refs/
 **/*.pdb
 **/*.exe
 .DS_Store

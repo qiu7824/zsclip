@@ -165,6 +165,7 @@ const EC_RIGHTMARGIN: usize = 0x0002;
 
 const APP_TITLE: &str = "剪贴板";
 const CLASS_NAME: &str = "ZsClipMain";
+const QUICK_CLASS_NAME: &str = "ZsClipQuick";
 
 pub(crate) const WIN_W: i32 = 300;
 pub(crate) const WIN_H: i32 = 615;
@@ -256,6 +257,87 @@ const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
 ];
 const EDGE_AUTO_HIDE_PEEK: i32 = 6;
 const EDGE_AUTO_HIDE_MARGIN: i32 = 8;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(isize)]
+pub(crate) enum WindowRole {
+    Main = 1,
+    Quick = 2,
+}
+
+impl WindowRole {
+    fn from_create_param(value: isize) -> Self {
+        match value {
+            x if x == WindowRole::Quick as isize => WindowRole::Quick,
+            _ => WindowRole::Main,
+        }
+    }
+
+    fn class_name(self) -> &'static str {
+        match self {
+            WindowRole::Main => CLASS_NAME,
+            WindowRole::Quick => QUICK_CLASS_NAME,
+        }
+    }
+}
+
+#[derive(Default)]
+struct WindowHosts {
+    main: isize,
+    quick: isize,
+}
+
+static WINDOW_HOSTS: OnceLock<Mutex<WindowHosts>> = OnceLock::new();
+
+fn window_hosts() -> &'static Mutex<WindowHosts> {
+    WINDOW_HOSTS.get_or_init(|| Mutex::new(WindowHosts::default()))
+}
+
+fn set_window_host(role: WindowRole, hwnd: HWND) {
+    if let Ok(mut hosts) = window_hosts().lock() {
+        match role {
+            WindowRole::Main => hosts.main = hwnd as isize,
+            WindowRole::Quick => hosts.quick = hwnd as isize,
+        }
+    }
+}
+
+fn clear_window_host(role: WindowRole, hwnd: HWND) {
+    if let Ok(mut hosts) = window_hosts().lock() {
+        let slot = match role {
+            WindowRole::Main => &mut hosts.main,
+            WindowRole::Quick => &mut hosts.quick,
+        };
+        if *slot == hwnd as isize {
+            *slot = 0;
+        }
+    }
+}
+
+fn window_host_hwnds() -> [HWND; 2] {
+    window_hosts()
+        .lock()
+        .ok()
+        .map(|hosts| [hosts.main as HWND, hosts.quick as HWND])
+        .unwrap_or([null_mut(), null_mut()])
+}
+
+fn is_app_window(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    window_host_hwnds()
+        .into_iter()
+        .any(|host| !host.is_null() && host == hwnd)
+}
+
+pub(crate) fn quick_window_hwnd() -> HWND {
+    window_hosts()
+        .lock()
+        .ok()
+        .map(|hosts| hosts.quick as HWND)
+        .unwrap_or(null_mut())
+}
 const EDGE_AUTO_HIDE_NONE: i32 = -1;
 const EDGE_AUTO_HIDE_LEFT: i32 = 0;
 const EDGE_AUTO_HIDE_RIGHT: i32 = 1;
@@ -557,6 +639,7 @@ struct VvPopupEntry {
 
 #[derive(Clone)]
 struct PageLoadResult {
+    hwnd: isize,
     tab: usize,
     request_seq: u64,
     query: ItemsQuery,
@@ -1481,6 +1564,7 @@ impl Icons {
 }
 
 pub(crate) struct AppState {
+    pub(crate) role: WindowRole,
     pub(crate) hwnd: HWND,
     pub(crate) search_hwnd: HWND,
     pub(crate) theme: Theme,
@@ -1515,9 +1599,12 @@ pub(crate) struct AppState {
     pub(crate) vv_popup_replaces_ime: bool,
     pub(crate) vv_popup_group_id: i64,
     vv_popup_items: Vec<VvPopupEntry>,
-    pub(crate) paste_return_to_main: bool,
     pub(crate) paste_target_override: HWND,
     pub(crate) paste_backspace_count: u8,
+    pub(crate) hotkey_passthrough_active: bool,
+    pub(crate) hotkey_passthrough_target: HWND,
+    pub(crate) hotkey_passthrough_edit: HWND,
+    pub(crate) main_window_noactivate: bool,
     pub(crate) edge_hidden: bool,
     pub(crate) edge_hidden_side: i32,
     pub(crate) edge_restore_x: i32,
@@ -1544,8 +1631,9 @@ impl DerefMut for AppState {
 
 
 impl AppState {
-    fn new(hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
+    fn new(role: WindowRole, hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
         Self {
+            role,
             hwnd,
             search_hwnd,
             theme: Theme::default(),
@@ -1580,9 +1668,12 @@ impl AppState {
             vv_popup_replaces_ime: false,
             vv_popup_group_id: 0,
             vv_popup_items: Vec::new(),
-            paste_return_to_main: false,
             paste_target_override: null_mut(),
             paste_backspace_count: 0,
+            hotkey_passthrough_active: false,
+            hotkey_passthrough_target: null_mut(),
+            hotkey_passthrough_edit: null_mut(),
+            main_window_noactivate: false,
             edge_hidden: false,
             edge_hidden_side: EDGE_AUTO_HIDE_NONE,
             edge_restore_x: 0,
@@ -1811,6 +1902,7 @@ impl AppState {
         self.clear_selection();
         self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
+        unsafe { sync_peer_windows_from_db(self.hwnd); }
     }
 
     fn toggle_pin_rows(&mut self) {
@@ -1835,6 +1927,7 @@ impl AppState {
         self.clear_selection();
         self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
+        unsafe { sync_peer_windows_from_db(self.hwnd); }
     }
 
     fn selected_items_owned(&self) -> Vec<ClipItem> {
@@ -1944,6 +2037,7 @@ impl AppState {
             self.sel_idx = 0;
         }
         self.refilter();
+        unsafe { sync_peer_windows_from_db(self.hwnd); }
     }
 
 
@@ -2016,6 +2110,7 @@ impl AppState {
             self.clear_selection();
             self.invalidate_tab_query(self.tab_index, true);
             self.refilter();
+            unsafe { sync_peer_windows_from_db(self.hwnd); }
         }
     }
 
@@ -2027,6 +2122,7 @@ impl AppState {
             }
             self.invalidate_tab_query(self.tab_index, true);
             self.refilter();
+            unsafe { sync_peer_windows_from_db(self.hwnd); }
         }
     }
 
@@ -2368,6 +2464,7 @@ fn spawn_items_page_load(
     std::thread::spawn(move || {
         let result = match db_load_items_page(&query, cursor, ITEMS_PAGE_SIZE) {
             Ok((items, next_cursor, has_more)) => PageLoadResult {
+                hwnd: hwnd_value,
                 tab,
                 request_seq,
                 query,
@@ -2378,6 +2475,7 @@ fn spawn_items_page_load(
                 error: None,
             },
             Err(err) => PageLoadResult {
+                hwnd: hwnd_value,
                 tab,
                 request_seq,
                 query,
@@ -2404,9 +2502,15 @@ fn spawn_items_page_load(
 unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
     let mut changed = false;
     if let Ok(mut queue) = page_load_results().lock() {
+        let mut pending = VecDeque::new();
         while let Some(result) = queue.pop_front() {
+            if result.hwnd != hwnd as isize {
+                pending.push_back(result);
+                continue;
+            }
             changed |= state.apply_page_load_result(result);
         }
+        *queue = pending;
     }
     if changed {
         InvalidateRect(hwnd, null(), 1);
@@ -5216,6 +5320,33 @@ fn reload_state_from_db(state: &mut AppState) {
     state.refilter();
 }
 
+unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    let state = &mut *ptr;
+    if reload_settings {
+        state.settings = load_settings();
+    }
+    reload_state_from_db(state);
+    layout_children(hwnd);
+    InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn sync_peer_windows_from_db(source_hwnd: HWND) {
+    for target in window_host_hwnds() {
+        if target.is_null() || target == source_hwnd || IsWindow(target) == 0 {
+            continue;
+        }
+        refresh_window_state(target, false);
+    }
+}
+
+pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
+    refresh_window_state(hwnd, true);
+}
+
 pub fn run() -> AppResult<()> {
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     unsafe {
@@ -5230,7 +5361,7 @@ pub fn run() -> AppResult<()> {
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // 已有实例：找到主窗口并激活
             use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, ShowWindow, SetForegroundWindow, SW_RESTORE};
-            let cls = to_wide("ZsClipMain");
+            let cls = to_wide(WindowRole::Main.class_name());
             let hwnd = FindWindowW(cls.as_ptr(), core::ptr::null());
             if !hwnd.is_null() {
                 ShowWindow(hwnd, SW_RESTORE);
@@ -5254,27 +5385,29 @@ pub fn run() -> AppResult<()> {
             return Err(io::Error::last_os_error());
         }
 
-        let class_name = to_wide(CLASS_NAME);
-        let wc = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
-            lpfnWndProc: Some(wnd_proc),
-            hInstance: hinstance,
-            hCursor: cursor,
-            hbrBackground: null_mut(),
-            lpszClassName: class_name.as_ptr(),
-            ..zeroed()
-        };
+        for role in [WindowRole::Main, WindowRole::Quick] {
+            let class_name = to_wide(role.class_name());
+            let wc = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
+                lpfnWndProc: Some(wnd_proc),
+                hInstance: hinstance,
+                hCursor: cursor,
+                hbrBackground: null_mut(),
+                lpszClassName: class_name.as_ptr(),
+                ..zeroed()
+            };
 
-        let atom = RegisterClassExW(&wc);
-        if atom == 0 {
-            return Err(io::Error::last_os_error());
+            let atom = RegisterClassExW(&wc);
+            if atom == 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
 
         let title = to_wide(APP_TITLE);
-        let hwnd = CreateWindowExW(
+        let main_hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            class_name.as_ptr(),
+            to_wide(WindowRole::Main.class_name()).as_ptr(),
             title.as_ptr(),
             WS_POPUP | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
@@ -5284,15 +5417,33 @@ pub fn run() -> AppResult<()> {
             null_mut(),
             null_mut(),
             hinstance,
-            null(),
+            WindowRole::Main as usize as _,
         );
-        if hwnd.is_null() {
+        if main_hwnd.is_null() {
             return Err(io::Error::last_os_error());
         }
 
-        ShowWindow(hwnd, SW_SHOW);
-        SetTimer(hwnd, ID_TIMER_CARET, 500, None);
-        SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
+        let quick_hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            to_wide(WindowRole::Quick.class_name()).as_ptr(),
+            title.as_ptr(),
+            WS_POPUP | WS_CLIPCHILDREN,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            WIN_W,
+            WIN_H,
+            null_mut(),
+            null_mut(),
+            hinstance,
+            WindowRole::Quick as usize as _,
+        );
+        if quick_hwnd.is_null() {
+            DestroyWindow(main_hwnd);
+            return Err(io::Error::last_os_error());
+        }
+
+        ShowWindow(main_hwnd, SW_SHOW);
+        ShowWindow(quick_hwnd, SW_HIDE);
 
         let mut msg: MSG = zeroed();
         loop {
@@ -5318,10 +5469,14 @@ unsafe fn apply_main_window_region(hwnd: HWND) {
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
-        WM_CREATE => match on_create(hwnd) {
-            Ok(_) => 0,
-            Err(_) => -1,
-        },
+        WM_CREATE => {
+            let cs = &*(lparam as *const CREATESTRUCTW);
+            let role = WindowRole::from_create_param(cs.lpCreateParams as isize);
+            match on_create(hwnd, role) {
+                Ok(_) => 0,
+                Err(_) => -1,
+            }
+        }
         WM_PAINT => {
             paint(hwnd);
             0
@@ -5373,18 +5528,16 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
+                    let target = state.paste_target_override;
+                    if !target.is_null() {
+                        let _ = force_foreground_window(target);
+                    }
                     send_backspace_times(state.paste_backspace_count);
                     state.paste_backspace_count = 0;
                     state.paste_target_override = null_mut();
+                    clear_hotkey_passthrough_state(state);
                 }
                 send_ctrl_v();
-                if !ptr.is_null() {
-                    let state = &mut *ptr;
-                    if state.paste_return_to_main {
-                        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-                        state.paste_return_to_main = false;
-                    }
-                }
                 return 0;
             }
             if wparam as usize == ID_TIMER_SCROLL_FADE {
@@ -5449,6 +5602,30 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             handle_lbutton_dblclk(hwnd, lparam);
             0
         }
+        WM_MOUSEACTIVATE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let mut keep_noactivate = false;
+                let state = &*ptr;
+                if state.main_window_noactivate {
+                    let mut pt = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut pt);
+                    ScreenToClient(hwnd, &mut pt);
+                    keep_noactivate = main_window_should_stay_noactivate(state, pt.x, pt.y);
+                }
+                if keep_noactivate {
+                    return MA_NOACTIVATE as LRESULT;
+                }
+                if state.main_window_noactivate {
+                    set_main_window_noactivate_mode(hwnd, false);
+                    let ptr = get_state_ptr(hwnd);
+                    if !ptr.is_null() {
+                        clear_hotkey_passthrough_state(&mut *ptr);
+                    }
+                }
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
         WM_RBUTTONUP => {
             handle_rbutton_up(hwnd, lparam);
             0
@@ -5507,31 +5684,48 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_MOVE => {
-            remember_window_pos(hwnd);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() && (*ptr).role == WindowRole::Main {
+                remember_window_pos(hwnd);
+            }
             0
         }
         WM_NCHITTEST => handle_nchittest(hwnd, lparam),
         WM_DESTROY => {
-            KillTimer(hwnd, ID_TIMER_CARET);
-            KillTimer(hwnd, ID_TIMER_VV_SHOW);
-            KillTimer(hwnd, ID_TIMER_PASTE);
-            KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
-            let popup = current_vv_popup_hwnd();
-            if !popup.is_null() && IsWindow(popup) != 0 {
-                DestroyWindow(popup);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                match (*ptr).role {
+                    WindowRole::Main => {
+                        KillTimer(hwnd, ID_TIMER_CARET);
+                        KillTimer(hwnd, ID_TIMER_VV_SHOW);
+                        KillTimer(hwnd, ID_TIMER_PASTE);
+                        KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
+                        let popup = current_vv_popup_hwnd();
+                        if !popup.is_null() && IsWindow(popup) != 0 {
+                            DestroyWindow(popup);
+                        }
+                        update_vv_mode_hook(hwnd, false);
+                        RemoveClipboardFormatListener(hwnd);
+                        unregister_hotkey_for(hwnd, &mut *ptr);
+                        remove_tray_icon(hwnd);
+                        let quick = quick_window_hwnd();
+                        if !quick.is_null() && quick != hwnd && IsWindow(quick) != 0 {
+                            DestroyWindow(quick);
+                        }
+                        PostQuitMessage(0);
+                    }
+                    WindowRole::Quick => {
+                        KillTimer(hwnd, ID_TIMER_PASTE);
+                        KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
+                    }
+                }
             }
-            update_vv_mode_hook(hwnd, false);
-            RemoveClipboardFormatListener(hwnd);
-            if let Some(state) = unsafe { get_state_mut(hwnd) } {
-                unregister_hotkey_for(hwnd, state);
-            }
-            remove_tray_icon(hwnd);
-            PostQuitMessage(0);
             0
         }
         WM_NCDESTROY => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
+                clear_window_host((*ptr).role, hwnd);
                 (*ptr).icons.destroy();
                 drop(Box::from_raw(ptr));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -5542,7 +5736,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-unsafe fn on_create(hwnd: HWND) -> AppResult<()> {
+unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     let hinstance = GetModuleHandleW(null());
     if hinstance.is_null() {
         return Err(io::Error::last_os_error());
@@ -5577,22 +5771,35 @@ unsafe fn on_create(hwnd: HWND) -> AppResult<()> {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG as WPARAM, icons.app as LPARAM);
     }
 
-    let state = Box::new(AppState::new(hwnd, search_hwnd, icons));
+    let state = Box::new(AppState::new(role, hwnd, search_hwnd, icons));
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     if let Some(state) = unsafe { get_state_mut(hwnd) } {
         ensure_db();
         reload_state_from_db(state);
-        register_hotkey_for(hwnd, state);
-        update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
-        position_main_window(hwnd, &state.settings, false);
+        if role == WindowRole::Main {
+            register_hotkey_for(hwnd, state);
+            update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+            position_main_window(hwnd, &state.settings, false);
+        }
     }
 
-    AddClipboardFormatListener(hwnd);
+    if role == WindowRole::Main {
+        AddClipboardFormatListener(hwnd);
+    }
     apply_main_window_region(hwnd);
     apply_dark_mode_to_window(hwnd);
-    add_tray_icon(hwnd, tray_icon);
+    if role == WindowRole::Main {
+        add_tray_icon(hwnd, tray_icon);
+    } else {
+        set_main_window_noactivate_mode(hwnd, true);
+    }
+    set_window_host(role, hwnd);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
+    if role == WindowRole::Main {
+        SetTimer(hwnd, ID_TIMER_CARET, 500, None);
+        SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
+    }
     Ok(())
 }
 
@@ -5666,6 +5873,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                 if state.tab_index == 1 {
                     state.refilter();
                 }
+                sync_peer_windows_from_db(hwnd);
                 InvalidateRect(hwnd, null(), 1);
             }
         }
@@ -5780,6 +5988,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                     if saved {
                         reload_state_from_db(state);
                         state.refilter();
+                        sync_peer_windows_from_db(hwnd);
                         InvalidateRect(hwnd, null(), 1);
                     }
                 }
@@ -5792,6 +6001,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                 if !ids.is_empty() {
                     let _ = db_assign_group(&ids, 0);
                     reload_state_from_db(state);
+                    sync_peer_windows_from_db(hwnd);
                     InvalidateRect(hwnd, null(), 1);
                 }
             }
@@ -5817,6 +6027,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                         let _ = db_assign_group(&ids, group_id);
                         reload_state_from_db(state);
                         state.refilter();
+                        sync_peer_windows_from_db(hwnd);
                         InvalidateRect(hwnd, null(), 1);
                     }
                 }
@@ -6353,6 +6564,28 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
     if idx >= 0 {
         state.sel_idx = idx;
         state.ensure_visible(idx);
+        let ctrl = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
+        let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
+        if !ctrl && !shift && state.hotkey_passthrough_active && !state.hotkey_passthrough_edit.is_null() {
+            let mut handled = false;
+            if let Some(src_idx) = state.filtered_indices.get(idx as usize).copied() {
+                if let Some(item) = state.active_items().get(src_idx).cloned() {
+                    if let Some(del_rc) = row_quick_delete_rect(state, idx, &item) {
+                        if !pt_in_rect(x, y, &del_rc) {
+                            handled = try_apply_to_explorer_rename(state, &item);
+                        }
+                    } else {
+                        handled = try_apply_to_explorer_rename(state, &item);
+                    }
+                }
+            }
+            if handled {
+                ShowWindow(hwnd, SW_HIDE);
+                state.clear_selection();
+                clear_main_hover_state(hwnd);
+                return;
+            }
+        }
         state.down_row = idx;
         state.down_x = x;
         state.down_y = y;
@@ -6472,15 +6705,8 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
         return;
     }
 
-    // 单击逻辑：
-    // - 开启“单击后隐藏主窗口”：复制到剪贴板后切到目标窗口并粘贴，同时隐藏主窗口
-    // - 关闭时：仍执行粘贴，但主窗口保持显示，仅在粘贴完成后重新置于最上层
-    if !apply_selected_to_clipboard(state) {
-        return;
-    }
-    state.clear_selection();
-    clear_main_hover_state(hwnd);
-    paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
+    // 单击逻辑统一走粘贴入口，资源管理器重命名会在这里走直接写 Edit 的专用路径。
+    paste_selected(hwnd, state);
     InvalidateRect(hwnd, null(), 0);
 }
 
@@ -6970,8 +7196,63 @@ unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
     apply_item_to_clipboard(state, &item_ref)
 }
 
+unsafe fn try_apply_to_explorer_rename(state: &mut AppState, item_ref: &ClipItem) -> bool {
+    if !state.hotkey_passthrough_active || state.hotkey_passthrough_edit.is_null() {
+        return false;
+    }
+    if IsWindow(state.hotkey_passthrough_edit) == 0 {
+        clear_hotkey_passthrough_state(state);
+        return false;
+    }
+
+    let full_item = match state.resolve_item_for_use(item_ref) {
+        Some(item) => item,
+        None => return false,
+    };
+
+    let text = match full_item.kind {
+        ClipKind::Text | ClipKind::Phrase => full_item
+            .text
+            .as_ref()
+            .map(|text| maybe_ai_clean_text(state, text)),
+        ClipKind::Files => full_item
+            .text
+            .as_ref()
+            .map(|text| maybe_ai_clean_text(state, text)),
+        ClipKind::Image => None,
+    };
+
+    let Some(text) = text else {
+        return false;
+    };
+
+    let wide = to_wide(&text);
+    let ok = SendMessageW(
+        state.hotkey_passthrough_edit,
+        WM_SETTEXT,
+        0,
+        wide.as_ptr() as LPARAM,
+    ) != 0;
+    if ok {
+        let caret = text.encode_utf16().count() as isize;
+        SendMessageW(state.hotkey_passthrough_edit, EM_SETSEL, caret as usize, caret);
+        state.ignore_clipboard_until = Some(Instant::now() + std::time::Duration::from_millis(250));
+        clear_hotkey_passthrough_state(state);
+    }
+    ok
+}
+
 unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
-    if !apply_selected_to_clipboard(state) {
+    let Some(item_ref) = state.current_item().cloned() else {
+        return;
+    };
+    if try_apply_to_explorer_rename(state, &item_ref) {
+        ShowWindow(hwnd, SW_HIDE);
+        state.clear_selection();
+        clear_main_hover_state(hwnd);
+        return;
+    }
+    if !apply_item_to_clipboard(state, &item_ref) {
         return;
     }
     state.clear_selection();
@@ -7345,6 +7626,12 @@ unsafe fn send_alt_tap() {
     let _ = SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
 }
 
+fn clear_hotkey_passthrough_state(state: &mut AppState) {
+    state.hotkey_passthrough_active = false;
+    state.hotkey_passthrough_target = null_mut();
+    state.hotkey_passthrough_edit = null_mut();
+}
+
 unsafe fn force_foreground_window(hwnd: HWND) -> bool {
     if hwnd.is_null() {
         return false;
@@ -7356,23 +7643,39 @@ unsafe fn force_foreground_window(hwnd: HWND) -> bool {
     SetForegroundWindow(hwnd) != 0
 }
 
+unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
+    if !state.paste_target_override.is_null() {
+        return state.paste_target_override;
+    }
+    if state.hotkey_passthrough_active && !state.hotkey_passthrough_target.is_null() {
+        return state.hotkey_passthrough_target;
+    }
+    if state.role == WindowRole::Quick {
+        let fg = GetForegroundWindow();
+        if is_viable_paste_window(fg, hwnd) {
+            return fg;
+        }
+    }
+    find_next_paste_target(hwnd)
+}
+
 unsafe fn paste_after_clipboard_ready(hwnd: HWND, state: &mut AppState, hide_main: bool) {
-    let target = find_next_paste_target(hwnd);
+    let target = effective_paste_target(state, hwnd);
     paste_after_clipboard_ready_to_target(hwnd, state, target, hide_main, 0);
 }
 
 unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState, target: HWND, hide_main: bool, backspaces: u8) {
-    state.paste_return_to_main = false;
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
     if !target.is_null() {
-        if hide_main {
+        if hide_main || state.hotkey_passthrough_active {
             ShowWindow(hwnd, SW_HIDE);
         }
         let _ = force_foreground_window(target);
         KillTimer(hwnd, ID_TIMER_PASTE);
         SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
     } else {
+        clear_hotkey_passthrough_state(state);
         SetForegroundWindow(hwnd);
         if state.search_on {
             SetFocus(state.search_hwnd);
@@ -7394,7 +7697,7 @@ unsafe extern "system" fn enum_visible_windows(hwnd: HWND, lparam: LPARAM) -> i3
 }
 
 unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool {
-    if hwnd.is_null() || hwnd == app_hwnd {
+    if hwnd.is_null() || hwnd == app_hwnd || is_app_window(hwnd) {
         return false;
     }
     if IsWindowVisible(hwnd) == 0 || !is_window_enabled_compat(hwnd) || IsIconic(hwnd) != 0 {
@@ -7901,6 +8204,32 @@ pub(crate) unsafe fn get_state_ptr(hwnd: HWND) -> *mut AppState {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
 }
 
+pub(crate) unsafe fn set_main_window_noactivate_mode(hwnd: HWND, enable: bool) {
+    if hwnd.is_null() {
+        return;
+    }
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    let desired = if enable {
+        ex_style | WS_EX_NOACTIVATE
+    } else {
+        ex_style & !WS_EX_NOACTIVATE
+    };
+    if desired == ex_style {
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() {
+            (*ptr).main_window_noactivate = enable;
+        }
+        return;
+    }
+    SetWindowLongW(hwnd, GWL_EXSTYLE, desired as i32);
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | if enable { SWP_NOACTIVATE } else { 0 };
+    SetWindowPos(hwnd, null_mut(), 0, 0, 0, 0, flags);
+    let ptr = get_state_ptr(hwnd);
+    if !ptr.is_null() {
+        (*ptr).main_window_noactivate = enable;
+    }
+}
+
 unsafe fn get_state_mut(hwnd: HWND) -> Option<&'static mut AppState> {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
@@ -7908,6 +8237,10 @@ unsafe fn get_state_mut(hwnd: HWND) -> Option<&'static mut AppState> {
     } else {
         Some(&mut *ptr)
     }
+}
+
+unsafe fn main_window_should_stay_noactivate(state: &AppState, x: i32, y: i32) -> bool {
+    hit_test_row(state, x, y) >= 0
 }
 
 fn loword(v: u32) -> u16 {
