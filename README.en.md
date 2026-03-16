@@ -5,7 +5,7 @@
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/v0.3.0>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/v0.4.0>
 - Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
 - Password: `7dvb`
 
@@ -57,6 +57,7 @@ Typical use cases:
 - Hover preview
 - Image sticker window
 - AI text cleanup
+- WebDAV cloud sync
 - Edge auto-hide
 - Drag out text, images, and files to generate real files
 - Inline thumbnail preview for image records
@@ -91,6 +92,13 @@ Typical use cases:
 - Chinese / English UI with automatic system language detection
 - Native lightweight Win32 windows
 - Multi-monitor and mixed DPI support
+
+### Translations
+
+- The app detects the system UI language automatically
+- Chinese and English are currently included
+- Translation files are stored in `locales/`
+- New languages can be added by copying `locales/en.json` to a new `<language-code>.json`
 
 ## Data Loading Model
 
@@ -202,8 +210,9 @@ The project is being reorganized for better long-term portability. The main entr
 - `src/win_system_ui.rs`: Win32 hosts, drawing adapters, drag-and-drop, and native UI integration
 - `src/win_system_params.rs`: Win32 constants, control IDs, and platform parameters
 - `src/app.rs`: app state, workflows, data loading, and command dispatch
+- `locales/`: UI translation files
 
-Current `0.3.x` also uses two window hosts:
+Current `0.4.x` also uses two window hosts:
 
 - Full main window: search, settings, editing, grouping, dragging, and full interaction
 - Quick window: opened by hotkey for fast paste and typing-focused scenarios

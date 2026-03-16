@@ -5,7 +5,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/v0.3.0>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/v0.4.0>
 - 蓝奏云下载: <https://tcnzy.lanzout.com/b01887awxg>
 - 下载密码: `7dvb`
 
@@ -57,6 +57,7 @@
 - 悬停预览
 - 图片贴图悬浮窗
 - AI 清洗文本
+- WebDAV 云同步
 - 贴边自动隐藏
 - 文本、图片、文件支持拖出生成文件
 - 图片记录支持列表内缩略图预览
@@ -84,6 +85,13 @@
 - 全局热键
 - Win32 原生轻量窗口
 - 多显示器与不同缩放环境适配
+
+### 多语言
+
+- 自动识别系统 UI 语言
+- 当前内置中文、英文
+- 翻译文件集中放在 `locales/`
+- 新增语言时可直接参考 `locales/en.json` 复制出新的 `<语言代码>.json`
 
 ## 数据加载模型
 
@@ -195,8 +203,9 @@ cargo build --release
 - `src/win_system_ui.rs`：Win32 窗口、绘制宿主、拖拽、原生交互适配
 - `src/win_system_params.rs`：Win32 常量、控件 ID、平台参数
 - `src/app.rs`：应用状态、业务流程、数据加载、命令分发
+- `locales/`：界面翻译文件目录
 
-当前 `0.3.x` 还额外做了两种窗口宿主：
+当前 `0.4.x` 还额外做了两种窗口宿主：
 
 - 完整主窗口：负责搜索、设置、编辑、分组、拖拽等完整能力
 - 快速窗口：由热键弹出，优先服务快速粘贴和输入中场景

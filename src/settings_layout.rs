@@ -1,18 +1,18 @@
 use crate::ui::{SETTINGS_CONTENT_W, SETTINGS_CONTENT_X, SETTINGS_CONTENT_Y};
 use crate::ui_core::UiRect;
 
-pub const SETTINGS_CONTENT_TOTAL_H: i32 = 892;
+pub const SETTINGS_CONTENT_TOTAL_H: i32 = 1024;
 pub const SCROLL_BAR_W: i32 = 3;
 pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
 pub const SCROLL_BAR_MARGIN: i32 = 3;
 
 pub const CARD_GENERAL_Y: i32 = 16;
-pub const CARD_GENERAL_H: i32 = 400;
-pub const CARD_DATA_Y: i32 = 428;
+pub const CARD_GENERAL_H: i32 = 520;
+pub const CARD_DATA_Y: i32 = 548;
 pub const CARD_DATA_H: i32 = 96;
-pub const CARD_POSITION_Y: i32 = 536;
+pub const CARD_POSITION_Y: i32 = 656;
 pub const CARD_POSITION_H: i32 = 168;
-pub const CARD_MAINTAIN_Y: i32 = 716;
+pub const CARD_MAINTAIN_Y: i32 = 836;
 pub const CARD_MAINTAIN_H: i32 = 96;
 
 #[inline]
