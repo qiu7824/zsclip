@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::windows::process::CommandExt;
@@ -79,13 +80,25 @@ impl RemoteLayout {
     }
 }
 
-pub fn cloud_sync_interval(label: &str) -> Duration {
+#[allow(dead_code)]
+fn cloud_sync_interval_legacy(label: &str) -> Duration {
     match label.trim() {
         "15分钟" | "15m" | "15min" => Duration::from_secs(15 * 60),
         "30分钟" | "30m" | "30min" => Duration::from_secs(30 * 60),
         "6小时" | "6h" => Duration::from_secs(6 * 60 * 60),
         "12小时" | "12h" => Duration::from_secs(12 * 60 * 60),
         "24小时" | "24h" | "1天" => Duration::from_secs(24 * 60 * 60),
+        _ => Duration::from_secs(60 * 60),
+    }
+}
+
+pub fn cloud_sync_interval(label: &str) -> Duration {
+    match label.trim() {
+        "15分钟" | "15 min" | "15m" | "15min" => Duration::from_secs(15 * 60),
+        "30分钟" | "30 min" | "30m" | "30min" => Duration::from_secs(30 * 60),
+        "6小时" | "6 hours" | "6h" => Duration::from_secs(6 * 60 * 60),
+        "12小时" | "12 hours" | "12h" => Duration::from_secs(12 * 60 * 60),
+        "24小时" | "24 hours" | "24h" | "1d" => Duration::from_secs(24 * 60 * 60),
         _ => Duration::from_secs(60 * 60),
     }
 }
@@ -384,7 +397,8 @@ Expand-Archive -LiteralPath '{archive}' -DestinationPath '{dest}' -Force
     run_powershell(&script).map(|_| ())
 }
 
-fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
+#[allow(dead_code)]
+fn upload_file_legacy(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
     if !local_path.exists() {
         return Err(format!("本地文件不存在：{}", local_path.to_string_lossy()));
     }
@@ -401,7 +415,8 @@ Invoke-WebRequest -UseBasicParsing -Method Put -Headers $headers -Uri '{url}' -I
     run_powershell(&script).map(|_| ())
 }
 
-fn download_file(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) -> Result<bool, String> {
+#[allow(dead_code)]
+fn download_file_legacy(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) -> Result<bool, String> {
     if let Some(parent) = local_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -432,7 +447,8 @@ try {{
     Ok(output.trim().ends_with("OK"))
 }
 
-fn webdav_mkcol(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
+#[allow(dead_code)]
+fn webdav_mkcol_legacy(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
     let script = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -458,6 +474,132 @@ try {{
     run_powershell(&script).map(|_| ())
 }
 
+fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
+    if !local_path.exists() {
+        return Err(format!(
+            "{}{}",
+            tr("本地文件不存在：", "Local file was not found: "),
+            local_path.to_string_lossy()
+        ));
+    }
+
+    let status = run_curl_status(build_webdav_args(
+        config,
+        &[
+            "-X".to_string(),
+            "PUT".to_string(),
+            "-T".to_string(),
+            local_path.to_string_lossy().to_string(),
+            "-o".to_string(),
+            "NUL".to_string(),
+            "-w".to_string(),
+            "%{http_code}".to_string(),
+            remote_url.to_string(),
+        ],
+    ))?;
+
+    match status.as_str() {
+        "200" | "201" | "204" => Ok(()),
+        _ => Err(format!(
+            "{}{}",
+            tr("上传失败，HTTP 状态码：", "Upload failed with HTTP status: "),
+            status
+        )),
+    }
+}
+
+fn download_file(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) -> Result<bool, String> {
+    if let Some(parent) = local_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let status = run_curl_status(build_webdav_args(
+        config,
+        &[
+            "-L".to_string(),
+            "-o".to_string(),
+            local_path.to_string_lossy().to_string(),
+            "-w".to_string(),
+            "%{http_code}".to_string(),
+            remote_url.to_string(),
+        ],
+    ))?;
+
+    match status.as_str() {
+        "200" | "206" => Ok(true),
+        "404" => {
+            let _ = fs::remove_file(local_path);
+            Ok(false)
+        }
+        _ => Err(format!(
+            "{}{}",
+            tr("下载失败，HTTP 状态码：", "Download failed with HTTP status: "),
+            status
+        )),
+    }
+}
+
+fn webdav_mkcol(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
+    let status = run_curl_status(build_webdav_args(
+        config,
+        &[
+            "-X".to_string(),
+            "MKCOL".to_string(),
+            "-o".to_string(),
+            "NUL".to_string(),
+            "-w".to_string(),
+            "%{http_code}".to_string(),
+            remote_url.to_string(),
+        ],
+    ))?;
+
+    match status.as_str() {
+        "200" | "201" | "204" | "301" | "302" | "405" | "409" => Ok(()),
+        _ => Err(format!(
+            "{}{}",
+            tr("创建云端目录失败，HTTP 状态码：", "Failed to create remote directory. HTTP status: "),
+            status
+        )),
+    }
+}
+
+fn build_webdav_args(config: &CloudSyncConfig, extra: &[String]) -> Vec<String> {
+    let mut args = vec![
+        "--silent".to_string(),
+        "--show-error".to_string(),
+        "--connect-timeout".to_string(),
+        "15".to_string(),
+        "--max-time".to_string(),
+        "300".to_string(),
+    ];
+
+    if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
+        args.push("--user".to_string());
+        args.push(format!("{}:{}", config.webdav_user.trim(), config.webdav_pass));
+    }
+
+    args.extend(extra.iter().cloned());
+    args
+}
+
+fn run_curl_status(args: Vec<String>) -> Result<String, String> {
+    let output = hidden_curl()
+        .args(&args)
+        .output()
+        .map_err(|err| err.to_string())?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            tr("curl 执行失败。", "curl execution failed.").to_string()
+        } else {
+            stderr
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 fn auth_script(config: &CloudSyncConfig) -> String {
     if config.webdav_user.trim().is_empty() && config.webdav_pass.is_empty() {
         return "$headers = @{}".to_string();
@@ -472,7 +614,7 @@ fn auth_script(config: &CloudSyncConfig) -> String {
 fn run_powershell(script: &str) -> Result<String, String> {
     let encoded = encode_powershell(script);
     let output = hidden_powershell()
-        .args(["-NoProfile", "-EncodedCommand", &encoded])
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
         .output()
         .map_err(|err| err.to_string())?;
     if output.status.success() {
@@ -497,6 +639,12 @@ fn encode_powershell(script: &str) -> String {
 
 fn hidden_powershell() -> Command {
     let mut cmd = Command::new("powershell");
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+    cmd
+}
+
+fn hidden_curl() -> Command {
+    let mut cmd = Command::new("curl.exe");
     cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
     cmd
 }
