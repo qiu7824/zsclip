@@ -438,7 +438,7 @@ pub unsafe fn draw_settings_dropdown_button(
         bottom: rc.bottom - 1,
     };
     let fill = if pressed { th.button_pressed } else { th.surface };
-    let border = if pressed { th.accent } else { th.control_stroke };
+    let border = th.control_stroke;
     draw_round_rect(hdc, &rr, fill, border, 6);
 
     let text_rc = RECT { left: rr.left + 12, top: rr.top, right: rr.right - 28, bottom: rr.bottom };
