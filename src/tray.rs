@@ -11,6 +11,7 @@ use windows_sys::Win32::{
 };
 
 use crate::app::{AppSettings, IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
+use crate::i18n::{app_title, translate};
 use crate::win_system_ui::{apply_theme_to_menu, to_wide};
 use crate::window_position::resolve_main_window_position;
 
@@ -64,9 +65,39 @@ unsafe fn explorer_rename_target() -> Option<(HWND, HWND)> {
 pub(crate) unsafe fn handle_tray(hwnd: HWND, msg: u32) {
     match msg {
         WM_LBUTTONUP | WM_LBUTTONDBLCLK => toggle_window_visibility(hwnd),
-        WM_RBUTTONUP | WM_CONTEXTMENU => show_tray_menu(hwnd),
+        WM_RBUTTONUP | WM_CONTEXTMENU => show_tray_menu_localized(hwnd),
         _ => {}
     }
+}
+
+pub(crate) unsafe fn show_tray_menu_localized(hwnd: HWND) {
+    let menu = CreatePopupMenu();
+    if menu.is_null() { return; }
+    apply_theme_to_menu(menu as _);
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_TOGGLE, to_wide(translate("显示/隐藏").as_ref()).as_ptr());
+    AppendMenuW(menu, MF_SEPARATOR, 0, null());
+    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, to_wide(translate("退出").as_ref()).as_ptr());
+
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    SetForegroundWindow(hwnd);
+    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, null());
+    PostMessageW(hwnd, WM_NULL, 0, 0);
+    DestroyMenu(menu);
+}
+
+pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) {
+    let mut nid: NOTIFYICONDATAW = zeroed();
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = TRAY_UID;
+    nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = icon as _;
+    let tip = to_wide(app_title());
+    let n = core::cmp::min(tip.len(), nid.szTip.len());
+    nid.szTip[..n].copy_from_slice(&tip[..n]);
+    Shell_NotifyIconW(NIM_ADD, &mut nid);
 }
 
 pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by_hotkey: bool) {
@@ -186,6 +217,7 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn show_tray_menu(hwnd: HWND) {
     let menu = CreatePopupMenu();
     if menu.is_null() { return; }
@@ -202,6 +234,7 @@ pub(crate) unsafe fn show_tray_menu(hwnd: HWND) {
     DestroyMenu(menu);
 }
 
+#[allow(dead_code)]
 pub(crate) unsafe fn add_tray_icon(hwnd: HWND, icon: isize) {
     let mut nid: NOTIFYICONDATAW = zeroed();
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;

@@ -16,6 +16,7 @@ use windows_sys::Win32::{
     },
 };
 
+use crate::i18n::translate;
 use crate::shell::load_icons;
 use crate::ui::{draw_round_rect, draw_text_ex, Theme};
 use crate::win_system_ui::{
@@ -423,13 +424,14 @@ for($i=1; $i -le $cols; $i++){
 }
 
 unsafe fn set_font(hwnd: HWND, font: *mut core::ffi::c_void) { if !hwnd.is_null() { SendMessageW(hwnd, WM_SETFONT, font as usize, 1); } }
-unsafe fn set_status(hwnd: HWND, text: &str) { SetWindowTextW(GetDlgItem(hwnd, IDC_STATUS as i32), to_wide(text).as_ptr()); }
-unsafe fn set_text(hwnd: HWND, id: isize, text: &str) { SetWindowTextW(GetDlgItem(hwnd, id as i32), to_wide(text).as_ptr()); }
+unsafe fn set_status(hwnd: HWND, text: &str) { SetWindowTextW(GetDlgItem(hwnd, IDC_STATUS as i32), to_wide(translate(text).as_ref()).as_ptr()); }
+unsafe fn set_text(hwnd: HWND, id: isize, text: &str) { SetWindowTextW(GetDlgItem(hwnd, id as i32), to_wide(translate(text).as_ref()).as_ptr()); }
 unsafe fn is_fill_mode(hwnd: HWND) -> bool { SendDlgItemMessageW(hwnd, IDC_MODE_FILL as i32, BM_GETCHECK, 0, 0) == BST_CHECKED as isize }
 unsafe fn current_data_row(hwnd: HWND) -> i32 { get_window_text(GetDlgItem(hwnd, IDC_DATA_ROW as i32)).parse::<i32>().ok().unwrap_or(1).max(1) }
 
 unsafe fn create_ctrl(class: &str, text: &str, style: u32, ex_style: u32, x: i32, y: i32, w: i32, h: i32, parent: HWND, id: isize, font: *mut core::ffi::c_void) -> HWND {
-    let hh = CreateWindowExW(ex_style, to_wide(class).as_ptr(), to_wide(text).as_ptr(), WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent, id as usize as _, GetModuleHandleW(null()), null());
+    let caption = if matches!(class, "STATIC" | "BUTTON") { translate(text).into_owned() } else { text.to_string() };
+    let hh = CreateWindowExW(ex_style, to_wide(class).as_ptr(), to_wide(&caption).as_ptr(), WS_CHILD | WS_VISIBLE | style, x, y, w, h, parent, id as usize as _, GetModuleHandleW(null()), null());
     set_font(hh, font);
     hh
 }

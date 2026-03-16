@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod gdiplus;
+mod i18n;
 mod ui;
 mod ui_core;
 mod win_system_ui;

@@ -25,6 +25,7 @@ use rusqlite::{params, params_from_iter};
 use rusqlite::types::Value as SqlValue;
 use serde::{Deserialize, Serialize};
 use std::ptr::{null, null_mut};
+use crate::i18n::{app_title, tr, translate};
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterHotKey(hwnd: HWND, id: i32, fsmodifiers: u32, vk: u32) -> i32;
@@ -121,7 +122,7 @@ use crate::shell::{is_directory_item, item_icon_handle, load_icons, open_parent_
 use crate::hover_preview::{hide_hover_preview, show_hover_preview};
 use crate::sticker::show_image_sticker;
 use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
-use crate::tray::{add_tray_icon, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
+use crate::tray::{add_tray_icon_localized, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
 use crate::db_runtime::{ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
@@ -163,7 +164,6 @@ const EM_SETMARGINS: u32 = 0x00D3;
 const EC_LEFTMARGIN: usize = 0x0001;
 const EC_RIGHTMARGIN: usize = 0x0002;
 
-const APP_TITLE: &str = "剪贴板";
 const CLASS_NAME: &str = "ZsClipMain";
 const QUICK_CLASS_NAME: &str = "ZsClipQuick";
 
@@ -438,7 +438,7 @@ impl Default for AppSettings {
             hotkey_enabled: true,
             hotkey_mod: "Win".to_string(),
             hotkey_key: "V".to_string(),
-            click_hide: true,
+            click_hide: false,
             edge_auto_hide: false,
             hover_preview: false,
             auto_start: false,
@@ -450,7 +450,7 @@ impl Default for AppSettings {
             show_fixed_x: 120,
             show_fixed_y: 120,
             quick_search_enabled: false,
-            vv_mode_enabled: false,
+            vv_mode_enabled: true,
             vv_source_tab: 0,
             vv_group_id: 0,
             image_preview_enabled: false,
@@ -477,12 +477,20 @@ fn search_engine_template(key: &str) -> &'static str {
     SEARCH_ENGINE_PRESETS.iter().find(|(k,_,_)| *k == key).map(|(_,_,tpl)| *tpl).unwrap_or(SEARCH_ENGINE_PRESETS[0].2)
 }
 
-fn search_engine_display(key: &str) -> &'static str {
-    SEARCH_ENGINE_PRESETS.iter().find(|(k,_,_)| *k == key).map(|(_,name,_)| *name).unwrap_or(SEARCH_ENGINE_PRESETS[0].1)
+fn search_engine_display(key: &str) -> String {
+    SEARCH_ENGINE_PRESETS
+        .iter()
+        .find(|(k, _, _)| *k == key)
+        .map(|(_, name, _)| translate(name).into_owned())
+        .unwrap_or_else(|| translate(SEARCH_ENGINE_PRESETS[0].1).into_owned())
 }
 
 fn search_engine_key_from_display(label: &str) -> &'static str {
-    SEARCH_ENGINE_PRESETS.iter().find(|(_,name,_)| *name == label).map(|(k,_,_)| *k).unwrap_or("jzxx")
+    SEARCH_ENGINE_PRESETS
+        .iter()
+        .find(|(_, name, _)| *name == label || translate(name).as_ref() == label)
+        .map(|(k, _, _)| *k)
+        .unwrap_or("jzxx")
 }
 
 fn group_name_for_display(groups: &[ClipGroup], group_id: i64, all_label: &str) -> String {
@@ -502,9 +510,9 @@ fn normalize_source_tab(tab: usize) -> usize {
 
 fn source_tab_label(tab: usize) -> &'static str {
     if normalize_source_tab(tab) == 1 {
-        "常用短语"
+        tr("常用短语", "Phrases")
     } else {
-        "复制记录"
+        tr("复制记录", "Clipboard Records")
     }
 }
 
@@ -519,7 +527,12 @@ fn normalize_hotkey_key(s: &str) -> String {
 }
 
 fn hotkey_preview_text(mod_label: &str, key_label: &str) -> String {
-    format!("当前设置：{} + {}", normalize_hotkey_mod(mod_label), normalize_hotkey_key(key_label))
+    format!(
+        "{}{} + {}",
+        tr("当前设置：", "Current setting: "),
+        normalize_hotkey_mod(mod_label),
+        normalize_hotkey_key(key_label)
+    )
 }
 
 fn open_source_url() -> &'static str {
@@ -528,7 +541,10 @@ fn open_source_url() -> &'static str {
 
 fn open_source_url_display() -> &'static str {
     if open_source_url().trim().is_empty() {
-        "未配置（可在 Cargo.toml 的 package.repository 中配置）"
+        tr(
+            "未配置（可在 Cargo.toml 的 package.repository 中配置）",
+            "Not configured (set package.repository in Cargo.toml)",
+        )
     } else {
         open_source_url()
     }
@@ -740,7 +756,7 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     apply_theme_to_menu(menu as _);
     let current_group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
     let all_flags = if current_group_id == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
-    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide("全部记录").as_ptr());
+    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide(translate("全部记录").as_ref()).as_ptr());
     if !state.groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         for (idx, g) in state.groups.iter().enumerate() {
@@ -2000,16 +2016,10 @@ impl AppState {
     }
 
     fn add_clip_item(&mut self, mut item: ClipItem, signature: String) {
-        if self.tab_index == 0 && self.last_signature == signature {
+        if !signature.is_empty() && self.last_signature == signature {
             return;
         }
         self.last_signature = signature;
-
-        if let Some(first) = self.records.first() {
-            if first.preview == item.preview && first.kind == item.kind {
-                return;
-            }
-        }
         item.id = db_insert_item(0, &item).unwrap_or(0);
         // 回填内存中的 created_at（DB 由 CURRENT_TIMESTAMP 自动填写，内存补齐以便时间分组标头正常工作）
         if item.created_at.is_empty() {
@@ -2223,7 +2233,7 @@ fn normalize_run_target(value: &str) -> String {
 fn is_autostart_enabled() -> bool {
     unsafe {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let val_name = to_wide(APP_TITLE);
+    let val_name = to_wide(app_title());
         let mut hkey: isize = 0;
         if RegOpenKeyExW(HKEY_CURRENT_USER_VAL, run_key.as_ptr(), 0, KEY_READ_VAL, &mut hkey) != 0 {
             return false;
@@ -2260,7 +2270,7 @@ fn is_autostart_enabled() -> bool {
 fn apply_autostart(enabled: bool) {
     unsafe {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let val_name = to_wide(APP_TITLE);
+    let val_name = to_wide(app_title());
         let mut hkey: isize = 0;
         let flags = KEY_READ_VAL | KEY_SET_VALUE;
         if RegOpenKeyExW(HKEY_CURRENT_USER_VAL, run_key.as_ptr(), 0, flags, &mut hkey) != 0 {
@@ -2696,12 +2706,18 @@ fn register_hotkey_for(hwnd: HWND, state: &mut AppState) {
     let err = unsafe { GetLastError() };
     if err == ERROR_HOTKEY_ALREADY_REGISTERED && !state.hotkey_conflict_notified {
         state.hotkey_conflict_notified = true;
-        let hk = hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key).replace("当前设置：", "");
+            let hk = hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key)
+                .replace(tr("当前设置：", "Current setting: "), "");
         unsafe {
             MessageBoxW(
                 hwnd,
-                to_wide(&format!("快捷键 {} 已被其他程序或系统占用，当前不会注册全局热键。请在设置-快捷键中改用其他组合。", hk)).as_ptr(),
-                to_wide("快捷键冲突").as_ptr(),
+                to_wide(&format!(
+                    "{} {} {}",
+                    tr("快捷键", "Hotkey"),
+                    hk,
+                    tr("已被其他程序或系统占用，当前不会注册全局热键。请在设置-快捷键中改用其他组合。", "is already used by another app or the system. The global hotkey will not be registered. Please choose another combination in Settings > Hotkeys.")
+                )).as_ptr(),
+                to_wide(translate("快捷键冲突").as_ref()).as_ptr(),
                 MB_OK | MB_ICONWARNING,
             );
         }
@@ -2795,19 +2811,39 @@ struct SettingsWndState {
 
 
 unsafe fn settings_set_text(hwnd: HWND, s: &str) {
-    SetWindowTextW(hwnd, to_wide(s).as_ptr());
+    let mut class_buf = [0u16; 32];
+    let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), class_buf.len() as i32);
+    let class_name = if class_len > 0 {
+        String::from_utf16_lossy(&class_buf[..class_len as usize])
+    } else {
+        String::new()
+    };
+    let text = if matches!(class_name.as_str(), "BUTTON" | "STATIC") {
+        translate(s).into_owned()
+    } else {
+        s.to_string()
+    };
+    SetWindowTextW(hwnd, to_wide(&text).as_ptr());
 }
 
 unsafe fn settings_group_current_filter_text(st: &SettingsWndState) -> String {
     let pst = get_state_ptr(st.parent_hwnd);
-    if pst.is_null() { return "全部记录".to_string(); }
+    if pst.is_null() { return tr("全部记录", "All Records").to_string(); }
     let app = &*pst;
     let view_tab = normalize_source_tab(st.group_view_tab);
     let gid = app.tab_group_filters.get(view_tab).copied().unwrap_or(0);
     if gid == 0 {
-        return if view_tab == 0 { "全部记录".to_string() } else { "全部短语".to_string() };
+        return if view_tab == 0 {
+            tr("全部记录", "All Records").to_string()
+        } else {
+            tr("全部短语", "All Phrases").to_string()
+        };
     }
-    app.groups.iter().find(|g| g.id == gid).map(|g| g.name.clone()).unwrap_or_else(|| format!("分组 #{}", gid))
+    app.groups
+        .iter()
+        .find(|g| g.id == gid)
+        .map(|g| g.name.clone())
+        .unwrap_or_else(|| format!("{} #{}", tr("分组", "Group"), gid))
 }
 
 unsafe fn settings_sync_vv_source_display(st: &mut SettingsWndState) {
@@ -2838,10 +2874,11 @@ unsafe fn settings_sync_group_view_tabs(st: &SettingsWndState) {
 unsafe fn settings_sync_group_overview(st: &mut SettingsWndState) {
     st.group_view_tab = normalize_source_tab(st.group_view_tab);
     let text = format!(
-        "当前分组（{}）：{}",
-        source_tab_label(st.group_view_tab),
-        settings_group_current_filter_text(st)
-    );
+        "{}（{}）：{}",
+            tr("当前分组", "Current Group"),
+            source_tab_label(st.group_view_tab),
+            settings_group_current_filter_text(st)
+        );
     if !st.lb_group_current.is_null() {
         settings_set_text(st.lb_group_current, &text);
     }
@@ -2913,7 +2950,7 @@ unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
         }
         SettingsPage::Plugin => {
             let s = &st.draft;
-            settings_set_text(st.cb_engine, search_engine_display(&s.search_engine));
+            settings_set_text(st.cb_engine, &search_engine_display(&s.search_engine));
             settings_set_text(st.ed_tpl, &s.search_template);
         }
         SettingsPage::Group => {
@@ -2926,7 +2963,10 @@ unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
             settings_set_text(st.ed_cloud_user, &s.cloud_webdav_user);
             settings_set_text(st.ed_cloud_pass, &s.cloud_webdav_pass);
             settings_set_text(st.ed_cloud_dir, &s.cloud_remote_dir);
-            settings_set_text(st.lb_cloud_status, &format!("上次同步：{}", s.cloud_last_sync_status));
+            settings_set_text(
+                st.lb_cloud_status,
+                &format!("{}{}", tr("上次同步：", "Last sync: "), s.cloud_last_sync_status),
+            );
         }
         SettingsPage::About => {}
     }
@@ -2978,10 +3018,11 @@ unsafe fn settings_create_toggle_plain(parent: HWND, text: &str, id: isize, x: i
     let row_h    = 32;
     let gap      = 12;
     let label_w  = max(40, w - toggle_w - gap);
+    let label_text = translate(text);
     let label = CreateWindowExW(
         0,
         to_wide("STATIC").as_ptr(),
-        to_wide(text).as_ptr(),
+        to_wide(label_text.as_ref()).as_ptr(),
         WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
         x, y, label_w, row_h,
         parent, null_mut(), GetModuleHandleW(null()), null(),
@@ -4354,7 +4395,7 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec = SettingsFormSectionLayout::new(page, 0, 0);
     let lines = [
-        format!("版本：{}", env!("CARGO_PKG_VERSION")),
+            format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
         "设置界面现在统一使用同一套 section/form 布局。".to_string(),
         "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
     ];
@@ -4379,8 +4420,8 @@ unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     y += label_h.max(32) + 10;
 
     for line in [
-        format!("数据目录：{}", data_dir().to_string_lossy()),
-        format!("数据库：{}", db_file().to_string_lossy()),
+            format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
+            format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
     ] {
         let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), 24);
         y += h + 10;
@@ -4865,7 +4906,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                                 if !pst.is_null() { reload_state_from_db(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
                             }
                             Err(e) => {
-                                MessageBoxW(hwnd, to_wide(&format!("新建分组失败：{}", e)).as_ptr(), to_wide("分组").as_ptr(), MB_OK | MB_ICONERROR);
+            MessageBoxW(
+                hwnd,
+                to_wide(&format!("{}: {}", tr("新建分组失败", "Failed to create group"), e)).as_ptr(),
+                to_wide(translate("分组").as_ref()).as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
                             }
                         }
                     }
@@ -4874,7 +4920,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     if let Some((_, g)) = settings_groups_selected(st) {
                         if let Some(new_name) = input_name_dialog(hwnd, "重命名分组", "请输入新名称：", &g.name) {
                             if let Err(e) = db_rename_group(g.id, &new_name) {
-                                MessageBoxW(hwnd, to_wide(&format!("重命名失败：{}", e)).as_ptr(), to_wide("分组").as_ptr(), MB_OK | MB_ICONERROR);
+                MessageBoxW(
+                    hwnd,
+                    to_wide(&format!("{}: {}", tr("重命名失败", "Rename failed"), e)).as_ptr(),
+                    to_wide(translate("分组").as_ref()).as_ptr(),
+                    MB_OK | MB_ICONERROR,
+                );
                             } else {
                                 settings_groups_refresh_list(st, g.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
@@ -4882,15 +4933,30 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             }
                         }
                     } else {
-                        MessageBoxW(hwnd, to_wide("请先选择一个分组。").as_ptr(), to_wide("分组").as_ptr(), MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(
+                hwnd,
+                to_wide(translate("请先选择一个分组。").as_ref()).as_ptr(),
+                to_wide(translate("分组").as_ref()).as_ptr(),
+                MB_OK | MB_ICONINFORMATION,
+            );
                     }
                 }
                 IDC_SET_GROUP_DELETE => {
                     if let Some((_, g)) = settings_groups_selected(st) {
-                        let ask = format!("确认删除分组“{}”？\n不会删除记录，只会清空这些记录的分组。", g.name);
-                        if MessageBoxW(hwnd, to_wide(&ask).as_ptr(), to_wide("分组").as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES {
+            let ask = format!(
+                "{} \"{}\"?\n{}",
+                tr("确认删除分组", "Delete group"),
+                g.name,
+                tr("不会删除记录，只会清空这些记录的分组。", "Records will be kept. Only their group assignment will be cleared.")
+            );
+            if MessageBoxW(hwnd, to_wide(&ask).as_ptr(), to_wide(translate("分组").as_ref()).as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES {
                             if let Err(e) = db_delete_group(g.id) {
-                                MessageBoxW(hwnd, to_wide(&format!("删除分组失败：{}", e)).as_ptr(), to_wide("分组").as_ptr(), MB_OK | MB_ICONERROR);
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!("{}: {}", tr("删除分组失败", "Delete group failed"), e)).as_ptr(),
+                        to_wide(translate("分组").as_ref()).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
                             } else {
                                 settings_groups_refresh_list(st, 0);
                                 let pst = get_state_ptr(st.parent_hwnd);
@@ -4995,8 +5061,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     if open_source_url().trim().is_empty() {
                         MessageBoxW(
                             hwnd,
-                            to_wide("当前还没有配置开源地址，请先在 Cargo.toml 的 package.repository 中填写。").as_ptr(),
-                            to_wide("开源地址").as_ptr(),
+                            to_wide(translate("当前还没有配置开源地址，请先在 Cargo.toml 的 package.repository 中填写。").as_ref()).as_ptr(),
+                            to_wide(translate("开源地址").as_ref()).as_ptr(),
                             MB_OK | MB_ICONINFORMATION,
                         );
                     } else {
@@ -5005,17 +5071,32 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 6111 => {
                     if let Err(e) = toggle_disabled_hotkey_char('V', true) {
-                        MessageBoxW(hwnd, to_wide(&format!("屏蔽 Win+V 失败：{}", e)).as_ptr(), to_wide("系统剪贴板历史").as_ptr(), MB_OK | MB_ICONERROR);
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!("{}: {}", tr("屏蔽 Win+V 失败", "Disable Win+V failed"), e)).as_ptr(),
+                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
                     }
                 }
                 6112 => {
                     if let Err(e) = toggle_disabled_hotkey_char('V', false) {
-                        MessageBoxW(hwnd, to_wide(&format!("恢复 Win+V 失败：{}", e)).as_ptr(), to_wide("系统剪贴板历史").as_ptr(), MB_OK | MB_ICONERROR);
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!("{}: {}", tr("恢复 Win+V 失败", "Restore Win+V failed"), e)).as_ptr(),
+                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
                     }
                 }
                 6113 => {
                     if let Err(e) = restart_explorer_shell() {
-                        MessageBoxW(hwnd, to_wide(&format!("重启资源管理器失败：{}", e)).as_ptr(), to_wide("系统剪贴板历史").as_ptr(), MB_OK | MB_ICONERROR);
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!("{}: {}", tr("重启资源管理器失败", "Restart Explorer failed"), e)).as_ptr(),
+                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
                     }
                 }
                 IDC_SET_CLOUD_SYNC_NOW | IDC_SET_CLOUD_UPLOAD_CFG | IDC_SET_CLOUD_APPLY_CFG | IDC_SET_CLOUD_RESTORE_BACKUP => {
@@ -5025,7 +5106,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         IDC_SET_CLOUD_APPLY_CFG => "应用云端配置入口已经迁到统一框架，下一步继续接真实下载逻辑。",
                         _ => "云备份恢复入口已经迁到统一框架，下一步继续接数据库与资源恢复逻辑。",
                     };
-                    MessageBoxW(hwnd, to_wide(msg).as_ptr(), to_wide("云同步").as_ptr(), MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(
+                    hwnd,
+                    to_wide(translate(msg).as_ref()).as_ptr(),
+                    to_wide(translate("云同步").as_ref()).as_ptr(),
+                    MB_OK | MB_ICONINFORMATION,
+                );
                 }
                 IDC_SET_SAVE => {
                     settings_collect_to_app(st);
@@ -5404,7 +5490,7 @@ pub fn run() -> AppResult<()> {
             }
         }
 
-        let title = to_wide(APP_TITLE);
+    let title = to_wide(app_title());
         let main_hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             to_wide(WindowRole::Main.class_name()).as_ptr(),
@@ -5789,7 +5875,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     apply_main_window_region(hwnd);
     apply_dark_mode_to_window(hwnd);
     if role == WindowRole::Main {
-        add_tray_icon(hwnd, tray_icon);
+        add_tray_icon_localized(hwnd, tray_icon);
     } else {
         set_main_window_noactivate_mode(hwnd, true);
     }
@@ -6189,6 +6275,21 @@ fn clear_edge_dock_state(state: &mut AppState) {
     state.edge_docked_bottom = 0;
 }
 
+unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
+    if let Some((side, base)) = edge_choose_dock_side(hwnd, rc) {
+        state.edge_hidden_side = side;
+        set_edge_docked_rect(state, &base);
+        if !state.edge_hidden {
+            state.edge_restore_x = rc.left;
+            state.edge_restore_y = rc.top;
+        }
+        true
+    } else {
+        clear_edge_dock_state(state);
+        false
+    }
+}
+
 fn set_edge_docked_rect(state: &mut AppState, rc: &RECT) {
     state.edge_docked_left = rc.left;
     state.edge_docked_top = rc.top;
@@ -6259,6 +6360,48 @@ unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
     state.edge_hidden = false;
 }
 
+unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
+    if state.role != WindowRole::Main || !state.settings.edge_auto_hide || state.edge_hidden {
+        return;
+    }
+
+    let rc = window_rect_for_dock(hwnd);
+    if !update_edge_dock_state(hwnd, state, &rc) {
+        return;
+    }
+
+    let mut cursor: POINT = zeroed();
+    GetCursorPos(&mut cursor);
+    if cursor_over_window_tree(hwnd, cursor) {
+        return;
+    }
+
+    state.edge_restore_x = rc.left;
+    state.edge_restore_y = rc.top;
+    let docked = edge_docked_rect(state);
+    let width = (rc.right - rc.left).max(1);
+    let height = (rc.bottom - rc.top).max(1);
+    let (hide_x, hide_y) = match state.edge_hidden_side {
+        EDGE_AUTO_HIDE_LEFT => (docked.left + EDGE_AUTO_HIDE_PEEK - width, rc.top),
+        EDGE_AUTO_HIDE_RIGHT => (docked.right - EDGE_AUTO_HIDE_PEEK, rc.top),
+        EDGE_AUTO_HIDE_TOP => (rc.left, docked.top + EDGE_AUTO_HIDE_PEEK - height),
+        EDGE_AUTO_HIDE_BOTTOM => (rc.left, docked.bottom - EDGE_AUTO_HIDE_PEEK),
+        _ => (rc.left, rc.top),
+    };
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        hide_x,
+        hide_y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    state.edge_hidden = true;
+    hide_hover_preview();
+    InvalidateRect(hwnd, null(), 0);
+}
+
 unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() || IsWindowVisible(hwnd) == 0 {
@@ -6278,29 +6421,6 @@ unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     let height = (rc.bottom - rc.top).max(1);
     let monitor = nearest_monitor_rect_for_window(hwnd);
     let docked = edge_docked_rect(state);
-
-    if state.edge_hidden_side != EDGE_AUTO_HIDE_NONE {
-        let margin_v = edge_detect_margin_v();
-        let margin_h = edge_detect_margin_h();
-        let still_docked = match state.edge_hidden_side {
-            EDGE_AUTO_HIDE_LEFT => (rc.left - docked.left).abs() <= margin_h || state.edge_hidden,
-            EDGE_AUTO_HIDE_RIGHT => (rc.right - docked.right).abs() <= margin_h || state.edge_hidden,
-            EDGE_AUTO_HIDE_TOP => (rc.top - docked.top).abs() <= margin_v || state.edge_hidden,
-            EDGE_AUTO_HIDE_BOTTOM => (rc.bottom - docked.bottom).abs() <= margin_v || state.edge_hidden,
-            _ => false,
-        };
-        if !still_docked {
-            clear_edge_dock_state(state);
-            return;
-        }
-    } else if let Some((side, base)) = edge_choose_dock_side(hwnd, &rc) {
-        state.edge_hidden_side = side;
-        set_edge_docked_rect(state, &base);
-        state.edge_restore_x = rc.left;
-        state.edge_restore_y = rc.top;
-    } else {
-        return;
-    }
 
     if !pt_in_rect_screen(&cursor, &RECT {
         left: monitor.left - 2,
@@ -6346,31 +6466,7 @@ unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
 
-    if GetForegroundWindow() == hwnd || cursor_over_window_tree(hwnd, cursor) {
-        return;
-    }
-
-    state.edge_restore_x = rc.left;
-    state.edge_restore_y = rc.top;
-    let (hide_x, hide_y) = match state.edge_hidden_side {
-        EDGE_AUTO_HIDE_LEFT => (docked.left + EDGE_AUTO_HIDE_PEEK - width, rc.top),
-        EDGE_AUTO_HIDE_RIGHT => (docked.right - EDGE_AUTO_HIDE_PEEK, rc.top),
-        EDGE_AUTO_HIDE_TOP => (rc.left, docked.top + EDGE_AUTO_HIDE_PEEK - height),
-        EDGE_AUTO_HIDE_BOTTOM => (rc.left, docked.bottom - EDGE_AUTO_HIDE_PEEK),
-        _ => (rc.left, rc.top),
-    };
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        hide_x,
-        hide_y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
-    state.edge_hidden = true;
-    hide_hover_preview();
-    InvalidateRect(hwnd, null(), 0);
+    update_edge_dock_state(hwnd, state, &rc);
 }
 
 unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
@@ -6474,6 +6570,7 @@ unsafe fn handle_mouse_leave_main(hwnd: HWND) {
     if dirty {
         InvalidateRect(hwnd, null(), 0);
     }
+    hide_edge_docked_window(hwnd, state);
 }
 
 unsafe fn clear_main_hover_state(hwnd: HWND) {
@@ -7478,7 +7575,7 @@ unsafe fn show_row_menu(
     if !group_menu.is_null() {
         apply_theme_to_menu(group_menu as _);
         if state.groups.is_empty() {
-            AppendMenuW(group_menu, MF_GRAYED | MF_STRING, 0xFFFFusize, to_wide("（暂无分组）").as_ptr());
+            AppendMenuW(group_menu, MF_GRAYED | MF_STRING, 0xFFFFusize, to_wide(translate("（暂无分组）").as_ref()).as_ptr());
         } else {
             for (idx, g) in state.groups.iter().enumerate() {
                 AppendMenuW(group_menu, MF_STRING, IDM_ROW_GROUP_BASE + idx, to_wide(&g.name).as_ptr());
@@ -7486,63 +7583,63 @@ unsafe fn show_row_menu(
         }
     }
     if selected_count > 1 {
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY, to_wide("合并复制").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY, to_wide(translate("合并复制").as_ref()).as_ptr());
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         let pin_text = if has_unpinned { "置顶所选" } else { "取消置顶" };
-        AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide("添加到短语").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide(translate("添加到短语").as_ref()).as_ptr());
         if !group_menu.is_null() {
-            AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide("添加到分组").as_ptr());
+            AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
         }
-        AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide("移出分组").as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide("删除所选").as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
+        AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除所选").as_ref()).as_ptr());
     } else {
         match current_kind {
             ClipKind::Image => {
-                AppendMenuW(menu, MF_STRING, IDM_ROW_STICKER, to_wide("贴图").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_SAVE_IMAGE, to_wide("另存为 PNG").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide("导出为文件").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_STICKER, to_wide(translate("贴图").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_SAVE_IMAGE, to_wide(translate("另存为 PNG").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide(translate("导出为文件").as_ref()).as_ptr());
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
                 if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide("添加到分组").as_ptr());
+                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
                 }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide("移出分组").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide("删除").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
             }
             ClipKind::Files => {
                 let open_text = if current_is_dir { "打开文件夹" } else { "打开文件" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_PATH, to_wide(open_text).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_FOLDER, to_wide("打开所在文件夹").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PATH, to_wide("复制路径").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_PATH, to_wide(translate(open_text).as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_FOLDER, to_wide(translate("打开所在文件夹").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PATH, to_wide(translate("复制路径").as_ref()).as_ptr());
                 if current_is_excel && state.settings.super_mail_merge_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_MAIL_MERGE, to_wide("超级邮件合并").as_ptr());
+                    AppendMenuW(menu, MF_STRING, IDM_ROW_MAIL_MERGE, to_wide(translate("超级邮件合并").as_ref()).as_ptr());
                 }
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
                 if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide("添加到分组").as_ptr());
+                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
                 }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide("移出分组").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide("删除").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
             }
             _ => {
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EDIT, to_wide("编辑").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_EDIT, to_wide(translate("编辑").as_ref()).as_ptr());
                 if state.settings.quick_search_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide("快速搜索").as_ptr());
+                    AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide(translate("快速搜索").as_ref()).as_ptr());
                 }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide("导出为文件").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide(translate("导出为文件").as_ref()).as_ptr());
                 AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(pin_text).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide("添加到短语").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide(translate("添加到短语").as_ref()).as_ptr());
                 if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide("添加到分组").as_ptr());
+                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
                 }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide("移出分组").as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide("删除").as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
+                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
             }
         }
     }
@@ -7580,7 +7677,7 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
         state.current_group_filter
     };
     let all_flags = if cur_gid == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
-    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide("全部").as_ptr());
+    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide(translate("全部").as_ref()).as_ptr());
     if !state.groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         for (idx, g) in state.groups.iter().enumerate() {
