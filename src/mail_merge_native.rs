@@ -55,8 +55,6 @@ const IDC_APPLY_ROW: isize = 1019;
 const IDC_ROW_LABEL: isize = 1020;
 const IDC_MM_TITLE: isize = 9001;
 const IDC_MM_DESC: isize = 9002;
-const IDC_EXCEL_LABEL: isize = 9005;
-
 const CB_GETCURSEL: u32 = 0x0147;
 const CB_ADDSTRING: u32 = 0x0143;
 const CB_RESETCONTENT: u32 = 0x014B;
@@ -629,31 +627,30 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             });
             create_ctrl("STATIC", "超级邮件合并", 0, 0, 24, 18, 260, 24, hwnd, IDC_MM_TITLE, font);
             create_ctrl("STATIC", "Excel -> Word（邮件合并 / 数据填表）", 0, 0, 24, 48, 360, 20, hwnd, IDC_MM_DESC, font);
-            create_ctrl("STATIC", "Excel 数据", 0, 0, 16, 82, 72, 22, hwnd, IDC_EXCEL_LABEL, font);
-            create_ctrl("EDIT", &args.initial_excel, ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 96, 78, 398, 32, hwnd, IDC_EXCEL, font);
-            create_action_btn(hwnd, "浏览...", IDC_BROWSE, 504, 79, 76, font);
-            create_accent_btn(hwnd, "加载字段", IDC_LOAD, 590, 79, 80, font);
-            create_ctrl("STATIC", "工作表", 0, 0, 16, 130, 54, 22, hwnd, 9003, font);
-            create_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP, 0, 74, 128, 200, 240, hwnd, IDC_SHEET, font);
-            create_ctrl("STATIC", "表头行", 0, 0, 286, 130, 54, 22, hwnd, 9004, font);
-            create_ctrl("EDIT", "1", ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 344, 128, 56, 30, hwnd, IDC_HEADER_ROW, font);
-            create_action_btn(hwnd, "自动识别", IDC_GUESS, 408, 128, 84, font);
-            create_ctrl("BUTTON", "邮件合并", BS_AUTORADIOBUTTON as u32 | WS_TABSTOP, 0, 16, 170, 96, 28, hwnd, IDC_MODE_MERGE, font);
-            create_ctrl("BUTTON", "数据填表", BS_AUTORADIOBUTTON as u32 | WS_TABSTOP, 0, 118, 170, 96, 28, hwnd, IDC_MODE_FILL, font);
+            create_ctrl("EDIT", &args.initial_excel, ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 96, 98, 398, 32, hwnd, IDC_EXCEL, font);
+            create_action_btn(hwnd, "浏览...", IDC_BROWSE, 504, 99, 76, font);
+            create_accent_btn(hwnd, "加载字段", IDC_LOAD, 590, 99, 80, font);
+            create_ctrl("STATIC", "工作表", 0, 0, 16, 144, 54, 22, hwnd, 9003, font);
+            create_ctrl("COMBOBOX", "", CBS_DROPDOWNLIST as u32 | WS_VSCROLL | WS_TABSTOP, 0, 74, 142, 200, 240, hwnd, IDC_SHEET, font);
+            create_ctrl("STATIC", "表头行", 0, 0, 286, 144, 54, 22, hwnd, 9004, font);
+            create_ctrl("EDIT", "1", ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 344, 142, 56, 30, hwnd, IDC_HEADER_ROW, font);
+            create_action_btn(hwnd, "自动识别", IDC_GUESS, 408, 142, 84, font);
+            create_ctrl("BUTTON", "邮件合并", BS_AUTORADIOBUTTON as u32 | WS_TABSTOP, 0, 16, 186, 96, 28, hwnd, IDC_MODE_MERGE, font);
+            create_ctrl("BUTTON", "数据填表", BS_AUTORADIOBUTTON as u32 | WS_TABSTOP, 0, 118, 186, 96, 28, hwnd, IDC_MODE_FILL, font);
             SendDlgItemMessageW(hwnd, IDC_MODE_MERGE as i32, BM_SETCHECK, BST_CHECKED, 0);
             SendDlgItemMessageW(hwnd, IDC_MODE_FILL as i32, BM_SETCHECK, BST_UNCHECKED, 0);
-            create_ctrl("STATIC", "行", 0, 0, 228, 174, 18, 20, hwnd, IDC_ROW_LABEL, font);
-            create_ctrl("EDIT", "1", ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 250, 170, 44, 30, hwnd, IDC_DATA_ROW, font);
-            create_action_btn(hwnd, "上一行", IDC_PREV_ROW, 302, 170, 68, font);
-            create_action_btn(hwnd, "下一行", IDC_NEXT_ROW, 378, 170, 68, font);
-            create_action_btn(hwnd, "切换", IDC_APPLY_ROW, 454, 170, 58, font);
-            create_ctrl("LISTBOX", "", LBS_NOTIFY as u32 | WS_VSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, 16, 214, 654, 234, hwnd, IDC_FIELDS, font);
-            create_action_btn(hwnd, "打开 Word", IDC_OPEN_WORD, 16, 462, 108, font);
-            create_accent_btn(hwnd, "插入字段", IDC_INSERT_FIELD, 134, 462, 108, font);
-            create_accent_btn(hwnd, "插入一行", IDC_INSERT_INLINE, 252, 462, 108, font);
-            create_accent_btn(hwnd, "插入表格", IDC_INSERT_TABLE, 370, 462, 108, font);
-            create_action_btn(hwnd, "复制字段", IDC_COPY_FIELDS, 488, 462, 90, font);
-            create_ctrl("STATIC", "请选择 Excel 文件（xlsx/xlsm/xls/csv）", 0, 0, 16, 504, 654, 24, hwnd, IDC_STATUS, font);
+            create_ctrl("STATIC", "行", 0, 0, 228, 186, 18, 20, hwnd, IDC_ROW_LABEL, font);
+            create_ctrl("EDIT", "1", ES_AUTOHSCROLL as u32 | WS_TABSTOP, WS_EX_CLIENTEDGE, 250, 182, 44, 30, hwnd, IDC_DATA_ROW, font);
+            create_action_btn(hwnd, "上一行", IDC_PREV_ROW, 302, 182, 68, font);
+            create_action_btn(hwnd, "下一行", IDC_NEXT_ROW, 378, 182, 68, font);
+            create_action_btn(hwnd, "切换", IDC_APPLY_ROW, 454, 182, 58, font);
+            create_ctrl("LISTBOX", "", LBS_NOTIFY as u32 | WS_VSCROLL | WS_TABSTOP, WS_EX_CLIENTEDGE, 16, 228, 654, 206, hwnd, IDC_FIELDS, font);
+            create_action_btn(hwnd, "打开 Word", IDC_OPEN_WORD, 16, 448, 108, font);
+            create_accent_btn(hwnd, "插入字段", IDC_INSERT_FIELD, 134, 448, 108, font);
+            create_accent_btn(hwnd, "插入一行", IDC_INSERT_INLINE, 252, 448, 108, font);
+            create_accent_btn(hwnd, "插入表格", IDC_INSERT_TABLE, 370, 448, 108, font);
+            create_action_btn(hwnd, "复制字段", IDC_COPY_FIELDS, 488, 448, 90, font);
+            create_ctrl("STATIC", "请选择 Excel 文件（xlsx/xlsm/xls/csv）", 0, 0, 16, 492, 654, 24, hwnd, IDC_STATUS, font);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(st) as isize);
             let icons = load_icons();
             if icons.app != 0 {
@@ -774,18 +771,18 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 DeleteObject(bg as _);
 
                 let cards = [
-                    RECT { left: 12, top: 8, right: rc.right - 12, bottom: 160 },
-                    RECT { left: 12, top: 160, right: rc.right - 12, bottom: 424 },
-                    RECT { left: 12, top: 424, right: rc.right - 12, bottom: rc.bottom - 12 },
+                    RECT { left: 12, top: 8, right: rc.right - 12, bottom: 176 },
+                    RECT { left: 12, top: 176, right: rc.right - 12, bottom: 438 },
+                    RECT { left: 12, top: 438, right: rc.right - 12, bottom: rc.bottom - 12 },
                 ];
                 for card in cards.iter() {
                     draw_round_rect(hdc as _, card, th.surface, th.stroke, 8);
                 }
                 let sec1 = RECT { left: 24, top: 74, right: 220, bottom: 96 };
                 draw_text_ex(hdc as _, "Excel 数据", &sec1, th.text_muted, 12, true, false, "Segoe UI Variable Text");
-                let sec2 = RECT { left: 24, top: 170, right: 220, bottom: 192 };
+                let sec2 = RECT { left: 24, top: 186, right: 220, bottom: 208 };
                 draw_text_ex(hdc as _, "字段与模式", &sec2, th.text_muted, 12, true, false, "Segoe UI Variable Text");
-                let sec3 = RECT { left: 24, top: 434, right: 220, bottom: 456 };
+                let sec3 = RECT { left: 24, top: 448, right: 220, bottom: 470 };
                 draw_text_ex(hdc as _, "操作", &sec3, th.text_muted, 12, true, false, "Segoe UI Variable Text");
                 EndPaint(hwnd, &mut ps);
             }
@@ -885,7 +882,7 @@ pub(crate) unsafe fn launch_mail_merge_window_with_excel(owner: HWND, initial_ex
         if rc.right > rc.left { rc.left + 80 } else { CW_USEDEFAULT },
         if rc.bottom > rc.top { rc.top + 60 } else { CW_USEDEFAULT },
         704,
-        592,
+        612,
         owner,
         null_mut(),
         GetModuleHandleW(null()),

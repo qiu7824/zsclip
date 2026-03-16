@@ -3,7 +3,7 @@ use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
         StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT,
@@ -16,7 +16,7 @@ use windows_sys::Win32::{
 use crate::{
     app::{ensure_item_image_bytes, ClipItem, ClipKind},
     ui::{draw_round_rect, draw_text, draw_text_ex, Theme},
-    win_system_ui::{apply_window_corner_preference, to_wide},
+    win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
 };
 
 const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";
@@ -182,12 +182,6 @@ unsafe fn preview_hwnd() -> HWND {
     raw as HWND
 }
 
-unsafe fn work_area() -> RECT {
-    let mut rc: RECT = zeroed();
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut rc as *mut _ as _, 0);
-    rc
-}
-
 fn limit_preview_text(text: &str, max_lines: usize, max_chars: usize) -> String {
     let mut out = String::new();
     let mut chars = 0usize;
@@ -286,7 +280,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     } else {
         (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
     };
-    let wa = work_area();
+    let wa = nearest_monitor_work_rect_for_point(POINT { x: cursor_x, y: cursor_y });
     let mut x = cursor_x + 16;
     let mut y = cursor_y + 22;
     if x + w > wa.right {

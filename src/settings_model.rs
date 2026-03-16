@@ -45,8 +45,8 @@ const PLUGIN_SECTIONS: [SettingsSection; 3] = [
 ];
 
 const GROUP_SECTIONS: [SettingsSection; 2] = [
-    SettingsSection { title: "分组功能", rect: settings_card_rect(16, 88) },
-    SettingsSection { title: "分组管理", rect: settings_card_rect(124, 474) },
+    SettingsSection { title: "分组功能", rect: settings_card_rect(16, 188) },
+    SettingsSection { title: "分组管理", rect: settings_card_rect(216, 434) },
 ];
 
 const CLOUD_SECTIONS: [SettingsSection; 3] = [

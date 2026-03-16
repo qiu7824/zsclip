@@ -17,9 +17,13 @@ pub use crate::settings_ui_host::{
     WM_SETTINGS_DROPDOWN_SELECTED,
 };
 use windows_sys::Win32::{
-    Foundation::HWND,
+    Foundation::{HWND, POINT, RECT},
+    Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
     System::Ole::DROPEFFECT,
-    UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW},
+    UI::WindowsAndMessaging::{
+        GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+        IsWindow, WindowFromPoint,
+    },
 };
 
 use crate::ui::is_dark_mode;
@@ -37,10 +41,84 @@ unsafe extern "system" {
         pvattribute: *const c_void,
         cbattribute: u32,
     ) -> i32;
+    fn DwmGetWindowAttribute(
+        hwnd: HWND,
+        dwattribute: u32,
+        pvattribute: *mut c_void,
+        cbattribute: u32,
+    ) -> i32;
+}
+
+#[repr(C)]
+struct RawMonitorInfo {
+    cb_size: u32,
+    rc_monitor: RECT,
+    rc_work: RECT,
+    dw_flags: u32,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetMonitorInfoW(hmonitor: *mut c_void, lpmi: *mut RawMonitorInfo) -> i32;
+}
+
+#[link(name = "oleacc")]
+unsafe extern "system" {
+    fn AccessibleObjectFromWindow(
+        hwnd: HWND,
+        dw_id: i32,
+        riid: *const windows_sys::core::GUID,
+        ppv_object: *mut *mut c_void,
+    ) -> i32;
 }
 
 pub(crate) fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+pub(crate) unsafe fn init_dpi_awareness_for_process() {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    let user32 = LoadLibraryW(to_wide("user32.dll").as_ptr());
+    if !user32.is_null() {
+        type FnSetCtx = unsafe extern "system" fn(isize) -> i32;
+        if let Some(f) = core::mem::transmute::<_, Option<FnSetCtx>>(GetProcAddress(
+            user32,
+            b"SetProcessDpiAwarenessContext\0".as_ptr(),
+        )) {
+            const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4isize;
+            if f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != 0 {
+                FreeLibrary(user32);
+                return;
+            }
+        }
+
+        type FnSetAware = unsafe extern "system" fn() -> i32;
+        if let Some(f) = core::mem::transmute::<_, Option<FnSetAware>>(GetProcAddress(
+            user32,
+            b"SetProcessDPIAware\0".as_ptr(),
+        )) {
+            let _ = f();
+            FreeLibrary(user32);
+            return;
+        }
+        FreeLibrary(user32);
+    }
+
+    let shcore = LoadLibraryW(to_wide("shcore.dll").as_ptr());
+    if shcore.is_null() {
+        return;
+    }
+    type FnSetAwareness = unsafe extern "system" fn(i32) -> i32;
+    if let Some(f) = core::mem::transmute::<_, Option<FnSetAwareness>>(GetProcAddress(
+        shcore,
+        b"SetProcessDpiAwareness\0".as_ptr(),
+    )) {
+        const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
+        let _ = f(PROCESS_PER_MONITOR_DPI_AWARE);
+    }
+    FreeLibrary(shcore);
 }
 
 pub(crate) unsafe fn init_dark_mode_for_process() {
@@ -136,6 +214,124 @@ pub(crate) unsafe fn get_window_text(hwnd: HWND) -> String {
         .to_string()
 }
 
+fn fallback_primary_rect() -> RECT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+
+    RECT {
+        left: 0,
+        top: 0,
+        right: unsafe { GetSystemMetrics(SM_CXSCREEN) },
+        bottom: unsafe { GetSystemMetrics(SM_CYSCREEN) },
+    }
+}
+
+unsafe fn monitor_info_from_handle(hmonitor: *mut c_void) -> Option<RawMonitorInfo> {
+    if hmonitor.is_null() {
+        return None;
+    }
+    let mut info = RawMonitorInfo {
+        cb_size: core::mem::size_of::<RawMonitorInfo>() as u32,
+        rc_monitor: RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        rc_work: RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
+        dw_flags: 0,
+    };
+    if GetMonitorInfoW(hmonitor, &mut info) != 0 {
+        Some(info)
+    } else {
+        None
+    }
+}
+
+pub(crate) unsafe fn nearest_monitor_work_rect_for_point(pt: POINT) -> RECT {
+    monitor_info_from_handle(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST))
+        .map(|info| info.rc_work)
+        .unwrap_or_else(fallback_primary_rect)
+}
+
+pub(crate) unsafe fn nearest_monitor_work_rect_for_window(hwnd: HWND) -> RECT {
+    monitor_info_from_handle(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))
+        .map(|info| info.rc_work)
+        .unwrap_or_else(fallback_primary_rect)
+}
+
+pub(crate) unsafe fn nearest_monitor_rect_for_window(hwnd: HWND) -> RECT {
+    monitor_info_from_handle(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST))
+        .map(|info| info.rc_monitor)
+        .unwrap_or_else(fallback_primary_rect)
+}
+
+pub(crate) unsafe fn nearest_monitor_rect_for_point(pt: POINT) -> RECT {
+    monitor_info_from_handle(MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST))
+        .map(|info| info.rc_monitor)
+        .unwrap_or_else(fallback_primary_rect)
+}
+
+pub(crate) unsafe fn window_rect_for_dock(hwnd: HWND) -> RECT {
+    const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
+
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if !hwnd.is_null()
+        && DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rc as *mut _ as *mut c_void,
+            core::mem::size_of::<RECT>() as u32,
+        ) == 0
+        && rc.right > rc.left
+        && rc.bottom > rc.top
+    {
+        return rc;
+    }
+    let _ = GetWindowRect(hwnd, &mut rc);
+    rc
+}
+
+pub(crate) unsafe fn point_in_rect_screen(pt: &POINT, rc: &RECT) -> bool {
+    pt.x >= rc.left && pt.x <= rc.right && pt.y >= rc.top && pt.y <= rc.bottom
+}
+
+pub(crate) unsafe fn cursor_over_window_tree(root_hwnd: HWND, cursor: POINT) -> bool {
+    if root_hwnd.is_null() || IsWindow(root_hwnd) == 0 {
+        return false;
+    }
+    let hit = WindowFromPoint(cursor);
+    if hit.is_null() {
+        return point_in_rect_screen(&cursor, &window_rect_for_dock(root_hwnd));
+    }
+
+    let root = GetAncestor(hit, GA_ROOT);
+    if !root.is_null() {
+        return root == root_hwnd;
+    }
+
+    let mut cur = hit;
+    for _ in 0..32 {
+        if cur.is_null() {
+            break;
+        }
+        if cur == root_hwnd {
+            return true;
+        }
+        cur = GetParent(cur);
+    }
+    point_in_rect_screen(&cursor, &window_rect_for_dock(root_hwnd))
+}
+
 pub(crate) fn get_x_lparam(lp: isize) -> i32 {
     (lp as i16) as i32
 }
@@ -161,6 +357,62 @@ pub(crate) struct RawIUnknownVtbl {
 }
 
 #[repr(C)]
+struct RawVariant {
+    vt: u16,
+    w_reserved1: u16,
+    w_reserved2: u16,
+    w_reserved3: u16,
+    data: [u8; 16],
+}
+
+#[repr(C)]
+struct RawIDispatchVtbl {
+    base: RawIUnknownVtbl,
+    get_type_info_count: usize,
+    get_type_info: usize,
+    get_ids_of_names: usize,
+    invoke: usize,
+}
+
+#[repr(C)]
+struct RawIAccessible {
+    vtbl: *const RawIAccessibleVtbl,
+}
+
+#[repr(C)]
+struct RawIAccessibleVtbl {
+    base: RawIDispatchVtbl,
+    get_acc_parent: usize,
+    get_acc_child_count: usize,
+    get_acc_child: usize,
+    get_acc_name: usize,
+    get_acc_value: usize,
+    get_acc_description: usize,
+    get_acc_role: usize,
+    get_acc_state: usize,
+    get_acc_help: usize,
+    get_acc_help_topic: usize,
+    get_acc_keyboard_shortcut: usize,
+    get_acc_focus: usize,
+    get_acc_selection: usize,
+    get_acc_default_action: usize,
+    acc_select: usize,
+    acc_location: unsafe extern "system" fn(
+        *mut c_void,
+        *mut i32,
+        *mut i32,
+        *mut i32,
+        *mut i32,
+        RawVariant,
+    ) -> i32,
+    acc_navigate: usize,
+    acc_hit_test: usize,
+    acc_do_default_action: usize,
+    put_acc_name: usize,
+    put_acc_value: usize,
+}
+
+#[repr(C)]
 struct RawDropSourceVtbl {
     base: RawIUnknownVtbl,
     query_continue_drag:
@@ -176,6 +428,58 @@ struct SimpleDropSource {
 
 fn guid_eq(a: &windows_sys::core::GUID, b: &windows_sys::core::GUID) -> bool {
     a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
+
+fn variant_child_self() -> RawVariant {
+    RawVariant {
+        vt: 3,
+        w_reserved1: 0,
+        w_reserved2: 0,
+        w_reserved3: 0,
+        data: [0; 16],
+    }
+}
+
+pub(crate) unsafe fn caret_accessible_rect(hwnd: HWND) -> Option<RECT> {
+    const OBJID_CARET_V: i32 = -8;
+    const IID_IACCESSIBLE_RAW: windows_sys::core::GUID =
+        windows_sys::core::GUID::from_u128(0x618736e0_3c3d_11cf_810c_00aa00389b71);
+
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return None;
+    }
+
+    let mut obj: *mut c_void = std::ptr::null_mut();
+    let hr = AccessibleObjectFromWindow(hwnd, OBJID_CARET_V, &IID_IACCESSIBLE_RAW, &mut obj);
+    if hr != S_OK_HR || obj.is_null() {
+        return None;
+    }
+
+    let acc = obj as *mut RawIAccessible;
+    let mut left = 0i32;
+    let mut top = 0i32;
+    let mut width = 0i32;
+    let mut height = 0i32;
+    let child = variant_child_self();
+    let location_hr = ((*(*acc).vtbl).acc_location)(
+        obj,
+        &mut left,
+        &mut top,
+        &mut width,
+        &mut height,
+        child,
+    );
+    release_raw_com(obj);
+    if location_hr != S_OK_HR || width <= 0 || height <= 0 {
+        return None;
+    }
+
+    Some(RECT {
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+    })
 }
 
 unsafe extern "system" fn drop_source_query_interface(
