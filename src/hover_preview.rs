@@ -15,6 +15,7 @@ use windows_sys::Win32::{
 
 use crate::{
     app::{ensure_item_image_bytes, ClipItem, ClipKind},
+    i18n::tr,
     ui::{draw_round_rect, draw_text, draw_text_ex, Theme},
     win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
 };
@@ -224,7 +225,7 @@ fn limit_file_preview(paths: &[String], max_items: usize) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     if paths.len() > max_items {
-        out.push_str(&format!("\n......共 {} 项", paths.len()));
+        out.push_str(&format!("\n......{} {}", tr("共", "Total"), paths.len()));
     }
     out
 }
@@ -253,10 +254,10 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
 
     let data = &mut *ptr;
     data.header = match item.kind {
-        ClipKind::Image => "图片预览".to_string(),
-        ClipKind::Files => "文件预览".to_string(),
-        ClipKind::Phrase => "短语预览".to_string(),
-        ClipKind::Text => "文本预览".to_string(),
+        ClipKind::Image => tr("图片预览", "Image Preview").to_string(),
+        ClipKind::Files => tr("文件预览", "File Preview").to_string(),
+        ClipKind::Phrase => tr("短语预览", "Phrase Preview").to_string(),
+        ClipKind::Text => tr("文本预览", "Text Preview").to_string(),
     };
     data.body = match item.kind {
         ClipKind::Text | ClipKind::Phrase => {

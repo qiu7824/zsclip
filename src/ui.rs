@@ -5,6 +5,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
+use crate::i18n::translate;
 use crate::time_utils::{gregorian_to_days, local_offset_secs, unix_secs_to_parts};
 use crate::ui_core::UiRect;
 
@@ -789,6 +790,7 @@ pub unsafe fn draw_text_ex(
     center: bool,
     family: &str,
 ) {
+    let translated = translate(text);
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
@@ -797,7 +799,7 @@ pub unsafe fn draw_text_ex(
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;
     let flags = (if center { DT_CENTER } else { DT_LEFT }) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
-    DrawTextW(hdc, to_wide(text).as_ptr(), -1, &mut rc2, flags);
+    DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
     SelectObject(hdc, old);
     if !font.is_null() && font != GetStockObject(DEFAULT_GUI_FONT) {
         DeleteObject(font as _);

@@ -11,6 +11,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
+use crate::i18n::{tr, translate};
 use crate::ui::{
     draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
 };
@@ -85,7 +86,16 @@ pub fn settings_child_visible(new_y: i32, h: i32, viewport: &RECT) -> bool {
     new_y >= safe_top && new_y + h > safe_top && new_y < viewport.bottom
 }
 
+#[allow(unreachable_code)]
 pub fn settings_dropdown_label_for_max_items(max_items: usize) -> &'static str {
+    return match max_items {
+        100 => "100",
+        200 => "200",
+        500 => "500",
+        1000 => "1000",
+        3000 => "3000",
+        _ => tr("无限制", "Unlimited"),
+    };
     match max_items {
         100 => "100",
         200 => "200",
@@ -118,7 +128,13 @@ pub fn settings_dropdown_max_items_from_label(label: &str) -> usize {
     }
 }
 
+#[allow(unreachable_code)]
 pub fn settings_dropdown_label_for_pos_mode(mode: &str) -> &'static str {
+    return match mode {
+        "fixed" => tr("固定位置", "Fixed Position"),
+        "last" => tr("上次位置", "Last Position"),
+        _ => tr("跟随鼠标", "Follow Mouse"),
+    };
     match mode {
         "fixed" => "固定位置",
         "last" => "上次位置",
@@ -134,7 +150,13 @@ pub fn settings_dropdown_index_for_pos_mode(mode: &str) -> usize {
     }
 }
 
+#[allow(unreachable_code)]
 pub fn settings_dropdown_pos_mode_from_label(label: &str) -> String {
+    return match label.trim() {
+        "固定位置" | "Fixed Position" => "fixed".to_string(),
+        "上次位置" | "Last Position" => "last".to_string(),
+        _ => "mouse".to_string(),
+    };
     match label.trim() {
         "固定位置" => "fixed".to_string(),
         "上次位置" => "last".to_string(),
@@ -159,10 +181,11 @@ pub unsafe fn create_settings_component(
         | SettingsComponentKind::Button
         | SettingsComponentKind::AccentButton => "BUTTON",
     };
+    let translated = translate(text);
     let hwnd = CreateWindowExW(
         0,
         to_wide(class_name).as_ptr(),
-        to_wide(text).as_ptr(),
+        to_wide(translated.as_ref()).as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
         x,
         y,
@@ -188,10 +211,11 @@ pub unsafe fn create_settings_label(
     h: i32,
     font: *mut c_void,
 ) -> HWND {
+    let translated = translate(text);
     let hwnd = CreateWindowExW(
         0,
         to_wide("STATIC").as_ptr(),
-        to_wide(text).as_ptr(),
+        to_wide(translated.as_ref()).as_ptr(),
         WS_CHILD | WS_VISIBLE,
         x,
         y,
@@ -221,7 +245,8 @@ pub unsafe fn settings_measure_text_height(
     }
     let old = if !font.is_null() { SelectObject(hdc, font) } else { null_mut() };
     let mut rc = RECT { left: 0, top: 0, right: w.max(1), bottom: 0 };
-    let wt = to_wide(text);
+    let translated = translate(text);
+    let wt = to_wide(translated.as_ref());
     DrawTextW(
         hdc,
         wt.as_ptr(),

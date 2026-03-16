@@ -1,0 +1,201 @@
+use std::borrow::Cow;
+use std::sync::OnceLock;
+
+use windows_sys::Win32::Globalization::GetUserDefaultUILanguage;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppLanguage {
+    ZhCn,
+    En,
+}
+
+static APP_LANGUAGE: OnceLock<AppLanguage> = OnceLock::new();
+
+pub fn current_language() -> AppLanguage {
+    *APP_LANGUAGE.get_or_init(detect_system_language)
+}
+
+pub fn is_english() -> bool {
+    matches!(current_language(), AppLanguage::En)
+}
+
+pub fn tr<'a>(zh: &'a str, en: &'a str) -> &'a str {
+    if is_english() { en } else { zh }
+}
+
+pub fn app_title() -> &'static str {
+    tr("剪贴板", "Clipboard")
+}
+
+pub fn translate<'a>(text: &'a str) -> Cow<'a, str> {
+    if !is_english() {
+        return Cow::Borrowed(text);
+    }
+    match translate_en(text) {
+        Some(value) => Cow::Borrowed(value),
+        None => Cow::Borrowed(text),
+    }
+}
+
+fn detect_system_language() -> AppLanguage {
+    let lang = unsafe { GetUserDefaultUILanguage() };
+    let primary_lang = lang & 0x03ff;
+    match primary_lang {
+        0x04 => AppLanguage::ZhCn,
+        _ => AppLanguage::En,
+    }
+}
+
+fn translate_en(text: &str) -> Option<&'static str> {
+    Some(match text {
+        "剪贴板" => "Clipboard",
+        "复制记录" => "Clipboard Records",
+        "常用短语" => "Phrases",
+        "常规" => "General",
+        "快捷键" => "Hotkeys",
+        "插件" => "Plugins",
+        "分组" => "Groups",
+        "云同步" => "Cloud Sync",
+        "关于" => "About",
+        "启动与显示" => "Startup & Display",
+        "数据" => "Data",
+        "显示位置" => "Window Position",
+        "维护" => "Maintenance",
+        "主快捷键" => "Main Hotkey",
+        "系统剪贴板历史（Win+V）" => "System Clipboard History (Win+V)",
+        "功能说明" => "Notes",
+        "搜索插件" => "Search Plugin",
+        "AI 文本清洗" => "AI Text Cleanup",
+        "超级邮件合并" => "Super Mail Merge",
+        "分组功能" => "Grouping",
+        "分组管理" => "Group Management",
+        "连接与凭据" => "Connection & Credentials",
+        "操作" => "Actions",
+        "VV 模式" => "VV Mode",
+        "输入 1-9 直接粘贴，Esc 取消" => "Type 1-9 to paste, Esc to cancel",
+        "当前分组暂无记录" => "No records in this group",
+        "设置" => "Settings",
+        "全部记录" => "All Records",
+        "全部短语" => "All Phrases",
+        "全部" => "All",
+        "图片预览" => "Image Preview",
+        "文件预览" => "File Preview",
+        "短语预览" => "Phrase Preview",
+        "文本预览" => "Text Preview",
+        "显示/隐藏" => "Show / Hide",
+        "退出" => "Exit",
+        "贴图" => "Sticker",
+        "继续加载中..." => "Loading more...",
+        "正在加载..." => "Loading...",
+        "加载失败，请稍后重试" => "Load failed, please try again later",
+        "暂无剪贴板记录" => "No clipboard records",
+        "暂无短语" => "No phrases",
+        "跟随鼠标" => "Follow Mouse",
+        "固定位置" => "Fixed Position",
+        "上次位置" => "Last Position",
+        "无限制" => "Unlimited",
+        "15分钟" => "15 min",
+        "30分钟" => "30 min",
+        "1小时" => "1 hour",
+        "6小时" => "6 hours",
+        "12小时" => "12 hours",
+        "24小时" => "24 hours",
+        "开机自启" => "Launch at startup",
+        "关闭不退出（托盘驻留）" => "Close to tray",
+        "单击后隐藏主窗口" => "Hide main window after click",
+        "贴边自动隐藏" => "Auto-hide when docked",
+        "悬停预览" => "Hover preview",
+        "显示图片记录" => "Show image records",
+        "快速删除按钮" => "Quick delete button",
+        "最大保存条数：" => "Max saved items:",
+        "弹出位置：" => "Popup position:",
+        "鼠标偏移 dx/dy：" => "Mouse offset dx/dy:",
+        "固定位置 x/y：" => "Fixed position x/y:",
+        "打开设置文件" => "Open settings file",
+        "打开数据库文件" => "Open database file",
+        "打开数据目录" => "Open data folder",
+        "启用快捷键" => "Enable hotkey",
+        "修饰键：" => "Modifier:",
+        "按键：" => "Key:",
+        "当前设置：Win + V" => "Current setting: Win + V",
+        "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。" => "Note: Disable or restore Win+V through the DisabledHotkeys registry value. Explorer restart or sign-out is usually required.",
+        "屏蔽 Win+V" => "Disable Win+V",
+        "恢复 Win+V" => "Restore Win+V",
+        "重启资源管理器" => "Restart Explorer",
+        "说明：保存后会立即重新注册主快捷键。" => "Note: Saving immediately re-registers the main hotkey.",
+        "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。" => "Avoid system-wide combinations such as Ctrl+C / Ctrl+V.",
+        "启用快速搜索" => "Enable quick search",
+        "搜索引擎：" => "Search engine:",
+        "筑森搜索（jzxx.vip）" => "ZS Search (jzxx.vip)",
+        "必应" => "Bing",
+        "百度" => "Baidu",
+        "搜狗" => "Sogou",
+        "360搜索" => "360 Search",
+        "夸克" => "Quark",
+        "神马" => "Shenma",
+        "自定义" => "Custom",
+        "URL 模板：" => "URL template:",
+        "恢复预设模板" => "Restore preset template",
+        "占位符：{q}=编码后关键字，{raw}=原文" => "Placeholders: {q}=encoded keyword, {raw}=raw text",
+        "启用超级邮件合并" => "Enable Super Mail Merge",
+        "打开超级邮件合并" => "Open Super Mail Merge",
+        "启用分组功能" => "Enable grouping",
+        "VV 来源：" => "VV source:",
+        "VV 默认分组：" => "VV default group:",
+        "当前分组：全部记录" => "Current group: All Records",
+        "分组列表：" => "Group list:",
+        "新建分组" => "New Group",
+        "重命名" => "Rename",
+        "删除" => "Delete",
+        "上移" => "Move Up",
+        "下移" => "Move Down",
+        "启用自动同步" => "Enable auto sync",
+        "同步间隔：" => "Sync interval:",
+        "上次同步：未同步" => "Last sync: Not synced",
+        "WebDAV 地址：" => "WebDAV URL:",
+        "用户名：" => "Username:",
+        "密码：" => "Password:",
+        "远程目录：" => "Remote directory:",
+        "立即同步" => "Sync now",
+        "上传配置" => "Upload config",
+        "应用云端配置" => "Apply cloud config",
+        "云备份恢复" => "Restore from cloud backup",
+        "版本：" => "Version:",
+        "设置界面现在统一使用同一套 section/form 布局。" => "The settings window now uses one shared section/form layout system.",
+        "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。" => "New settings can reuse the same cards, field columns, action rows, and spacing.",
+        "开源地址：" => "Source URL:",
+        "当前还没有配置开源地址，请先在 Cargo.toml 的 package.repository 中填写。" => "No source URL is configured yet. Please fill package.repository in Cargo.toml first.",
+        "数据目录：" => "Data directory:",
+        "数据库：" => "Database:",
+        "保存" => "Save",
+        "关闭" => "Close",
+        "取消" => "Cancel",
+        "编辑" => "Edit",
+        "快速搜索" => "Quick Search",
+        "合并复制" => "Copy Selected",
+        "置顶所选" => "Pin Selected",
+        "取消置顶" => "Unpin",
+        "添加到短语" => "Add to Phrases",
+        "添加到分组" => "Add to Group",
+        "移出分组" => "Remove from Group",
+        "删除所选" => "Delete Selected",
+        "另存为 PNG" => "Save as PNG",
+        "导出为文件" => "Export as File",
+        "置顶" => "Pin",
+        "打开文件夹" => "Open Folder",
+        "打开文件" => "Open File",
+        "打开所在文件夹" => "Open Containing Folder",
+        "复制路径" => "Copy Path",
+        "Excel 数据" => "Excel Data",
+        "字段与模式" => "Fields & Mode",
+        "快捷键冲突" => "Hotkey Conflict",
+        "系统剪贴板历史" => "System Clipboard History",
+        "请先选择一个分组。" => "Please select a group first.",
+        "云同步执行入口已经迁到统一框架，下一步继续接真实同步逻辑。" => "The cloud sync action has been moved into the unified framework. Real sync logic will be connected next.",
+        "上传配置入口已经迁到统一框架，下一步继续接真实上传逻辑。" => "The upload config action has been moved into the unified framework. Real upload logic will be connected next.",
+        "应用云端配置入口已经迁到统一框架，下一步继续接真实下载逻辑。" => "The apply cloud config action has been moved into the unified framework. Real download logic will be connected next.",
+        "云备份恢复入口已经迁到统一框架，下一步继续接数据库与资源恢复逻辑。" => "The cloud restore action has been moved into the unified framework. Database and resource restore logic will be connected next.",
+        "（暂无分组）" => "(No groups)",
+        _ => return None,
+    })
+}
