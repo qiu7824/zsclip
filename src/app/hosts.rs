@@ -117,6 +117,9 @@ unsafe extern "system" fn outside_hide_mouse_hook_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if vv_popup_menu_active() {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
     if code >= 0
         && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
         && any_visible_window_requires_outside_hide()
@@ -161,17 +164,37 @@ unsafe extern "system" fn quick_escape_keyboard_hook_proc(
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
     let data = &*(lparam as *const KBDLLHOOKSTRUCT);
-    if (data.flags & LLKHF_INJECTED_FLAG) != 0 || data.vkCode != VK_ESCAPE as u32 {
+    if (data.flags & LLKHF_INJECTED_FLAG) != 0 {
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
 
     let quick = quick_window_hwnd();
+    let main = main_window_hwnd();
+
+    let ctrl_down = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
+    if data.vkCode == 0x46 && ctrl_down {
+        if !quick.is_null() && IsWindowVisible(quick) != 0 {
+            let _ = PostMessageW(quick, WM_KEYDOWN, 0x46usize, 0);
+            return 1;
+        }
+        if !main.is_null() && IsWindowVisible(main) != 0 {
+            let ptr = get_state_ptr(main);
+            if !ptr.is_null() && (*ptr).main_window_noactivate {
+                let _ = PostMessageW(main, WM_KEYDOWN, 0x46usize, 0);
+                return 1;
+            }
+        }
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    if data.vkCode != VK_ESCAPE as u32 {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
     if !quick.is_null() && IsWindowVisible(quick) != 0 {
         let _ = PostMessageW(quick, WM_KEYDOWN, VK_ESCAPE as usize, 0);
         return 1;
     }
 
-    let main = main_window_hwnd();
     if !main.is_null() && IsWindowVisible(main) != 0 {
         let ptr = get_state_ptr(main);
         if !ptr.is_null() && (*ptr).main_window_noactivate {

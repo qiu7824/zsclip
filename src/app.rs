@@ -2272,13 +2272,17 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     st.draft.show_fixed_x = get_window_text(st.ed_fx).parse::<i32>().ok().unwrap_or(120);
     st.draft.show_fixed_y = get_window_text(st.ed_fy).parse::<i32>().ok().unwrap_or(120);
     st.draft.show_pos_mode = settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos));
-    st.draft.hotkey_mod = normalize_hotkey_mod(&get_window_text(st.cb_hk_mod));
-    st.draft.hotkey_key = normalize_hotkey_key(&get_window_text(st.cb_hk_key));
-    st.draft.search_engine = search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
-    st.draft.search_template = {
-        let tpl = get_window_text(st.ed_tpl);
-        if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
-    };
+    if st.ui.is_built(SettingsPage::Hotkey.index()) && !st.cb_hk_mod.is_null() && !st.cb_hk_key.is_null() {
+        st.draft.hotkey_mod = normalize_hotkey_mod(&get_window_text(st.cb_hk_mod));
+        st.draft.hotkey_key = normalize_hotkey_key(&get_window_text(st.cb_hk_key));
+    }
+    if st.ui.is_built(SettingsPage::Plugin.index()) && !st.cb_engine.is_null() {
+        st.draft.search_engine = search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
+        st.draft.search_template = {
+            let tpl = get_window_text(st.ed_tpl);
+            if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
+        };
+    }
     st.draft.vv_source_tab = settings_vv_source_current(st);
     let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
     st.draft.vv_group_id = if st.vv_group_selected > 0 && vv_groups.iter().any(|g| g.id == st.vv_group_selected) {
@@ -2286,22 +2290,22 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     } else {
         0
     };
-    if !st.cb_cloud_interval.is_null() {
+    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.cb_cloud_interval.is_null() {
         st.draft.cloud_sync_interval = {
             let label = get_window_text(st.cb_cloud_interval);
             if label.trim().is_empty() { "1小时".to_string() } else { label }
         };
     }
-    if !st.ed_cloud_url.is_null() {
+    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_url.is_null() {
         st.draft.cloud_webdav_url = get_window_text(st.ed_cloud_url);
     }
-    if !st.ed_cloud_user.is_null() {
+    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_user.is_null() {
         st.draft.cloud_webdav_user = get_window_text(st.ed_cloud_user);
     }
-    if !st.ed_cloud_pass.is_null() {
+    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_pass.is_null() {
         st.draft.cloud_webdav_pass = get_window_text(st.ed_cloud_pass);
     }
-    if !st.ed_cloud_dir.is_null() {
+    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_dir.is_null() {
         st.draft.cloud_remote_dir = {
             let dir = get_window_text(st.ed_cloud_dir);
             if dir.trim().is_empty() { "ZSClip".to_string() } else { dir }
@@ -5883,10 +5887,12 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
 
         match key {
             "search" => {
-                if state.search_on {
-                    close_search_ui(hwnd, state);
+                state.search_on = !state.search_on;
+                if !state.search_on {
+                    reset_search_ui_state(state);
                 } else {
-                    open_search_ui(hwnd, state);
+                    layout_children(hwnd);
+                    InvalidateRect(hwnd, null(), 1);
                 }
             }
             "setting" => {
@@ -6829,6 +6835,7 @@ unsafe fn show_row_menu(
         hwnd,
         null(),
     ) as usize;
+    vv_set_popup_menu_active(false);
     PostMessageW(hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
     cmd
@@ -6859,6 +6866,7 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
         }
     }
     SetForegroundWindow(hwnd);
+    vv_set_popup_menu_active(true);
     let cmd = TrackPopupMenu(
         menu,
         TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN | TPM_RETURNCMD,
@@ -6868,6 +6876,7 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
         hwnd,
         null(),
     ) as usize;
+    vv_set_popup_menu_active(false);
     PostMessageW(hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
     cmd
