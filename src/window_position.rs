@@ -1,7 +1,8 @@
 use std::cmp::{max, min};
 use windows_sys::Win32::Foundation::{POINT, RECT};
 
-use crate::app::{AppSettings, WIN_H, WIN_W};
+use crate::app::{WIN_H, WIN_W};
+use crate::app::state::AppSettings;
 use crate::win_system_ui::{nearest_monitor_work_rect_for_point, nearest_monitor_rect_for_point};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
