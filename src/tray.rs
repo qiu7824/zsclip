@@ -10,7 +10,8 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::app::{AppSettings, IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
+use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
+use crate::app::state::AppSettings;
 use crate::i18n::{app_title, translate};
 use crate::win_system_ui::{apply_theme_to_menu, to_wide};
 use crate::window_position::resolve_main_window_position;
