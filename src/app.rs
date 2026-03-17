@@ -1999,12 +1999,15 @@ impl AppState {
 
     fn release_list_memory(&mut self) {
         self.invalidate_all_queries();
+        self.records.clear();
+        self.phrases.clear();
         self.record_groups.clear();
         self.phrase_groups.clear();
         self.vv_popup_items.clear();
         self.clear_payload_cache();
         self.clear_selection();
         self.scroll_y = 0;
+        self.list.apply_visible_len(0);
         self.record_groups.shrink_to_fit();
         self.phrase_groups.shrink_to_fit();
         self.records.shrink_to_fit();
@@ -3530,12 +3533,27 @@ unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
             settings_set_text(st.ed_cloud_dir, &s.cloud_remote_dir);
             settings_set_text(
                 st.lb_cloud_status,
-                &format!("{}{}", tr("上次同步：", "Last sync: "), s.cloud_last_sync_status),
+                &format!(
+                    "{}{}",
+                    tr("上次同步：", "Last sync: "),
+                    localized_cloud_status_text(&s.cloud_last_sync_status)
+                ),
             );
         }
         SettingsPage::About => {}
     }
     settings_invalidate_page_ctrls(st.parent_hwnd, st, page);
+}
+
+fn localized_cloud_status_text(status: &str) -> String {
+    let trimmed = status.trim();
+    if trimmed.is_empty() {
+        return tr("未同步", "Not synced").to_string();
+    }
+    if let Some(rest) = trimmed.strip_prefix("失败：") {
+        return format!("{}{}", tr("失败：", "Failed: "), rest);
+    }
+    translate(trimmed).into_owned()
 }
 
 unsafe fn settings_refresh_theme_resources(st: &mut SettingsWndState) {
@@ -4171,13 +4189,13 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             SetFocus(ed);
 
             // 取消按钮（左）
-            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide("取消").as_ptr(),
+            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("取消").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
                 148, 132, 88, 30, hwnd, IDC_INPUT_CANCEL as _, hmod, null());
             SendMessageW(btn_cancel, WM_SETFONT, d.ui_font as usize, 1);
 
             // 保存按钮（右）
-            let btn_ok = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide("保存").as_ptr(),
+            let btn_ok = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("保存").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
                 248, 132, 88, 30, hwnd, IDC_INPUT_OK as _, hmod, null());
             SendMessageW(btn_ok, WM_SETFONT, d.ui_font as usize, 1);
@@ -4349,8 +4367,8 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
     let mut data = InputDlgData {
         result: None,
         initial: init_arr,
-        title_w: title.encode_utf16().chain(std::iter::once(0)).collect(),
-        label_w: label.encode_utf16().chain(std::iter::once(0)).collect(),
+        title_w: translate(title).encode_utf16().chain(std::iter::once(0)).collect(),
+        label_w: translate(label).encode_utf16().chain(std::iter::once(0)).collect(),
         ui_font: null_mut(),
         surface_brush: null_mut(),
         control_brush: null_mut(),
@@ -4363,7 +4381,7 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
     let cx = parent_rc.left + (parent_rc.right - parent_rc.left - dw) / 2;
     let cy = parent_rc.top + (parent_rc.bottom - parent_rc.top - dh) / 2;
 
-    let title_w = to_wide(title);
+    let title_w = to_wide(translate(title).as_ref());
     let hwnd = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
         cls_w.as_ptr(),
@@ -4493,13 +4511,13 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             SetFocus(ed);
 
             // 取消按钮
-            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide("取消").as_ptr(),
+            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("取消").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
                 w - 210, h - 44, 90, 30, hwnd, IDC_EDIT_CANCEL as _, hmod, null());
             SendMessageW(btn_cancel, WM_SETFONT, d.btn_font as usize, 1);
 
             // 保存按钮
-            let btn_save = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide("保存").as_ptr(),
+            let btn_save = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("保存").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
                 w - 110, h - 44, 90, 30, hwnd, IDC_EDIT_SAVE as _, hmod, null());
             SendMessageW(btn_save, WM_SETFONT, d.btn_font as usize, 1);
@@ -6303,7 +6321,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_SHOWWINDOW => {
             if wparam == 0 {
                 let ptr = get_state_ptr(hwnd);
-                if !ptr.is_null() && (*ptr).role == WindowRole::Quick {
+                if !ptr.is_null() {
                     (*ptr).release_list_memory();
                     trim_process_working_set();
                 }
