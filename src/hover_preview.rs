@@ -27,9 +27,14 @@ const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
 
 struct HoverPreviewData {
+    item_id: i64,
     header: String,
     body: String,
     image: Option<(Vec<u8>, usize, usize)>,
+    last_x: i32,
+    last_y: i32,
+    last_w: i32,
+    last_h: i32,
 }
 
 static HOVER_HWND: OnceLock<isize> = OnceLock::new();
@@ -172,9 +177,14 @@ unsafe fn create_preview_window() -> HWND {
         null_mut(),
         GetModuleHandleW(null()),
         Box::into_raw(Box::new(HoverPreviewData {
+            item_id: -1,
             header: String::new(),
             body: String::new(),
             image: None,
+            last_x: i32::MIN,
+            last_y: i32::MIN,
+            last_w: 0,
+            last_h: 0,
         })) as _,
     )
 }
@@ -234,11 +244,6 @@ fn limit_file_preview(paths: &[String], max_items: usize) -> String {
 pub(crate) unsafe fn hide_hover_preview() {
     let hwnd = preview_hwnd();
     if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
-        if !ptr.is_null() {
-            (*ptr).image = None;
-            (*ptr).body.clear();
-        }
         ShowWindow(hwnd, SW_HIDE);
     }
 }
@@ -253,14 +258,13 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         return;
     }
 
-    let data = &mut *ptr;
-    data.header = match item.kind {
+    let header = match item.kind {
         ClipKind::Image => tr("图片预览", "Image Preview").to_string(),
         ClipKind::Files => tr("文件预览", "File Preview").to_string(),
         ClipKind::Phrase => tr("短语预览", "Phrase Preview").to_string(),
         ClipKind::Text => tr("文本预览", "Text Preview").to_string(),
     };
-    data.body = match item.kind {
+    let body = match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             limit_preview_text(item.text.as_deref().unwrap_or(item.preview.as_str()), 10, 420)
         }
@@ -271,13 +275,13 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
             .unwrap_or_else(|| item.preview.clone()),
         ClipKind::Image => String::new(),
     };
-    data.image = if item.kind == ClipKind::Image {
+    let image = if item.kind == ClipKind::Image {
         ensure_item_image_bytes(item)
     } else {
         None
     };
 
-    let (w, h) = if data.image.is_some() {
+    let (w, h) = if image.is_some() {
         (PREVIEW_W_IMAGE, PREVIEW_H_IMAGE)
     } else {
         (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
@@ -294,6 +298,32 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     x = x.max(wa.left);
     y = y.max(wa.top);
 
+    let data = &mut *ptr;
+    let same_image_shape = data
+        .image
+        .as_ref()
+        .map(|(_, iw, ih)| (*iw, *ih))
+        == image.as_ref().map(|(_, iw, ih)| (*iw, *ih));
+    let same_content = data.item_id == item.id
+        && data.header == header
+        && data.body == body
+        && same_image_shape;
+    let same_geometry = data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
+    let visible = IsWindowVisible(hwnd) != 0;
+
+    if visible && same_content && same_geometry {
+        return;
+    }
+
+    data.item_id = item.id;
+    data.header = header;
+    data.body = body;
+    data.image = image;
+    data.last_x = x;
+    data.last_y = y;
+    data.last_w = w;
+    data.last_h = h;
+
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -303,5 +333,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         h,
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
-    InvalidateRect(hwnd, null(), 1);
+    if !same_content {
+        InvalidateRect(hwnd, null(), 1);
+    }
 }
