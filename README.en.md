@@ -5,7 +5,7 @@
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.4.0>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.5.0>
 - Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
 - Password: `7dvb`
 
@@ -212,7 +212,7 @@ The project is being reorganized for better long-term portability. The main entr
 - `src/app.rs`: app state, workflows, data loading, and command dispatch
 - `locales/`: UI translation files
 
-Current `0.4.x` also uses two window hosts:
+Current `0.5.x` also uses two window hosts:
 
 - Full main window: search, settings, editing, grouping, dragging, and full interaction
 - Quick window: opened by hotkey for fast paste and typing-focused scenarios
