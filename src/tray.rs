@@ -122,6 +122,7 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
     let pst = crate::app::get_state_ptr(hwnd);
     if !pst.is_null() {
         crate::app::refresh_window_for_show(hwnd);
+        crate::app::reset_search_ui_state(&mut *pst);
         position_main_window(hwnd, &(*pst).settings, by_hotkey);
         (*pst).edge_hidden = false;
         (*pst).edge_hidden_side = -1;
@@ -145,6 +146,7 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
     crate::app::refresh_window_for_show(hwnd);
     let pst = crate::app::get_state_ptr(hwnd);
     if !pst.is_null() {
+        crate::app::reset_search_ui_state(&mut *pst);
         position_main_window(hwnd, &(*pst).settings, by_hotkey);
         (*pst).edge_hidden = false;
         (*pst).edge_hidden_side = -1;
