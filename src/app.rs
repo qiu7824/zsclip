@@ -46,6 +46,7 @@ unsafe extern "system" {
     fn UnregisterHotKey(hwnd: HWND, id: i32) -> i32;
     fn EnableWindow(hwnd: HWND, benable: i32) -> i32;
     fn IsWindow(hwnd: HWND) -> i32;
+    fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
     fn TrackMouseEvent(lpeventtrack: *mut TRACKMOUSEEVENT) -> i32;
     fn SendInput(cinputs: u32, pinputs: *const INPUT, cbsize: i32) -> u32;
 }
@@ -55,6 +56,7 @@ unsafe extern "system" {
     fn GetLastError() -> u32;
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetCurrentProcessId() -> u32;
+    fn GetCurrentThreadId() -> u32;
     fn GlobalAlloc(uflags: u32, dwbytes: usize) -> *mut core::ffi::c_void;
     fn GlobalLock(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
     fn GlobalUnlock(hmem: *mut core::ffi::c_void) -> i32;
@@ -1270,6 +1272,7 @@ pub(crate) struct AppState {
     pub(crate) paste_backspace_count: u8,
     pub(crate) hotkey_passthrough_active: bool,
     pub(crate) hotkey_passthrough_target: HWND,
+    pub(crate) hotkey_passthrough_focus: HWND,
     pub(crate) hotkey_passthrough_edit: HWND,
     pub(crate) main_window_noactivate: bool,
     pub(crate) edge_hidden: bool,
@@ -4695,6 +4698,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let target = state.paste_target_override;
                     if !target.is_null() {
                         let _ = force_foreground_window(target);
+                        restore_hotkey_focus_target(state, target);
                     }
                     send_backspace_times(state.paste_backspace_count);
                     state.paste_backspace_count = 0;
@@ -6841,6 +6845,7 @@ unsafe fn send_alt_tap() {
 fn clear_hotkey_passthrough_state(state: &mut AppState) {
     state.hotkey_passthrough_active = false;
     state.hotkey_passthrough_target = null_mut();
+    state.hotkey_passthrough_focus = null_mut();
     state.hotkey_passthrough_edit = null_mut();
 }
 
@@ -6853,6 +6858,37 @@ unsafe fn force_foreground_window(hwnd: HWND) -> bool {
     }
     send_alt_tap();
     SetForegroundWindow(hwnd) != 0
+}
+
+unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND) {
+    let focus = state.hotkey_passthrough_focus;
+    if target.is_null() || focus.is_null() || IsWindow(focus) == 0 {
+        return;
+    }
+    if GetAncestor(focus, GA_ROOT) != target {
+        return;
+    }
+
+    let current_thread = GetCurrentThreadId();
+    let target_thread = GetWindowThreadProcessId(target, null_mut());
+    let focus_thread = GetWindowThreadProcessId(focus, null_mut());
+
+    let attach_target = target_thread != 0
+        && target_thread != current_thread
+        && AttachThreadInput(current_thread, target_thread, 1) != 0;
+    let attach_focus = focus_thread != 0
+        && focus_thread != current_thread
+        && focus_thread != target_thread
+        && AttachThreadInput(current_thread, focus_thread, 1) != 0;
+
+    let _ = SetFocus(focus);
+
+    if attach_focus {
+        let _ = AttachThreadInput(current_thread, focus_thread, 0);
+    }
+    if attach_target {
+        let _ = AttachThreadInput(current_thread, target_thread, 0);
+    }
 }
 
 unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
@@ -6884,6 +6920,7 @@ unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState
             ShowWindow(hwnd, SW_HIDE);
         }
         let _ = force_foreground_window(target);
+        restore_hotkey_focus_target(state, target);
         KillTimer(hwnd, ID_TIMER_PASTE);
         SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
     } else {

@@ -30,25 +30,33 @@ unsafe fn window_class_name(hwnd: HWND) -> String {
 }
 
 unsafe fn explorer_rename_target() -> Option<(HWND, HWND)> {
+    let (fg, focus) = foreground_focus_snapshot()?;
+    let fg_class = window_class_name(fg);
+    if !matches!(fg_class.as_str(), "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW") {
+        return None;
+    }
+    if matches!(window_class_name(focus).as_str(), "Edit") {
+        Some((fg, focus))
+    } else {
+        None
+    }
+}
+
+unsafe fn foreground_focus_snapshot() -> Option<(HWND, HWND)> {
     let fg = GetForegroundWindow();
     if fg.is_null() {
         return None;
     }
 
-    let fg_class = window_class_name(fg);
-    if !matches!(fg_class.as_str(), "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW") {
-        return None;
-    }
-
     let thread_id = GetWindowThreadProcessId(fg, null_mut());
     if thread_id == 0 {
-        return None;
+        return Some((fg, null_mut()));
     }
 
     let mut info: GUITHREADINFO = zeroed();
     info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
     if GetGUIThreadInfo(thread_id, &mut info) == 0 {
-        return None;
+        return Some((fg, null_mut()));
     }
 
     let focus = if !info.hwndFocus.is_null() {
@@ -56,10 +64,10 @@ unsafe fn explorer_rename_target() -> Option<(HWND, HWND)> {
     } else {
         info.hwndCaret
     };
-    if matches!(window_class_name(focus).as_str(), "Edit") {
+    if !focus.is_null() && GetAncestor(focus, GA_ROOT) == fg {
         Some((fg, focus))
     } else {
-        None
+        Some((fg, null_mut()))
     }
 }
 
@@ -119,6 +127,7 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
         (*pst).edge_hidden_side = -1;
         (*pst).hotkey_passthrough_active = false;
         (*pst).hotkey_passthrough_target = null_mut();
+        (*pst).hotkey_passthrough_focus = null_mut();
         (*pst).hotkey_passthrough_edit = null_mut();
     }
     crate::app::set_main_window_noactivate_mode(hwnd, false);
@@ -140,18 +149,22 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
         (*pst).edge_hidden = false;
         (*pst).edge_hidden_side = -1;
         if by_hotkey {
-            if let Some((target, edit)) = explorer_rename_target() {
+            if let Some((target, focus)) = foreground_focus_snapshot() {
                 (*pst).hotkey_passthrough_active = true;
                 (*pst).hotkey_passthrough_target = target;
-                (*pst).hotkey_passthrough_edit = edit;
+                (*pst).hotkey_passthrough_focus = focus;
+                (*pst).hotkey_passthrough_edit =
+                    explorer_rename_target().map(|(_, edit)| edit).unwrap_or(null_mut());
             } else {
                 (*pst).hotkey_passthrough_active = false;
                 (*pst).hotkey_passthrough_target = null_mut();
+                (*pst).hotkey_passthrough_focus = null_mut();
                 (*pst).hotkey_passthrough_edit = null_mut();
             }
         } else {
             (*pst).hotkey_passthrough_active = false;
             (*pst).hotkey_passthrough_target = null_mut();
+            (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
         }
     }
@@ -171,6 +184,7 @@ pub(crate) unsafe fn toggle_window_visibility(hwnd: HWND) {
         if !pst.is_null() {
             (*pst).hotkey_passthrough_active = false;
             (*pst).hotkey_passthrough_target = null_mut();
+            (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
         }
         crate::app::set_main_window_noactivate_mode(hwnd, false);
@@ -200,6 +214,7 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
         if !pst.is_null() {
             (*pst).hotkey_passthrough_active = false;
             (*pst).hotkey_passthrough_target = null_mut();
+            (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
         }
         crate::app::set_main_window_noactivate_mode(quick, false);
@@ -209,6 +224,7 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
         if !pst.is_null() {
             (*pst).hotkey_passthrough_active = false;
             (*pst).hotkey_passthrough_target = null_mut();
+            (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
         }
         crate::app::set_main_window_noactivate_mode(hwnd, false);
