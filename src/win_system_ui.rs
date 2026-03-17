@@ -22,7 +22,7 @@ use windows_sys::Win32::{
     System::Ole::DROPEFFECT,
     UI::WindowsAndMessaging::{
         GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        IsWindow, WindowFromPoint,
+        IsWindow, SystemParametersInfoW, WindowFromPoint,
     },
 };
 
@@ -212,6 +212,23 @@ pub(crate) unsafe fn get_window_text(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf)
         .trim_end_matches('\0')
         .to_string()
+}
+
+pub(crate) unsafe fn system_mouse_hover_time_ms() -> u32 {
+    const SPI_GETMOUSEHOVERTIME: u32 = 0x0066;
+    let mut hover_ms = 0u32;
+    if SystemParametersInfoW(
+        SPI_GETMOUSEHOVERTIME,
+        0,
+        &mut hover_ms as *mut _ as _,
+        0,
+    ) != 0
+        && hover_ms > 0
+    {
+        hover_ms
+    } else {
+        400
+    }
 }
 
 fn fallback_primary_rect() -> RECT {
