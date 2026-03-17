@@ -5,7 +5,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.4.0>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.5.0>
 - 蓝奏云下载: <https://tcnzy.lanzout.com/b01887awxg>
 - 下载密码: `7dvb`
 
@@ -205,7 +205,7 @@ cargo build --release
 - `src/app.rs`：应用状态、业务流程、数据加载、命令分发
 - `locales/`：界面翻译文件目录
 
-当前 `0.4.x` 还额外做了两种窗口宿主：
+当前 `0.5.x` 还额外做了两种窗口宿主：
 
 - 完整主窗口：负责搜索、设置、编辑、分组、拖拽等完整能力
 - 快速窗口：由热键弹出，优先服务快速粘贴和输入中场景
