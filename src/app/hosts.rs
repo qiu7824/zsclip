@@ -213,6 +213,98 @@ pub(crate) fn quick_window_hwnd() -> HWND {
         .unwrap_or(null_mut())
 }
 
+pub(crate) unsafe fn get_state_ptr(hwnd: HWND) -> *mut AppState {
+    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
+}
+
+pub(crate) unsafe fn set_main_window_noactivate_mode(hwnd: HWND, enable: bool) {
+    if hwnd.is_null() {
+        return;
+    }
+    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+    let desired = if enable {
+        ex_style | WS_EX_NOACTIVATE
+    } else {
+        ex_style & !WS_EX_NOACTIVATE
+    };
+    if desired == ex_style {
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() {
+            (*ptr).main_window_noactivate = enable;
+        }
+        return;
+    }
+    SetWindowLongW(hwnd, GWL_EXSTYLE, desired as i32);
+    let flags =
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | if enable { SWP_NOACTIVATE } else { 0 };
+    SetWindowPos(hwnd, null_mut(), 0, 0, 0, 0, flags);
+    let ptr = get_state_ptr(hwnd);
+    if !ptr.is_null() {
+        (*ptr).main_window_noactivate = enable;
+    }
+}
+
+pub(super) unsafe fn get_state_mut(hwnd: HWND) -> Option<&'static mut AppState> {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        None
+    } else {
+        Some(&mut *ptr)
+    }
+}
+
+pub(super) unsafe fn clear_main_hover_state(hwnd: HWND) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    let state = &mut *ptr;
+    let mut dirty = false;
+    if !state.hover_btn.is_empty() {
+        state.hover_btn = "";
+        dirty = true;
+    }
+    if state.hover_tab != -1 {
+        state.hover_tab = -1;
+        dirty = true;
+    }
+    if state.hover_idx != -1 {
+        state.hover_idx = -1;
+        dirty = true;
+    }
+    if state.hover_to_top {
+        state.hover_to_top = false;
+        dirty = true;
+    }
+    if state.down_to_top {
+        state.down_to_top = false;
+        dirty = true;
+    }
+    if state.down_row != -1 {
+        state.down_row = -1;
+        state.down_x = 0;
+        state.down_y = 0;
+        dirty = true;
+    }
+    hide_hover_preview();
+    if dirty {
+        InvalidateRect(hwnd, null(), 0);
+    }
+}
+
+pub(super) unsafe fn main_window_should_stay_noactivate(state: &AppState, x: i32, y: i32) -> bool {
+    hit_test_row(state, x, y) >= 0
+}
+
+pub(super) fn trim_process_working_set() {
+    unsafe {
+        let process = GetCurrentProcess();
+        if !process.is_null() {
+            let _ = EmptyWorkingSet(process);
+        }
+    }
+}
+
 pub(super) fn taskbar_created_message() -> u32 {
     *TASKBAR_CREATED_MESSAGE.get_or_init(|| unsafe {
         RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr())
@@ -342,4 +434,8 @@ pub(super) unsafe fn sync_peer_windows_from_settings(source_hwnd: HWND) {
         }
         refresh_window_state(target, true);
     }
+}
+
+pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
+    refresh_window_state(hwnd, true);
 }

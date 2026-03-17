@@ -13,7 +13,10 @@ pub(crate) mod data;
 pub(crate) mod hosts;
 
 pub(crate) use self::runtime::{db_file, save_settings};
-pub(crate) use self::hosts::{main_window_hwnd, quick_window_hwnd};
+pub(crate) use self::hosts::{
+    get_state_ptr, main_window_hwnd, quick_window_hwnd, refresh_window_for_show,
+    set_main_window_noactivate_mode,
+};
 
 use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
@@ -144,7 +147,7 @@ use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
 use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -253,7 +256,6 @@ const TME_LEAVE: u32 = 0x00000002;
 const TME_HOVER: u32 = 0x00000001;
 const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
-const SPI_GETMOUSEHOVERTIME_V: u32 = 0x0066;
 
 type AppResult<T> = Result<T, io::Error>;
 
@@ -4485,10 +4487,6 @@ unsafe fn open_settings_window(hwnd: HWND) {
     }
 }
 
-pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
-    refresh_window_state(hwnd, true);
-}
-
 pub fn run() -> AppResult<()> {
     let boot_settings = load_settings();
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
@@ -5358,22 +5356,6 @@ unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
     TrackMouseEvent(&mut tme);
 }
 
-unsafe fn system_mouse_hover_time_ms() -> u32 {
-    let mut hover_ms = 0u32;
-    if SystemParametersInfoW(
-        SPI_GETMOUSEHOVERTIME_V,
-        0,
-        &mut hover_ms as *mut _ as _,
-        0,
-    ) != 0
-        && hover_ms > 0
-    {
-        hover_ms
-    } else {
-        400
-    }
-}
-
 unsafe fn hover_preview_blocked_at_point(state: &AppState, x: i32, y: i32) -> bool {
     if scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect()) {
         return true;
@@ -5721,25 +5703,6 @@ unsafe fn handle_mouse_leave_main(hwnd: HWND) {
         InvalidateRect(hwnd, null(), 0);
     }
     hide_edge_docked_window(hwnd, state);
-}
-
-unsafe fn clear_main_hover_state(hwnd: HWND) {
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
-        return;
-    }
-    let state = &mut *ptr;
-    let mut dirty = false;
-    if !state.hover_btn.is_empty() { state.hover_btn = ""; dirty = true; }
-    if state.hover_tab != -1 { state.hover_tab = -1; dirty = true; }
-    if state.hover_idx != -1 { state.hover_idx = -1; dirty = true; }
-    if state.hover_to_top { state.hover_to_top = false; dirty = true; }
-    if state.down_to_top { state.down_to_top = false; dirty = true; }
-    if state.down_row != -1 { state.down_row = -1; state.down_x = 0; state.down_y = 0; dirty = true; }
-    hide_hover_preview();
-    if dirty {
-        InvalidateRect(hwnd, null(), 0);
-    }
 }
 
 unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
@@ -7438,58 +7401,6 @@ fn hash_bytes(data: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
     data.hash(&mut hasher);
     hasher.finish()
-}
-
-fn trim_process_working_set() {
-    unsafe {
-        let process = GetCurrentProcess();
-        if !process.is_null() {
-            let _ = EmptyWorkingSet(process);
-        }
-    }
-}
-
-pub(crate) unsafe fn get_state_ptr(hwnd: HWND) -> *mut AppState {
-    GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
-}
-
-pub(crate) unsafe fn set_main_window_noactivate_mode(hwnd: HWND, enable: bool) {
-    if hwnd.is_null() {
-        return;
-    }
-    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    let desired = if enable {
-        ex_style | WS_EX_NOACTIVATE
-    } else {
-        ex_style & !WS_EX_NOACTIVATE
-    };
-    if desired == ex_style {
-        let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null() {
-            (*ptr).main_window_noactivate = enable;
-        }
-        return;
-    }
-    SetWindowLongW(hwnd, GWL_EXSTYLE, desired as i32);
-    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | if enable { SWP_NOACTIVATE } else { 0 };
-    SetWindowPos(hwnd, null_mut(), 0, 0, 0, 0, flags);
-    let ptr = get_state_ptr(hwnd);
-    if !ptr.is_null() {
-        (*ptr).main_window_noactivate = enable;
-    }
-}
-
-unsafe fn get_state_mut(hwnd: HWND) -> Option<&'static mut AppState> {
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(&mut *ptr)
-    }
-}
-
-unsafe fn main_window_should_stay_noactivate(state: &AppState, x: i32, y: i32) -> bool {
-    hit_test_row(state, x, y) >= 0
 }
 
 fn loword(v: u32) -> u16 {
