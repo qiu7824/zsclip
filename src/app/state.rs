@@ -466,6 +466,7 @@ impl AppState {
             paste_backspace_count: 0,
             hotkey_passthrough_active: false,
             hotkey_passthrough_target: null_mut(),
+            hotkey_passthrough_focus: null_mut(),
             hotkey_passthrough_edit: null_mut(),
             main_window_noactivate: false,
             edge_hidden: false,
