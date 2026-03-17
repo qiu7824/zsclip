@@ -25,9 +25,10 @@ pub struct SettingsFormCardSpec {
     pub rows: i32,
 }
 
-const GENERAL_SECTIONS: [SettingsSection; 4] = [
+const GENERAL_SECTIONS: [SettingsSection; 5] = [
     SettingsSection { title: "启动与显示", rect: settings_card_rect(crate::settings_layout::CARD_GENERAL_Y, crate::settings_layout::CARD_GENERAL_H) },
     SettingsSection { title: "数据", rect: settings_card_rect(crate::settings_layout::CARD_DATA_Y, crate::settings_layout::CARD_DATA_H) },
+    SettingsSection { title: "快捷操作", rect: settings_card_rect(crate::settings_layout::CARD_ACTIONS_Y, crate::settings_layout::CARD_ACTIONS_H) },
     SettingsSection { title: "显示位置", rect: settings_card_rect(crate::settings_layout::CARD_POSITION_Y, crate::settings_layout::CARD_POSITION_H) },
     SettingsSection { title: "维护", rect: settings_card_rect(crate::settings_layout::CARD_MAINTAIN_Y, crate::settings_layout::CARD_MAINTAIN_H) },
 ];

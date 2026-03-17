@@ -457,6 +457,16 @@ pub(super) fn db_update_item_text(item_id: i64, new_text: &str) -> rusqlite::Res
     })
 }
 
+pub(super) fn db_touch_item_created_at(item_id: i64) -> rusqlite::Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE items SET created_at=CURRENT_TIMESTAMP WHERE id=?",
+            params![item_id],
+        )?;
+        Ok(())
+    })
+}
+
 pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> {
     let mut clone = item.clone();
     clone.id = 0;

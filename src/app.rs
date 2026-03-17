@@ -148,7 +148,7 @@ use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -1689,6 +1689,7 @@ struct SettingsWndState {
     chk_tray_icon: HWND,
     chk_close_tray: HWND,
     chk_click_hide: HWND,
+    chk_move_pasted_to_top: HWND,
     chk_auto_hide_on_blur: HWND,
     chk_edge_hide: HWND,
     chk_hover_preview: HWND,
@@ -2367,6 +2368,7 @@ unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
         IDC_SET_TRAYICON     => st.draft.tray_icon_enabled,
         IDC_SET_CLOSETRAY    => st.draft.close_without_exit,
         IDC_SET_CLICK_HIDE   => st.draft.click_hide,
+        IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top,
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
@@ -2390,6 +2392,7 @@ unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
         IDC_SET_TRAYICON     => st.draft.tray_icon_enabled = !st.draft.tray_icon_enabled,
         IDC_SET_CLOSETRAY    => st.draft.close_without_exit = !st.draft.close_without_exit,
         IDC_SET_CLICK_HIDE   => st.draft.click_hide = !st.draft.click_hide,
+        IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top = !st.draft.move_pasted_item_to_top,
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
@@ -2421,20 +2424,20 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     let ui_font = st.ui_font;
     let sec0 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 0, 0);
     let sec1 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 1, 130);
-    let sec2 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 2, 138);
-    let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 0);
+    let sec2 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 2, 0);
+    let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 138);
+    let sec4 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 4, 0);
 
     st.chk_autostart = settings_create_toggle(hwnd, st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
     st.chk_silent_start = settings_create_toggle(hwnd, st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
     st.chk_tray_icon = settings_create_toggle(hwnd, st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
     st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
-    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
-    st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
-    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
-    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(10), sec0.full_w(), ui_font);
+    st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
+    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
+    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
 
     let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
     settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
@@ -2442,35 +2445,38 @@ unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), 150, 32);
     if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
 
-    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec2.left(), sec2.label_y(0, 24), sec2.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_pos, sec2.left(), sec2.label_y(0, 24), sec2.label_w, 24);
-    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec2.field_x(), sec2.row_y(0), 170, ui_font);
-    settings_page0_push_ctrl(st, st.cb_pos, sec2.field_x(), sec2.row_y(0), 170, 32);
+    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
+    st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
+
+    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, 24), sec3.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, 24), sec3.label_w, 24);
+    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), 170, ui_font);
+    settings_page0_push_ctrl(st, st.cb_pos, sec3.field_x(), sec3.row_y(0), 170, 32);
     if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
 
-    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec2.left(), sec2.label_y(1, 24), sec2.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_mouse, sec2.left(), sec2.label_y(1, 24), sec2.label_w, 24);
-    let mouse_x = sec2.field_x();
-    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec2.row_y(1), 64, ui_font);
-    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + 74, sec2.row_y(1), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec2.row_y(1), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + 74, sec2.row_y(1), 64, 28);
+    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, 24), sec3.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_mouse, sec3.left(), sec3.label_y(1, 24), sec3.label_w, 24);
+    let mouse_x = sec3.field_x();
+    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec3.row_y(1), 64, ui_font);
+    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + 74, sec3.row_y(1), 64, ui_font);
+    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec3.row_y(1), 64, 28);
+    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + 74, sec3.row_y(1), 64, 28);
 
-    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec2.left(), sec2.label_y(2, 24), sec2.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_fixed, sec2.left(), sec2.label_y(2, 24), sec2.label_w, 24);
-    let fixed_x = sec2.field_x();
-    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec2.row_y(2), 64, ui_font);
-    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + 74, sec2.row_y(2), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec2.row_y(2), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + 74, sec2.row_y(2), 64, 28);
+    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec3.left(), sec3.label_y(2, 24), sec3.label_w, 24, ui_font);
+    settings_page0_push_ctrl(st, lbl_fixed, sec3.left(), sec3.label_y(2, 24), sec3.label_w, 24);
+    let fixed_x = sec3.field_x();
+    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec3.row_y(2), 64, ui_font);
+    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + 74, sec3.row_y(2), 64, ui_font);
+    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec3.row_y(2), 64, 28);
+    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + 74, sec3.row_y(2), 64, 28);
 
-    let btn_y = sec3.row_y(0);
-    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec3.action_x(0, 130), btn_y, 130, ui_font);
-    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec3.action_x(1, 130), btn_y, 130, ui_font);
-    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec3.action_x(2, 130), btn_y, 130, ui_font);
-    settings_page0_push_ctrl(st, st.btn_open_cfg, sec3.action_x(0, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_db, sec3.action_x(1, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_data, sec3.action_x(2, 130), btn_y, 130, 32);
+    let btn_y = sec4.row_y(0);
+    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, 130), btn_y, 130, ui_font);
+    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, 130), btn_y, 130, ui_font);
+    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, 130), btn_y, 130, ui_font);
+    settings_page0_push_ctrl(st, st.btn_open_cfg, sec4.action_x(0, 130), btn_y, 130, 32);
+    settings_page0_push_ctrl(st, st.btn_open_db, sec4.action_x(1, 130), btn_y, 130, 32);
+    settings_page0_push_ctrl(st, st.btn_open_data, sec4.action_x(2, 130), btn_y, 130, 32);
     for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
@@ -3532,7 +3538,7 @@ unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT)
     let text = get_window_text(dis.hwndItem);
 
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
+        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
         || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
@@ -3635,6 +3641,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 chk_tray_icon: null_mut(),
                 chk_close_tray: null_mut(),
                 chk_click_hide: null_mut(),
+                chk_move_pasted_to_top: null_mut(),
                 chk_auto_hide_on_blur: null_mut(),
                 chk_edge_hide: null_mut(),
                 chk_hover_preview: null_mut(),
@@ -3948,7 +3955,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == IDC_SET_MAX || dis.CtlID as isize == IDC_SET_POSMODE || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL || dis.CtlID as isize == IDC_SET_VV_SOURCE || dis.CtlID as isize == IDC_SET_VV_GROUP || dis.CtlID as isize == 6101 || dis.CtlID as isize == 6102 || dis.CtlID as isize == 6103 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 || dis.CtlID as isize == 7201 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_PASTE_MOVE_TOP || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == IDC_SET_MAX || dis.CtlID as isize == IDC_SET_POSMODE || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL || dis.CtlID as isize == IDC_SET_VV_SOURCE || dis.CtlID as isize == IDC_SET_VV_GROUP || dis.CtlID as isize == 6101 || dis.CtlID as isize == 6102 || dis.CtlID as isize == 6103 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 || dis.CtlID as isize == 7201 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -3969,7 +3976,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_PASTE_MOVE_TOP | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
@@ -5059,6 +5066,57 @@ unsafe fn layout_children(hwnd: HWND) {
     ShowWindow(state.search_hwnd, if state.search_on { SW_SHOW } else { SW_HIDE });
 }
 
+pub(crate) unsafe fn reset_search_ui_state(state: &mut AppState) {
+    if !state.search_on && state.search_text.is_empty() {
+        return;
+    }
+    state.search_on = false;
+    state.search_text.clear();
+    SetWindowTextW(state.search_hwnd, to_wide("").as_ptr());
+    state.clear_selection();
+    state.refilter();
+    if !state.hwnd.is_null() {
+        layout_children(state.hwnd);
+        InvalidateRect(state.hwnd, null(), 1);
+    }
+}
+
+unsafe fn activate_window_for_search_input(hwnd: HWND, state: &mut AppState) {
+    if state.main_window_noactivate || state.role == WindowRole::Quick {
+        set_main_window_noactivate_mode(hwnd, false);
+        ShowWindow(hwnd, SW_SHOW);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+        let _ = force_foreground_window(hwnd);
+    }
+    SetFocus(state.search_hwnd);
+}
+
+unsafe fn open_search_ui(hwnd: HWND, state: &mut AppState) {
+    if !state.search_on {
+        state.search_on = true;
+    }
+    layout_children(hwnd);
+    activate_window_for_search_input(hwnd, state);
+    InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn close_search_ui(hwnd: HWND, state: &mut AppState) {
+    if !state.search_on && state.search_text.is_empty() {
+        return;
+    }
+    reset_search_ui_state(state);
+    layout_children(hwnd);
+    InvalidateRect(hwnd, null(), 1);
+}
+
 unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
     match cmd {
         IDM_ROW_PASTE => {
@@ -5825,16 +5883,10 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
 
         match key {
             "search" => {
-                state.search_on = !state.search_on;
-                if !state.search_on {
-                    state.search_text.clear();
-                    SetWindowTextW(state.search_hwnd, to_wide("").as_ptr());
-                    state.clear_selection();
-                    state.refilter();
-                }
-                layout_children(hwnd);
                 if state.search_on {
-                    SetFocus(state.search_hwnd);
+                    close_search_ui(hwnd, state);
+                } else {
+                    open_search_ui(hwnd, state);
                 }
             }
             "setting" => {
@@ -6133,12 +6185,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
                 state.clear_selection();
                 InvalidateRect(hwnd, null(), 0);
             } else if state.search_on {
-                state.search_on = false;
-                state.search_text.clear();
-                SetWindowTextW(state.search_hwnd, to_wide("").as_ptr());
-                state.refilter();
-                layout_children(hwnd);
-                InvalidateRect(hwnd, null(), 1);
+                close_search_ui(hwnd, state);
             } else {
                 ShowWindow(hwnd, SW_HIDE);
             }
@@ -6150,18 +6197,11 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
         }
         // Ctrl+F: 搜索
         0x46 if ctrl => {
-            state.search_on = !state.search_on;
-            if !state.search_on {
-                state.search_text.clear();
-                SetWindowTextW(state.search_hwnd, to_wide("").as_ptr());
-                state.clear_selection();
-                state.refilter();
-            }
-            layout_children(hwnd);
             if state.search_on {
-                SetFocus(state.search_hwnd);
+                close_search_ui(hwnd, state);
+            } else {
+                open_search_ui(hwnd, state);
             }
-            InvalidateRect(hwnd, null(), 1);
         }
         _ => {}
     }
@@ -6456,11 +6496,23 @@ unsafe fn try_apply_to_explorer_rename(state: &mut AppState, item_ref: &ClipItem
     ok
 }
 
+unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i64) {
+    if !state.settings.move_pasted_item_to_top || item_id <= 0 {
+        return;
+    }
+    if db_touch_item_created_at(item_id).is_ok() {
+        state.remove_cached_item(item_id);
+        reload_state_from_db(state);
+        sync_peer_windows_from_db(hwnd);
+    }
+}
+
 unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     let Some(item_ref) = state.current_item().cloned() else {
         return;
     };
     if try_apply_to_explorer_rename(state, &item_ref) {
+        maybe_promote_pasted_item(hwnd, state, item_ref.id);
         ShowWindow(hwnd, SW_HIDE);
         state.clear_selection();
         clear_main_hover_state(hwnd);
@@ -6469,6 +6521,7 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     if !apply_item_to_clipboard(state, &item_ref) {
         return;
     }
+    maybe_promote_pasted_item(hwnd, state, item_ref.id);
     state.clear_selection();
     clear_main_hover_state(hwnd);
     paste_after_clipboard_ready(hwnd, state, state.settings.click_hide);
@@ -6488,6 +6541,7 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
     if !apply_item_to_clipboard(state, &item) {
         return;
     }
+    maybe_promote_pasted_item(hwnd, state, item.id);
     paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
 }
 
