@@ -86,7 +86,7 @@ pub(crate) unsafe fn show_tray_menu_localized(hwnd: HWND) {
     DestroyMenu(menu);
 }
 
-pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) {
+pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) -> bool {
     let mut nid: NOTIFYICONDATAW = zeroed();
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
     nid.hWnd = hwnd;
@@ -97,7 +97,7 @@ pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) {
     let tip = to_wide(app_title());
     let n = core::cmp::min(tip.len(), nid.szTip.len());
     nid.szTip[..n].copy_from_slice(&tip[..n]);
-    Shell_NotifyIconW(NIM_ADD, &mut nid);
+    Shell_NotifyIconW(NIM_ADD, &mut nid) != 0
 }
 
 pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by_hotkey: bool) {

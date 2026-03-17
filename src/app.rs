@@ -198,6 +198,7 @@ const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
 const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
 const ID_TIMER_VV_SHOW: usize = 6;
 const ID_TIMER_CLOUD_SYNC: usize = 7;
+const STARTUP_RECOVERY_TICKS: u8 = 24;
 const WM_VV_SHOW: u32 = WM_APP + 20;
 const WM_VV_HIDE: u32 = WM_APP + 21;
 const WM_VV_SELECT: u32 = WM_APP + 22;
@@ -297,6 +298,7 @@ struct WindowHosts {
 }
 
 static WINDOW_HOSTS: OnceLock<Mutex<WindowHosts>> = OnceLock::new();
+static TASKBAR_CREATED_MESSAGE: OnceLock<u32> = OnceLock::new();
 
 fn window_hosts() -> &'static Mutex<WindowHosts> {
     WINDOW_HOSTS.get_or_init(|| Mutex::new(WindowHosts::default()))
@@ -353,15 +355,14 @@ fn is_app_window(hwnd: HWND) -> bool {
         .any(|host| !host.is_null() && host == hwnd)
 }
 
-unsafe fn window_contains_screen_point(hwnd: HWND, pt: POINT) -> bool {
+unsafe fn screen_point_hits_window_scope(hwnd: HWND, pt: POINT) -> bool {
     if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
         return false;
     }
-    let mut rc = zeroed();
-    if GetWindowRect(hwnd, &mut rc) == 0 {
-        return false;
+    if pt_in_rect_screen(&pt, &window_rect_for_dock(hwnd)) {
+        return true;
     }
-    pt_in_rect_screen(&pt, &rc)
+    cursor_over_window_tree(hwnd, pt)
 }
 
 unsafe fn any_visible_window_requires_outside_hide() -> bool {
@@ -379,21 +380,29 @@ unsafe fn any_visible_window_requires_outside_hide() -> bool {
 
 unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
     for hwnd in window_host_hwnds() {
-        if window_contains_screen_point(hwnd, pt) {
+        if screen_point_hits_window_scope(hwnd, pt) {
             return true;
         }
         let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null() && window_contains_screen_point((*ptr).settings_hwnd, pt) {
-            return true;
+        if !ptr.is_null() {
+            if screen_point_hits_window_scope((*ptr).settings_hwnd, pt) {
+                return true;
+            }
+            if !(*ptr).settings_hwnd.is_null() {
+                let st_ptr = GetWindowLongPtrW((*ptr).settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+                if !st_ptr.is_null() && screen_point_hits_window_scope((*st_ptr).dropdown_popup, pt) {
+                    return true;
+                }
+            }
         }
     }
     let popup = current_vv_popup_hwnd();
-    window_contains_screen_point(popup, pt)
+    screen_point_hits_window_scope(popup, pt)
 }
 
 unsafe extern "system" fn outside_hide_mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0
-        && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_NCLBUTTONDOWN | WM_NCRBUTTONDOWN)
+        && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
         && any_visible_window_requires_outside_hide()
     {
         let data = &*(lparam as *const MSLLHOOKSTRUCT);
@@ -422,6 +431,42 @@ unsafe fn ensure_outside_hide_mouse_hook() {
     }
 }
 
+unsafe extern "system" fn quick_escape_keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code < 0 || (wparam as u32 != WM_KEYDOWN && wparam as u32 != WM_SYSKEYDOWN) {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+    let data = &*(lparam as *const KBDLLHOOKSTRUCT);
+    if (data.flags & LLKHF_INJECTED_FLAG) != 0 || data.vkCode != VK_ESCAPE as u32 {
+        return CallNextHookEx(null_mut(), code, wparam, lparam);
+    }
+
+    let quick = quick_window_hwnd();
+    if !quick.is_null() && IsWindowVisible(quick) != 0 {
+        let _ = PostMessageW(quick, WM_KEYDOWN, VK_ESCAPE as usize, 0);
+        return 1;
+    }
+
+    let main = main_window_hwnd();
+    if !main.is_null() && IsWindowVisible(main) != 0 {
+        let ptr = get_state_ptr(main);
+        if !ptr.is_null() && (*ptr).main_window_noactivate {
+            let _ = PostMessageW(main, WM_KEYDOWN, VK_ESCAPE as usize, 0);
+            return 1;
+        }
+    }
+
+    CallNextHookEx(null_mut(), code, wparam, lparam)
+}
+
+unsafe fn ensure_quick_escape_keyboard_hook() {
+    let Ok(mut handle) = quick_escape_keyboard_hook_handle().lock() else {
+        return;
+    };
+    if *handle == 0 {
+        *handle = SetWindowsHookExW(WH_KEYBOARD_LL, Some(quick_escape_keyboard_hook_proc), GetModuleHandleW(null()), 0) as isize;
+    }
+}
+
 pub(crate) fn main_window_hwnd() -> HWND {
     window_hosts()
         .lock()
@@ -438,10 +483,39 @@ pub(crate) fn quick_window_hwnd() -> HWND {
         .unwrap_or(null_mut())
 }
 
-unsafe fn sync_main_tray_icon(hwnd: HWND, state: &AppState) {
+fn taskbar_created_message() -> u32 {
+    *TASKBAR_CREATED_MESSAGE.get_or_init(|| unsafe {
+        RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr())
+    })
+}
+
+unsafe fn sync_main_tray_icon(hwnd: HWND, state: &mut AppState) {
     remove_tray_icon(hwnd);
+    state.tray_icon_registered = false;
     if tray_mode_enabled(&state.settings) && state.icons.app != 0 {
-        add_tray_icon_localized(hwnd, state.icons.app);
+        state.tray_icon_registered = add_tray_icon_localized(hwnd, state.icons.app);
+    }
+}
+
+unsafe fn retry_startup_integrations(hwnd: HWND, state: &mut AppState) {
+    if state.role != WindowRole::Main || state.startup_recovery_ticks == 0 {
+        return;
+    }
+
+    if tray_mode_enabled(&state.settings) && state.icons.app != 0 && !state.tray_icon_registered {
+        sync_main_tray_icon(hwnd, state);
+    }
+
+    if state.settings.hotkey_enabled && !state.hotkey_registered {
+        register_hotkey_for(hwnd, state);
+    }
+
+    let tray_ready = !tray_mode_enabled(&state.settings) || state.icons.app == 0 || state.tray_icon_registered;
+    let hotkey_ready = !state.settings.hotkey_enabled || state.hotkey_registered;
+    if tray_ready && hotkey_ready {
+        state.startup_recovery_ticks = 0;
+    } else {
+        state.startup_recovery_ticks = state.startup_recovery_ticks.saturating_sub(1);
     }
 }
 
@@ -470,10 +544,12 @@ const VV_POPUP_W: i32 = 360;
 const VV_POPUP_HEADER_H: i32 = 58;
 const VV_POPUP_ROW_H: i32 = 30;
 const LLKHF_INJECTED_FLAG: u32 = 0x00000010;
-const VV_TRIGGER_TIMEOUT_MS: u128 = 900;
+const VV_TRIGGER_TIMEOUT_MS: u128 = 300;
 const VV_SHOW_RETRY_DELAY_MS: u32 = 30;
 const VV_SHOW_RETRY_MAX: u8 = 10;
 const VV_POPUP_MENU_GRACE_MS: u64 = 450;
+const VV_IMM_POINT_MAX_X_DRIFT: i32 = 120;
+const VV_IMM_POINT_MAX_Y_DRIFT: i32 = 180;
 const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
 const IMC_GETCOMPOSITIONWINDOW: WPARAM = 0x000B;
 const CFS_RECT_V: u32 = 0x0001;
@@ -502,6 +578,7 @@ struct VvOverlayAnchor {
     left: i32,
     edge_y: i32,
     align_bottom: bool,
+    exact_rect: bool,
 }
 
 fn vv_choose_overlay_edge(top: i32, bottom: i32, popup_height: i32, work_area: &RECT) -> (i32, bool) {
@@ -510,6 +587,33 @@ fn vv_choose_overlay_edge(top: i32, bottom: i32, popup_height: i32, work_area: &
     let align_bottom = below_space < popup_height && above_space > below_space;
     let edge_y = if align_bottom { top } else { bottom };
     (edge_y, align_bottom)
+}
+
+fn vv_anchor_within(anchor: &VvOverlayAnchor, reference: &VvOverlayAnchor, max_dx: i32, max_dy: i32) -> bool {
+    (anchor.left - reference.left).abs() <= max_dx && (anchor.edge_y - reference.edge_y).abs() <= max_dy
+}
+
+fn vv_imm_point_anchor_is_plausible(
+    anchor: &VvOverlayAnchor,
+    caret_anchor: Option<&VvOverlayAnchor>,
+    focus_anchor: Option<&VvOverlayAnchor>,
+) -> bool {
+    if anchor.exact_rect {
+        return true;
+    }
+    if let Some(caret) = caret_anchor {
+        if vv_anchor_within(anchor, caret, VV_IMM_POINT_MAX_X_DRIFT, VV_IMM_POINT_MAX_Y_DRIFT) {
+            return true;
+        }
+        if let Some(focus) = focus_anchor {
+            return vv_anchor_within(anchor, focus, VV_IMM_POINT_MAX_X_DRIFT + 60, VV_IMM_POINT_MAX_Y_DRIFT + 40);
+        }
+        return false;
+    }
+    if let Some(focus) = focus_anchor {
+        return vv_anchor_within(anchor, focus, VV_IMM_POINT_MAX_X_DRIFT + 60, VV_IMM_POINT_MAX_Y_DRIFT + 40);
+    }
+    true
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -631,6 +735,18 @@ fn group_name_for_display(groups: &[ClipGroup], group_id: i64, all_label: &str) 
 
 fn normalize_source_tab(tab: usize) -> usize {
     if tab == 1 { 1 } else { 0 }
+}
+
+fn source_tab_category(tab: usize) -> i64 {
+    normalize_source_tab(tab) as i64
+}
+
+fn source_tab_all_label(tab: usize) -> &'static str {
+    if normalize_source_tab(tab) == 1 {
+        "全部短语"
+    } else {
+        "全部记录"
+    }
 }
 
 fn source_tab_label(tab: usize) -> &'static str {
@@ -803,6 +919,7 @@ struct CloudSyncResult {
 static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
 static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static OUTSIDE_HIDE_MOUSE_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+static QUICK_ESCAPE_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
 static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
 static CLOUD_SYNC_RESULTS: OnceLock<Mutex<VecDeque<CloudSyncResult>>> = OnceLock::new();
@@ -817,6 +934,10 @@ fn vv_hook_handle() -> &'static Mutex<isize> {
 
 fn outside_hide_mouse_hook_handle() -> &'static Mutex<isize> {
     OUTSIDE_HIDE_MOUSE_HOOK.get_or_init(|| Mutex::new(0))
+}
+
+fn quick_escape_keyboard_hook_handle() -> &'static Mutex<isize> {
+    QUICK_ESCAPE_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
 
 fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
@@ -867,7 +988,8 @@ unsafe fn vv_popup_group_rect() -> RECT {
 }
 
 fn vv_popup_resolved_group_id(state: &AppState, group_id: i64) -> i64 {
-    if group_id > 0 && state.groups.iter().any(|g| g.id == group_id) {
+    let source_tab = normalize_source_tab(state.settings.vv_source_tab);
+    if group_id > 0 && state.groups_for_tab(source_tab).iter().any(|g| g.id == group_id) {
         group_id
     } else {
         0
@@ -875,7 +997,9 @@ fn vv_popup_resolved_group_id(state: &AppState, group_id: i64) -> i64 {
 }
 
 fn vv_popup_group_name(state: &AppState) -> String {
-    group_name_for_display(&state.groups, state.vv_popup_group_id, "全部记录")
+    let source_tab = normalize_source_tab(state.settings.vv_source_tab);
+    let all_label = if source_tab == 0 { "全部记录" } else { "全部短语" };
+    group_name_for_display(state.groups_for_tab(source_tab), state.vv_popup_group_id, all_label)
 }
 
 fn vv_popup_rebuild_items(state: &mut AppState) {
@@ -893,6 +1017,8 @@ fn vv_popup_rebuild_items(state: &mut AppState) {
 }
 
 unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> {
+    let source_tab = normalize_source_tab(state.settings.vv_source_tab);
+    let groups = state.groups_for_tab(source_tab);
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return None;
@@ -900,10 +1026,15 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     apply_theme_to_menu(menu as _);
     let current_group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
     let all_flags = if current_group_id == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
-    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide(translate("全部记录").as_ref()).as_ptr());
-    if !state.groups.is_empty() {
+    AppendMenuW(
+        menu,
+        all_flags,
+        IDM_GROUP_FILTER_ALL,
+        to_wide(translate(if source_tab == 0 { "全部记录" } else { "全部短语" }).as_ref()).as_ptr(),
+    );
+    if !groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        for (idx, g) in state.groups.iter().enumerate() {
+        for (idx, g) in groups.iter().enumerate() {
             let flags = if current_group_id == g.id { MF_STRING | MF_CHECKED } else { MF_STRING };
             AppendMenuW(menu, flags, IDM_GROUP_FILTER_BASE + idx, to_wide(&g.name).as_ptr());
         }
@@ -929,7 +1060,7 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     if cmd == IDM_GROUP_FILTER_ALL {
         Some(0)
     } else if (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&cmd) {
-        state.groups.get(cmd - IDM_GROUP_FILTER_BASE).map(|g| g.id)
+        groups.get(cmd - IDM_GROUP_FILTER_BASE).map(|g| g.id)
     } else {
         None
     }
@@ -1047,6 +1178,7 @@ unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RE
         left: top_left.x,
         edge_y,
         align_bottom,
+        exact_rect: true,
     })
 }
 
@@ -1065,6 +1197,7 @@ unsafe fn vv_accessible_caret_anchor(
         left: rc.left,
         edge_y,
         align_bottom,
+        exact_rect: true,
     })
 }
 
@@ -1090,14 +1223,14 @@ unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: 
         let mut pt = cand.pt_current_pos;
         let pt_ok = vv_point_to_screen(focus_hwnd, &mut pt);
         if cand.dw_style == CFS_CANDIDATEPOS_V && pt_ok {
-            return Some(VvOverlayAnchor { left: pt.x, edge_y: pt.y, align_bottom: false });
+            let (edge_y, align_bottom) = vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
+            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom, exact_rect: false });
         }
         if cand.dw_style == CFS_EXCLUDE_V && vv_rect_has_area(&cand.rc_area) {
             if let Some(exclude_rc) = vv_client_rect_to_screen(focus_hwnd, &cand.rc_area) {
-                let left = if pt_ok { pt.x } else { exclude_rc.left };
                 let (edge_y, align_bottom) =
                     vv_choose_overlay_edge(exclude_rc.top, exclude_rc.bottom, popup_height, work_area);
-                return Some(VvOverlayAnchor { left, edge_y, align_bottom });
+                return Some(VvOverlayAnchor { left: exclude_rc.left, edge_y, align_bottom, exact_rect: true });
             }
         }
     }
@@ -1113,13 +1246,13 @@ unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: 
         if (comp.dw_style == CFS_POINT_V || comp.dw_style == CFS_FORCE_POSITION_V) && pt_ok {
             let (edge_y, align_bottom) =
                 vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
-            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom });
+            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom, exact_rect: false });
         }
         if comp.dw_style == CFS_RECT_V && vv_rect_has_area(&comp.rc_area) {
             if let Some(rc) = vv_client_rect_to_screen(focus_hwnd, &comp.rc_area) {
                 let (edge_y, align_bottom) =
                     vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
-                return Some(VvOverlayAnchor { left: rc.left, edge_y, align_bottom });
+                return Some(VvOverlayAnchor { left: rc.left, edge_y, align_bottom, exact_rect: true });
             }
         }
     }
@@ -1149,6 +1282,7 @@ unsafe fn vv_focus_rect_anchor(
         left: rc.left,
         edge_y,
         align_bottom,
+        exact_rect: true,
     })
 }
 
@@ -1162,6 +1296,7 @@ unsafe fn vv_cursor_anchor(popup_height: i32, work_area: &RECT) -> Option<VvOver
         left: pt.x,
         edge_y,
         align_bottom,
+        exact_rect: false,
     })
 }
 
@@ -1191,10 +1326,14 @@ unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
     }
     let mut wa = nearest_monitor_work_rect_for_window(focus_hwnd);
     let height = vv_popup_height(state.vv_popup_items.len());
-    let anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
-        .or_else(|| vv_accessible_caret_anchor(focus_hwnd, height, &wa))
-        .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa))
-        .or_else(|| vv_focus_rect_anchor(focus_hwnd, height, &wa))
+    let caret_anchor = vv_accessible_caret_anchor(focus_hwnd, height, &wa)
+        .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa));
+    let focus_anchor = vv_focus_rect_anchor(focus_hwnd, height, &wa);
+    let imm_anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
+        .filter(|anchor| vv_imm_point_anchor_is_plausible(anchor, caret_anchor.as_ref(), focus_anchor.as_ref()));
+    let anchor = imm_anchor
+        .or(caret_anchor)
+        .or(focus_anchor)
         .or_else(|| vv_cursor_anchor(height, &wa));
     let Some(anchor) = anchor else {
         return false;
@@ -1715,7 +1854,8 @@ pub(crate) struct AppState {
     pub(crate) icons: Icons,
     pub(crate) records: Vec<ClipItem>,
     pub(crate) phrases: Vec<ClipItem>,
-    pub(crate) groups: Vec<ClipGroup>,
+    pub(crate) record_groups: Vec<ClipGroup>,
+    pub(crate) phrase_groups: Vec<ClipGroup>,
     pub(crate) list: ClipListState,
     pub(crate) hover_btn: &'static str,
     pub(crate) down_btn: &'static str,
@@ -1726,8 +1866,10 @@ pub(crate) struct AppState {
     pub(crate) last_signature: String,
     pub(crate) ignore_clipboard_until: Option<Instant>,
     pub(crate) settings: AppSettings,
+    pub(crate) tray_icon_registered: bool,
     pub(crate) hotkey_registered: bool,
     pub(crate) hotkey_conflict_notified: bool,
+    pub(crate) startup_recovery_ticks: u8,
     pub(crate) settings_hwnd: HWND,
     pub(crate) hover_scroll: bool,   // 鼠标是否在滚动条区域
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
@@ -1793,7 +1935,8 @@ impl AppState {
             icons,
             records: Vec::new(),
             phrases: Vec::new(),
-            groups: Vec::new(),
+            record_groups: Vec::new(),
+            phrase_groups: Vec::new(),
             list: ClipListState::default(),
             hover_btn: "",
             down_btn: "",
@@ -1804,8 +1947,10 @@ impl AppState {
             last_signature: String::new(),
             ignore_clipboard_until: None,
             settings,
+            tray_icon_registered: false,
             hotkey_registered: false,
             hotkey_conflict_notified: false,
+            startup_recovery_ticks: if role == WindowRole::Main { STARTUP_RECOVERY_TICKS } else { 0 },
             settings_hwnd: null_mut(),
             hover_scroll: false,
             scroll_fade_alpha: 0,
@@ -1844,14 +1989,24 @@ impl AppState {
         if tab == 0 { &self.records } else { &self.phrases }
     }
 
+    fn groups_for_tab(&self, tab: usize) -> &Vec<ClipGroup> {
+        if normalize_source_tab(tab) == 0 {
+            &self.record_groups
+        } else {
+            &self.phrase_groups
+        }
+    }
+
     fn release_list_memory(&mut self) {
         self.invalidate_all_queries();
-        self.groups.clear();
+        self.record_groups.clear();
+        self.phrase_groups.clear();
         self.vv_popup_items.clear();
         self.clear_payload_cache();
         self.clear_selection();
         self.scroll_y = 0;
-        self.groups.shrink_to_fit();
+        self.record_groups.shrink_to_fit();
+        self.phrase_groups.shrink_to_fit();
         self.records.shrink_to_fit();
         self.phrases.shrink_to_fit();
         self.vv_popup_items.shrink_to_fit();
@@ -2982,10 +3137,10 @@ fn db_delete_item(id: i64) -> rusqlite::Result<()> {
     })
 }
 
-fn db_load_groups() -> Vec<ClipGroup> {
+fn db_load_groups(category: i64) -> Vec<ClipGroup> {
     with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT id, name FROM clip_groups ORDER BY sort_order ASC, id ASC")?;
-        let rows = stmt.query_map([], |r| Ok(ClipGroup { id: r.get(0)?, name: r.get(1)? }))?;
+        let mut stmt = conn.prepare("SELECT id, category, name FROM clip_groups WHERE category=? ORDER BY sort_order ASC, id ASC")?;
+        let rows = stmt.query_map([category], |r| Ok(ClipGroup { id: r.get(0)?, category: r.get(1)?, name: r.get(2)? }))?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }).unwrap_or_default()
 }
@@ -3002,11 +3157,11 @@ fn db_delete_group(group_id: i64) -> rusqlite::Result<()> {
     })
 }
 
-fn db_set_groups_order(group_ids: &[i64]) -> rusqlite::Result<()> {
+fn db_set_groups_order(category: i64, group_ids: &[i64]) -> rusqlite::Result<()> {
     with_db_mut(|conn| {
         let tx = conn.unchecked_transaction()?;
         for (idx, gid) in group_ids.iter().enumerate() {
-            tx.execute("UPDATE clip_groups SET sort_order=? WHERE id=?", params![idx as i64 + 1, *gid])?;
+            tx.execute("UPDATE clip_groups SET sort_order=? WHERE id=? AND category=?", params![idx as i64 + 1, *gid, category])?;
         }
         tx.commit()?;
         Ok(())
@@ -3025,18 +3180,18 @@ fn db_assign_group(item_ids: &[i64], group_id: i64) -> rusqlite::Result<()> {
 }
 
 
-fn db_rename_group(group_id: i64, new_name: &str) -> rusqlite::Result<()> {
+fn db_rename_group(category: i64, group_id: i64, new_name: &str) -> rusqlite::Result<()> {
     with_db(|conn| {
-        conn.execute("UPDATE clip_groups SET name=? WHERE id=?", params![new_name, group_id])?;
+        conn.execute("UPDATE clip_groups SET name=? WHERE id=? AND category=?", params![new_name, group_id, category])?;
         Ok(())
     })
 }
 
-fn db_create_named_group(name: &str) -> rusqlite::Result<ClipGroup> {
+fn db_create_named_group(category: i64, name: &str) -> rusqlite::Result<ClipGroup> {
     with_db(|conn| {
-        let next_sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM clip_groups", [], |r| r.get(0)).unwrap_or(1);
-        conn.execute("INSERT INTO clip_groups(name, sort_order) VALUES(?, ?)", params![name, next_sort])?;
-        Ok(ClipGroup { id: conn.last_insert_rowid(), name: name.to_string() })
+        let next_sort: i64 = conn.query_row("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM clip_groups WHERE category=?", [category], |r| r.get(0)).unwrap_or(1);
+        conn.execute("INSERT INTO clip_groups(category, name, sort_order) VALUES(?, ?, ?)", params![category, name, next_sort])?;
+        Ok(ClipGroup { id: conn.last_insert_rowid(), category, name: name.to_string() })
     })
 }
 
@@ -3138,7 +3293,8 @@ struct SettingsWndState {
     btn_group_delete: HWND,
     btn_group_up: HWND,
     btn_group_down: HWND,
-    groups_cache: Vec<ClipGroup>,
+    record_groups_cache: Vec<ClipGroup>,
+    phrase_groups_cache: Vec<ClipGroup>,
     chk_hk_enable: HWND,
     cb_hk_mod: HWND,
     cb_hk_key: HWND,
@@ -3204,6 +3360,22 @@ unsafe fn settings_set_text(hwnd: HWND, s: &str) {
     SetWindowTextW(hwnd, to_wide(&text).as_ptr());
 }
 
+fn settings_groups_cache_for_tab(st: &SettingsWndState, tab: usize) -> &Vec<ClipGroup> {
+    if normalize_source_tab(tab) == 0 {
+        &st.record_groups_cache
+    } else {
+        &st.phrase_groups_cache
+    }
+}
+
+fn settings_groups_cache_for_tab_mut(st: &mut SettingsWndState, tab: usize) -> &mut Vec<ClipGroup> {
+    if normalize_source_tab(tab) == 0 {
+        &mut st.record_groups_cache
+    } else {
+        &mut st.phrase_groups_cache
+    }
+}
+
 unsafe fn settings_group_current_filter_text(st: &SettingsWndState) -> String {
     let pst = get_state_ptr(st.parent_hwnd);
     if pst.is_null() { return tr("全部记录", "All Records").to_string(); }
@@ -3217,7 +3389,7 @@ unsafe fn settings_group_current_filter_text(st: &SettingsWndState) -> String {
             tr("全部短语", "All Phrases").to_string()
         };
     }
-    app.groups
+    app.groups_for_tab(view_tab)
         .iter()
         .find(|g| g.id == gid)
         .map(|g| g.name.clone())
@@ -3232,11 +3404,24 @@ unsafe fn settings_sync_vv_source_display(st: &mut SettingsWndState) {
 }
 
 unsafe fn settings_sync_vv_group_display(st: &mut SettingsWndState) {
-    if st.vv_group_selected > 0 && !st.groups_cache.iter().any(|g| g.id == st.vv_group_selected) {
+    let source_tab = settings_vv_source_current(st);
+    let selected = st.vv_group_selected;
+    let exists = if selected > 0 {
+        settings_groups_cache_for_tab(st, source_tab)
+            .iter()
+            .any(|g| g.id == selected)
+    } else {
+        true
+    };
+    if selected > 0 && !exists {
         st.vv_group_selected = 0;
     }
     if !st.cb_vv_group.is_null() {
-        settings_set_text(st.cb_vv_group, &group_name_for_display(&st.groups_cache, st.vv_group_selected, "全部记录"));
+        let groups = settings_groups_cache_for_tab(st, source_tab);
+        settings_set_text(
+            st.cb_vv_group,
+            &group_name_for_display(groups, st.vv_group_selected, source_tab_all_label(source_tab)),
+        );
     }
 }
 
@@ -3296,6 +3481,8 @@ unsafe fn settings_group_view_from_app(st: &mut SettingsWndState) {
 }
 
 unsafe fn settings_sync_group_page(st: &mut SettingsWndState) {
+    st.record_groups_cache = db_load_groups(0);
+    st.phrase_groups_cache = db_load_groups(1);
     settings_vv_source_from_app(st);
     settings_sync_vv_source_display(st);
     st.vv_group_selected = st.draft.vv_group_id;
@@ -3670,7 +3857,8 @@ unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
     };
     st.draft.vv_source_tab = settings_vv_source_current(st);
-    st.draft.vv_group_id = if st.vv_group_selected > 0 && st.groups_cache.iter().any(|g| g.id == st.vv_group_selected) {
+    let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
+    st.draft.vv_group_id = if st.vv_group_selected > 0 && vv_groups.iter().any(|g| g.id == st.vv_group_selected) {
         st.vv_group_selected
     } else {
         0
@@ -3873,16 +4061,18 @@ unsafe fn settings_create_listbox(parent: HWND, id: isize, x: i32, y: i32, w: i3
 
 unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, select_gid: i64) {
     if st.lb_groups.is_null() { return; }
+    let category = source_tab_category(settings_group_view_current(st));
     SendMessageW(st.lb_groups, LB_RESETCONTENT, 0, 0);
-    st.groups_cache = db_load_groups();
+    *settings_groups_cache_for_tab_mut(st, settings_group_view_current(st)) = db_load_groups(category);
+    let groups = settings_groups_cache_for_tab(st, settings_group_view_current(st));
     let mut sel_idx: i32 = -1;
-    for (i, g) in st.groups_cache.iter().enumerate() {
+    for (i, g) in groups.iter().enumerate() {
         SendMessageW(st.lb_groups, LB_ADDSTRING, 0, to_wide(&g.name).as_ptr() as LPARAM);
         if g.id == select_gid {
             sel_idx = i as i32;
         }
     }
-    if sel_idx < 0 && !st.groups_cache.is_empty() {
+    if sel_idx < 0 && !groups.is_empty() {
         sel_idx = 0;
     }
     if sel_idx >= 0 {
@@ -3895,7 +4085,10 @@ unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(usize, Clip
     if st.lb_groups.is_null() { return None; }
     let row = SendMessageW(st.lb_groups, LB_GETCURSEL, 0, 0) as i32;
     if row < 0 { return None; }
-    st.groups_cache.get(row as usize).cloned().map(|g| (row as usize, g))
+    settings_groups_cache_for_tab(st, settings_group_view_current(st))
+        .get(row as usize)
+        .cloned()
+        .map(|g| (row as usize, g))
 }
 
 unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {
@@ -3903,14 +4096,17 @@ unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {
 
 unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) {
     let Some((idx, _)) = settings_groups_selected(st) else { return; };
+    let tab = settings_group_view_current(st);
+    let category = source_tab_category(tab);
+    let groups = settings_groups_cache_for_tab(st, tab);
     let new_idx = idx as i32 + step;
-    if new_idx < 0 || new_idx >= st.groups_cache.len() as i32 {
+    if new_idx < 0 || new_idx >= groups.len() as i32 {
         return;
     }
-    let mut ids: Vec<i64> = st.groups_cache.iter().map(|g| g.id).collect();
+    let mut ids: Vec<i64> = groups.iter().map(|g| g.id).collect();
     let item = ids.remove(idx);
     ids.insert(new_idx as usize, item);
-    if db_set_groups_order(&ids).is_ok() {
+    if db_set_groups_order(category, &ids).is_ok() {
         settings_groups_refresh_list(st, ids[new_idx as usize]);
         let pst = get_state_ptr(st.parent_hwnd);
         if !pst.is_null() {
@@ -5028,7 +5224,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 btn_group_delete: null_mut(),
                 btn_group_up: null_mut(),
                 btn_group_down: null_mut(),
-                groups_cache: Vec::new(),
+                record_groups_cache: Vec::new(),
+                phrase_groups_cache: Vec::new(),
                 chk_hk_enable: null_mut(),
                 cb_hk_mod: null_mut(),
                 cb_hk_key: null_mut(),
@@ -5298,12 +5495,16 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 IDC_SET_VV_SOURCE => {
                     st.vv_source_selected = normalize_source_tab(idx);
                     settings_sync_vv_source_display(st);
+                    settings_sync_vv_group_display(st);
                     InvalidateRect(st.cb_vv_source, null(), 1);
+                    InvalidateRect(st.cb_vv_group, null(), 1);
                 }
                 IDC_SET_VV_GROUP => {
+                    let vv_source = settings_vv_source_current(st);
+                    let groups = settings_groups_cache_for_tab(st, vv_source);
                     if idx == 0 {
                         st.vv_group_selected = 0;
-                    } else if let Some(group) = st.groups_cache.get(idx - 1) {
+                    } else if let Some(group) = groups.get(idx - 1) {
                         st.vv_group_selected = group.id;
                     }
                     settings_sync_vv_group_display(st);
@@ -5353,7 +5554,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 IDC_SET_GROUP_ADD => {
                     if let Some(name) = input_name_dialog(hwnd, "新建分组", "请输入分组名称：", "新分组") {
-                        match db_create_named_group(&name) {
+                        let category = source_tab_category(settings_group_view_current(st));
+                        match db_create_named_group(category, &name) {
                             Ok(group) => {
                                 settings_groups_refresh_list(st, group.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
@@ -5373,7 +5575,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 IDC_SET_GROUP_RENAME => {
                     if let Some((_, g)) = settings_groups_selected(st) {
                         if let Some(new_name) = input_name_dialog(hwnd, "重命名分组", "请输入新名称：", &g.name) {
-                            if let Err(e) = db_rename_group(g.id, &new_name) {
+                            if let Err(e) = db_rename_group(g.category, g.id, &new_name) {
                 MessageBoxW(
                     hwnd,
                     to_wide(&format!("{}: {}", tr("重命名失败", "Rename failed"), e)).as_ptr(),
@@ -5489,14 +5691,16 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_vv_group, &mut rc);
-                    let labels_owned: Vec<String> = std::iter::once("全部记录".to_string())
-                        .chain(st.groups_cache.iter().map(|g| g.name.clone()))
+                    let vv_source = settings_vv_source_current(st);
+                    let groups = settings_groups_cache_for_tab(st, vv_source);
+                    let labels_owned: Vec<String> = std::iter::once(source_tab_all_label(vv_source).to_string())
+                        .chain(groups.iter().map(|g| g.name.clone()))
                         .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
                     let current = if st.vv_group_selected == 0 {
                         0
                     } else {
-                        st.groups_cache
+                        groups
                             .iter()
                             .position(|g| g.id == st.vv_group_selected)
                             .map(|idx| idx + 1)
@@ -5867,18 +6071,20 @@ unsafe fn open_settings_window(hwnd: HWND) {
 fn reload_state_from_db(state: &mut AppState) {
     ensure_db();
     state.clear_payload_cache();
-    state.groups = db_load_groups();
+    state.record_groups = db_load_groups(0);
+    state.phrase_groups = db_load_groups(1);
     if state.settings.vv_source_tab > 1 {
         state.settings.vv_source_tab = 0;
         save_settings(&state.settings);
     }
-    if state.settings.vv_group_id > 0 && !state.groups.iter().any(|g| g.id == state.settings.vv_group_id) {
+    let vv_groups = state.groups_for_tab(state.settings.vv_source_tab);
+    if state.settings.vv_group_id > 0 && !vv_groups.iter().any(|g| g.id == state.settings.vv_group_id) {
         state.settings.vv_group_id = 0;
         save_settings(&state.settings);
     }
     for i in 0..state.tab_group_filters.len() {
         let gid = state.tab_group_filters[i];
-        if gid > 0 && !state.groups.iter().any(|g| g.id == gid) {
+        if gid > 0 && !state.groups_for_tab(i).iter().any(|g| g.id == gid) {
             state.tab_group_filters[i] = 0;
         }
     }
@@ -6066,6 +6272,14 @@ unsafe fn apply_main_window_region(hwnd: HWND) {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == taskbar_created_message() {
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && (*ptr).role == WindowRole::Main {
+            sync_main_tray_icon(hwnd, &mut *ptr);
+            retry_startup_integrations(hwnd, &mut *ptr);
+        }
+        return 0;
+    }
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -6101,6 +6315,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
+                    retry_startup_integrations(hwnd, state);
                     if state.vv_popup_visible {
                         if !vv_popup_menu_active()
                             && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
@@ -6370,6 +6585,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                                 *handle = 0;
                             }
                         }
+                        if let Ok(mut handle) = quick_escape_keyboard_hook_handle().lock() {
+                            if *handle != 0 {
+                                UnhookWindowsHookEx(*handle as _);
+                                *handle = 0;
+                            }
+                        }
                         RemoveClipboardFormatListener(hwnd);
                         unregister_hotkey_for(hwnd, &mut *ptr);
                         remove_tray_icon(hwnd);
@@ -6446,6 +6667,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
             update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
             ensure_outside_hide_mouse_hook();
+            ensure_quick_escape_keyboard_hook();
         }
     }
 
@@ -6692,7 +6914,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
                 let idx = cmd - IDM_ROW_GROUP_BASE;
-                if let Some(group_id) = state.groups.get(idx).map(|g| g.id) {
+                if let Some(group_id) = state.groups_for_tab(state.tab_index).get(idx).map(|g| g.id) {
                     let ids = state.selected_db_ids();
                     if !ids.is_empty() {
                         let _ = db_assign_group(&ids, group_id);
@@ -6706,7 +6928,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         }
         _ if (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&cmd) => {
             let idx = cmd - IDM_GROUP_FILTER_BASE;
-            if let Some(group_id) = state.groups.get(idx).map(|g| g.id) {
+            if let Some(group_id) = state.groups_for_tab(state.tab_index).get(idx).map(|g| g.id) {
                 state.current_group_filter = group_id;
                 let tab_index = state.tab_index;
                 if tab_index < state.tab_group_filters.len() {
@@ -7129,7 +7351,7 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
         || old_tab != state.hover_tab
         || old_scroll != state.hover_scroll
         || old_to_top != state.hover_to_top;
-    if preview_target_changed || hover_preview_blocked_at_point(state, x, y) {
+    if old_hover != state.hover_idx || hover_preview_blocked_at_point(state, x, y) {
         hide_hover_preview();
     }
 
@@ -7436,7 +7658,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
             state.refilter();
         } else if (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&cmd) {
             let idx = cmd - IDM_GROUP_FILTER_BASE;
-            if let Some(group_id) = state.groups.get(idx).map(|g| g.id) {
+            if let Some(group_id) = state.groups_for_tab(target_tab).get(idx).map(|g| g.id) {
                 state.tab_group_filters[target_tab] = group_id;
                 state.current_group_filter = group_id;
                 state.scroll_y = 0;
@@ -8156,13 +8378,14 @@ unsafe fn show_row_menu(
         return 0;
     }
     apply_theme_to_menu(menu as _);
+    let groups = state.groups_for_tab(state.tab_index);
     let group_menu = if state.settings.grouping_enabled { CreatePopupMenu() } else { null_mut() };
     if !group_menu.is_null() {
         apply_theme_to_menu(group_menu as _);
-        if state.groups.is_empty() {
+        if groups.is_empty() {
             AppendMenuW(group_menu, MF_GRAYED | MF_STRING, 0xFFFFusize, to_wide(translate("（暂无分组）").as_ref()).as_ptr());
         } else {
-            for (idx, g) in state.groups.iter().enumerate() {
+            for (idx, g) in groups.iter().enumerate() {
                 AppendMenuW(group_menu, MF_STRING, IDM_ROW_GROUP_BASE + idx, to_wide(&g.name).as_ptr());
             }
         }
@@ -8251,6 +8474,7 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
     if !state.settings.grouping_enabled {
         return 0;
     }
+    let groups = state.groups_for_tab(tab_index);
     let menu = CreatePopupMenu();
     if menu.is_null() {
         return 0;
@@ -8263,9 +8487,9 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
     };
     let all_flags = if cur_gid == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
     AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide(translate("全部").as_ref()).as_ptr());
-    if !state.groups.is_empty() {
+    if !groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        for (idx, g) in state.groups.iter().enumerate() {
+        for (idx, g) in groups.iter().enumerate() {
             let flags = if cur_gid == g.id { MF_STRING | MF_CHECKED } else { MF_STRING };
             AppendMenuW(menu, flags, IDM_GROUP_FILTER_BASE + idx, to_wide(&g.name).as_ptr());
         }

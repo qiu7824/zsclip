@@ -220,6 +220,7 @@ pub fn settings_nav_item_rect(index: usize) -> RECT {
 #[derive(Clone, Debug)]
 pub(crate) struct ClipGroup {
     pub(crate) id: i64,
+    pub(crate) category: i64,
     pub(crate) name: String,
 }
 

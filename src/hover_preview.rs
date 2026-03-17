@@ -131,6 +131,7 @@ unsafe extern "system" fn preview_wnd_proc(
             EndPaint(hwnd, &ps);
             0
         }
+        WM_NCHITTEST => HTTRANSPARENT as LRESULT,
         WM_NCDESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
             if !ptr.is_null() {
