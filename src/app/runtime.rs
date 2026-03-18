@@ -250,11 +250,21 @@ fn autostart_value_names() -> impl Iterator<Item = &'static str> {
     std::iter::once(AUTOSTART_VALUE_NAME).chain(LEGACY_AUTOSTART_VALUE_NAMES.iter().copied())
 }
 
-unsafe fn registered_autostart_value_name(hkey: isize) -> Option<&'static str> {
+unsafe fn registered_autostart_value_name_by_path(hkey: isize) -> Option<&'static str> {
     autostart_value_names().find(|name| {
         read_run_value(hkey, name)
             .map(|value| run_target_matches_current_exe(&value))
             .unwrap_or(false)
+    })
+}
+
+unsafe fn registered_autostart_value_name(hkey: isize) -> Option<&'static str> {
+    registered_autostart_value_name_by_path(hkey).or_else(|| {
+        autostart_value_names().find(|name| {
+            read_run_value(hkey, name)
+                .map(|value| !normalize_run_target(&value).is_empty())
+                .unwrap_or(false)
+        })
     })
 }
 
@@ -313,6 +323,9 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
                         let legacy_wide = to_wide(legacy_name);
                         let _ = RegDeleteValueW(hkey, legacy_wide.as_ptr());
                     }
+                    changed = read_run_value(hkey, AUTOSTART_VALUE_NAME)
+                        .map(|value| normalize_run_target(&value) == normalize_run_target(&cmdline))
+                        .unwrap_or(false);
                 }
             }
         } else {
@@ -328,6 +341,10 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
             }
         }
         RegCloseKey(hkey);
-        changed && is_autostart_enabled() == enabled
+        if enabled {
+            changed
+        } else {
+            changed && !is_autostart_enabled()
+        }
     }
 }

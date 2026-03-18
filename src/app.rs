@@ -4335,7 +4335,7 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
                 }
             }
             if handled {
-                ShowWindow(hwnd, SW_HIDE);
+                maybe_hide_after_paste(hwnd, state);
                 state.clear_selection();
                 clear_main_hover_state(hwnd);
                 return;
@@ -4366,12 +4366,10 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
 
         match key {
             "search" => {
-                state.search_on = !state.search_on;
-                if !state.search_on {
-                    reset_search_ui_state(state);
+                if state.search_on {
+                    close_search_ui(hwnd, state);
                 } else {
-                    layout_children(hwnd);
-                    InvalidateRect(hwnd, null(), 1);
+                    open_search_ui(hwnd, state);
                 }
             }
             "setting" => {
@@ -4992,13 +4990,19 @@ unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i
     }
 }
 
+unsafe fn maybe_hide_after_paste(hwnd: HWND, state: &AppState) {
+    if state.settings.click_hide {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
 unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
     let Some(item_ref) = state.current_item().cloned() else {
         return;
     };
     if try_apply_to_explorer_rename(state, &item_ref) {
         maybe_promote_pasted_item(hwnd, state, item_ref.id);
-        ShowWindow(hwnd, SW_HIDE);
+        maybe_hide_after_paste(hwnd, state);
         state.clear_selection();
         clear_main_hover_state(hwnd);
         return;
@@ -5027,7 +5031,13 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
         return;
     }
     maybe_promote_pasted_item(hwnd, state, item.id);
-    paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
+    paste_after_clipboard_ready_to_target(
+        hwnd,
+        state,
+        target,
+        state.settings.click_hide,
+        backspaces,
+    );
 }
 
 fn ai_clean_text(input: &str) -> String {
@@ -5425,7 +5435,7 @@ unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
     if !target.is_null() {
-        if hide_main || state.hotkey_passthrough_active {
+        if hide_main {
             ShowWindow(hwnd, SW_HIDE);
         }
         let _ = force_foreground_window(target);
