@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 
 pub(super) const HOTKEY_MOD_OPTIONS: [&str; 8] = [
     "Win",
@@ -190,7 +190,7 @@ pub(super) fn source_tab_label(tab: usize) -> &'static str {
 
 pub(super) fn normalize_hotkey_mod(value: &str) -> String {
     let trimmed = value.trim();
-    if HOTKEY_MOD_OPTIONS.iter().any(|item| *item == trimmed) {
+    if HOTKEY_MOD_OPTIONS.contains(&trimmed) {
         trimmed.to_string()
     } else {
         "Win".to_string()
@@ -199,7 +199,7 @@ pub(super) fn normalize_hotkey_mod(value: &str) -> String {
 
 pub(super) fn normalize_hotkey_key(value: &str) -> String {
     let trimmed = value.trim();
-    if HOTKEY_KEY_OPTIONS.iter().any(|item| *item == trimmed) {
+    if HOTKEY_KEY_OPTIONS.contains(&trimmed) {
         trimmed.to_string()
     } else {
         "V".to_string()
@@ -385,6 +385,26 @@ pub(super) fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
 
 pub(super) fn cloud_sync_results() -> &'static Mutex<VecDeque<CloudSyncResult>> {
     CLOUD_SYNC_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+pub(super) fn clear_page_load_results_for_hwnd(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    if let Ok(mut queue) = page_load_results().lock() {
+        let target = hwnd as isize;
+        queue.retain(|result| result.hwnd != target);
+    }
+}
+
+pub(super) fn clear_cloud_sync_results_for_hwnd(hwnd: HWND) {
+    if hwnd.is_null() {
+        return;
+    }
+    if let Ok(mut queue) = cloud_sync_results().lock() {
+        let target = hwnd as isize;
+        queue.retain(|result| result.hwnd != target);
+    }
 }
 
 pub(super) fn vv_popup_menu_active() -> bool {
@@ -729,3 +749,4 @@ impl AppState {
         self.list.selected_source_indices()
     }
 }
+

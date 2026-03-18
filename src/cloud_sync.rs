@@ -1,4 +1,4 @@
-use crate::i18n::tr;
+﻿use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::windows::process::CommandExt;
@@ -80,25 +80,14 @@ impl RemoteLayout {
     }
 }
 
-#[allow(dead_code)]
-fn cloud_sync_interval_legacy(label: &str) -> Duration {
-    match label.trim() {
-        "15分钟" | "15m" | "15min" => Duration::from_secs(15 * 60),
-        "30分钟" | "30m" | "30min" => Duration::from_secs(30 * 60),
-        "6小时" | "6h" => Duration::from_secs(6 * 60 * 60),
-        "12小时" | "12h" => Duration::from_secs(12 * 60 * 60),
-        "24小时" | "24h" | "1天" => Duration::from_secs(24 * 60 * 60),
-        _ => Duration::from_secs(60 * 60),
-    }
-}
-
 pub fn cloud_sync_interval(label: &str) -> Duration {
     match label.trim() {
-        "15分钟" | "15 min" | "15m" | "15min" => Duration::from_secs(15 * 60),
-        "30分钟" | "30 min" | "30m" | "30min" => Duration::from_secs(30 * 60),
-        "6小时" | "6 hours" | "6h" => Duration::from_secs(6 * 60 * 60),
-        "12小时" | "12 hours" | "12h" => Duration::from_secs(12 * 60 * 60),
-        "24小时" | "24 hours" | "24h" | "1d" => Duration::from_secs(24 * 60 * 60),
+        "15分钟" | "15鍒嗛挓" | "15 min" | "15m" | "15min" => Duration::from_secs(15 * 60),
+        "30分钟" | "30鍒嗛挓" | "30 min" | "30m" | "30min" => Duration::from_secs(30 * 60),
+        "1小时" | "1灏忔椂" | "1 hour" | "1h" => Duration::from_secs(60 * 60),
+        "6小时" | "6灏忔椂" | "6 hours" | "6h" => Duration::from_secs(6 * 60 * 60),
+        "12小时" | "12灏忔椂" | "12 hours" | "12h" => Duration::from_secs(12 * 60 * 60),
+        "24小时" | "24灏忔椂" | "24 hours" | "24h" | "1d" => Duration::from_secs(24 * 60 * 60),
         _ => Duration::from_secs(60 * 60),
     }
 }
@@ -397,83 +386,6 @@ Expand-Archive -LiteralPath '{archive}' -DestinationPath '{dest}' -Force
     run_powershell(&script).map(|_| ())
 }
 
-#[allow(dead_code)]
-fn upload_file_legacy(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
-    if !local_path.exists() {
-        return Err(format!("本地文件不存在：{}", local_path.to_string_lossy()));
-    }
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-{auth}
-Invoke-WebRequest -UseBasicParsing -Method Put -Headers $headers -Uri '{url}' -InFile '{file}' -ContentType 'application/octet-stream' | Out-Null
-"#,
-        auth = auth_script(config),
-        url = ps_quote(remote_url),
-        file = ps_quote(&local_path.to_string_lossy()),
-    );
-    run_powershell(&script).map(|_| ())
-}
-
-#[allow(dead_code)]
-fn download_file_legacy(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) -> Result<bool, String> {
-    if let Some(parent) = local_path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-{auth}
-try {{
-  Invoke-WebRequest -UseBasicParsing -Method Get -Headers $headers -Uri '{url}' -OutFile '{file}' | Out-Null
-  'OK'
-}} catch {{
-  $code = 0
-  if ($_.Exception.Response) {{
-    try {{ $code = [int]$_.Exception.Response.StatusCode.value__ }} catch {{ $code = 0 }}
-  }}
-  if ($code -eq 404) {{
-    'NOT_FOUND'
-  }} else {{
-    throw
-  }}
-}}
-"#,
-        auth = auth_script(config),
-        url = ps_quote(remote_url),
-        file = ps_quote(&local_path.to_string_lossy()),
-    );
-    let output = run_powershell(&script)?;
-    Ok(output.trim().ends_with("OK"))
-}
-
-#[allow(dead_code)]
-fn webdav_mkcol_legacy(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-{auth}
-try {{
-  Invoke-WebRequest -UseBasicParsing -Method 'MKCOL' -Headers $headers -Uri '{url}' | Out-Null
-  'OK'
-}} catch {{
-  $code = 0
-  if ($_.Exception.Response) {{
-    try {{ $code = [int]$_.Exception.Response.StatusCode.value__ }} catch {{ $code = 0 }}
-  }}
-  if ($code -in @(200,201,204,301,302,405)) {{
-    'OK'
-  }} else {{
-    throw
-  }}
-}}
-"#,
-        auth = auth_script(config),
-        url = ps_quote(remote_url),
-    );
-    run_powershell(&script).map(|_| ())
-}
-
 fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
     if !local_path.exists() {
         return Err(format!(
@@ -600,17 +512,6 @@ fn run_curl_status(args: Vec<String>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn auth_script(config: &CloudSyncConfig) -> String {
-    if config.webdav_user.trim().is_empty() && config.webdav_pass.is_empty() {
-        return "$headers = @{}".to_string();
-    }
-    format!(
-        "$pair = '{}:{}'\n$bytes = [System.Text.Encoding]::UTF8.GetBytes($pair)\n$headers = @{{ Authorization = 'Basic ' + [Convert]::ToBase64String($bytes) }}",
-        ps_quote(config.webdav_user.trim()),
-        ps_quote(&config.webdav_pass),
-    )
-}
-
 fn run_powershell(script: &str) -> Result<String, String> {
     let encoded = encode_powershell(script);
     let output = hidden_powershell()
@@ -651,7 +552,7 @@ fn hidden_curl() -> Command {
 
 fn base64_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(((bytes.len() + 2) / 3) * 4);
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let mut i = 0;
     while i < bytes.len() {
         let b0 = bytes[i];
@@ -741,3 +642,4 @@ fn remove_optional_file(path: &Path) {
         let _ = fs::remove_file(path);
     }
 }
+

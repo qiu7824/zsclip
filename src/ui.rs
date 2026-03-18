@@ -1,41 +1,22 @@
-use std::collections::BTreeSet;
-use std::ffi::OsStr;
-use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
+﻿use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
 use crate::i18n::translate;
 use crate::time_utils::{gregorian_to_days, local_offset_secs, unix_secs_to_parts};
-use crate::ui_core::UiRect;
+use crate::win_system_ui::{is_dark_mode, system_accent, to_wide};
 
 use windows_sys::Win32::{
     Foundation::RECT,
     Graphics::Gdi::{
         BitBlt, CreateCompatibleDC, DeleteDC,
-        CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, Ellipse, FillRect, GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT, NULL_PEN,
+        CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT, NULL_PEN,
         SRCCOPY,
         CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB,
     },
 };
 
-// Registry API — Win32_System_Registry feature not enabled, declare manually
-const HKEY_CURRENT_USER: isize = -2147483647i32 as isize;
-const KEY_READ: u32 = 0x20019;
-const REG_DWORD: u32 = 4;
-
-#[link(name = "advapi32")]
-unsafe extern "system" {
-    fn RegOpenKeyExW(hkey: isize, lpsubkey: *const u16, uloptions: u32, samdesired: u32, phkresult: *mut isize) -> i32;
-    fn RegQueryValueExW(hkey: isize, lpvaluename: *const u16, lpreserved: *mut u32, lptype: *mut u32, lpdata: *mut u8, lpcbdata: *mut u32) -> i32;
-    fn RegCloseKey(hkey: isize) -> i32;
-}
-
-#[link(name = "dwmapi")]
-unsafe extern "system" {
-    fn DwmGetColorizationColor(pcr_colorization: *mut u32, pf_opaque_blend: *mut i32) -> i32;
-}
-
+// Registry API 鈥?Win32_System_Registry feature not enabled, declare manually
 pub const DT_LEFT: u32 = 0x0000;
 pub const DT_CENTER: u32 = 0x0001;
 pub const DT_VCENTER: u32 = 0x0004;
@@ -53,6 +34,60 @@ pub const SETTINGS_NAV_Y: i32 = 72;
 pub const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
 pub const SETTINGS_CONTENT_W: i32 = SETTINGS_W - SETTINGS_CONTENT_X - 28;
 pub const SETTINGS_CONTENT_Y: i32 = SETTINGS_TOP_H;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UiRect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl UiRect {
+    pub const fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self {
+        Self { left, top, right, bottom }
+    }
+
+    pub const fn offset_y(self, dy: i32) -> Self {
+        Self {
+            left: self.left,
+            top: self.top - dy,
+            right: self.right,
+            bottom: self.bottom - dy,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<windows_sys::Win32::Foundation::RECT> for UiRect {
+    fn from(value: windows_sys::Win32::Foundation::RECT) -> Self {
+        Self {
+            left: value.left,
+            top: value.top,
+            right: value.right,
+            bottom: value.bottom,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<&windows_sys::Win32::Foundation::RECT> for UiRect {
+    fn from(value: &windows_sys::Win32::Foundation::RECT) -> Self {
+        Self::from(*value)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<UiRect> for windows_sys::Win32::Foundation::RECT {
+    fn from(value: UiRect) -> Self {
+        Self {
+            left: value.left,
+            top: value.top,
+            right: value.right,
+            bottom: value.bottom,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[allow(dead_code)]
@@ -165,50 +200,6 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
         (ag + (bg - ag) * t).round() as u8,
         (ab + (bb - ab) * t).round() as u8,
     )
-}
-
-pub fn is_dark_mode() -> bool {
-    unsafe {
-        let key_path = OsStr::new("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
-            .encode_wide().chain(once(0)).collect::<Vec<u16>>();
-        let val_name = OsStr::new("AppsUseLightTheme")
-            .encode_wide().chain(once(0)).collect::<Vec<u16>>();
-        let mut hkey = 0isize;
-        if RegOpenKeyExW(HKEY_CURRENT_USER, key_path.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
-            return false;
-        }
-        let mut data = 0u32;
-        let mut data_size = 4u32;
-        let mut reg_type = 0u32;
-        let ret = RegQueryValueExW(
-            hkey, val_name.as_ptr(), std::ptr::null_mut(), &mut reg_type,
-            &mut data as *mut u32 as *mut u8, &mut data_size,
-        );
-        RegCloseKey(hkey);
-        if ret == 0 && reg_type == REG_DWORD {
-            data == 0  // 0 = dark, 1 = light
-        } else {
-            false
-        }
-    }
-}
-
-fn system_accent() -> u32 {
-    unsafe {
-        let mut c = 0u32;
-        let mut opaque = 0i32;
-        if DwmGetColorizationColor(&mut c, &mut opaque) == 0 {
-            let r = ((c >> 16) & 0xFF) as u8;
-            let g = ((c >> 8) & 0xFF) as u8;
-            let b = (c & 0xFF) as u8;
-            return rgb(r, g, b);
-        }
-    }
-    rgb(0, 120, 212)
-}
-
-fn to_wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(once(0)).collect()
 }
 
 pub fn settings_nav_item_rect(index: usize) -> RECT {
@@ -349,8 +340,8 @@ pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTime
             .strip_prefix("time:")
             .or_else(|| lower.strip_prefix("date:"))
             .map(|v| v.to_string())
-            .or_else(|| token.strip_prefix("时间:").map(|v| v.to_string()))
-            .or_else(|| token.strip_prefix("日期:").map(|v| v.to_string()));
+            .or_else(|| token.strip_prefix("鏃堕棿:").map(|v| v.to_string()))
+            .or_else(|| token.strip_prefix("鏃ユ湡:").map(|v| v.to_string()));
         if let Some(value) = time_value {
             if let Some(filter) = parse_time_filter(&value) {
                 time_filter = Some(filter);
@@ -631,57 +622,6 @@ impl MainUiLayout {
         Some(UiRect::new(track.left + 1, thumb_y, track.right - 1, thumb_y + thumb_h))
     }
 }
-
-
-
-#[allow(dead_code)]
-pub unsafe fn draw_pill_fill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32) {
-    let w = rc.right - rc.left;
-    let h = rc.bottom - rc.top;
-    if w <= 1 || h <= 1 { return; }
-    let radius = (h / 2).max(1);
-    if gdiplus::draw_round_rect(hdc, rc.left, rc.top, rc.right, rc.bottom, fill, fill, radius) {
-        return;
-    }
-    let d = h.max(2);
-    let r = d / 2;
-    let br = CreateSolidBrush(fill);
-    let old_br = SelectObject(hdc, br as _);
-    let pen = GetStockObject(NULL_PEN);
-    let old_pen = SelectObject(hdc, pen as _);
-    let mid = RECT { left: rc.left + r, top: rc.top, right: rc.right - r, bottom: rc.bottom };
-    if mid.right > mid.left { FillRect(hdc, &mid, br); }
-    Ellipse(hdc, rc.left, rc.top, rc.left + d, rc.bottom);
-    Ellipse(hdc, rc.right - d, rc.top, rc.right, rc.bottom);
-    SelectObject(hdc, old_pen);
-    SelectObject(hdc, old_br);
-    DeleteObject(br as _);
-}
-
-#[allow(dead_code)]
-pub unsafe fn draw_pill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32, border: u32) {
-    if border != 0 && border != fill {
-        draw_pill_fill(hdc, rc, border);
-        let inner = RECT { left: rc.left + 1, top: rc.top + 1, right: rc.right - 1, bottom: rc.bottom - 1 };
-        if inner.right > inner.left && inner.bottom > inner.top {
-            draw_pill_fill(hdc, &inner, fill);
-        }
-    } else {
-        draw_pill_fill(hdc, rc, fill);
-    }
-}
-
-#[allow(dead_code)]
-pub fn settings_card_rect(y: i32, h: i32) -> RECT {
-    RECT {
-        left: SETTINGS_CONTENT_X,
-        top: SETTINGS_CONTENT_Y + y,
-        right: SETTINGS_CONTENT_X + SETTINGS_CONTENT_W,
-        bottom: SETTINGS_CONTENT_Y + y + h,
-    }
-}
-
-
 pub unsafe fn draw_round_rect(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32, border: u32, radius: i32) {
     if gdiplus::draw_round_rect(hdc, rc.left, rc.top, rc.right, rc.bottom, fill, border, radius.max(1)) {
         return;
@@ -771,8 +711,8 @@ pub unsafe fn draw_main_segment_bar(
         draw_round_fill(hdc, &hr, th.item_hover, 3);
     }
 
-    let t0c = if selected == 0 { th.text } else if hover == 0 { th.text } else { th.text_muted };
-    let t1c = if selected == 1 { th.text } else if hover == 1 { th.text } else { th.text_muted };
+    let t0c = if selected == 0 || hover == 0 { th.text } else { th.text_muted };
+    let t1c = if selected == 1 || hover == 1 { th.text } else { th.text_muted };
     draw_text_ex(hdc, "复制记录", tab0, t0c, 11, false, true, "Segoe UI Variable Text");
     draw_text_ex(hdc, "常用短语", tab1, t1c, 11, false, true, "Segoe UI Variable Text");
 }
@@ -807,8 +747,8 @@ pub unsafe fn draw_text_ex(
     }
 }
 
-/// 在深色模式下绘制图标时，将黑色图标反色为白色。
-/// 深色模式下把图标反色为白色版本（两次绘制提取真实像素）
+/// 鍦ㄦ繁鑹叉ā寮忎笅缁樺埗鍥炬爣鏃讹紝灏嗛粦鑹插浘鏍囧弽鑹蹭负鐧借壊銆?
+/// 娣辫壊妯″紡涓嬫妸鍥炬爣鍙嶈壊涓虹櫧鑹茬増鏈紙涓ゆ缁樺埗鎻愬彇鐪熷疄鍍忕礌锛?
 pub unsafe fn draw_icon_tinted(
     hdc: *mut core::ffi::c_void,
     x: i32, y: i32,
@@ -823,12 +763,12 @@ pub unsafe fn draw_icon_tinted(
         return;
     }
 
-    // 两次绘制法提取带 alpha 的图标，再以灰/白色重绘到目标 DC
-    // pass1: 白底 → 图标像素 = alpha*icon_color + (1-alpha)*255
-    // pass2: 黑底 → 图标像素 = alpha*icon_color
+    // 涓ゆ缁樺埗娉曟彁鍙栧甫 alpha 鐨勫浘鏍囷紝鍐嶄互鐏?鐧借壊閲嶇粯鍒扮洰鏍?DC
+    // pass1: 鐧藉簳 鈫?鍥炬爣鍍忕礌 = alpha*icon_color + (1-alpha)*255
+    // pass2: 榛戝簳 鈫?鍥炬爣鍍忕礌 = alpha*icon_color
     // alpha = 1 - (pass1 - pass2) / 255
     // icon_color = pass2 / alpha
-    // 最终以亮灰色绘制到目标（保留 alpha）
+    // 鏈€缁堜互浜伆鑹茬粯鍒跺埌鐩爣锛堜繚鐣?alpha锛?
 
     let make_dib = |bg: u32| -> (*mut core::ffi::c_void, *mut core::ffi::c_void, *mut u32) {
         let dc = CreateCompatibleDC(hdc);
@@ -838,7 +778,7 @@ pub unsafe fn draw_icon_tinted(
         bmi.bmiHeader.biHeight = -h;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB as u32;
+        bmi.bmiHeader.biCompression = BI_RGB;
         let mut ptr: *mut core::ffi::c_void = core::ptr::null_mut();
         let dib = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut ptr, core::ptr::null_mut(), 0);
         if dib.is_null() || ptr.is_null() {
@@ -846,17 +786,17 @@ pub unsafe fn draw_icon_tinted(
             return (core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut());
         }
         SelectObject(dc, dib as _);
-        // 填充背景色
+        // 濉厖鑳屾櫙鑹?
         let br = CreateSolidBrush(bg);
         let rc = RECT { left: 0, top: 0, right: w, bottom: h };
         FillRect(dc, &rc, br);
         DeleteObject(br as _);
         DrawIconEx(dc, 0, 0, icon as _, w, h, 0, core::ptr::null_mut(), DI_NORMAL);
-        (dc, dib as *mut core::ffi::c_void, ptr as *mut u32)
+        (dc, dib, ptr as *mut u32)
     };
 
-    let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32); // 白底
-    let (dc_b, dib_b, px_b) = make_dib(0x00000000u32); // 黑底
+    let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32); // 鐧藉簳
+    let (dc_b, dib_b, px_b) = make_dib(0x00000000u32); // 榛戝簳
 
     if dc_w.is_null() || dc_b.is_null() {
         if !dc_w.is_null() { DeleteDC(dc_w); }
@@ -865,7 +805,7 @@ pub unsafe fn draw_icon_tinted(
         return;
     }
 
-    // 创建输出 DIB
+    // 鍒涘缓杈撳嚭 DIB
     let dc_out = CreateCompatibleDC(hdc);
     let mut bmi_out: BITMAPINFO = core::mem::zeroed();
     bmi_out.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -873,7 +813,7 @@ pub unsafe fn draw_icon_tinted(
     bmi_out.bmiHeader.biHeight = -h;
     bmi_out.bmiHeader.biPlanes = 1;
     bmi_out.bmiHeader.biBitCount = 32;
-    bmi_out.bmiHeader.biCompression = BI_RGB as u32;
+    bmi_out.bmiHeader.biCompression = BI_RGB;
     let mut px_out_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
     let dib_out = CreateDIBSection(dc_out, &bmi_out, DIB_RGB_COLORS, &mut px_out_ptr, core::ptr::null_mut(), 0);
     if dib_out.is_null() || px_out_ptr.is_null() {
@@ -888,8 +828,8 @@ pub unsafe fn draw_icon_tinted(
     let src_b = core::slice::from_raw_parts(px_b, n);
     let dst   = core::slice::from_raw_parts_mut(px_out_ptr as *mut u32, n);
 
-    // 从目标 DC 读取背景色（用于 premix）
-    // 获取目标 DC 当前对应区域的背景像素（读取当前 hdc 内容）
+    // 浠庣洰鏍?DC 璇诲彇鑳屾櫙鑹诧紙鐢ㄤ簬 premix锛?
+    // 鑾峰彇鐩爣 DC 褰撳墠瀵瑰簲鍖哄煙鐨勮儗鏅儚绱狅紙璇诲彇褰撳墠 hdc 鍐呭锛?
     let dc_bg = CreateCompatibleDC(hdc);
     let mut bmi_bg: BITMAPINFO = core::mem::zeroed();
     bmi_bg.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -897,7 +837,7 @@ pub unsafe fn draw_icon_tinted(
     bmi_bg.bmiHeader.biHeight = -h;
     bmi_bg.bmiHeader.biPlanes = 1;
     bmi_bg.bmiHeader.biBitCount = 32;
-    bmi_bg.bmiHeader.biCompression = BI_RGB as u32;
+    bmi_bg.bmiHeader.biCompression = BI_RGB;
     let mut px_bg_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
     let dib_bg = CreateDIBSection(dc_bg, &bmi_bg, DIB_RGB_COLORS, &mut px_bg_ptr, core::ptr::null_mut(), 0);
     SelectObject(dc_bg, dib_bg as _);
@@ -920,40 +860,40 @@ pub unsafe fn draw_icon_tinted(
         let bg = ((b_px >> 8)  & 0xFF) as i32;
         let bb = ( b_px        & 0xFF) as i32;
 
-        // alpha（每通道）: diff = white - black = (1-a)*255, so a = 1 - diff/255
+        // alpha锛堟瘡閫氶亾锛? diff = white - black = (1-a)*255, so a = 1 - diff/255
         let ar = 255 - (wr - br).clamp(0, 255);
         let ag = 255 - (wg - bg).clamp(0, 255);
         let ab = 255 - (wb - bb).clamp(0, 255);
         let alpha = ((ar + ag + ab) / 3) as u32;
 
         if alpha < 8 {
-            // 完全透明：直接用背景色
+            // 瀹屽叏閫忔槑锛氱洿鎺ョ敤鑳屾櫙鑹?
             dst[i] = if i < src_bg.len() { src_bg[i] & 0x00FFFFFF } else { 0x00202020 };
             continue;
         }
 
-        // 原图标颜色（从黑底版本恢复）
+        // 鍘熷浘鏍囬鑹诧紙浠庨粦搴曠増鏈仮澶嶏級
         let icon_r = ((br * 255 / ar.max(1)) as u32).min(255);
         let icon_g = ((bg * 255 / ag.max(1)) as u32).min(255);
         let icon_b = ((bb * 255 / ab.max(1)) as u32).min(255);
 
-        // 图标亮度
+        // 鍥炬爣浜害
         let lum = (icon_r * 299 + icon_g * 587 + icon_b * 114) / 1000;
 
-        // 深色背景上：把暗色图标像素映射为亮灰/白色，彩色像素适当提亮
+        // 娣辫壊鑳屾櫙涓婏細鎶婃殫鑹插浘鏍囧儚绱犳槧灏勪负浜伆/鐧借壊锛屽僵鑹插儚绱犻€傚綋鎻愪寒
         let (out_r, out_g, out_b) = if lum < 80 {
-            // 纯黑/深灰图标 → 纯白
+            // 绾粦/娣辩伆鍥炬爣 鈫?绾櫧
             (255u32, 255u32, 255u32)
         } else if lum < 200 {
-            // 中灰 → 亮灰
+            // 涓伆 鈫?浜伆
             let bright = (255 - lum + 180).min(255);
             (bright, bright, bright)
         } else {
-            // 已是亮色/彩色 → 保留
+            // 宸叉槸浜壊/褰╄壊 鈫?淇濈暀
             (icon_r, icon_g, icon_b)
         };
 
-        // 与背景 alpha 合成
+        // 涓庤儗鏅?alpha 鍚堟垚
         let (bg_r, bg_g, bg_b) = if i < src_bg.len() {
             let bg_px = src_bg[i];
             (((bg_px >> 16) & 0xFF) as u32,

@@ -224,12 +224,15 @@ pub(super) fn spawn_items_page_load(
             },
         };
 
-        if let Ok(mut queue) = page_load_results().lock() {
-            queue.push_back(result);
-        }
-
         unsafe {
-            if hwnd_value != 0 {
+            let still_alive = hwnd_value != 0
+                && window_host_hwnds()
+                    .into_iter()
+                    .any(|host| host == hwnd_value as HWND && IsWindow(host) != 0);
+            if still_alive {
+                if let Ok(mut queue) = page_load_results().lock() {
+                    queue.push_back(result);
+                }
                 let _ = PostMessageW(hwnd_value as HWND, WM_ITEMS_PAGE_READY, 0, 0);
             }
         }

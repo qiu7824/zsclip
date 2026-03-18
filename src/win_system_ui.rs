@@ -1,37 +1,65 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-pub use crate::settings_registry::{SettingsCtrlReg, SettingsPage, SettingsUiRegistry};
+pub use crate::settings_model::SettingsPage;
 pub use crate::settings_render::{
     draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x,
     settings_title_rect_win,
 };
 pub use crate::settings_ui_host::{
-    create_settings_component, create_settings_edit, create_settings_label, create_settings_label_auto,
-    create_settings_listbox, create_settings_password_edit, draw_settings_button_component,
-    draw_settings_toggle_component, settings_child_visible, settings_dropdown_index_for_max_items,
+    create_settings_button, create_settings_component, create_settings_dropdown_button, create_settings_edit,
+    create_settings_fonts, create_settings_label, create_settings_label_auto, create_settings_listbox,
+    create_settings_password_edit, create_settings_small_button, create_settings_toggle_plain,
+    draw_settings_button_component, draw_settings_toggle_component, draw_text_wide_centered, get_ctrl_text_wide,
+    set_settings_font, settings_child_visible, settings_dropdown_index_for_max_items,
     settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items,
     settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label,
     settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_viewport_mask_rect,
-    settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind,
-    WM_SETTINGS_DROPDOWN_SELECTED,
+    settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind, SettingsCtrlReg,
+    SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED,
 };
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
     System::Ole::DROPEFFECT,
-    UI::WindowsAndMessaging::{
-        GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        IsWindow, SystemParametersInfoW, WindowFromPoint,
+    UI::{
+        Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_MENU, VK_V},
+        WindowsAndMessaging::{
+            GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+            IsWindow, SetForegroundWindow, SystemParametersInfoW, WindowFromPoint,
+        },
     },
 };
 
-use crate::ui::is_dark_mode;
 use crate::win_system_params::{
     DRAGDROP_S_CANCEL_HR, DRAGDROP_S_DROP_HR, DRAGDROP_S_USEDEFAULTCURSORS_HR,
     E_NOINTERFACE_HR, E_POINTER_HR, IID_IDROPSOURCE_RAW, IID_IUNKNOWN_RAW, MK_LBUTTON_FLAG,
     S_OK_HR,
 };
+
+const HKEY_CURRENT_USER: isize = -2147483647i32 as isize;
+const KEY_READ: u32 = 0x20019;
+const REG_DWORD: u32 = 4;
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn RegOpenKeyExW(
+        hkey: isize,
+        lpsubkey: *const u16,
+        uloptions: u32,
+        samdesired: u32,
+        phkresult: *mut isize,
+    ) -> i32;
+    fn RegQueryValueExW(
+        hkey: isize,
+        lpvaluename: *const u16,
+        lpreserved: *mut u32,
+        lptype: *mut u32,
+        lpdata: *mut u8,
+        lpcbdata: *mut u32,
+    ) -> i32;
+    fn RegCloseKey(hkey: isize) -> i32;
+}
 
 #[link(name = "dwmapi")]
 unsafe extern "system" {
@@ -47,6 +75,7 @@ unsafe extern "system" {
         pvattribute: *mut c_void,
         cbattribute: u32,
     ) -> i32;
+    fn DwmGetColorizationColor(pcr_colorization: *mut u32, pf_opaque_blend: *mut i32) -> i32;
 }
 
 #[repr(C)]
@@ -74,6 +103,78 @@ unsafe extern "system" {
 
 pub(crate) fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
+}
+
+pub(crate) fn is_dark_mode() -> bool {
+    unsafe {
+        let key_path = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
+        let val_name = to_wide("AppsUseLightTheme");
+        let mut hkey = 0isize;
+        if RegOpenKeyExW(HKEY_CURRENT_USER, key_path.as_ptr(), 0, KEY_READ, &mut hkey) != 0 {
+            return false;
+        }
+        let mut data = 0u32;
+        let mut data_size = 4u32;
+        let mut reg_type = 0u32;
+        let ret = RegQueryValueExW(
+            hkey,
+            val_name.as_ptr(),
+            core::ptr::null_mut(),
+            &mut reg_type,
+            &mut data as *mut u32 as *mut u8,
+            &mut data_size,
+        );
+        RegCloseKey(hkey);
+        ret == 0 && reg_type == REG_DWORD && data == 0
+    }
+}
+
+pub(crate) fn system_accent() -> u32 {
+    unsafe {
+        let mut color = 0u32;
+        let mut opaque = 0i32;
+        if DwmGetColorizationColor(&mut color, &mut opaque) == 0 {
+            let r = ((color >> 16) & 0xFF) as u8;
+            let g = ((color >> 8) & 0xFF) as u8;
+            let b = (color & 0xFF) as u8;
+            return rgb(r, g, b);
+        }
+    }
+    rgb(0, 120, 212)
+}
+
+pub(crate) unsafe fn send_ctrl_v() {
+    keybd_event(VK_CONTROL as u8, 0, 0, 0);
+    keybd_event(VK_V as u8, 0, 0, 0);
+    keybd_event(VK_V as u8, 0, KEYEVENTF_KEYUP, 0);
+    keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+}
+
+pub(crate) unsafe fn send_backspace_times(count: u8) {
+    for _ in 0..count {
+        keybd_event(VK_BACK as u8, 0, 0, 0);
+        keybd_event(VK_BACK as u8, 0, KEYEVENTF_KEYUP, 0);
+    }
+}
+
+pub(crate) unsafe fn send_alt_tap() {
+    keybd_event(VK_MENU as u8, 0, 0, 0);
+    keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+}
+
+pub(crate) unsafe fn force_foreground_window(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    if SetForegroundWindow(hwnd) != 0 {
+        return true;
+    }
+    send_alt_tap();
+    SetForegroundWindow(hwnd) != 0
 }
 
 pub(crate) unsafe fn init_dpi_awareness_for_process() {

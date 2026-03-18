@@ -11,7 +11,7 @@ use windows_sys::Win32::{
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
-        Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_MENU, VK_SHIFT, VK_V},
+        Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_SHIFT},
         WindowsAndMessaging::*,
     },
 };
@@ -21,7 +21,8 @@ use crate::shell::load_icons;
 use crate::ui::{draw_round_rect, draw_text_ex, Theme};
 use crate::win_system_ui::{
     apply_dark_mode_to_window, apply_window_corner_preference, create_settings_component,
-    draw_settings_button_component, get_window_text, to_wide, SettingsComponentKind,
+    draw_settings_button_component, force_foreground_window, get_window_text, send_ctrl_v, to_wide,
+    SettingsComponentKind,
 };
 
 unsafe extern "system" {
@@ -68,16 +69,11 @@ const BST_CHECKED: usize = 1;
 const BST_UNCHECKED: usize = 0;
 const VK_F9_KEY: u8 = 0x78;
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Default)]
 enum PendingPasteKind {
+    #[default]
     PlainText,
     MergeFieldCode,
-}
-
-impl Default for PendingPasteKind {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Default)]
@@ -476,12 +472,9 @@ unsafe fn good_target(hwnd: HWND, self_hwnd: HWND) -> bool {
     !hwnd.is_null() && hwnd != self_hwnd && IsWindow(hwnd) != 0 && IsWindowVisible(hwnd) != 0 && IsWindowEnabled(hwnd) != 0 && !get_window_text(hwnd).trim().is_empty()
 }
 
-unsafe fn send_alt_tap() { keybd_event(VK_MENU as u8, 0, 0, 0); keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0); }
-unsafe fn send_ctrl_v() { keybd_event(VK_CONTROL as u8, 0, 0, 0); keybd_event(VK_V as u8, 0, 0, 0); keybd_event(VK_V as u8, 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0); }
 unsafe fn send_ctrl_f9() { keybd_event(VK_CONTROL as u8, 0, 0, 0); keybd_event(VK_F9_KEY, 0, 0, 0); keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0); }
 unsafe fn send_f9() { keybd_event(VK_F9_KEY, 0, 0, 0); keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0); }
 unsafe fn send_shift_f9() { keybd_event(VK_SHIFT as u8, 0, 0, 0); keybd_event(VK_F9_KEY, 0, 0, 0); keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0); keybd_event(VK_SHIFT as u8, 0, KEYEVENTF_KEYUP, 0); }
-unsafe fn force_foreground_window(hwnd: HWND) -> bool { if SetForegroundWindow(hwnd) != 0 { true } else { send_alt_tap(); SetForegroundWindow(hwnd) != 0 } }
 
 unsafe fn refresh_mode_ui(hwnd: HWND) {
     let fill = is_fill_mode(hwnd);
@@ -616,7 +609,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let args = if !cs.lpCreateParams.is_null() { Box::from_raw(cs.lpCreateParams as *mut CreateArgs) } else { Box::new(CreateArgs { initial_excel: String::new() }) };
-            let font = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr()) as *mut core::ffi::c_void;
+            let font = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr());
             let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { font };
             let th = Theme::default();
             let st = Box::new(MailMergeState {
@@ -673,7 +666,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             if !st_ptr.is_null() {
                 let st = &mut *st_ptr;
                 let state = (wparam & 0xffff) as u32;
-                if state == WA_ACTIVE as u32 || state == WA_CLICKACTIVE as u32 {
+                if state == WA_ACTIVE || state == WA_CLICKACTIVE {
                     let prev = lparam as HWND;
                     if good_target(prev, hwnd) { st.last_target_hwnd = prev; st.last_target_title = get_window_text(prev); }
                 }
@@ -731,7 +724,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 &text,
                 button_kind(dis.CtlID as isize),
                 hover,
-                (dis.itemState & (ODS_SELECTED as u32)) != 0,
+                (dis.itemState & ODS_SELECTED) != 0,
                 Theme::default(),
             );
             let _ = st;
@@ -786,13 +779,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 draw_text_ex(hdc as _, "字段与模式", &sec2, th.text_muted, 12, true, false, "Segoe UI Variable Text");
                 let sec3 = RECT { left: 24, top: 448, right: 220, bottom: 470 };
                 draw_text_ex(hdc as _, "操作", &sec3, th.text_muted, 12, true, false, "Segoe UI Variable Text");
-                EndPaint(hwnd, &mut ps);
+                EndPaint(hwnd, &ps);
             }
             0
         }
         WM_COMMAND => {
             let id = (wparam as u32 & 0xffff) as isize;
-            let code = ((wparam as u32 >> 16) & 0xffff) as u32;
+            let code = (wparam as u32 >> 16) & 0xffff;
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
@@ -832,7 +825,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let res = if is_fill_mode(hwnd) { ps_word_insert_table(&st.headers, Some(&st.values)) } else { ps_word_insert_table(&st.headers, None) };
                     match res { Ok(_) => set_status(hwnd, if is_fill_mode(hwnd) { "已填入表格" } else { "已插入表格" }), Err(e) => set_status(hwnd, &e) }
                 }
-                IDC_FIELDS if code == LBN_DBLCLK as u32 => run_primary_action_inner(hwnd, st, false),
+                IDC_FIELDS if code == LBN_DBLCLK => run_primary_action_inner(hwnd, st, false),
                 _ => {}
             }
             0
@@ -844,7 +837,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let st = Box::from_raw(ptr);
                 KillTimer(hwnd, ID_TIMER_PASTE);
                 KillTimer(hwnd, ID_TIMER_TARGET_TRACK);
-                if !st.font.is_null() && st.font != GetStockObject(DEFAULT_GUI_FONT) as _ { DeleteObject(st.font as _); }
+                if !st.font.is_null() && !core::ptr::eq(st.font, GetStockObject(DEFAULT_GUI_FONT)) {
+                    DeleteObject(st.font as _);
+                }
+                if !st.card_brush.is_null() {
+                    DeleteObject(st.card_brush as _);
+                }
+                if !st.edit_brush.is_null() {
+                    DeleteObject(st.edit_brush as _);
+                }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             0

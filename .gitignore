@@ -1,6 +1,9 @@
 /target
 /target_codex2
 /target_codex*
+/target_bugfix*
+/target_refactor*
+/target_review*
 /data/clipboard_history.json
 /target
 /_refs/

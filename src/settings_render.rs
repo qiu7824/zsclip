@@ -89,7 +89,7 @@ pub unsafe fn draw_settings_nav_item(
     let txt_rc = RECT { left: item_rc.left + 40, top: item_rc.top, right: item_rc.right - 8, bottom: item_rc.bottom };
     let icon_color = if selected { th.accent } else if hover { th.text } else { th.text_muted };
     draw_text_ex(hdc, SETTINGS_NAV_GLYPHS[index], &icon_rc, icon_color, 16, false, false, "Segoe Fluent Icons");
-    let label_color = if selected { th.text } else if hover { th.text } else { th.text_muted };
+    let label_color = if selected || hover { th.text } else { th.text_muted };
     draw_text_ex(hdc, SETTINGS_PAGES[index], &txt_rc, label_color, 14, false, false, "Segoe UI Variable Text");
 }
 

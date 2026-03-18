@@ -1,20 +1,25 @@
-use std::ffi::c_void;
+﻿use std::ffi::c_void;
 use std::ptr::{null, null_mut};
+use std::cmp::max;
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, InvalidateRect,
-        PAINTSTRUCT, ReleaseDC, SelectObject,
+        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
+        GetStockObject, InvalidateRect, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+        DEFAULT_GUI_FONT,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
 };
 
 use crate::i18n::{tr, translate};
+use crate::settings_model::{SettingsPage, SETTINGS_PAGE_COUNT};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme, UiRect, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
+    DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
+use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
 
 pub const SETTINGS_VIEWPORT_MASK_H: i32 = 14;
 pub const WM_SETTINGS_DROPDOWN_SELECTED: u32 = WM_APP + 91;
@@ -34,6 +39,76 @@ pub enum SettingsComponentKind {
     Dropdown,
     Button,
     AccentButton,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SettingsCtrlReg {
+    pub hwnd: HWND,
+    pub page: usize,
+    pub bounds: UiRect,
+    pub scrollable: bool,
+}
+
+impl SettingsCtrlReg {
+    pub const fn new(hwnd: HWND, page: usize, x: i32, y: i32, w: i32, h: i32, scrollable: bool) -> Self {
+        Self {
+            hwnd,
+            page,
+            bounds: UiRect::new(x, y, x + w, y + h),
+            scrollable,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SettingsCtrlSlot {
+    pub hwnd: HWND,
+    pub bounds: UiRect,
+}
+
+pub struct SettingsUiRegistry {
+    built_pages: [bool; SETTINGS_PAGE_COUNT],
+    page_ctrls: Vec<Vec<HWND>>,
+    regs: Vec<SettingsCtrlReg>,
+    scroll_ctrls: Vec<SettingsCtrlSlot>,
+}
+
+impl SettingsUiRegistry {
+    pub fn new() -> Self {
+        Self {
+            built_pages: [false; SETTINGS_PAGE_COUNT],
+            page_ctrls: vec![Vec::new(); SETTINGS_PAGE_COUNT],
+            regs: Vec::new(),
+            scroll_ctrls: Vec::new(),
+        }
+    }
+
+    pub fn is_built(&self, page: usize) -> bool {
+        self.built_pages.get(page).copied().unwrap_or(false)
+    }
+
+    pub fn mark_built(&mut self, page: usize) {
+        if let Some(slot) = self.built_pages.get_mut(page) {
+            *slot = true;
+        }
+    }
+
+    pub fn register(&mut self, reg: SettingsCtrlReg) {
+        let page = reg.page.min(SETTINGS_PAGE_COUNT.saturating_sub(1));
+        self.regs.push(reg);
+        if let Some(list) = self.page_ctrls.get_mut(page) {
+            list.push(reg.hwnd);
+        }
+        if page == SettingsPage::General.index() && reg.scrollable {
+            self.scroll_ctrls.push(SettingsCtrlSlot { hwnd: reg.hwnd, bounds: reg.bounds });
+        }
+    }
+
+    pub fn page_regs(&self, page: usize) -> impl Iterator<Item = &SettingsCtrlReg> {
+        self.regs.iter().filter(move |reg| reg.page == page)
+    }
+
+    pub fn scroll_ctrls(&self) -> &[SettingsCtrlSlot] { &self.scroll_ctrls }
 }
 
 #[link(name = "dwmapi")]
@@ -86,26 +161,16 @@ pub fn settings_child_visible(new_y: i32, h: i32, viewport: &RECT) -> bool {
     new_y >= safe_top && new_y + h > safe_top && new_y < viewport.bottom
 }
 
-#[allow(unreachable_code)]
 pub fn settings_dropdown_label_for_max_items(max_items: usize) -> &'static str {
-    return match max_items {
-        100 => "100",
-        200 => "200",
-        500 => "500",
-        1000 => "1000",
-        3000 => "3000",
-        _ => tr("无限制", "Unlimited"),
-    };
     match max_items {
         100 => "100",
         200 => "200",
         500 => "500",
         1000 => "1000",
         3000 => "3000",
-        _ => "无限制",
+        _ => tr("无限制", "Unlimited"),
     }
 }
-
 pub fn settings_dropdown_index_for_max_items(max_items: usize) -> usize {
     match max_items {
         100 => 0,
@@ -128,20 +193,13 @@ pub fn settings_dropdown_max_items_from_label(label: &str) -> usize {
     }
 }
 
-#[allow(unreachable_code)]
 pub fn settings_dropdown_label_for_pos_mode(mode: &str) -> &'static str {
-    return match mode {
+    match mode {
         "fixed" => tr("固定位置", "Fixed Position"),
         "last" => tr("上次位置", "Last Position"),
         _ => tr("跟随鼠标", "Follow Mouse"),
-    };
-    match mode {
-        "fixed" => "固定位置",
-        "last" => "上次位置",
-        _ => "跟随鼠标",
     }
 }
-
 pub fn settings_dropdown_index_for_pos_mode(mode: &str) -> usize {
     match mode {
         "fixed" => 1,
@@ -150,20 +208,13 @@ pub fn settings_dropdown_index_for_pos_mode(mode: &str) -> usize {
     }
 }
 
-#[allow(unreachable_code)]
 pub fn settings_dropdown_pos_mode_from_label(label: &str) -> String {
-    return match label.trim() {
+    match label.trim() {
         "固定位置" | "Fixed Position" => "fixed".to_string(),
         "上次位置" | "Last Position" => "last".to_string(),
         _ => "mouse".to_string(),
-    };
-    match label.trim() {
-        "固定位置" => "fixed".to_string(),
-        "上次位置" => "last".to_string(),
-        _ => "mouse".to_string(),
     }
 }
-
 pub unsafe fn create_settings_component(
     parent: HWND,
     text: &str,
@@ -200,6 +251,98 @@ pub unsafe fn create_settings_component(
         SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
     }
     hwnd
+}
+
+pub unsafe fn set_settings_font(hwnd: HWND, hfont: *mut c_void) {
+    if !hwnd.is_null() && !hfont.is_null() {
+        SendMessageW(hwnd, WM_SETFONT, hfont as usize, 1);
+    }
+}
+
+pub unsafe fn create_settings_button(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> HWND {
+    create_settings_component(parent, text, id, SettingsComponentKind::Button, x, y, w, 32, font)
+}
+
+pub unsafe fn create_settings_small_button(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> HWND {
+    create_settings_button(parent, text, id, x, y, w, font)
+}
+
+pub unsafe fn create_settings_dropdown_button(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> HWND {
+    create_settings_component(parent, text, id, SettingsComponentKind::Dropdown, x, y, w, 32, font)
+}
+
+pub unsafe fn create_settings_toggle_plain(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut c_void,
+) -> (HWND, HWND, i32, i32, i32, i32, i32, i32) {
+    const SS_CENTERIMAGE: u32 = 0x0200;
+    let toggle_w = 44;
+    let toggle_h = 24;
+    let row_h = 32;
+    let gap = 12;
+    let label_w = max(40, w - toggle_w - gap);
+    let label_text = translate(text);
+    let label = CreateWindowExW(
+        0,
+        to_wide("STATIC").as_ptr(),
+        to_wide(label_text.as_ref()).as_ptr(),
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        x,
+        y,
+        label_w,
+        row_h,
+        parent,
+        null_mut(),
+        GetModuleHandleW(null()),
+        null(),
+    );
+    set_settings_font(label, font);
+
+    let btn_x = x + w - toggle_w;
+    let btn_y = y + max(0, (row_h - toggle_h) / 2);
+    let btn = create_settings_component(parent, "", id, SettingsComponentKind::Toggle, btn_x, btn_y, toggle_w, toggle_h, font);
+    (label, btn, x, y, label_w, row_h, btn_x, btn_y)
+}
+
+pub unsafe fn create_settings_fonts() -> (*mut c_void, *mut c_void, *mut c_void) {
+    let nav: *mut c_void =
+        CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe Fluent Icons").as_ptr()) as _;
+    let ui: *mut c_void =
+        CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr()) as _;
+    let title: *mut c_void =
+        CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Display").as_ptr()) as _;
+    let default_ui: *mut c_void = if ui.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { ui };
+    let default_title: *mut c_void = if title.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { title };
+    (nav, default_ui, default_title)
 }
 
 pub unsafe fn create_settings_label(
@@ -301,7 +444,7 @@ pub unsafe fn create_settings_edit(
     );
     if !hwnd.is_null() {
         SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
-        let theme = if crate::ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+        let theme = if crate::win_system_ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
         SetWindowTheme(hwnd, to_wide(theme).as_ptr(), null());
         SendMessageW(
             hwnd,
@@ -343,7 +486,7 @@ pub unsafe fn create_settings_listbox(
         WS_EX_CLIENTEDGE,
         to_wide("LISTBOX").as_ptr(),
         to_wide("").as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (LBS_NOTIFY as u32) | (WS_VSCROLL as u32),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (LBS_NOTIFY as u32) | WS_VSCROLL,
         x,
         y,
         w,
@@ -358,6 +501,33 @@ pub unsafe fn create_settings_listbox(
         SetWindowTheme(hwnd, to_wide("Explorer").as_ptr(), null());
     }
     hwnd
+}
+
+pub unsafe fn get_ctrl_text_wide(hwnd: HWND) -> Vec<u16> {
+    let len = GetWindowTextLengthW(hwnd);
+    let mut buf = vec![0u16; (len as usize) + 2];
+    GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    buf.truncate(len as usize);
+    buf
+}
+
+pub unsafe fn draw_text_wide_centered(
+    hdc: *mut c_void,
+    text_w: &[u16],
+    rc: &RECT,
+    color: u32,
+    size: i32,
+    font_name: &str,
+) {
+    let hdc = hdc as _;
+    let font: *mut c_void =
+        CreateFontW(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr()) as _;
+    let old = SelectObject(hdc, font as _);
+    SetBkMode(hdc, 1);
+    SetTextColor(hdc, color);
+    DrawTextW(hdc, text_w.as_ptr(), text_w.len() as i32, rc as *const _ as *mut _, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(hdc, old);
+    DeleteObject(font as _);
 }
 
 pub unsafe fn draw_settings_toggle_component(
@@ -445,15 +615,15 @@ pub unsafe fn draw_settings_dropdown_button(
     draw_text_ex(hdc, text, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
 
     let arrow_rc = RECT { left: rr.right - 24, top: rr.top, right: rr.right - 8, bottom: rr.bottom };
-    draw_text_ex(hdc, "▼", &arrow_rc, th.text_muted, 10, false, true, "Segoe UI Symbol");
+    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, 10, false, true, "Segoe UI Symbol");
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
-    if crate::ui::is_dark_mode() {
+    if crate::win_system_ui::is_dark_mode() {
         let val: u32 = 1;
         let _ = DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
     }
-    let theme_name = if crate::ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+    let theme_name = if crate::win_system_ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
     let _ = SetWindowTheme(hwnd, to_wide(theme_name).as_ptr(), null());
 }
 
@@ -476,14 +646,21 @@ struct DropdownPopupState {
     selected: i32,
     hover: i32,
     item_h: i32,
+    scroll_top: i32,
+    visible_rows: i32,
 }
 
 unsafe fn dropdown_index_from_y(st: &DropdownPopupState, y: i32) -> i32 {
-    if y < DROPDOWN_PAD || y >= DROPDOWN_PAD + st.item_h * st.items.len() as i32 {
+    if y < DROPDOWN_PAD || y >= DROPDOWN_PAD + st.item_h * st.visible_rows {
         -1
     } else {
-        ((y - DROPDOWN_PAD) / st.item_h).clamp(0, st.items.len() as i32 - 1)
+        let row = ((y - DROPDOWN_PAD) / st.item_h).clamp(0, st.visible_rows - 1);
+        (st.scroll_top + row).clamp(0, st.items.len() as i32 - 1)
     }
+}
+
+fn dropdown_max_scroll(st: &DropdownPopupState) -> i32 {
+    (st.items.len() as i32 - st.visible_rows).max(0)
 }
 
 unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -511,6 +688,22 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
             }
             0
         }
+        WM_MOUSEWHEEL => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
+            if ptr.is_null() {
+                return 0;
+            }
+            let st = &mut *ptr;
+            let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
+            let step = if delta > 0 { -1 } else { 1 };
+            let next = (st.scroll_top + step).clamp(0, dropdown_max_scroll(st));
+            if next != st.scroll_top {
+                st.scroll_top = next;
+                st.hover = -1;
+                InvalidateRect(hwnd, null(), 0);
+            }
+            0
+        }
         WM_LBUTTONDOWN | WM_LBUTTONUP => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
             if !ptr.is_null() {
@@ -524,45 +717,59 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
             DestroyWindow(hwnd);
             0
         }
-        WM_ACTIVATE => {
-            if (wparam & 0xffff) as u32 == WA_INACTIVE {
-                DestroyWindow(hwnd);
-            }
-            0
-        }
+        WM_ACTIVATE => 0,
+        WM_ERASEBKGND => 1,
         WM_PAINT => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             if !hdc.is_null() {
-                let th = Theme::default();
                 let mut rc: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rc);
+                let paint_target = begin_buffered_paint(hdc, &rc);
+                let memdc = if let Some((_, pdc)) = paint_target { pdc } else { hdc };
+                let th = Theme::default();
                 let w = (rc.right - rc.left).max(1);
                 let h = (rc.bottom - rc.top).max(1);
                 let bg = CreateSolidBrush(th.bg);
-                FillRect(hdc, &rc, bg);
+                FillRect(memdc, &rc, bg);
                 DeleteObject(bg as _);
                 let shell = RECT { left: 0, top: 0, right: w, bottom: h };
-                draw_round_rect(hdc as _, &shell, th.surface, th.stroke, 8);
+                draw_round_rect(memdc as _, &shell, th.surface, th.stroke, 8);
                 if !ptr.is_null() {
                     let st = &mut *ptr;
-                    for (idx, item) in st.items.iter().enumerate() {
-                        let top = DROPDOWN_PAD + idx as i32 * st.item_h;
+                    let start = st.scroll_top.max(0) as usize;
+                    let end = (st.scroll_top + st.visible_rows).min(st.items.len() as i32).max(0) as usize;
+                    for (visible_idx, idx) in (start..end).enumerate() {
+                        let item = &st.items[idx];
+                        let top = DROPDOWN_PAD + visible_idx as i32 * st.item_h;
                         let item_rc = RECT { left: DROPDOWN_PAD, top, right: w - DROPDOWN_PAD, bottom: top + st.item_h };
                         let selected = st.selected == idx as i32;
                         if selected {
                             let fill = th.nav_sel_fill;
-                            draw_round_fill(hdc as _, &item_rc, fill, 6);
+                            draw_round_fill(memdc as _, &item_rc, fill, 6);
                         }
                         if selected {
                             let cy = (item_rc.top + item_rc.bottom) / 2;
                             let bar = RECT { left: item_rc.left + 4, top: cy - 8, right: item_rc.left + 7, bottom: cy + 8 };
-                            draw_round_fill(hdc as _, &bar, th.accent, 2);
+                            draw_round_fill(memdc as _, &bar, th.accent, 2);
                         }
                         let text_rc = RECT { left: item_rc.left + 18, top: item_rc.top, right: item_rc.right - 12, bottom: item_rc.bottom };
-                        draw_text_ex(hdc as _, item, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
+                        draw_text_ex(memdc as _, item, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
                     }
+                    if dropdown_max_scroll(st) > 0 {
+                        if st.scroll_top > 0 {
+                            let top_hint = RECT { left: w - 22, top: 6, right: w - 8, bottom: 20 };
+                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, 8, false, true, "Segoe UI Symbol");
+                        }
+                        if st.scroll_top < dropdown_max_scroll(st) {
+                            let bottom_hint = RECT { left: w - 22, top: h - 20, right: w - 8, bottom: h - 6 };
+                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, 8, false, true, "Segoe UI Symbol");
+                        }
+                    }
+                }
+                if let Some((paint_buf, _)) = paint_target {
+                    end_buffered_paint(paint_buf, true);
                 }
                 EndPaint(hwnd, &ps);
             }
@@ -605,7 +812,10 @@ pub unsafe fn show_settings_dropdown_popup(
     ensure_dropdown_popup_class();
     let hinstance = GetModuleHandleW(null());
     let items_vec = items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-    let height = DROPDOWN_PAD * 2 + DROPDOWN_ITEM_H * items_vec.len() as i32;
+    let visible_rows = (items_vec.len() as i32).clamp(1, 8);
+    let height = DROPDOWN_PAD * 2 + DROPDOWN_ITEM_H * visible_rows;
+    let max_scroll = (items_vec.len() as i32 - visible_rows).max(0);
+    let scroll_top = (selected as i32 - visible_rows / 2).clamp(0, max_scroll);
     let state = Box::new(DropdownPopupState {
         parent,
         control_id,
@@ -613,12 +823,14 @@ pub unsafe fn show_settings_dropdown_popup(
         selected: selected as i32,
         hover: -1,
         item_h: DROPDOWN_ITEM_H,
+        scroll_top,
+        visible_rows,
     });
     let hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         to_wide(DROPDOWN_CLASS).as_ptr(),
         to_wide("").as_ptr(),
-        WS_POPUP | WS_VISIBLE,
+        WS_POPUP,
         anchor_rect.left,
         anchor_rect.bottom + 6,
         width.max(anchor_rect.right - anchor_rect.left),
@@ -629,8 +841,16 @@ pub unsafe fn show_settings_dropdown_popup(
         Box::into_raw(state) as _,
     );
     if !hwnd.is_null() {
-        ShowWindow(hwnd, SW_SHOWNA);
-        InvalidateRect(hwnd, null(), 0);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            anchor_rect.left,
+            anchor_rect.bottom + 6,
+            width.max(anchor_rect.right - anchor_rect.left),
+            height,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+        );
     }
     hwnd
 }
+
