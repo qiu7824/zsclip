@@ -14,8 +14,8 @@ pub(crate) mod hosts;
 
 pub(crate) use self::runtime::{db_file, save_settings};
 pub(crate) use self::hosts::{
-    get_state_ptr, main_window_hwnd, quick_window_hwnd, refresh_window_for_show,
-    set_main_window_noactivate_mode,
+    get_state_ptr, main_window_hwnd, quick_window_hwnd, refresh_low_level_input_hooks,
+    refresh_window_for_show, set_main_window_noactivate_mode, shutdown_low_level_input_hooks,
 };
 
 use arboard::{Clipboard, ImageData};
@@ -48,7 +48,6 @@ unsafe extern "system" {
     fn IsWindow(hwnd: HWND) -> i32;
     fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
     fn TrackMouseEvent(lpeventtrack: *mut TRACKMOUSEEVENT) -> i32;
-    fn SendInput(cinputs: u32, pinputs: *const INPUT, cbsize: i32) -> u32;
 }
 
 #[link(name = "kernel32")]
@@ -106,34 +105,10 @@ struct TRACKMOUSEEVENT {
     dw_hover_time: u32,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct KEYBDINPUT {
-    w_vk: u16,
-    w_scan: u16,
-    dw_flags: u32,
-    time: u32,
-    dw_extra_info: usize,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-union INPUT_UNION {
-    ki: KEYBDINPUT,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct INPUT {
-    r#type: u32,
-    anonymous: INPUT_UNION,
-}
-
-const INPUT_KEYBOARD: u32 = 1;
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, is_dark_mode, parse_search_query, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_CENTER, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{
     is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell,
     open_source_url, open_source_url_display, restart_explorer_shell, start_update_check,
@@ -148,8 +123,8 @@ use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_section_body_rect, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_component, create_settings_edit as host_create_settings_edit, create_settings_label as host_create_settings_label, create_settings_label_auto as host_create_settings_label_auto, create_settings_listbox as host_create_settings_listbox, create_settings_password_edit as host_create_settings_password_edit, cursor_over_window_tree, draw_settings_button_component, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_settings_toggle_component, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsComponentKind, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_params::{settings_max_scroll, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, send_backspace_times, send_ctrl_v, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -170,7 +145,7 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture, keybd_event,
             KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_LBUTTON, VK_MENU, VK_PRIOR, VK_NEXT, VK_SPACE,
-            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_V, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_NUMPAD1, VK_NUMPAD9,
+            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_NUMPAD1, VK_NUMPAD9,
         },
         Shell::{DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject},
         WindowsAndMessaging::*,
@@ -707,10 +682,8 @@ unsafe fn vv_focus_hwnd_for_target(target: HWND) -> HWND {
     let thread_id = GetWindowThreadProcessId(target, &mut pid);
     let mut info: GUITHREADINFO = zeroed();
     info.cbSize = size_of::<GUITHREADINFO>() as u32;
-    if thread_id != 0 && GetGUIThreadInfo(thread_id, &mut info) != 0 {
-        if !info.hwndFocus.is_null() {
-            return info.hwndFocus;
-        }
+    if thread_id != 0 && GetGUIThreadInfo(thread_id, &mut info) != 0 && !info.hwndFocus.is_null() {
+        return info.hwndFocus;
     }
     target
 }
@@ -859,7 +832,7 @@ unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lpara
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
 
-    let Ok(mut hook) = vv_hook_state().lock() else {
+    let Ok(mut hook) = vv_hook_state().try_lock() else {
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     };
     if !hook.enabled || hook.main_hwnd == 0 {
@@ -1169,7 +1142,7 @@ unsafe fn quick_search_open(settings: &AppSettings, text: &str) {
     let mut raw = text.trim().to_string();
     if raw.is_empty() { return; }
     if raw.chars().count() > 200 { raw = raw.chars().take(200).collect(); }
-    let q = raw.replace('\r', " ").replace('\n', " ");
+    let q = raw.replace(['\r', '\n'], " ");
     let enc = url_encode_component(&q);
     let tpl = if settings.search_template.trim().is_empty() { search_engine_template(&settings.search_engine).to_string() } else { settings.search_template.clone() };
     let url = tpl.replace("{key}", &enc).replace("{q}", &enc).replace("{raw}", &q);
@@ -1749,430 +1722,6 @@ struct SettingsWndState {
     dropdown_popup: HWND,
 }
 
-
-
-
-unsafe fn settings_set_text(hwnd: HWND, s: &str) {
-    let mut class_buf = [0u16; 32];
-    let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), class_buf.len() as i32);
-    let class_name = if class_len > 0 {
-        String::from_utf16_lossy(&class_buf[..class_len as usize])
-    } else {
-        String::new()
-    };
-    let text = if matches!(class_name.as_str(), "BUTTON" | "STATIC") {
-        translate(s).into_owned()
-    } else {
-        s.to_string()
-    };
-    SetWindowTextW(hwnd, to_wide(&text).as_ptr());
-}
-
-fn settings_groups_cache_for_tab(st: &SettingsWndState, tab: usize) -> &Vec<ClipGroup> {
-    if normalize_source_tab(tab) == 0 {
-        &st.record_groups_cache
-    } else {
-        &st.phrase_groups_cache
-    }
-}
-
-fn settings_groups_cache_for_tab_mut(st: &mut SettingsWndState, tab: usize) -> &mut Vec<ClipGroup> {
-    if normalize_source_tab(tab) == 0 {
-        &mut st.record_groups_cache
-    } else {
-        &mut st.phrase_groups_cache
-    }
-}
-
-unsafe fn settings_group_current_filter_text(st: &SettingsWndState) -> String {
-    let pst = get_state_ptr(st.parent_hwnd);
-    if pst.is_null() { return tr("全部记录", "All Records").to_string(); }
-    let app = &*pst;
-    let view_tab = normalize_source_tab(st.group_view_tab);
-    let gid = app.tab_group_filters.get(view_tab).copied().unwrap_or(0);
-    if gid == 0 {
-        return if view_tab == 0 {
-            tr("全部记录", "All Records").to_string()
-        } else {
-            tr("全部短语", "All Phrases").to_string()
-        };
-    }
-    app.groups_for_tab(view_tab)
-        .iter()
-        .find(|g| g.id == gid)
-        .map(|g| g.name.clone())
-        .unwrap_or_else(|| format!("{} #{}", tr("分组", "Group"), gid))
-}
-
-unsafe fn settings_sync_vv_source_display(st: &mut SettingsWndState) {
-    st.vv_source_selected = normalize_source_tab(st.vv_source_selected);
-    if !st.cb_vv_source.is_null() {
-        settings_set_text(st.cb_vv_source, source_tab_label(st.vv_source_selected));
-    }
-}
-
-unsafe fn settings_sync_vv_group_display(st: &mut SettingsWndState) {
-    let source_tab = settings_vv_source_current(st);
-    let selected = st.vv_group_selected;
-    let exists = if selected > 0 {
-        settings_groups_cache_for_tab(st, source_tab)
-            .iter()
-            .any(|g| g.id == selected)
-    } else {
-        true
-    };
-    if selected > 0 && !exists {
-        st.vv_group_selected = 0;
-    }
-    if !st.cb_vv_group.is_null() {
-        let groups = settings_groups_cache_for_tab(st, source_tab);
-        settings_set_text(
-            st.cb_vv_group,
-            &group_name_for_display(groups, st.vv_group_selected, source_tab_all_label(source_tab)),
-        );
-    }
-}
-
-unsafe fn settings_sync_group_view_tabs(st: &SettingsWndState) {
-    if !st.btn_group_view_records.is_null() {
-        InvalidateRect(st.btn_group_view_records, null(), 1);
-    }
-    if !st.btn_group_view_phrases.is_null() {
-        InvalidateRect(st.btn_group_view_phrases, null(), 1);
-    }
-}
-
-unsafe fn settings_sync_group_overview(st: &mut SettingsWndState) {
-    st.group_view_tab = normalize_source_tab(st.group_view_tab);
-    let text = format!(
-        "{}（{}）：{}",
-            tr("当前分组", "Current Group"),
-            source_tab_label(st.group_view_tab),
-            settings_group_current_filter_text(st)
-        );
-    if !st.lb_group_current.is_null() {
-        settings_set_text(st.lb_group_current, &text);
-    }
-    let pst = get_state_ptr(st.parent_hwnd);
-    let gid = if pst.is_null() {
-        0
-    } else {
-        (&*pst)
-            .tab_group_filters
-            .get(st.group_view_tab)
-            .copied()
-            .unwrap_or(0)
-    };
-    settings_groups_refresh_list(st, gid);
-    settings_sync_group_view_tabs(st);
-}
-
-fn settings_vv_source_current(st: &SettingsWndState) -> usize {
-    normalize_source_tab(st.vv_source_selected)
-}
-
-fn settings_group_view_current(st: &SettingsWndState) -> usize {
-    normalize_source_tab(st.group_view_tab)
-}
-
-unsafe fn settings_vv_source_from_app(st: &mut SettingsWndState) {
-    st.vv_source_selected = normalize_source_tab(st.draft.vv_source_tab);
-}
-
-unsafe fn settings_group_view_from_app(st: &mut SettingsWndState) {
-    let pst = get_state_ptr(st.parent_hwnd);
-    st.group_view_tab = if pst.is_null() {
-        0
-    } else {
-        normalize_source_tab((&*pst).tab_index)
-    };
-}
-
-unsafe fn settings_sync_group_page(st: &mut SettingsWndState) {
-    st.record_groups_cache = db_load_groups(0);
-    st.phrase_groups_cache = db_load_groups(1);
-    settings_vv_source_from_app(st);
-    settings_sync_vv_source_display(st);
-    st.vv_group_selected = st.draft.vv_group_id;
-    settings_sync_vv_group_display(st);
-    settings_group_view_from_app(st);
-    settings_sync_group_overview(st);
-}
-
-unsafe fn settings_invalidate_page_ctrls(hwnd: HWND, st: &SettingsWndState, page: usize) {
-    for reg in st.ui.page_regs(page) {
-        if !reg.hwnd.is_null() { InvalidateRect(reg.hwnd, null(), 1); }
-    }
-    let mut rc: RECT = core::mem::zeroed();
-    if GetClientRect(hwnd, &mut rc) != 0 {
-        let viewport = settings_viewport_rect(&rc);
-        InvalidateRect(hwnd, &viewport, 0);
-    }
-}
-
-unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
-    match SettingsPage::from_index(page) {
-        SettingsPage::General => {
-            settings_sync_pos_fields_enabled(st);
-        }
-        SettingsPage::Hotkey => {
-            let s = &st.draft;
-            settings_set_text(st.cb_hk_mod, &normalize_hotkey_mod(&s.hotkey_mod));
-            settings_set_text(st.cb_hk_key, &normalize_hotkey_key(&s.hotkey_key));
-            settings_set_text(st.lb_hk_preview, &hotkey_preview_text(&s.hotkey_mod, &s.hotkey_key));
-        }
-        SettingsPage::Plugin => {
-            let s = &st.draft;
-            settings_set_text(st.cb_engine, &search_engine_display(&s.search_engine));
-            settings_set_text(st.ed_tpl, &s.search_template);
-        }
-        SettingsPage::Group => {
-            settings_sync_group_page(st);
-        }
-        SettingsPage::Cloud => {
-            let s = &st.draft;
-            settings_set_text(st.cb_cloud_interval, &s.cloud_sync_interval);
-            settings_set_text(st.ed_cloud_url, &s.cloud_webdav_url);
-            settings_set_text(st.ed_cloud_user, &s.cloud_webdav_user);
-            settings_set_text(st.ed_cloud_pass, &s.cloud_webdav_pass);
-            settings_set_text(st.ed_cloud_dir, &s.cloud_remote_dir);
-            settings_set_text(
-                st.lb_cloud_status,
-                &format!(
-                    "{}{}",
-                    tr("上次同步：", "Last sync: "),
-                    localized_cloud_status_text(&s.cloud_last_sync_status)
-                ),
-            );
-        }
-        SettingsPage::About => {}
-    }
-    settings_invalidate_page_ctrls(st.parent_hwnd, st, page);
-}
-
-fn localized_cloud_status_text(status: &str) -> String {
-    let trimmed = status.trim();
-    if trimmed.is_empty() {
-        return tr("未同步", "Not synced").to_string();
-    }
-    if let Some(rest) = trimmed.strip_prefix("失败：") {
-        return format!("{}{}", tr("失败：", "Failed: "), rest);
-    }
-    translate(trimmed).into_owned()
-}
-
-unsafe fn settings_refresh_theme_resources(st: &mut SettingsWndState) {
-    if !st.bg_brush.is_null() { DeleteObject(st.bg_brush as _); }
-    if !st.surface_brush.is_null() { DeleteObject(st.surface_brush as _); }
-    if !st.control_brush.is_null() { DeleteObject(st.control_brush as _); }
-    if !st.nav_brush.is_null() { DeleteObject(st.nav_brush as _); }
-    let th = Theme::default();
-    st.bg_brush = CreateSolidBrush(th.bg) as _;
-    st.surface_brush = CreateSolidBrush(th.surface) as _;
-    st.control_brush = CreateSolidBrush(th.control_bg) as _;
-    st.nav_brush = CreateSolidBrush(th.nav_bg) as _;
-}
-
-unsafe fn settings_set_font(hwnd: HWND, hfont: *mut core::ffi::c_void) {
-    if !hwnd.is_null() && !hfont.is_null() {
-        SendMessageW(hwnd, WM_SETFONT, hfont as usize, 1);
-    }
-}
-
-unsafe fn settings_create_label(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
-    host_create_settings_label(parent, text, x, y, w, h, font)
-}
-
-unsafe fn settings_create_label_auto(parent: HWND, text: &str, x: i32, y: i32, w: i32, min_h: i32, font: *mut core::ffi::c_void) -> (HWND, i32) {
-    host_create_settings_label_auto(parent, text, x, y, w, min_h, font)
-}
-
-unsafe fn settings_create_btn(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    create_settings_component(parent, text, id, SettingsComponentKind::Button, x, y, w, 32, font)
-}
-
-unsafe fn settings_create_small_btn(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    settings_create_btn(parent, text, id, x, y, w, font)
-}
-
-unsafe fn settings_create_dropdown_btn(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    create_settings_component(parent, text, id, SettingsComponentKind::Dropdown, x, y, w, 32, font)
-}
-
-unsafe fn settings_create_toggle_plain(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> (HWND, HWND, i32, i32, i32, i32, i32, i32) {
-    const SS_CENTERIMAGE: u32 = 0x0200;
-    let toggle_w = 44;
-    let toggle_h = 24;
-    let row_h    = 32;
-    let gap      = 12;
-    let label_w  = max(40, w - toggle_w - gap);
-    let label_text = translate(text);
-    let label = CreateWindowExW(
-        0,
-        to_wide("STATIC").as_ptr(),
-        to_wide(label_text.as_ref()).as_ptr(),
-        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
-        x, y, label_w, row_h,
-        parent, null_mut(), GetModuleHandleW(null()), null(),
-    );
-    settings_set_font(label, font);
-
-    let btn_x = x + w - toggle_w;
-    let btn_y = y + max(0, (row_h - toggle_h) / 2);
-    let btn = create_settings_component(parent, "", id, SettingsComponentKind::Toggle, btn_x, btn_y, toggle_w, toggle_h, font);
-    (label, btn, x, y, label_w, row_h, btn_x, btn_y)
-}
-
-unsafe fn settings_create_toggle(parent: HWND, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    let (label, btn, lx, ly, lw, lh, btn_x, btn_y) = settings_create_toggle_plain(parent, text, id, x, y, w, font);
-    settings_page0_push_ctrl(st, label, lx, ly, lw, lh);
-    settings_page0_push_ctrl(st, btn, btn_x, btn_y, 44, 24);
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    btn
-}
-
-
-
-unsafe fn settings_create_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    host_create_settings_edit(parent, text, id, x, y, w, font)
-}
-
-unsafe fn settings_create_password_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    host_create_settings_password_edit(parent, text, id, x, y, w, font)
-}
-
-
-/// 计算最大可滚动量
-fn settings_max_scroll(view_h: i32) -> i32 {
-    (SETTINGS_CONTENT_TOTAL_H - view_h).max(0)
-}
-
-
-/// 向 page0_ctrls 和 ctrl_origins 同时注册控件（在创建时调用，用创建参数记录坐标）
-unsafe fn settings_register_ctrl(st: &mut SettingsWndState, page: usize, hwnd: HWND, x: i32, y: i32, w: i32, h: i32, scrollable: bool) {
-    if hwnd.is_null() { return; }
-    st.ui.register(SettingsCtrlReg::new(hwnd, page, x, y, w, h, scrollable));
-}
-
-unsafe fn settings_page_push_ctrl(st: &mut SettingsWndState, page: usize, hwnd: HWND) {
-    settings_register_ctrl(st, page, hwnd, 0, 0, 0, 0, false);
-}
-
-unsafe fn settings_page0_push_ctrl(st: &mut SettingsWndState, hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
-    settings_register_ctrl(st, 0, hwnd, x, y, w, h, true);
-}
-
-
-/// 根据 content_scroll_y 批量重定位「当前页」内容区控件
-/// 超出内容视口的控件自动隐藏，防止溢出到标题区
-unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) {
-    if st.ui.scroll_ctrls().is_empty() { return; }
-    if st.cur_page != SettingsPage::General.index() { return; }
-
-    let mut crc: RECT = core::mem::zeroed();
-    GetClientRect(hwnd, &mut crc);
-    let viewport = settings_viewport_rect(&crc);
-
-    // 记录旧/新区域，滚动后精确失效，避免遗留白块
-    let mut dirty: Vec<RECT> = Vec::with_capacity(st.ui.scroll_ctrls().len() * 2);
-
-    let hdwp = BeginDeferWindowPos(st.ui.scroll_ctrls().len() as i32);
-    if hdwp.is_null() { return; }
-    let mut hdwp = hdwp;
-    for slot in st.ui.scroll_ctrls() {
-        let hchild = slot.hwnd;
-        let ox = slot.bounds.left;
-        let oy = slot.bounds.top;
-        let ow = slot.bounds.right - slot.bounds.left;
-        let oh = slot.bounds.bottom - slot.bounds.top;
-        if hchild.is_null() { continue; }
-
-        let mut wr: RECT = core::mem::zeroed();
-        if GetWindowRect(hchild, &mut wr) != 0 {
-            let mut tl = POINT { x: wr.left, y: wr.top };
-            let mut br = POINT { x: wr.right, y: wr.bottom };
-            ScreenToClient(hwnd, &mut tl);
-            ScreenToClient(hwnd, &mut br);
-            dirty.push(RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y });
-        }
-
-        let new_y = oy - st.content_scroll_y;
-        let visible = settings_child_visible(new_y, oh, &viewport);
-        dirty.push(RECT { left: ox, top: new_y, right: ox + ow, bottom: new_y + oh });
-
-        let flags = SWP_NOZORDER | SWP_NOACTIVATE
-            | if visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
-        let r = DeferWindowPos(hdwp, hchild, null_mut(), ox, new_y, ow, oh, flags);
-        if !r.is_null() { hdwp = r; }
-    }
-    EndDeferWindowPos(hdwp);
-
-    // 立即刷新当前页子控件，避免滚动过程先出现白框、结束后才补画
-    for slot in st.ui.scroll_ctrls() {
-        let hchild = slot.hwnd;
-        let oy = slot.bounds.top;
-        let oh = slot.bounds.bottom - slot.bounds.top;
-        if hchild.is_null() { continue; }
-        let new_y = oy - st.content_scroll_y;
-        if settings_child_visible(new_y, oh, &viewport) {
-            InvalidateRect(hchild, null(), 0);
-        }
-    }
-
-    for mut rc in dirty {
-        if rc.right <= rc.left || rc.bottom <= rc.top { continue; }
-        if rc.left < viewport.left { rc.left = viewport.left; }
-        if rc.top < viewport.top { rc.top = viewport.top; }
-        if rc.right > viewport.right { rc.right = viewport.right; }
-        if rc.bottom > viewport.bottom { rc.bottom = viewport.bottom; }
-        if rc.right > rc.left && rc.bottom > rc.top {
-            InvalidateRect(hwnd, &rc, 0);
-        }
-    }
-}
-
-/// 滚动到指定位置，重定位控件并重绘
-unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, new_y: i32) {
-    let mut crc: RECT = core::mem::zeroed();
-    GetClientRect(hwnd, &mut crc);
-    let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
-    let new_y = new_y.clamp(0, settings_max_scroll(view_h));
-    let old_y = st.content_scroll_y;
-    if new_y == old_y { return; }
-    st.content_scroll_y = new_y;
-    settings_scrollbar_show(hwnd, st);
-
-    let viewport = settings_viewport_rect(&crc);
-
-    // 不再依赖 ScrollWindowEx 复制旧像素，直接重定位子控件并立即精确重绘，避免滚动白框残留
-    settings_repos_controls(hwnd, st);
-
-    let mask = settings_viewport_mask_rect(&crc);
-    InvalidateRect(hwnd, &mask, 0);
-    let scroll_strip = RECT {
-        left: crc.right - SCROLL_BAR_W_ACTIVE - SCROLL_BAR_MARGIN - 4,
-        top: SETTINGS_CONTENT_Y,
-        right: crc.right,
-        bottom: crc.bottom,
-    };
-    InvalidateRect(hwnd, &scroll_strip, 0);
-    InvalidateRect(hwnd, &viewport, 0);
-}
-
-/// 显示设置滚动条，并启动（重置）自动隐藏 timer（1.5秒后隐藏）
-unsafe fn settings_scrollbar_show(hwnd: HWND, st: &mut SettingsWndState) {
-    st.scroll_bar_visible = true;
-    if st.scroll_hide_timer {
-        KillTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
-    }
-    st.scroll_hide_timer = true;
-    SetTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR, 1500, None);
-}
-
-unsafe fn settings_scroll(hwnd: HWND, st: &mut SettingsWndState, delta: i32) {
-    settings_scroll_to(hwnd, st, st.content_scroll_y + delta);
-}
-
 /// 计算自绘滚动条拇指矩形（宽度可变：正常=SCROLL_BAR_W，拖拽=SCROLL_BAR_W_ACTIVE）
 fn settings_scrollbar_thumb_w(crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<RECT> {
     let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
@@ -2192,360 +1741,6 @@ fn settings_scrollbar_thumb_w(crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<R
         right,
         bottom: thumb_top + thumb_h,
     })
-}
-
-unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, page: usize) {
-    let page = page.min(SETTINGS_PAGES.len().saturating_sub(1));
-    let old_page = st.cur_page;
-    if old_page == page && st.ui.is_built(page) {
-        settings_sync_page_state(st, page);
-        return;
-    }
-
-    SendMessageW(hwnd, WM_SETREDRAW, 0, 0);
-    settings_ensure_page(hwnd, st, page);
-    st.cur_page = page;
-
-    for reg in st.ui.page_regs(old_page) {
-        if !reg.hwnd.is_null() { ShowWindow(reg.hwnd, SW_HIDE); }
-    }
-    for reg in st.ui.page_regs(st.cur_page) {
-        if !reg.hwnd.is_null() { ShowWindow(reg.hwnd, SW_SHOW); }
-    }
-
-    st.content_scroll_y = 0;
-    if st.cur_page == SettingsPage::General.index() {
-        settings_repos_controls(hwnd, st);
-    }
-
-    settings_sync_page_state(st, page);
-    SendMessageW(hwnd, WM_SETREDRAW, 1, 0);
-    let mut rc: RECT = core::mem::zeroed();
-    if GetClientRect(hwnd, &mut rc) != 0 {
-        let viewport = settings_viewport_rect(&rc);
-        RedrawWindow(hwnd, &viewport, null_mut(), RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
-    } else {
-        InvalidateRect(hwnd, null(), 1);
-    }
-}
-
-unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
-    let pst = get_state_ptr(st.parent_hwnd);
-    if pst.is_null() { return; }
-    let app = &mut *pst;
-    // 每次打开设置时，从注册表同步自启状态（避免外部修改不一致）
-    app.settings.auto_start = is_autostart_enabled();
-    st.draft = app.settings.clone();
-    st.vv_source_selected = normalize_source_tab(st.draft.vv_source_tab);
-    st.vv_group_selected = st.draft.vv_group_id;
-    st.group_view_tab = normalize_source_tab(app.tab_index);
-    let s = &st.draft;
-    settings_set_text(st.cb_max, settings_dropdown_label_for_max_items(s.max_items));
-    settings_set_text(st.ed_dx, &s.show_mouse_dx.to_string());
-    settings_set_text(st.ed_dy, &s.show_mouse_dy.to_string());
-    settings_set_text(st.ed_fx, &s.show_fixed_x.to_string());
-    settings_set_text(st.ed_fy, &s.show_fixed_y.to_string());
-    settings_set_text(st.cb_pos, settings_dropdown_label_for_pos_mode(&s.show_pos_mode));
-    settings_sync_page_state(st, SettingsPage::General.index());
-    if st.ui.is_built(SettingsPage::Hotkey.index()) { settings_sync_page_state(st, SettingsPage::Hotkey.index()); }
-    if st.ui.is_built(SettingsPage::Plugin.index()) { settings_sync_page_state(st, SettingsPage::Plugin.index()); }
-    if st.ui.is_built(SettingsPage::Group.index()) { settings_sync_page_state(st, SettingsPage::Group.index()); }
-    if st.ui.is_built(SettingsPage::Cloud.index()) { settings_sync_page_state(st, SettingsPage::Cloud.index()); }
-}
-
-unsafe fn settings_sync_pos_fields_enabled(st: &SettingsWndState) {
-    let mode = settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos));
-    let is_follow = mode == "mouse";
-    let is_fixed = mode == "fixed";
-    if !st.ed_dx.is_null() { EnableWindow(st.ed_dx, if is_follow { 1 } else { 0 }); }
-    if !st.ed_dy.is_null() { EnableWindow(st.ed_dy, if is_follow { 1 } else { 0 }); }
-    if !st.ed_fx.is_null() { EnableWindow(st.ed_fx, if is_fixed { 1 } else { 0 }); }
-    if !st.ed_fy.is_null() { EnableWindow(st.ed_fy, if is_fixed { 1 } else { 0 }); }
-}
-
-unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
-    let pst = get_state_ptr(st.parent_hwnd);
-    if pst.is_null() { return; }
-    st.draft.max_items = settings_dropdown_max_items_from_label(&get_window_text(st.cb_max));
-    st.draft.show_mouse_dx = get_window_text(st.ed_dx).parse::<i32>().ok().unwrap_or(12);
-    st.draft.show_mouse_dy = get_window_text(st.ed_dy).parse::<i32>().ok().unwrap_or(12);
-    st.draft.show_fixed_x = get_window_text(st.ed_fx).parse::<i32>().ok().unwrap_or(120);
-    st.draft.show_fixed_y = get_window_text(st.ed_fy).parse::<i32>().ok().unwrap_or(120);
-    st.draft.show_pos_mode = settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos));
-    if st.ui.is_built(SettingsPage::Hotkey.index()) && !st.cb_hk_mod.is_null() && !st.cb_hk_key.is_null() {
-        st.draft.hotkey_mod = normalize_hotkey_mod(&get_window_text(st.cb_hk_mod));
-        st.draft.hotkey_key = normalize_hotkey_key(&get_window_text(st.cb_hk_key));
-    }
-    if st.ui.is_built(SettingsPage::Plugin.index()) && !st.cb_engine.is_null() {
-        st.draft.search_engine = search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
-        st.draft.search_template = {
-            let tpl = get_window_text(st.ed_tpl);
-            if tpl.trim().is_empty() { search_engine_template(&st.draft.search_engine).to_string() } else { tpl }
-        };
-    }
-    st.draft.vv_source_tab = settings_vv_source_current(st);
-    let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
-    st.draft.vv_group_id = if st.vv_group_selected > 0 && vv_groups.iter().any(|g| g.id == st.vv_group_selected) {
-        st.vv_group_selected
-    } else {
-        0
-    };
-    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.cb_cloud_interval.is_null() {
-        st.draft.cloud_sync_interval = {
-            let label = get_window_text(st.cb_cloud_interval);
-            if label.trim().is_empty() { "1小时".to_string() } else { label }
-        };
-    }
-    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_url.is_null() {
-        st.draft.cloud_webdav_url = get_window_text(st.ed_cloud_url);
-    }
-    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_user.is_null() {
-        st.draft.cloud_webdav_user = get_window_text(st.ed_cloud_user);
-    }
-    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_pass.is_null() {
-        st.draft.cloud_webdav_pass = get_window_text(st.ed_cloud_pass);
-    }
-    if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_cloud_dir.is_null() {
-        st.draft.cloud_remote_dir = {
-            let dir = get_window_text(st.ed_cloud_dir);
-            if dir.trim().is_empty() { "ZSClip".to_string() } else { dir }
-        };
-    }
-    let app = &mut *pst;
-    let grouping_old = app.settings.grouping_enabled;
-    let autostart_old = app.settings.auto_start;
-    let tray_icon_old = app.settings.tray_icon_enabled;
-    let hotkey_old = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
-    let edge_hide_old = app.settings.edge_auto_hide;
-    let vv_mode_old = app.settings.vv_mode_enabled;
-    app.settings = st.draft.clone();
-    if !app.settings.grouping_enabled {
-        app.current_group_filter = 0;
-        app.tab_group_filters = [0, 0];
-    }
-    save_settings(&app.settings);
-    // 开机自启：同步写注册表
-    if autostart_old != app.settings.auto_start {
-        app.settings.auto_start = apply_autostart(app.settings.auto_start);
-        st.draft.auto_start = app.settings.auto_start;
-        save_settings(&app.settings);
-    }
-    if tray_icon_old != app.settings.tray_icon_enabled {
-        let main_hwnd = main_window_hwnd();
-        if !main_hwnd.is_null() {
-            sync_main_tray_icon(main_hwnd, app);
-        }
-    }
-    if grouping_old != app.settings.grouping_enabled {
-        app.clear_selection();
-    }
-    let hotkey_new = format!("{}+{}+{}", app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key);
-    if hotkey_old != hotkey_new {
-        register_hotkey_for(st.parent_hwnd, app);
-    }
-    if vv_mode_old != app.settings.vv_mode_enabled {
-        update_vv_mode_hook(st.parent_hwnd, app.settings.vv_mode_enabled);
-        if !app.settings.vv_mode_enabled {
-            vv_popup_hide(st.parent_hwnd, app);
-        }
-    }
-    schedule_cloud_sync(app, false);
-    // 保存后按新的上限清理 DB 中多余条目（0=无限制不清理）
-    let new_max = app.settings.max_items;
-    if new_max > 0 {
-        db_prune_items(new_max);
-        // 同步刷新内存列表
-        reload_state_from_db(app);
-    }
-    if edge_hide_old && !app.settings.edge_auto_hide {
-        restore_edge_hidden_window(st.parent_hwnd, app);
-    }
-    app.refilter();
-    sync_peer_windows_from_settings(st.parent_hwnd);
-    InvalidateRect(st.parent_hwnd, null(), 1);
-}
-
-unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> bool {
-    match cid {
-        IDC_SET_AUTOSTART    => st.draft.auto_start,
-        IDC_SET_SILENTSTART  => st.draft.silent_start,
-        IDC_SET_TRAYICON     => st.draft.tray_icon_enabled,
-        IDC_SET_CLOSETRAY    => st.draft.close_without_exit,
-        IDC_SET_CLICK_HIDE   => st.draft.click_hide,
-        IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top,
-        IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
-        IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide,
-        IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
-        IDC_SET_VV_MODE => st.draft.vv_mode_enabled,
-        IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled,
-        IDC_SET_QUICK_DELETE => st.draft.quick_delete_button,
-        IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
-        IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled,
-        6101 => st.draft.hotkey_enabled,
-        7102 => st.draft.quick_search_enabled,
-        7101 => st.draft.ai_clean_enabled,
-        7103 => st.draft.super_mail_merge_enabled,
-        _ => false,
-    }
-}
-
-unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize) {
-    match cid {
-        IDC_SET_AUTOSTART    => st.draft.auto_start = !st.draft.auto_start,
-        IDC_SET_SILENTSTART  => st.draft.silent_start = !st.draft.silent_start,
-        IDC_SET_TRAYICON     => st.draft.tray_icon_enabled = !st.draft.tray_icon_enabled,
-        IDC_SET_CLOSETRAY    => st.draft.close_without_exit = !st.draft.close_without_exit,
-        IDC_SET_CLICK_HIDE   => st.draft.click_hide = !st.draft.click_hide,
-        IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top = !st.draft.move_pasted_item_to_top,
-        IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
-        IDC_SET_EDGEHIDE     => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
-        IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
-        IDC_SET_VV_MODE => st.draft.vv_mode_enabled = !st.draft.vv_mode_enabled,
-        IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled = !st.draft.image_preview_enabled,
-        IDC_SET_QUICK_DELETE => st.draft.quick_delete_button = !st.draft.quick_delete_button,
-        IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
-        IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
-        6101 => st.draft.hotkey_enabled = !st.draft.hotkey_enabled,
-        7102 => st.draft.quick_search_enabled = !st.draft.quick_search_enabled,
-        7101 => st.draft.ai_clean_enabled = !st.draft.ai_clean_enabled,
-        7103 => st.draft.super_mail_merge_enabled = !st.draft.super_mail_merge_enabled,
-        _ => {}
-    }
-}
-
-unsafe fn settings_create_fonts() -> (*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void) {
-    let nav: *mut core::ffi::c_void = CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe Fluent Icons").as_ptr()) as _;
-    // WinUI3 body font = 14px Segoe UI Variable Text Regular
-    let ui: *mut core::ffi::c_void = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr()) as _;
-    // WinUI3 title = 20px Segoe UI Variable Display Semibold
-    let title: *mut core::ffi::c_void = CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Display").as_ptr()) as _;
-    let default_ui: *mut core::ffi::c_void = if ui.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { ui };
-    let default_title: *mut core::ffi::c_void = if title.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { title };
-    (nav, default_ui, default_title)
-}
-
-unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let ui_font = st.ui_font;
-    let sec0 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 0, 0);
-    let sec1 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 1, 130);
-    let sec2 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 2, 0);
-    let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 138);
-    let sec4 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 4, 0);
-
-    st.chk_autostart = settings_create_toggle(hwnd, st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    st.chk_silent_start = settings_create_toggle(hwnd, st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
-    st.chk_tray_icon = settings_create_toggle(hwnd, st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
-    st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
-    st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
-    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
-    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
-
-    let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
-    st.cb_max = settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), 150, ui_font);
-    settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), 150, 32);
-    if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
-
-    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
-    st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
-
-    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, 24), sec3.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, 24), sec3.label_w, 24);
-    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), 170, ui_font);
-    settings_page0_push_ctrl(st, st.cb_pos, sec3.field_x(), sec3.row_y(0), 170, 32);
-    if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
-
-    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, 24), sec3.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_mouse, sec3.left(), sec3.label_y(1, 24), sec3.label_w, 24);
-    let mouse_x = sec3.field_x();
-    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec3.row_y(1), 64, ui_font);
-    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + 74, sec3.row_y(1), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec3.row_y(1), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + 74, sec3.row_y(1), 64, 28);
-
-    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec3.left(), sec3.label_y(2, 24), sec3.label_w, 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_fixed, sec3.left(), sec3.label_y(2, 24), sec3.label_w, 24);
-    let fixed_x = sec3.field_x();
-    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec3.row_y(2), 64, ui_font);
-    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + 74, sec3.row_y(2), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec3.row_y(2), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + 74, sec3.row_y(2), 64, 28);
-
-    let btn_y = sec4.row_y(0);
-    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, 130), btn_y, 130, ui_font);
-    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, 130), btn_y, 130, ui_font);
-    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, 130), btn_y, 130, ui_font);
-    settings_page0_push_ctrl(st, st.btn_open_cfg, sec4.action_x(0, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_db, sec4.action_x(1, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_data, sec4.action_x(2, 130), btn_y, 130, 32);
-    for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
-        if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
-    }
-    st.ui.mark_built(SettingsPage::General.index());
-}
-
-unsafe fn settings_create_listbox(parent: HWND, id: isize, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
-    host_create_settings_listbox(parent, id, x, y, w, h, font)
-}
-
-unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, select_gid: i64) {
-    if st.lb_groups.is_null() { return; }
-    let category = source_tab_category(settings_group_view_current(st));
-    SendMessageW(st.lb_groups, LB_RESETCONTENT, 0, 0);
-    *settings_groups_cache_for_tab_mut(st, settings_group_view_current(st)) = db_load_groups(category);
-    let groups = settings_groups_cache_for_tab(st, settings_group_view_current(st));
-    let mut sel_idx: i32 = -1;
-    for (i, g) in groups.iter().enumerate() {
-        SendMessageW(st.lb_groups, LB_ADDSTRING, 0, to_wide(&g.name).as_ptr() as LPARAM);
-        if g.id == select_gid {
-            sel_idx = i as i32;
-        }
-    }
-    if sel_idx < 0 && !groups.is_empty() {
-        sel_idx = 0;
-    }
-    if sel_idx >= 0 {
-        SendMessageW(st.lb_groups, LB_SETCURSEL, sel_idx as WPARAM, 0);
-    }
-    settings_sync_vv_group_display(st);
-}
-
-unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(usize, ClipGroup)> {
-    if st.lb_groups.is_null() { return None; }
-    let row = SendMessageW(st.lb_groups, LB_GETCURSEL, 0, 0) as i32;
-    if row < 0 { return None; }
-    settings_groups_cache_for_tab(st, settings_group_view_current(st))
-        .get(row as usize)
-        .cloned()
-        .map(|g| (row as usize, g))
-}
-
-unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {
-}
-
-unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) {
-    let Some((idx, _)) = settings_groups_selected(st) else { return; };
-    let tab = settings_group_view_current(st);
-    let category = source_tab_category(tab);
-    let groups = settings_groups_cache_for_tab(st, tab);
-    let new_idx = idx as i32 + step;
-    if new_idx < 0 || new_idx >= groups.len() as i32 {
-        return;
-    }
-    let mut ids: Vec<i64> = groups.iter().map(|g| g.id).collect();
-    let item = ids.remove(idx);
-    ids.insert(new_idx as usize, item);
-    if db_set_groups_order(category, &ids).is_ok() {
-        settings_groups_refresh_list(st, ids[new_idx as usize]);
-        let pst = get_state_ptr(st.parent_hwnd);
-        if !pst.is_null() {
-            reload_state_from_db(&mut *pst);
-            InvalidateRect(st.parent_hwnd, null(), 1);
-        }
-    }
 }
 
 
@@ -2687,9 +1882,9 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             let hdc = dis.hDC;
             let rc = dis.rcItem;
             let th = Theme::default();
-            let pressed = (dis.itemState & (ODS_SELECTED as u32)) != 0;
+            let pressed = (dis.itemState & ODS_SELECTED) != 0;
             let cid = dis.CtlID as usize;
-            let text_w = get_ctrl_text_w(dis.hwndItem);
+            let text_w = get_ctrl_text_wide(dis.hwndItem);
             let rr = RECT { left: rc.left+1, top: rc.top+1, right: rc.right-1, bottom: rc.bottom-1 };
             if cid == IDC_INPUT_OK {
                 let fill = if pressed {
@@ -2699,17 +1894,17 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     rgb((r-18).max(0) as u8, (g-18).max(0) as u8, (b-18).max(0) as u8)
                 } else { th.accent };
                 draw_round_rect(hdc as _, &rr, fill, fill, 4);
-                draw_text_wide(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
             } else {
                 let fill = if pressed { th.button_pressed } else { th.button_bg };
                 let border = if pressed { rgb(180,180,180) } else { rgb(196,196,196) };
                 draw_round_rect(hdc as _, &rr, fill, border, 4);
-                draw_text_wide(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
             }
             1
         }
         WM_COMMAND => {
-            let cid = (wparam & 0xffff) as usize;
+            let cid = wparam & 0xffff;
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut InputDlgData;
             if data_ptr.is_null() { return 0; }
             let d = &mut *data_ptr;
@@ -2753,6 +1948,7 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 if !(*data_ptr).ui_font.is_null() && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).ui_font as _); }
                 if !(*data_ptr).surface_brush.is_null() { DeleteObject((*data_ptr).surface_brush as _); }
                 if !(*data_ptr).control_brush.is_null() { DeleteObject((*data_ptr).control_brush as _); }
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             0
         }
@@ -2770,7 +1966,7 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
     wc.lpfnWndProc = Some(input_dlg_proc);
     wc.hInstance = hmod;
     wc.lpszClassName = cls_w.as_ptr();
-    wc.hbrBackground = CreateSolidBrush(Theme::default().surface) as _;
+    wc.hbrBackground = null_mut();
     let _ = RegisterClassExW(&wc);
 
     let mut init_arr = [0u16; 256];
@@ -2778,7 +1974,7 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
     let copy_len = iw.len().min(255);
     init_arr[..copy_len].copy_from_slice(&iw[..copy_len]);
 
-    let mut data = InputDlgData {
+    let data = Box::new(InputDlgData {
         result: None,
         initial: init_arr,
         title_w: translate(title).encode_utf16().chain(std::iter::once(0)).collect(),
@@ -2786,7 +1982,8 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
         ui_font: null_mut(),
         surface_brush: null_mut(),
         control_brush: null_mut(),
-    };
+    });
+    let data_ptr = Box::into_raw(data);
 
     // 计算居中位置
     let (dw, dh) = (360i32, 180i32);
@@ -2803,9 +2000,12 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
         WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
         cx, cy, dw, dh,
         parent, null_mut(), hmod,
-        &mut data as *mut InputDlgData as _,
+        data_ptr as _,
     );
-    if hwnd.is_null() { return None; }
+    if hwnd.is_null() {
+        drop(Box::from_raw(data_ptr));
+        return None;
+    }
     EnableWindow(parent, 0);
 
     let mut msg: MSG = zeroed();
@@ -2815,15 +2015,18 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
             SendMessageW(hwnd, WM_KEYDOWN, msg.wParam, msg.lParam);
             continue;
         }
-        if IsDialogMessageW(hwnd, &mut msg) == 0 {
+        if IsDialogMessageW(hwnd, &msg) == 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         if IsWindow(hwnd) == 0 { break; }
     }
+    if IsWindow(hwnd) != 0 {
+        DestroyWindow(hwnd);
+    }
     EnableWindow(parent, 1);
     SetForegroundWindow(parent);
-    data.result
+    Box::from_raw(data_ptr).result
 }
 
 // ─── WinUI3风格文本编辑对话框 ─────────────────────────────────────────────────
@@ -3011,9 +2214,9 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let hdc = dis.hDC;
             let rc = dis.rcItem;
             let th = Theme::default();
-            let pressed = (dis.itemState & (ODS_SELECTED as u32)) != 0;
+            let pressed = (dis.itemState & ODS_SELECTED) != 0;
             let cid = dis.CtlID as usize;
-            let text_w = get_ctrl_text_w(dis.hwndItem);
+            let text_w = get_ctrl_text_wide(dis.hwndItem);
             let rr = RECT { left: rc.left+1, top: rc.top+1, right: rc.right-1, bottom: rc.bottom-1 };
             if cid == IDC_EDIT_SAVE {
                 let fill = if pressed {
@@ -3023,24 +2226,24 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                     rgb((r-18).max(0) as u8, (g-18).max(0) as u8, (b-18).max(0) as u8)
                 } else { th.accent };
                 draw_round_rect(hdc as _, &rr, fill, fill, 4);
-                draw_text_wide(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
             } else {
                 let fill = if pressed { th.button_pressed } else { th.button_bg };
                 let border = if pressed { rgb(180,180,180) } else { rgb(196,196,196) };
                 draw_round_rect(hdc as _, &rr, fill, border, 4);
-                draw_text_wide(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
             }
             1
         }
         WM_COMMAND => {
-            let cid = (wparam & 0xffff) as usize;
+            let cid = wparam & 0xffff;
             let notify = ((wparam >> 16) & 0xffff) as u32;
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
             if data_ptr.is_null() { return 0; }
             let d = &mut *data_ptr;
 
             // 文本区滚动时同步行号
-            if cid == IDC_EDIT_TEXTAREA && notify == EN_VSCROLL as u32 {
+            if cid == IDC_EDIT_TEXTAREA && notify == EN_VSCROLL {
                 let ed = GetDlgItem(hwnd, IDC_EDIT_TEXTAREA as i32);
                 let ln = GetDlgItem(hwnd, IDC_EDIT_LINENO as i32);
                 sync_line_numbers(ln, ed);
@@ -3107,6 +2310,15 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             0
         }
         WM_NCDESTROY => {
+            let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
+            if !data_ptr.is_null() {
+                if !(*data_ptr).ui_font.is_null() && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).ui_font as _); }
+                if !(*data_ptr).btn_font.is_null() && (*data_ptr).btn_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).btn_font as _); }
+                if !(*data_ptr).surface_brush.is_null() { DeleteObject((*data_ptr).surface_brush as _); }
+                if !(*data_ptr).control_brush.is_null() { DeleteObject((*data_ptr).control_brush as _); }
+                if !(*data_ptr).gutter_brush.is_null() { DeleteObject((*data_ptr).gutter_brush as _); }
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            }
             0
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -3121,7 +2333,7 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     wc.lpfnWndProc = Some(edit_dlg_proc);
     wc.hInstance = hmod;
     wc.lpszClassName = cls_w.as_ptr();
-    wc.hbrBackground = CreateSolidBrush(Theme::default().surface) as _;
+    wc.hbrBackground = null_mut();
     wc.style = CS_HREDRAW | CS_VREDRAW;
     let _ = RegisterClassExW(&wc);
 
@@ -3134,7 +2346,8 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     let cx = parent_rc.left + (pw - dw) / 2;
     let cy = parent_rc.top + (ph - dh) / 2;
 
-    let mut data = EditDlgData { item_id, saved: false, ui_font: null_mut(), btn_font: null_mut(), surface_brush: null_mut(), control_brush: null_mut(), gutter_brush: null_mut() };
+    let data = Box::new(EditDlgData { item_id, saved: false, ui_font: null_mut(), btn_font: null_mut(), surface_brush: null_mut(), control_brush: null_mut(), gutter_brush: null_mut() });
+    let data_ptr = Box::into_raw(data);
     let title_w = to_wide(title);
     let hwnd = CreateWindowExW(
         WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
@@ -3143,487 +2356,39 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
         WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
         cx, cy, dw, dh,
         parent, null_mut(), hmod,
-        &mut data as *mut EditDlgData as _,
+        data_ptr as _,
     );
-    if hwnd.is_null() { return false; }
+    if hwnd.is_null() {
+        drop(Box::from_raw(data_ptr));
+        return false;
+    }
     EnableWindow(parent, 0);
 
     let mut msg: MSG = zeroed();
     loop {
         let r = GetMessageW(&mut msg, null_mut(), 0, 0);
         if r == 0 || r == -1 { break; }
-        if IsDialogMessageW(hwnd, &mut msg) == 0 {
+        if IsDialogMessageW(hwnd, &msg) == 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         if IsWindow(hwnd) == 0 { break; }
     }
+    if IsWindow(hwnd) != 0 {
+        DestroyWindow(hwnd);
+    }
     EnableWindow(parent, 1);
     SetForegroundWindow(parent);
-    data.saved
-}
-
-// 辅助函数：获取控件文字宽字节
-unsafe fn get_ctrl_text_w(hwnd: HWND) -> Vec<u16> {
-    let len = GetWindowTextLengthW(hwnd);
-    let mut buf = vec![0u16; (len as usize) + 2];
-    GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
-    buf.truncate(len as usize);
-    buf
+    Box::from_raw(data_ptr).saved
 }
 
 // 辅助函数：绘制宽字节文字居中
-#[derive(Clone, Copy)]
-struct SettingsPageBuilder {
-    hwnd: HWND,
-    page: usize,
-    font: *mut core::ffi::c_void,
-}
-
-#[derive(Clone, Copy)]
-struct SettingsFormSectionLayout {
-    body: RECT,
-    label_w: i32,
-}
-
-impl SettingsFormSectionLayout {
-    fn new(page: usize, index: usize, label_w: i32) -> Self {
-        Self {
-            body: settings_section_body_rect(page, index, 18).into(),
-            label_w,
-        }
-    }
-
-    fn left(&self) -> i32 { self.body.left }
-    fn full_w(&self) -> i32 { self.body.right - self.body.left }
-    fn row_y(&self, row: i32) -> i32 { self.body.top + row * (SETTINGS_FORM_ROW_H + SETTINGS_FORM_ROW_GAP) }
-    fn label_y(&self, row: i32, h: i32) -> i32 { self.row_y(row) + ((SETTINGS_FORM_ROW_H - h).max(0) / 2) }
-    fn field_x(&self) -> i32 { self.body.left + self.label_w }
-    fn field_w(&self) -> i32 { (self.body.right - self.field_x()).max(40) }
-    fn field_w_from(&self, x: i32) -> i32 { (self.body.right - x).max(40) }
-    fn action_x(&self, slot: i32, w: i32) -> i32 { self.body.left + slot * (w + 14) }
-}
-
-impl SettingsPageBuilder {
-    unsafe fn add(&self, st: &mut SettingsWndState, hwnd: HWND) -> HWND {
-        if !hwnd.is_null() { settings_page_push_ctrl(st, self.page, hwnd); }
-        hwnd
-    }
-
-    unsafe fn label(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
-        self.add(st, settings_create_label(self.hwnd, text, x, y, w, h, self.font))
-    }
-
-    unsafe fn label_auto(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, min_h: i32) -> (HWND, i32) {
-        let (hwnd, h) = settings_create_label_auto(self.hwnd, text, x, y, w, min_h, self.font);
-        (self.add(st, hwnd), h)
-    }
-
-    unsafe fn button(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font))
-    }
-
-    unsafe fn dropdown(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font))
-    }
-
-    unsafe fn edit(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_edit(self.hwnd, text, id, x, y, w, self.font))
-    }
-
-    unsafe fn toggle_row(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> (HWND, HWND) {
-        let (label, btn, ..) = settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
-        (self.add(st, label), self.add(st, btn))
-    }
-}
-
-unsafe fn draw_text_wide(hdc: *mut core::ffi::c_void, text_w: &[u16], rc: &RECT, color: u32, size: i32, font_name: &str) {
-    let hdc = hdc as _;
-    let font: *mut core::ffi::c_void = CreateFontW(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-        to_wide(font_name).as_ptr()) as _;
-    let old = SelectObject(hdc, font as _);
-    SetBkMode(hdc, 1);
-    SetTextColor(hdc, color);
-    DrawTextW(hdc, text_w.as_ptr(), text_w.len() as i32, rc as *const _ as *mut _, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    SelectObject(hdc, old);
-    DeleteObject(font as _);
-}
-
-unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let page = SettingsPage::Hotkey.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
-    let sec0 = SettingsFormSectionLayout::new(page, 0, 86);
-    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
-    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
-
-    let (_hk_lbl, hk_btn) = b.toggle_row(st, "启用快捷键", 6101, sec0.left(), sec0.row_y(0), sec0.full_w());
-    st.chk_hk_enable = hk_btn;
-    if !st.chk_hk_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_hk_enable); }
-
-    b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, 24), 70, 24);
-    st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), 170);
-    if !st.cb_hk_mod.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_mod); }
-    let key_label_x = sec0.field_x() + 186;
-    b.label(st, "按键：", key_label_x, sec0.label_y(1, 24), 50, 24);
-    st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + 50, sec0.row_y(1), 120);
-    if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
-
-    let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
-    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, 110), sec1.row_y(1), 110);
-    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, 110), sec1.row_y(1), 110);
-    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, 130), sec1.row_y(1), 130);
-    for &hh in &[st.btn_clip_hist_block, st.btn_clip_hist_restore, st.btn_restart_explorer] {
-        if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
-    }
-
-    let (_desc1, d1h) = b.label_auto(st, "说明：保存后会立即重新注册主快捷键。", sec2.left(), sec2.row_y(0), sec2.full_w(), 24);
-    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", sec2.left(), sec2.row_y(0) + d1h + 6, sec2.full_w(), 24);
-
-    st.ui.mark_built(page);
-}
-
-unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let page = SettingsPage::Plugin.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
-    let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
-    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
-    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
-
-    let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
-    st.chk_qs = qs_btn;
-    if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
-    b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24);
-    st.cb_engine = b.dropdown(st, "筑森搜索（jzxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), 240);
-    if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
-    b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, 24), sec0.label_w, 24);
-    st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
-    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), 130);
-    if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let _ = b.label_auto(st, "占位符：{q}=编码后关键字，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
-    st.chk_ai = ai_btn;
-    if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
-    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(0), sec2.full_w());
-    st.chk_mm = mm_btn;
-    if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
-    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(1), 170);
-    if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
-    st.ui.mark_built(page);
-}
-
-unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let ui_font = st.ui_font;
-    let page = SettingsPage::Group.index();
-    let sec0 = SettingsFormSectionLayout::new(page, 0, 104);
-    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
-
-    let push = |st: &mut SettingsWndState, hh: HWND| {
-        if !hh.is_null() { settings_page_push_ctrl(st, page, hh); }
-    };
-
-    let (group_lbl, group_btn, _lx, _ly, _lw, _lh, _bx, _by) = settings_create_toggle_plain(hwnd, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    push(st, group_lbl);
-    st.chk_group_enable = group_btn;
-    settings_set_font(st.chk_group_enable, ui_font);
-    push(st, st.chk_group_enable);
-    if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
-
-    let lbl_vv_source = settings_create_label(hwnd, "VV 来源：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24, ui_font);
-    push(st, lbl_vv_source);
-    st.cb_vv_source = settings_create_dropdown_btn(hwnd, "复制记录", IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), 180, ui_font);
-    if !st.cb_vv_source.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_source);
-        st.ownerdraw_ctrls.push(st.cb_vv_source);
-    }
-
-    let lbl_vv_group = settings_create_label(hwnd, "VV 默认分组：", sec0.left(), sec0.label_y(2, 24), sec0.label_w, 24, ui_font);
-    push(st, lbl_vv_group);
-    st.cb_vv_group = settings_create_dropdown_btn(hwnd, "全部记录", IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), 220, ui_font);
-    if !st.cb_vv_group.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_group);
-        st.ownerdraw_ctrls.push(st.cb_vv_group);
-    }
-
-    let tab_w = 118;
-    st.btn_group_view_records = settings_create_small_btn(hwnd, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w, ui_font);
-    st.btn_group_view_phrases = settings_create_small_btn(hwnd, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + 10, sec1.row_y(0), tab_w, ui_font);
-    for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
-        if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh);
-            st.ownerdraw_ctrls.push(hh);
-        }
-    }
-
-    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), 24, ui_font);
-    push(st, st.lb_group_current);
-
-    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), 220, 22, ui_font);
-    push(st, lbl3);
-
-    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), 170, ui_font);
-    if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups); }
-
-    let btn_y = sec1.row_y(3) + 186;
-    let bw = 90;
-    let gap = 10;
-    let x0 = sec1.left();
-    st.btn_group_add = settings_create_small_btn(hwnd, "新建分组", IDC_SET_GROUP_ADD, x0 + (bw + gap) * 0, btn_y, bw, ui_font);
-    st.btn_group_rename = settings_create_small_btn(hwnd, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap) * 1, btn_y, bw, ui_font);
-    st.btn_group_delete = settings_create_small_btn(hwnd, "删除", IDC_SET_GROUP_DELETE, x0 + (bw + gap) * 2, btn_y, bw, ui_font);
-    st.btn_group_up = settings_create_small_btn(hwnd, "上移", IDC_SET_GROUP_UP, x0 + (bw + gap) * 3, btn_y, bw, ui_font);
-    st.btn_group_down = settings_create_small_btn(hwnd, "下移", IDC_SET_GROUP_DOWN, x0 + (bw + gap) * 4, btn_y, bw, ui_font);
-    for &hh in &[st.btn_group_add, st.btn_group_rename, st.btn_group_delete, st.btn_group_up, st.btn_group_down] {
-        if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh);
-            st.ownerdraw_ctrls.push(hh);
-        }
-    }
-
-    st.ui.mark_built(page);
-}
-
-unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let page = SettingsPage::Cloud.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
-    let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
-    let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
-    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
-
-    let (_, toggle) = b.toggle_row(st, "启用自动同步", IDC_SET_CLOUD_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
-    st.chk_cloud_enable = toggle;
-    if !st.chk_cloud_enable.is_null() {
-        st.ownerdraw_ctrls.push(st.chk_cloud_enable);
-    }
-    b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, 24), sec0.label_w, 24);
-    st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), 150);
-    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
-
-    b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, 24), sec1.label_w, 24);
-    st.ed_cloud_url = b.edit(st, "", IDC_SET_CLOUD_URL, sec1.field_x(), sec1.row_y(0), sec1.field_w());
-    b.label(st, "用户名：", sec1.left(), sec1.label_y(1, 24), sec1.label_w, 24);
-    st.ed_cloud_user = b.edit(st, "", IDC_SET_CLOUD_USER, sec1.field_x(), sec1.row_y(1), sec1.field_w());
-    b.label(st, "密码：", sec1.left(), sec1.label_y(2, 24), sec1.label_w, 24);
-    st.ed_cloud_pass = b.add(st, settings_create_password_edit(hwnd, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w(), st.ui_font));
-    b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, 24), sec1.label_w, 24);
-    st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
-
-    let btn_w = 130;
-    let gap = 14;
-    let x0 = sec2.left();
-    let x1 = x0 + btn_w + gap;
-    let btn_sync = b.button(st, "立即同步", IDC_SET_CLOUD_SYNC_NOW, x0, sec2.row_y(0), btn_w);
-    let btn_upload = b.button(st, "上传配置", IDC_SET_CLOUD_UPLOAD_CFG, x1, sec2.row_y(0), btn_w);
-    let btn_apply = b.button(st, "应用云端配置", IDC_SET_CLOUD_APPLY_CFG, x0, sec2.row_y(1), btn_w);
-    let btn_restore = b.button(st, "云备份恢复", IDC_SET_CLOUD_RESTORE_BACKUP, x1, sec2.row_y(1), btn_w);
-    for &hh in &[btn_sync, btn_upload, btn_apply, btn_restore] {
-        if !hh.is_null() {
-            st.ownerdraw_ctrls.push(hh);
-        }
-    }
-
-    st.ui.mark_built(page);
-}
-
-unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let page = SettingsPage::About.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
-    let sec = SettingsFormSectionLayout::new(page, 0, 0);
-    let update_state = update_check_state_snapshot();
-    let lines = [
-        format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
-        "设置界面现在统一使用同一套 section/form 布局。".to_string(),
-        "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
-    ];
-    let mut y = sec.row_y(0);
-    for line in lines.iter() {
-        let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), 24);
-        y += h + 10;
-    }
-
-    let (_, label_h) = b.label_auto(st, "开源地址：", sec.left(), y, 72, 24);
-    let link = b.button(
-        st,
-        open_source_url_display(),
-        IDC_SET_OPEN_SOURCE,
-        sec.left() + 64,
-        y - 4,
-        sec.full_w() - 64,
-    );
-    if !link.is_null() {
-        st.ownerdraw_ctrls.push(link);
-    }
-    y += label_h.max(32) + 10;
-
-    let update_text = if update_state.checking {
-        tr("更新检查中…", "Checking for updates...").to_string()
-    } else if !update_state.started {
-        tr("点击下方按钮后再检查更新。", "Click the button below to check for updates.").to_string()
-    } else if update_state.available {
-        format!(
-            "{} {}",
-            tr("发现新版本：", "New version available: "),
-            if update_state.latest_tag.trim().is_empty() {
-                "latest".to_string()
-            } else {
-                update_state.latest_tag.clone()
-            }
-        )
-    } else if !update_state.error.trim().is_empty() {
-        format!("{} {}", tr("更新检查失败：", "Update check failed: "), update_state.error)
-    } else {
-        tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
-    };
-    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), 24);
-    y += update_h + 8;
-    st.btn_open_update = b.button(
-        st,
-        if update_state.checking {
-            tr("检测中…", "Checking...")
-        } else if update_state.available {
-            tr("打开新版本", "Open new version")
-        } else if update_state.started {
-            tr("再次检查", "Check again")
-        } else {
-            tr("检查更新", "Check for updates")
-        },
-        IDC_SET_OPEN_UPDATE,
-        sec.left(),
-        y,
-        180,
-    );
-    if !st.btn_open_update.is_null() {
-        st.ownerdraw_ctrls.push(st.btn_open_update);
-    }
-    y += 42;
-
-    for line in [
-        format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
-        format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
-    ] {
-        let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), 24);
-        y += h + 10;
-    }
-    st.ui.mark_built(page);
-}
-
-unsafe fn settings_button_hover(st: &SettingsWndState, hwnd_item: HWND) -> bool {
-    if hwnd_item.is_null() { return false; }
-    let mut pt: POINT = zeroed();
-    if GetCursorPos(&mut pt) == 0 { return false; }
-    let mut rc: RECT = zeroed();
-    if GetWindowRect(hwnd_item, &mut rc) == 0 { return false; }
-    pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom && st.hot_ownerdraw == hwnd_item
-}
-
-unsafe fn settings_ensure_page(hwnd: HWND, st: &mut SettingsWndState, page: usize) {
-    let page = page.min(SETTINGS_PAGES.len().saturating_sub(1));
-    if st.ui.is_built(page) { return; }
-    match SettingsPage::from_index(page) {
-        SettingsPage::General => {
-            settings_create_general_page(hwnd, st);
-            st.ui.mark_built(page);
-        }
-        SettingsPage::Hotkey => settings_create_hotkey_page(hwnd, st),
-        SettingsPage::Plugin => settings_create_plugin_page(hwnd, st),
-        SettingsPage::Group => settings_create_group_page(hwnd, st),
-        SettingsPage::Cloud => settings_create_cloud_page(hwnd, st),
-        SettingsPage::About => settings_create_about_page(hwnd, st),
-    }
-}
-
-unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAWITEMSTRUCT) {
-    let th = Theme::default();
-    let hdc = dis.hDC;
-    let rc = dis.rcItem;
-    let cid = dis.CtlID as isize;
-    let pressed = (dis.itemState & (ODS_SELECTED as u32)) != 0;
-    let hover = settings_button_hover(st, dis.hwndItem);
-    let text = get_window_text(dis.hwndItem);
-
-    if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
-        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
-        || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
-        || cid == IDC_SET_CLOUD_ENABLE
-        || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103
-    {
-        let checked = settings_toggle_get(st, cid);
-        draw_settings_toggle_component(hdc as _, &rc, hover, checked, th);
-        return;
-    }
-
-    if cid == IDC_SET_OPEN_SOURCE {
-        let text_color = if open_source_url().trim().is_empty() {
-            th.text_muted
-        } else if pressed {
-            rgb(22, 78, 180)
-        } else if hover {
-            rgb(14, 111, 214)
-        } else {
-            rgb(24, 92, 189)
-        };
-        let font = CreateFontW(
-            -14,
-            0,
-            0,
-            0,
-            400,
-            0,
-            1,
-            0,
-            1,
-            0,
-            0,
-            5,
-            0,
-            to_wide("Segoe UI").as_ptr(),
-        ) as *mut core::ffi::c_void;
-        let old_font = if !font.is_null() {
-            SelectObject(hdc, font)
-        } else {
-            null_mut()
-        };
-        SetBkMode(hdc, 1);
-        SetTextColor(hdc, text_color);
-        let mut text_rc = rc;
-        text_rc.left += if pressed { 5 } else { 4 };
-        text_rc.top += if pressed { 1 } else { 0 };
-        let text_w = to_wide(&text);
-        DrawTextW(
-            hdc,
-            text_w.as_ptr(),
-            -1,
-            &mut text_rc,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-        );
-        if !font.is_null() {
-            SelectObject(hdc, old_font);
-            DeleteObject(font as _);
-        }
-        return;
-    }
-
-    let kind = if cid == IDC_SET_MAX || cid == IDC_SET_POSMODE || cid == IDC_SET_CLOUD_INTERVAL || cid == IDC_SET_VV_GROUP || cid == IDC_SET_VV_SOURCE || cid == 6102 || cid == 6103 || cid == 7201 {
-        SettingsComponentKind::Dropdown
-    } else if (cid == IDC_SET_GROUP_VIEW_RECORDS && settings_group_view_current(st) == 0)
-        || (cid == IDC_SET_GROUP_VIEW_PHRASES && settings_group_view_current(st) == 1)
-    {
-        SettingsComponentKind::AccentButton
-    } else if cid == IDC_SET_SAVE {
-        SettingsComponentKind::AccentButton
-    } else {
-        SettingsComponentKind::Button
-    };
-    draw_settings_button_component(hdc as _, &rc, &text, kind, hover, pressed, th);
-}
-
 unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let parent_hwnd = cs.lpCreateParams as HWND;
-            let (nav_font, ui_font, title_font) = settings_create_fonts();
+            let (nav_font, ui_font, title_font) = create_settings_fonts();
             let mut st = Box::new(SettingsWndState {
                 parent_hwnd,
                 cur_page: 0,
@@ -3770,7 +2535,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             }
             let pt = POINT { x, y };
             let mut hot_ctrl = ChildWindowFromPointEx(hwnd, pt, CWP_SKIPDISABLED | CWP_SKIPINVISIBLE);
-            if !st.ownerdraw_ctrls.iter().any(|&hh| hh == hot_ctrl) {
+            if !st.ownerdraw_ctrls.contains(&hot_ctrl) {
                 hot_ctrl = null_mut();
             }
             if hot_ctrl != st.hot_ownerdraw {
@@ -4663,25 +3428,25 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     trim_process_working_set();
                 }
             }
+            refresh_low_level_input_hooks();
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_TIMER => {
-            if wparam as usize == ID_TIMER_CARET {
+            if wparam == ID_TIMER_CARET {
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     retry_startup_integrations(hwnd, state);
-                    if state.vv_popup_visible {
-                        if !vv_popup_menu_active()
-                            && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
-                        {
-                            vv_popup_hide(hwnd, state);
-                        }
+                    if state.vv_popup_visible
+                        && !vv_popup_menu_active()
+                        && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
+                    {
+                        vv_popup_hide(hwnd, state);
                     }
                 }
                 return 0;
             }
-            if wparam as usize == ID_TIMER_VV_SHOW {
+            if wparam == ID_TIMER_VV_SHOW {
                 KillTimer(hwnd, ID_TIMER_VV_SHOW);
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
@@ -4701,7 +3466,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 return 0;
             }
-            if wparam as usize == ID_TIMER_PASTE {
+            if wparam == ID_TIMER_PASTE {
                 KillTimer(hwnd, ID_TIMER_PASTE);
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
@@ -4719,7 +3484,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 send_ctrl_v();
                 return 0;
             }
-            if wparam as usize == ID_TIMER_SCROLL_FADE {
+            if wparam == ID_TIMER_SCROLL_FADE {
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
@@ -4738,11 +3503,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 return 0;
             }
-            if wparam as usize == ID_TIMER_EDGE_AUTO_HIDE {
+            if wparam == ID_TIMER_EDGE_AUTO_HIDE {
                 handle_edge_auto_hide_tick(hwnd);
                 return 0;
             }
-            if wparam as usize == ID_TIMER_CLOUD_SYNC {
+            if wparam == ID_TIMER_CLOUD_SYNC {
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
@@ -4857,7 +3622,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_VV_SELECT => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
-                handle_vv_select(hwnd, &mut *ptr, wparam as usize);
+                handle_vv_select(hwnd, &mut *ptr, wparam);
             }
             0
         }
@@ -4883,11 +3648,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             0
         }
         WM_OUTSIDE_CLICK_HIDE => {
-            let ptr = get_state_ptr(hwnd);
-            if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
-                hide_hover_preview();
-                ShowWindow(hwnd, SW_HIDE);
-            }
+            handle_outside_click_hide(hwnd);
             0
         }
         WM_ACTIVATEAPP => {
@@ -4923,6 +3684,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_DESTROY => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
+                clear_page_load_results_for_hwnd(hwnd);
+                clear_cloud_sync_results_for_hwnd(hwnd);
                 match (*ptr).role {
                     WindowRole::Main => {
                         KillTimer(hwnd, ID_TIMER_CARET);
@@ -4935,18 +3698,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                             DestroyWindow(popup);
                         }
                         update_vv_mode_hook(hwnd, false);
-                        if let Ok(mut handle) = outside_hide_mouse_hook_handle().lock() {
-                            if *handle != 0 {
-                                UnhookWindowsHookEx(*handle as _);
-                                *handle = 0;
-                            }
-                        }
-                        if let Ok(mut handle) = quick_escape_keyboard_hook_handle().lock() {
-                            if *handle != 0 {
-                                UnhookWindowsHookEx(*handle as _);
-                                *handle = 0;
-                            }
-                        }
+                        shutdown_low_level_input_hooks();
                         RemoveClipboardFormatListener(hwnd);
                         unregister_hotkey_for(hwnd, &mut *ptr);
                         remove_tray_icon(hwnd);
@@ -4959,6 +3711,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     WindowRole::Quick => {
                         KillTimer(hwnd, ID_TIMER_PASTE);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
+                        refresh_low_level_input_hooks();
                     }
                 }
             }
@@ -5022,8 +3775,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
             register_hotkey_for(hwnd, state);
             update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
-            ensure_outside_hide_mouse_hook();
-            ensure_quick_escape_keyboard_hook();
+            refresh_low_level_input_hooks();
         }
     }
 
@@ -5040,8 +3792,10 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         }
     } else {
         set_main_window_noactivate_mode(hwnd, true);
+        refresh_low_level_input_hooks();
     }
     set_window_host(role, hwnd);
+    refresh_low_level_input_hooks();
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
     if role == WindowRole::Main {
@@ -5358,7 +4112,7 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
     }
     let state = &mut *ptr;
     let id = loword(wparam as u32) as usize;
-    let code = hiword(wparam as u32) as u16;
+    let code = hiword(wparam as u32);
 
     if id == IDC_SEARCH as usize && code == EN_CHANGE_CODE {
         state.search_text = get_window_text(state.search_hwnd);
@@ -5410,261 +4164,6 @@ unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
         SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None); // 50ms ≈ 20fps
     }
     InvalidateRect(hwnd, null(), 1);
-}
-
-unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
-    let mut tme = TRACKMOUSEEVENT {
-        cb_size: core::mem::size_of::<TRACKMOUSEEVENT>() as u32,
-        dw_flags: TME_LEAVE | TME_HOVER,
-        hwnd_track: hwnd,
-        dw_hover_time: system_mouse_hover_time_ms(),
-    };
-    TrackMouseEvent(&mut tme);
-}
-
-unsafe fn hover_preview_blocked_at_point(state: &AppState, x: i32, y: i32) -> bool {
-    if scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect()) {
-        return true;
-    }
-    let Some(item) = hovered_item_clone(state) else {
-        return false;
-    };
-    row_quick_delete_rect(state, state.hover_idx, &item)
-        .map(|rc| pt_in_rect(x, y, &rc))
-        .unwrap_or(false)
-}
-
-unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
-    if !state.settings.hover_preview || state.edge_hidden {
-        hide_hover_preview();
-        return;
-    }
-    let Some(item) = hovered_item_clone(state) else {
-        hide_hover_preview();
-        return;
-    };
-    if hover_preview_blocked_at_point(state, x, y) {
-        hide_hover_preview();
-        return;
-    }
-    let mut win_rc: RECT = zeroed();
-    if GetWindowRect(hwnd, &mut win_rc) == 0 {
-        hide_hover_preview();
-        return;
-    }
-    show_hover_preview(&item, win_rc.left + x, win_rc.top + y);
-}
-
-unsafe fn handle_mouse_hover_main(hwnd: HWND, lparam: LPARAM) {
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
-        return;
-    }
-    let state = &*ptr;
-    refresh_hover_preview(hwnd, state, get_x_lparam(lparam), get_y_lparam(lparam));
-}
-
-fn clear_edge_dock_state(state: &mut AppState) {
-    state.edge_hidden = false;
-    state.edge_hidden_side = EDGE_AUTO_HIDE_NONE;
-    state.edge_docked_left = 0;
-    state.edge_docked_top = 0;
-    state.edge_docked_right = 0;
-    state.edge_docked_bottom = 0;
-}
-
-unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
-    if let Some((side, base)) = edge_choose_dock_side(hwnd, rc) {
-        state.edge_hidden_side = side;
-        set_edge_docked_rect(state, &base);
-        if !state.edge_hidden {
-            state.edge_restore_x = rc.left;
-            state.edge_restore_y = rc.top;
-        }
-        true
-    } else {
-        clear_edge_dock_state(state);
-        false
-    }
-}
-
-fn set_edge_docked_rect(state: &mut AppState, rc: &RECT) {
-    state.edge_docked_left = rc.left;
-    state.edge_docked_top = rc.top;
-    state.edge_docked_right = rc.right;
-    state.edge_docked_bottom = rc.bottom;
-}
-
-fn edge_docked_rect(state: &AppState) -> RECT {
-    RECT {
-        left: state.edge_docked_left,
-        top: state.edge_docked_top,
-        right: state.edge_docked_right,
-        bottom: state.edge_docked_bottom,
-    }
-}
-
-fn edge_detect_margin_v() -> i32 {
-    EDGE_AUTO_HIDE_MARGIN.max(12)
-}
-
-fn edge_detect_margin_h() -> i32 {
-    edge_detect_margin_v().max(24)
-}
-
-unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
-    let work = nearest_monitor_work_rect_for_window(hwnd);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
-    let margin_v = edge_detect_margin_v();
-    let margin_h = edge_detect_margin_h();
-
-    let candidates = [
-        ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT, work, margin_h),
-        ((rc.left - monitor.left).abs(), EDGE_AUTO_HIDE_LEFT, monitor, margin_h),
-        ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, work, margin_h),
-        ((monitor.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, monitor, margin_h),
-        ((rc.top - work.top).abs(), EDGE_AUTO_HIDE_TOP, work, margin_v),
-        ((rc.top - monitor.top).abs(), EDGE_AUTO_HIDE_TOP, monitor, margin_v),
-        ((work.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, work, margin_v),
-        ((monitor.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, monitor, margin_v),
-    ];
-
-    let mut best: Option<(i32, i32, RECT)> = None;
-    for (dist, side, base, limit) in candidates {
-        if dist > limit {
-            continue;
-        }
-        match best {
-            Some((best_dist, _, _)) if best_dist <= dist => {}
-            _ => best = Some((dist, side, base)),
-        }
-    }
-    best.map(|(_, side, base)| (side, base))
-}
-
-unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
-    if !state.edge_hidden {
-        return;
-    }
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        state.edge_restore_x,
-        state.edge_restore_y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
-    state.edge_hidden = false;
-}
-
-unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
-    if state.role != WindowRole::Main || !state.settings.edge_auto_hide || state.edge_hidden {
-        return;
-    }
-
-    let rc = window_rect_for_dock(hwnd);
-    if !update_edge_dock_state(hwnd, state, &rc) {
-        return;
-    }
-
-    let mut cursor: POINT = zeroed();
-    GetCursorPos(&mut cursor);
-    if cursor_over_window_tree(hwnd, cursor) {
-        return;
-    }
-
-    state.edge_restore_x = rc.left;
-    state.edge_restore_y = rc.top;
-    let docked = edge_docked_rect(state);
-    let width = (rc.right - rc.left).max(1);
-    let height = (rc.bottom - rc.top).max(1);
-    let (hide_x, hide_y) = match state.edge_hidden_side {
-        EDGE_AUTO_HIDE_LEFT => (docked.left + EDGE_AUTO_HIDE_PEEK - width, rc.top),
-        EDGE_AUTO_HIDE_RIGHT => (docked.right - EDGE_AUTO_HIDE_PEEK, rc.top),
-        EDGE_AUTO_HIDE_TOP => (rc.left, docked.top + EDGE_AUTO_HIDE_PEEK - height),
-        EDGE_AUTO_HIDE_BOTTOM => (rc.left, docked.bottom - EDGE_AUTO_HIDE_PEEK),
-        _ => (rc.left, rc.top),
-    };
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        hide_x,
-        hide_y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
-    state.edge_hidden = true;
-    hide_hover_preview();
-    InvalidateRect(hwnd, null(), 0);
-}
-
-unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() || IsWindowVisible(hwnd) == 0 {
-        return;
-    }
-    let state = &mut *ptr;
-    if !state.settings.edge_auto_hide {
-        restore_edge_hidden_window(hwnd, state);
-        clear_edge_dock_state(state);
-        return;
-    }
-
-    let rc = window_rect_for_dock(hwnd);
-    let mut cursor: POINT = zeroed();
-    GetCursorPos(&mut cursor);
-    let width = (rc.right - rc.left).max(1);
-    let height = (rc.bottom - rc.top).max(1);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
-    let docked = edge_docked_rect(state);
-
-    if !pt_in_rect_screen(&cursor, &RECT {
-        left: monitor.left - 2,
-        top: monitor.top - 2,
-        right: monitor.right + 2,
-        bottom: monitor.bottom + 2,
-    }) {
-        return;
-    }
-
-    if state.edge_hidden {
-        let hot = match state.edge_hidden_side {
-            EDGE_AUTO_HIDE_LEFT => RECT {
-                left: docked.left,
-                top: state.edge_restore_y,
-                right: docked.left + EDGE_AUTO_HIDE_MARGIN,
-                bottom: state.edge_restore_y + height,
-            },
-            EDGE_AUTO_HIDE_RIGHT => RECT {
-                left: docked.right - EDGE_AUTO_HIDE_MARGIN,
-                top: state.edge_restore_y,
-                right: docked.right,
-                bottom: state.edge_restore_y + height,
-            },
-            EDGE_AUTO_HIDE_TOP => RECT {
-                left: state.edge_restore_x,
-                top: docked.top,
-                right: state.edge_restore_x + width,
-                bottom: docked.top + EDGE_AUTO_HIDE_MARGIN,
-            },
-            EDGE_AUTO_HIDE_BOTTOM => RECT {
-                left: state.edge_restore_x,
-                top: docked.bottom - EDGE_AUTO_HIDE_MARGIN,
-                right: state.edge_restore_x + width,
-                bottom: docked.bottom,
-            },
-            _ => rc,
-        };
-        if pt_in_rect_screen(&cursor, &hot) || GetForegroundWindow() == hwnd {
-            restore_edge_hidden_window(hwnd, state);
-            InvalidateRect(hwnd, null(), 0);
-        }
-        return;
-    }
-
-    update_edge_dock_state(hwnd, state, &rc);
 }
 
 unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
@@ -5751,26 +4250,6 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-unsafe fn handle_mouse_leave_main(hwnd: HWND) {
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
-        return;
-    }
-    let state = &mut *ptr;
-    let mut dirty = false;
-    if !state.hover_btn.is_empty() { state.hover_btn = ""; dirty = true; }
-    if state.hover_tab != -1 { state.hover_tab = -1; dirty = true; }
-    if state.hover_idx != -1 { state.hover_idx = -1; dirty = true; }
-    if state.hover_scroll { state.hover_scroll = false; dirty = true; }
-    if state.hover_to_top { state.hover_to_top = false; dirty = true; }
-    hide_hover_preview();
-    // 保留当前选择集，避免右键菜单弹出时因为 WM_MOUSELEAVE 把多选清空。
-    if dirty {
-        InvalidateRect(hwnd, null(), 0);
-    }
-    hide_edge_docked_window(hwnd, state);
-}
-
 unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
@@ -5780,7 +4259,7 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
     let x = get_x_lparam(lparam);
     let y = get_y_lparam(lparam);
 
-    if 0 <= y && y < TITLE_H {
+    if (0..TITLE_H).contains(&y) {
         let mut blocked = false;
         for key in ["search", "setting", "min", "close"] {
             if !title_button_visible(&state.settings, key) {
@@ -6077,7 +4556,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     state.ensure_visible(idx);
     let current_item = state.current_item_for_use();
     let current_kind = current_item.as_ref().map(|it| it.kind).unwrap_or(ClipKind::Text);
-    let current_is_dir = current_item.as_ref().map(|it| is_directory_item(it)).unwrap_or(false);
+    let current_is_dir = current_item.as_ref().map(is_directory_item).unwrap_or(false);
     let current_is_excel = current_item
         .as_ref()
         .and_then(|it| it.file_paths.as_ref())
@@ -6685,7 +5164,7 @@ fn materialize_item_as_file(item: &ClipItem) -> Option<PathBuf> {
         ClipKind::Text | ClipKind::Phrase => {
             let name = sanitize_export_name(&item.preview, "text");
             let path = base.join(format!("{}_{}_{}.txt", name, ts, suffix));
-            let text = item.text.as_ref().map(|s| s.as_str()).unwrap_or(&item.preview);
+            let text = item.text.as_deref().unwrap_or(&item.preview);
             fs::write(&path, text).ok()?;
             Some(path)
         }
@@ -6883,44 +5362,11 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
 }
 
 
-unsafe fn send_ctrl_v() {
-    keybd_event(VK_CONTROL as u8, 0, 0, 0);
-    keybd_event(VK_V as u8, 0, 0, 0);
-    keybd_event(VK_V as u8, 0, KEYEVENTF_KEYUP, 0);
-    keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
-}
-
-unsafe fn send_backspace_times(count: u8) {
-    for _ in 0..count {
-        keybd_event(VK_BACK as u8, 0, 0, 0);
-        keybd_event(VK_BACK as u8, 0, KEYEVENTF_KEYUP, 0);
-    }
-}
-
-unsafe fn send_alt_tap() {
-    let inputs = [
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_MENU as u16, w_scan: 0, dw_flags: 0, time: 0, dw_extra_info: 0 } } },
-        INPUT { r#type: INPUT_KEYBOARD, anonymous: INPUT_UNION { ki: KEYBDINPUT { w_vk: VK_MENU as u16, w_scan: 0, dw_flags: KEYEVENTF_KEYUP, time: 0, dw_extra_info: 0 } } },
-    ];
-    let _ = SendInput(inputs.len() as u32, inputs.as_ptr(), size_of::<INPUT>() as i32);
-}
-
 fn clear_hotkey_passthrough_state(state: &mut AppState) {
     state.hotkey_passthrough_active = false;
     state.hotkey_passthrough_target = null_mut();
     state.hotkey_passthrough_focus = null_mut();
     state.hotkey_passthrough_edit = null_mut();
-}
-
-unsafe fn force_foreground_window(hwnd: HWND) -> bool {
-    if hwnd.is_null() {
-        return false;
-    }
-    if SetForegroundWindow(hwnd) != 0 {
-        return true;
-    }
-    send_alt_tap();
-    SetForegroundWindow(hwnd) != 0
 }
 
 unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND) {
@@ -6997,56 +5443,6 @@ unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState
 
 unsafe fn is_window_enabled_compat(hwnd: HWND) -> bool {
     (GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_DISABLED) == 0
-}
-
-unsafe extern "system" fn enum_visible_windows(hwnd: HWND, lparam: LPARAM) -> i32 {
-    let list = &mut *(lparam as *mut Vec<HWND>);
-    if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || !is_window_enabled_compat(hwnd) || IsIconic(hwnd) != 0 {
-        return 1;
-    }
-    list.push(hwnd);
-    1
-}
-
-unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool {
-    if hwnd.is_null() || hwnd == app_hwnd || is_app_window(hwnd) {
-        return false;
-    }
-    if IsWindowVisible(hwnd) == 0 || !is_window_enabled_compat(hwnd) || IsIconic(hwnd) != 0 {
-        return false;
-    }
-    if GetAncestor(hwnd, GA_ROOT) != hwnd {
-        return false;
-    }
-    let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    (ex_style & WS_EX_TOOLWINDOW) == 0
-}
-
-unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
-    let mut wins: Vec<HWND> = Vec::new();
-    EnumWindows(Some(enum_visible_windows), &mut wins as *mut _ as LPARAM);
-
-    let fg = GetForegroundWindow();
-    let start = wins
-        .iter()
-        .position(|&h| h == fg)
-        .map(|idx| idx + 1)
-        .unwrap_or(0);
-
-    for &h in wins.iter().skip(start) {
-        if !is_viable_paste_window(h, app_hwnd) {
-            continue;
-        }
-        let title = get_window_text(h);
-        if matches!(
-            title.trim(),
-            "" | "开始" | "dummyLayeredWnd" | "Float" | "屏幕录制" | "RecBackgroundForm"
-        ) {
-            continue;
-        }
-        return h;
-    }
-    null_mut()
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -7283,7 +5679,7 @@ unsafe fn paint(hwnd: HWND) {
 
 
 fn build_preview(text: &str) -> String {
-    let one_line = text.replace('\r', " ").replace('\n', " ").trim().to_string();
+    let one_line = text.replace(['\r', '\n'], " ").trim().to_string();
     if one_line.chars().count() > 72 {
         let mut s = String::new();
         for (idx, ch) in one_line.chars().enumerate() {

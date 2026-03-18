@@ -1,7 +1,9 @@
 use windows_sys::Win32::Foundation::POINT;
 
-pub use crate::settings_layout::{SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CONTENT_TOTAL_H};
-pub use crate::settings_model::{settings_section_body_rect, SETTINGS_FORM_ROW_GAP, SETTINGS_FORM_ROW_H};
+pub use crate::settings_model::{
+    settings_max_scroll, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout,
+    SETTINGS_CONTENT_TOTAL_H,
+};
 pub use crate::settings_render::{
     IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE,
     IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE,

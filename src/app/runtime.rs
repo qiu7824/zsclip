@@ -1,6 +1,8 @@
 use super::*;
 
 static DATA_DIR_CACHE: OnceLock<PathBuf> = OnceLock::new();
+const AUTOSTART_VALUE_NAME: &str = "ZSClip";
+const LEGACY_AUTOSTART_VALUE_NAMES: &[&str] = &["剪贴板", "Clipboard", "筑森剪贴"];
 
 pub(super) fn current_exe_path() -> Option<PathBuf> {
     std::env::current_exe().ok()
@@ -164,16 +166,20 @@ pub(super) fn spawn_cloud_sync_job(
     let paths = current_cloud_sync_paths();
     std::thread::spawn(move || {
         let result = perform_cloud_sync(action, &config, &paths);
-        if let Ok(mut queue) = cloud_sync_results().lock() {
-            queue.push_back(CloudSyncResult {
-                hwnd: hwnd_value,
-                action,
-                auto_triggered,
-                result,
-            });
-        }
         unsafe {
-            if hwnd_value != 0 {
+            let still_alive = hwnd_value != 0
+                && window_host_hwnds()
+                    .into_iter()
+                    .any(|host| host == hwnd_value as HWND && IsWindow(host) != 0);
+            if still_alive {
+                if let Ok(mut queue) = cloud_sync_results().lock() {
+                    queue.push_back(CloudSyncResult {
+                        hwnd: hwnd_value,
+                        action,
+                        auto_triggered,
+                        result,
+                    });
+                }
                 let _ = PostMessageW(hwnd_value as HWND, WM_CLOUD_SYNC_READY, 0, 0);
             }
         }
@@ -198,10 +204,63 @@ pub(super) fn normalize_run_target(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn run_target_matches_current_exe(value: &str) -> bool {
+    if let Some(exe) = current_exe_path() {
+        normalize_run_target(value) == normalize_run_target(&exe.to_string_lossy())
+    } else {
+        !value.trim().is_empty()
+    }
+}
+
+unsafe fn read_run_value(hkey: isize, value_name: &str) -> Option<String> {
+    let value_name_wide = to_wide(value_name);
+    let mut data_size = 0u32;
+    let mut reg_type = 0u32;
+    let ret = RegQueryValueExW(
+        hkey,
+        value_name_wide.as_ptr(),
+        null_mut(),
+        &mut reg_type,
+        null_mut(),
+        &mut data_size,
+    );
+    if ret != 0 || reg_type != REG_SZ || data_size < 2 {
+        return None;
+    }
+
+    let mut data = vec![0u8; data_size as usize];
+    let ret = RegQueryValueExW(
+        hkey,
+        value_name_wide.as_ptr(),
+        null_mut(),
+        &mut reg_type,
+        data.as_mut_ptr(),
+        &mut data_size,
+    );
+    if ret != 0 || reg_type != REG_SZ {
+        return None;
+    }
+
+    let wide = std::slice::from_raw_parts(data.as_ptr() as *const u16, (data_size as usize) / 2);
+    let value_len = wide.iter().position(|&ch| ch == 0).unwrap_or(wide.len());
+    Some(String::from_utf16_lossy(&wide[..value_len]))
+}
+
+fn autostart_value_names() -> impl Iterator<Item = &'static str> {
+    std::iter::once(AUTOSTART_VALUE_NAME).chain(LEGACY_AUTOSTART_VALUE_NAMES.iter().copied())
+}
+
+unsafe fn registered_autostart_value_name(hkey: isize) -> Option<&'static str> {
+    autostart_value_names().find(|name| {
+        read_run_value(hkey, name)
+            .map(|value| run_target_matches_current_exe(&value))
+            .unwrap_or(false)
+    })
+}
+
 pub(super) fn is_autostart_enabled() -> bool {
     unsafe {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let val_name = to_wide(app_title());
         let mut hkey: isize = 0;
         if RegOpenKeyExW(
             HKEY_CURRENT_USER_VAL,
@@ -213,55 +272,15 @@ pub(super) fn is_autostart_enabled() -> bool {
         {
             return false;
         }
-
-        let mut data_size = 0u32;
-        let mut reg_type = 0u32;
-        let ret = RegQueryValueExW(
-            hkey,
-            val_name.as_ptr(),
-            null_mut(),
-            &mut reg_type,
-            null_mut(),
-            &mut data_size,
-        );
-        if ret != 0 || reg_type != REG_SZ || data_size < 2 {
-            RegCloseKey(hkey);
-            return false;
-        }
-
-        let mut data = vec![0u8; data_size as usize];
-        let ret = RegQueryValueExW(
-            hkey,
-            val_name.as_ptr(),
-            null_mut(),
-            &mut reg_type,
-            data.as_mut_ptr(),
-            &mut data_size,
-        );
+        let enabled = registered_autostart_value_name(hkey).is_some();
         RegCloseKey(hkey);
-        if ret != 0 || reg_type != REG_SZ {
-            return false;
-        }
-
-        let wide = std::slice::from_raw_parts(
-            data.as_ptr() as *const u16,
-            (data_size as usize) / 2,
-        );
-        let value_len = wide.iter().position(|&ch| ch == 0).unwrap_or(wide.len());
-        let reg_value = String::from_utf16_lossy(&wide[..value_len]);
-
-        if let Some(exe) = current_exe_path() {
-            normalize_run_target(&reg_value) == normalize_run_target(&exe.to_string_lossy())
-        } else {
-            !reg_value.trim().is_empty()
-        }
+        enabled
     }
 }
 
 pub(super) fn apply_autostart(enabled: bool) -> bool {
     unsafe {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-        let val_name = to_wide(app_title());
         let mut hkey: isize = 0;
         let flags = KEY_READ_VAL | KEY_SET_VALUE;
         if RegOpenKeyExW(
@@ -280,17 +299,33 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
                 let wide = to_wide(&cmdline);
                 let bytes =
                     std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2);
+                let stable_name = to_wide(AUTOSTART_VALUE_NAME);
                 changed = RegSetValueExW(
                     hkey,
-                    val_name.as_ptr(),
+                    stable_name.as_ptr(),
                     0,
                     REG_SZ,
                     bytes.as_ptr(),
                     bytes.len() as u32,
                 ) == 0;
+                if changed {
+                    for legacy_name in LEGACY_AUTOSTART_VALUE_NAMES {
+                        let legacy_wide = to_wide(legacy_name);
+                        let _ = RegDeleteValueW(hkey, legacy_wide.as_ptr());
+                    }
+                }
             }
         } else {
-            changed = RegDeleteValueW(hkey, val_name.as_ptr()) == 0 || !is_autostart_enabled();
+            changed = false;
+            for value_name in autostart_value_names() {
+                let value_name_wide = to_wide(value_name);
+                if RegDeleteValueW(hkey, value_name_wide.as_ptr()) == 0 {
+                    changed = true;
+                }
+            }
+            if !is_autostart_enabled() {
+                changed = true;
+            }
         }
         RegCloseKey(hkey);
         changed && is_autostart_enabled() == enabled

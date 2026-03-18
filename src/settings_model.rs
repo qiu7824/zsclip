@@ -1,6 +1,22 @@
-﻿use crate::settings_layout::settings_card_rect;
-use crate::ui::{SETTINGS_CONTENT_Y, SETTINGS_NAV_W};
-use crate::ui_core::UiRect;
+use crate::ui::{SETTINGS_CONTENT_W, SETTINGS_CONTENT_X, SETTINGS_CONTENT_Y, SETTINGS_NAV_W};
+use crate::ui::UiRect;
+
+pub const SETTINGS_CONTENT_TOTAL_H: i32 = 1120;
+pub const SCROLL_BAR_W: i32 = 3;
+pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
+pub const SCROLL_BAR_MARGIN: i32 = 3;
+pub const SETTINGS_PAGE_COUNT: usize = 6;
+
+pub const CARD_GENERAL_Y: i32 = 16;
+pub const CARD_GENERAL_H: i32 = 470;
+pub const CARD_DATA_Y: i32 = 498;
+pub const CARD_DATA_H: i32 = 96;
+pub const CARD_ACTIONS_Y: i32 = 606;
+pub const CARD_ACTIONS_H: i32 = 150;
+pub const CARD_POSITION_Y: i32 = 768;
+pub const CARD_POSITION_H: i32 = 168;
+pub const CARD_MAINTAIN_Y: i32 = 948;
+pub const CARD_MAINTAIN_H: i32 = 96;
 
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
 pub const SETTINGS_FORM_ROW_H: i32 = 32;
@@ -8,10 +24,44 @@ pub const SETTINGS_FORM_ROW_GAP: i32 = 8;
 pub const SETTINGS_FORM_SECTION_GAP: i32 = 12;
 pub const SETTINGS_FORM_SECTION_PAD: i32 = 18;
 
+#[inline]
+pub const fn settings_card_rect(y: i32, h: i32) -> UiRect {
+    UiRect::new(
+        SETTINGS_CONTENT_X,
+        SETTINGS_CONTENT_Y + y,
+        SETTINGS_CONTENT_X + SETTINGS_CONTENT_W,
+        SETTINGS_CONTENT_Y + y + h,
+    )
+}
+
 #[derive(Clone, Copy)]
 pub struct SettingsSection {
     pub title: &'static str,
     pub rect: UiRect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsPage {
+    General = 0,
+    Hotkey = 1,
+    Plugin = 2,
+    Group = 3,
+    Cloud = 4,
+    About = 5,
+}
+
+impl SettingsPage {
+    pub const fn index(self) -> usize { self as usize }
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            1 => SettingsPage::Hotkey,
+            2 => SettingsPage::Plugin,
+            3 => SettingsPage::Group,
+            4 => SettingsPage::Cloud,
+            5 => SettingsPage::About,
+            _ => SettingsPage::General,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -26,11 +76,11 @@ pub struct SettingsFormCardSpec {
 }
 
 const GENERAL_SECTIONS: [SettingsSection; 5] = [
-    SettingsSection { title: "启动与显示", rect: settings_card_rect(crate::settings_layout::CARD_GENERAL_Y, crate::settings_layout::CARD_GENERAL_H) },
-    SettingsSection { title: "数据", rect: settings_card_rect(crate::settings_layout::CARD_DATA_Y, crate::settings_layout::CARD_DATA_H) },
-    SettingsSection { title: "快捷操作", rect: settings_card_rect(crate::settings_layout::CARD_ACTIONS_Y, crate::settings_layout::CARD_ACTIONS_H) },
-    SettingsSection { title: "显示位置", rect: settings_card_rect(crate::settings_layout::CARD_POSITION_Y, crate::settings_layout::CARD_POSITION_H) },
-    SettingsSection { title: "维护", rect: settings_card_rect(crate::settings_layout::CARD_MAINTAIN_Y, crate::settings_layout::CARD_MAINTAIN_H) },
+    SettingsSection { title: "启动与显示", rect: settings_card_rect(CARD_GENERAL_Y, CARD_GENERAL_H) },
+    SettingsSection { title: "数据", rect: settings_card_rect(CARD_DATA_Y, CARD_DATA_H) },
+    SettingsSection { title: "快捷操作", rect: settings_card_rect(CARD_ACTIONS_Y, CARD_ACTIONS_H) },
+    SettingsSection { title: "显示位置", rect: settings_card_rect(CARD_POSITION_Y, CARD_POSITION_H) },
+    SettingsSection { title: "维护", rect: settings_card_rect(CARD_MAINTAIN_Y, CARD_MAINTAIN_H) },
 ];
 
 const HOTKEY_SECTIONS: [SettingsSection; 3] = [
@@ -149,31 +199,6 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
     settings_cards_for_page(page).to_vec()
 }
 
-#[allow(dead_code)]
-pub fn settings_section_rect(page: usize, index: usize) -> UiRect {
-    settings_cards_for_page_vec(page)
-        .get(index)
-        .map(|s| s.rect)
-        .unwrap_or_else(|| settings_card_rect(16, 96))
-}
-
-#[allow(dead_code)]
-pub fn settings_page_total_content_h(page: usize) -> i32 {
-    settings_cards_for_page_vec(page)
-        .iter()
-        .map(|s| s.rect.bottom - SETTINGS_CONTENT_Y + SETTINGS_FORM_SECTION_GAP)
-        .max()
-        .unwrap_or(760)
-}
-
-#[allow(dead_code)]
-pub fn settings_last_section_bottom(page: usize) -> i32 {
-    settings_cards_for_page_vec(page)
-        .last()
-        .map(|s| s.rect.bottom)
-        .unwrap_or(SETTINGS_CONTENT_Y + 220)
-}
-
 pub fn settings_section(page: usize, index: usize) -> SettingsSection {
     settings_cards_for_page_vec(page)
         .get(index)
@@ -189,4 +214,33 @@ pub fn settings_section_body_rect(page: usize, index: usize, padding: i32) -> Ui
         rc.right - padding,
         rc.bottom - padding,
     )
+}
+
+#[derive(Clone, Copy)]
+pub struct SettingsFormSectionLayout {
+    body: UiRect,
+    label_w: i32,
+}
+
+impl SettingsFormSectionLayout {
+    pub fn new(page: usize, index: usize, label_w: i32) -> Self {
+        Self {
+            body: settings_section_body_rect(page, index, 18),
+            label_w,
+        }
+    }
+
+    pub fn left(&self) -> i32 { self.body.left }
+    pub fn label_w(&self) -> i32 { self.label_w }
+    pub fn full_w(&self) -> i32 { self.body.right - self.body.left }
+    pub fn row_y(&self, row: i32) -> i32 { self.body.top + row * (SETTINGS_FORM_ROW_H + SETTINGS_FORM_ROW_GAP) }
+    pub fn label_y(&self, row: i32, h: i32) -> i32 { self.row_y(row) + ((SETTINGS_FORM_ROW_H - h).max(0) / 2) }
+    pub fn field_x(&self) -> i32 { self.body.left + self.label_w }
+    pub fn field_w(&self) -> i32 { (self.body.right - self.field_x()).max(40) }
+    pub fn field_w_from(&self, x: i32) -> i32 { (self.body.right - x).max(40) }
+    pub fn action_x(&self, slot: i32, w: i32) -> i32 { self.body.left + slot * (w + 14) }
+}
+
+pub fn settings_max_scroll(view_h: i32) -> i32 {
+    (SETTINGS_CONTENT_TOTAL_H - view_h).max(0)
 }
