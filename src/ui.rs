@@ -35,6 +35,28 @@ pub const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
 pub const SETTINGS_CONTENT_W: i32 = SETTINGS_W - SETTINGS_CONTENT_X - 28;
 pub const SETTINGS_CONTENT_Y: i32 = SETTINGS_TOP_H;
 
+pub const fn ui_text_font_family() -> &'static str {
+    "Segoe UI"
+}
+
+pub const fn ui_display_font_family() -> &'static str {
+    "Segoe UI"
+}
+
+pub const fn ui_icon_font_family() -> &'static str {
+    "Segoe MDL2 Assets"
+}
+
+pub fn resolve_ui_font_family(family: &str) -> &str {
+    match family {
+        "" => ui_text_font_family(),
+        "Segoe UI Variable Text" => ui_text_font_family(),
+        "Segoe UI Variable Display" => ui_display_font_family(),
+        "Segoe Fluent Icons" => ui_icon_font_family(),
+        other => other,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UiRect {
     pub left: i32,
@@ -718,7 +740,7 @@ pub unsafe fn draw_main_segment_bar(
 }
 
 pub unsafe fn draw_text(hdc: *mut core::ffi::c_void, text: &str, rc: &RECT, color: u32, size: i32, bold: bool, center: bool) {
-    draw_text_ex(hdc, text, rc, color, size, bold, center, "Segoe UI Variable Text");
+    draw_text_ex(hdc, text, rc, color, size, bold, center, ui_text_font_family());
 }
 
 pub unsafe fn draw_text_ex(
@@ -735,7 +757,8 @@ pub unsafe fn draw_text_ex(
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
-    let font = CreateFontW(-size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(if family.is_empty() { "Segoe UI Variable Text" } else { family }).as_ptr());
+    let font_name = resolve_ui_font_family(family);
+    let font = CreateFontW(-size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
     let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;

@@ -167,10 +167,7 @@ pub(super) fn spawn_cloud_sync_job(
     std::thread::spawn(move || {
         let result = perform_cloud_sync(action, &config, &paths);
         unsafe {
-            let still_alive = hwnd_value != 0
-                && window_host_hwnds()
-                    .into_iter()
-                    .any(|host| host == hwnd_value as HWND && IsWindow(host) != 0);
+            let still_alive = hwnd_value != 0 && IsWindow(hwnd_value as HWND) != 0;
             if still_alive {
                 if let Ok(mut queue) = cloud_sync_results().lock() {
                     queue.push_back(CloudSyncResult {

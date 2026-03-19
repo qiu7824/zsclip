@@ -9,20 +9,36 @@ thread_local! {
 
 static DB_MIGRATED: OnceLock<()> = OnceLock::new();
 
-fn clip_groups_has_category_column(conn: &Connection) -> rusqlite::Result<bool> {
-    let mut stmt = conn.prepare("PRAGMA table_info(clip_groups)")?;
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn.prepare(&pragma)?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let name: String = row.get(1)?;
-        if name.eq_ignore_ascii_case("category") {
+        if name.eq_ignore_ascii_case(column) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
+fn ensure_table_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<()> {
+    if !table_has_column(conn, table, column)? {
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {definition}"),
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 fn migrate_clip_groups_schema(conn: &Connection) -> rusqlite::Result<()> {
-    if !clip_groups_has_category_column(conn)? {
+    if !table_has_column(conn, "clip_groups", "category")? {
         conn.execute_batch(
             "
             ALTER TABLE clip_groups RENAME TO clip_groups_legacy;
@@ -45,6 +61,37 @@ fn migrate_clip_groups_schema(conn: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_clip_groups_category_sort ON clip_groups(category, sort_order, id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_groups_category_name ON clip_groups(category, name);
         ",
+    )?;
+    Ok(())
+}
+
+fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_table_column(conn, "items", "category", "category INTEGER NOT NULL DEFAULT 0")?;
+    ensure_table_column(conn, "items", "kind", "kind TEXT NOT NULL DEFAULT 'text'")?;
+    ensure_table_column(conn, "items", "preview", "preview TEXT NOT NULL DEFAULT ''")?;
+    ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
+    ensure_table_column(conn, "items", "file_paths", "file_paths TEXT")?;
+    ensure_table_column(conn, "items", "image_data", "image_data BLOB")?;
+    ensure_table_column(conn, "items", "image_path", "image_path TEXT")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "image_width",
+        "image_width INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_table_column(
+        conn,
+        "items",
+        "image_height",
+        "image_height INTEGER NOT NULL DEFAULT 0",
+    )?;
+    ensure_table_column(conn, "items", "pinned", "pinned INTEGER NOT NULL DEFAULT 0")?;
+    ensure_table_column(conn, "items", "group_id", "group_id INTEGER NOT NULL DEFAULT 0")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "created_at",
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
     )?;
     Ok(())
 }
@@ -131,9 +178,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_groups_category_name ON clip_groups(category, name);
         ",
     )?;
-    let _ = conn.execute("ALTER TABLE items ADD COLUMN file_paths TEXT", []);
-    let _ = conn.execute("ALTER TABLE items ADD COLUMN image_path TEXT", []);
-    let _ = conn.execute("ALTER TABLE items ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0", []);
+    migrate_items_schema(conn)?;
     migrate_clip_groups_schema(conn)?;
     migrate_phrase_group_assignments(conn)?;
     Ok(())

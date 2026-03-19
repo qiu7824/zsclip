@@ -252,7 +252,8 @@ pub(crate) unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
 
     if is_dark_mode() {
         let val: u32 = 1;
-        DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, 19, &val as *const u32 as _, 4);
     }
 
     let lib = LoadLibraryW(to_wide("uxtheme.dll").as_ptr());

@@ -15,20 +15,44 @@ struct DbItem {
     created_at: String,
 }
 
+fn split_paths_blob(value: Option<String>) -> Option<Vec<String>> {
+    let paths: Vec<String> = value
+        .unwrap_or_default()
+        .split('\n')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.to_string())
+        .collect();
+    if paths.is_empty() { None } else { Some(paths) }
+}
+
 fn row_to_clip_item(row: DbItem) -> ClipItem {
+    let kind = match row.kind.as_str() {
+        "image" => ClipKind::Image,
+        "phrase" => ClipKind::Phrase,
+        "files" => ClipKind::Files,
+        _ => ClipKind::Text,
+    };
+    let file_paths = if matches!(kind, ClipKind::Files) {
+        split_paths_blob(row.file_paths.or(row.text.clone()))
+    } else {
+        split_paths_blob(row.file_paths)
+    };
+    let preview = if matches!(kind, ClipKind::Files) {
+        file_paths
+            .as_ref()
+            .map(|paths| build_files_preview(paths))
+            .filter(|value| !value.is_empty())
+            .unwrap_or(row.preview)
+    } else {
+        row.preview
+    };
     ClipItem {
         id: row.id,
-        kind: match row.kind.as_str() {
-            "image" => ClipKind::Image,
-            "phrase" => ClipKind::Phrase,
-            "files" => ClipKind::Files,
-            _ => ClipKind::Text,
-        },
-        preview: row.preview,
+        kind,
+        preview,
         text: row.text,
-        file_paths: row
-            .file_paths
-            .map(|value| value.split('\n').map(|item| item.to_string()).collect()),
+        file_paths,
         image_bytes: row.image_bytes,
         image_path: row.image_path,
         image_width: row.image_width.max(0) as usize,
@@ -40,17 +64,32 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
 }
 
 fn row_to_clip_item_summary(row: DbItem) -> ClipItem {
+    let kind = match row.kind.as_str() {
+        "image" => ClipKind::Image,
+        "phrase" => ClipKind::Phrase,
+        "files" => ClipKind::Files,
+        _ => ClipKind::Text,
+    };
+    let file_paths = if matches!(kind, ClipKind::Files) {
+        split_paths_blob(row.file_paths.or(row.text))
+    } else {
+        None
+    };
+    let preview = if matches!(kind, ClipKind::Files) {
+        file_paths
+            .as_ref()
+            .map(|paths| build_files_preview(paths))
+            .filter(|value| !value.is_empty())
+            .unwrap_or(row.preview)
+    } else {
+        row.preview
+    };
     ClipItem {
         id: row.id,
-        kind: match row.kind.as_str() {
-            "image" => ClipKind::Image,
-            "phrase" => ClipKind::Phrase,
-            "files" => ClipKind::Files,
-            _ => ClipKind::Text,
-        },
-        preview: row.preview,
+        kind,
+        preview,
         text: None,
-        file_paths: None,
+        file_paths,
         image_bytes: None,
         image_path: row.image_path,
         image_width: row.image_width.max(0) as usize,
@@ -62,12 +101,26 @@ fn row_to_clip_item_summary(row: DbItem) -> ClipItem {
 }
 
 pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
+    let file_paths = if matches!(item.kind, ClipKind::Files) {
+        item.file_paths.clone()
+    } else {
+        None
+    };
+    let preview = if matches!(item.kind, ClipKind::Files) {
+        file_paths
+            .as_ref()
+            .map(|paths| build_files_preview(paths))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| item.preview.clone())
+    } else {
+        item.preview.clone()
+    };
     ClipItem {
         id: item.id,
         kind: item.kind,
-        preview: item.preview.clone(),
+        preview,
         text: None,
-        file_paths: None,
+        file_paths,
         image_bytes: None,
         image_path: item.image_path.clone(),
         image_width: item.image_width,
@@ -96,7 +149,7 @@ pub(super) fn db_load_items_page(
     let (search_terms, time_filter) = parse_search_query(query.search_text.trim());
     with_db(|conn| {
         let mut sql = String::from(
-            "SELECT id, kind, preview, image_path, image_width, image_height, pinned, group_id, \
+            "SELECT id, kind, preview, text_data, file_paths, image_path, image_width, image_height, pinned, group_id, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE category=?",
         );
@@ -111,8 +164,10 @@ pub(super) fn db_load_items_page(
             let like = format!("%{}%", term);
             sql.push_str(
                 " AND (LOWER(preview) LIKE ? \
+                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
                  OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
             );
+            bind_values.push(SqlValue::from(like.clone()));
             bind_values.push(SqlValue::from(like.clone()));
             bind_values.push(SqlValue::from(like));
         }
@@ -151,15 +206,15 @@ pub(super) fn db_load_items_page(
                 id: row.get(0)?,
                 kind: row.get(1)?,
                 preview: row.get(2)?,
-                text: None,
-                file_paths: None,
-                image_path: row.get(3)?,
+                text: row.get(3)?,
+                file_paths: row.get(4)?,
+                image_path: row.get(5)?,
                 image_bytes: None,
-                image_width: row.get(4)?,
-                image_height: row.get(5)?,
-                pinned: row.get(6)?,
-                group_id: row.get(7)?,
-                created_at: row.get(8)?,
+                image_width: row.get(6)?,
+                image_height: row.get(7)?,
+                pinned: row.get(8)?,
+                group_id: row.get(9)?,
+                created_at: row.get(10)?,
             })
         })?;
 
@@ -225,10 +280,7 @@ pub(super) fn spawn_items_page_load(
         };
 
         unsafe {
-            let still_alive = hwnd_value != 0
-                && window_host_hwnds()
-                    .into_iter()
-                    .any(|host| host == hwnd_value as HWND && IsWindow(host) != 0);
+            let still_alive = hwnd_value != 0 && IsWindow(hwnd_value as HWND) != 0;
             if still_alive {
                 if let Ok(mut queue) = page_load_results().lock() {
                     queue.push_back(result);
