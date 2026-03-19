@@ -16,7 +16,7 @@ use windows_sys::Win32::{
 use crate::i18n::{tr, translate};
 use crate::settings_model::{SettingsPage, SETTINGS_PAGE_COUNT};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, Theme, UiRect, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
+    draw_round_fill, draw_round_rect, draw_text_ex, resolve_ui_font_family, rgb, ui_display_font_family, ui_icon_font_family, ui_text_font_family, Theme, UiRect, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
@@ -335,11 +335,11 @@ pub unsafe fn create_settings_toggle_plain(
 
 pub unsafe fn create_settings_fonts() -> (*mut c_void, *mut c_void, *mut c_void) {
     let nav: *mut c_void =
-        CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe Fluent Icons").as_ptr()) as _;
+        CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_icon_font_family()).as_ptr()) as _;
     let ui: *mut c_void =
-        CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr()) as _;
+        CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
     let title: *mut c_void =
-        CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Display").as_ptr()) as _;
+        CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_display_font_family()).as_ptr()) as _;
     let default_ui: *mut c_void = if ui.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { ui };
     let default_title: *mut c_void = if title.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { title };
     (nav, default_ui, default_title)
@@ -521,7 +521,7 @@ pub unsafe fn draw_text_wide_centered(
 ) {
     let hdc = hdc as _;
     let font: *mut c_void =
-        CreateFontW(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr()) as _;
+        CreateFontW(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(resolve_ui_font_family(font_name)).as_ptr()) as _;
     let old = SelectObject(hdc, font as _);
     SetBkMode(hdc, 1);
     SetTextColor(hdc, color);
@@ -622,6 +622,7 @@ unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
     if crate::win_system_ui::is_dark_mode() {
         let val: u32 = 1;
         let _ = DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, 19, &val as *const u32 as _, 4);
     }
     let theme_name = if crate::win_system_ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
     let _ = SetWindowTheme(hwnd, to_wide(theme_name).as_ptr(), null());

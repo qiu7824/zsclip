@@ -609,7 +609,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let args = if !cs.lpCreateParams.is_null() { Box::from_raw(cs.lpCreateParams as *mut CreateArgs) } else { Box::new(CreateArgs { initial_excel: String::new() }) };
-            let font = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr());
+            let font = CreateFontW(-16, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(crate::ui::ui_text_font_family()).as_ptr());
             let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { font };
             let th = Theme::default();
             let st = Box::new(MailMergeState {

@@ -108,7 +108,7 @@ struct TRACKMOUSEEVENT {
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{
     is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell,
     open_source_url, open_source_url_display, restart_explorer_shell, start_update_check,
@@ -1779,7 +1779,7 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             let d = &mut *data;
             let hmod = GetModuleHandleW(null());
             d.ui_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide("Segoe UI Variable Text").as_ptr()) as _;
+                to_wide(ui_text_font_family()).as_ptr()) as _;
             input_dialog_refresh_theme(d);
 
             // 标签
@@ -1860,7 +1860,7 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                 let d = &*data_ptr;
                 let title_rc = RECT { left: 20, top: 12, right: rc.right - 20, bottom: 46 };
                 let title_font: *mut core::ffi::c_void = CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
-                    to_wide("Segoe UI Variable Display").as_ptr()) as _;
+                    to_wide(ui_display_font_family()).as_ptr()) as _;
                 let old = SelectObject(hdc, title_font as _);
                 SetBkMode(hdc, 1);
                 SetTextColor(hdc, th.text);
@@ -2091,7 +2091,7 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                     to_wide("Consolas").as_ptr()) as _;
             }
             d.btn_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide("Segoe UI Variable Text").as_ptr()) as _;
+                to_wide(ui_text_font_family()).as_ptr()) as _;
 
             let mut rc: RECT = zeroed();
             GetClientRect(hwnd, &mut rc);
@@ -3754,7 +3754,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     if search_hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let search_font: *mut core::ffi::c_void = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide("Segoe UI Variable Text").as_ptr()) as _;
+    let search_font: *mut core::ffi::c_void = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
     let font: *mut core::ffi::c_void = if search_font.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { search_font };
     SendMessageW(search_hwnd, WM_SETFONT, font as WPARAM, 1 as LPARAM);
     SendMessageW(search_hwnd, EM_SETMARGINS, (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM, 0);
@@ -3768,6 +3768,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
 
     let state = Box::new(AppState::new(role, hwnd, search_hwnd, icons));
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+    set_window_host(role, hwnd);
     if let Some(state) = unsafe { get_state_mut(hwnd) } {
         ensure_db();
         if role == WindowRole::Main {
@@ -3794,7 +3795,6 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         set_main_window_noactivate_mode(hwnd, true);
         refresh_low_level_input_hooks();
     }
-    set_window_host(role, hwnd);
     refresh_low_level_input_hooks();
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
@@ -4271,7 +4271,12 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
             }
         }
         if !blocked && (!state.search_on || !pt_in_rect(x, y, &state.search_rect())) {
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
+            if state.role == WindowRole::Quick || state.main_window_noactivate {
+                set_main_window_noactivate_mode(hwnd, false);
+                let _ = force_foreground_window(hwnd);
+            }
+            ReleaseCapture();
+            SendMessageW(hwnd, WM_SYSCOMMAND, (SC_MOVE as usize | HTCAPTION as usize) as WPARAM, 0);
             return;
         }
     }
@@ -4714,6 +4719,9 @@ unsafe fn handle_nchittest(hwnd: HWND, lparam: LPARAM) -> LRESULT {
             if pt_in_rect(pt.x, pt.y, &state.title_button_rect(key)) {
                 return HTCLIENT as LRESULT;
             }
+        }
+        if state.role == WindowRole::Quick || state.main_window_noactivate {
+            return HTCLIENT as LRESULT;
         }
         return HTCAPTION as LRESULT;
     }
@@ -5710,12 +5718,23 @@ fn build_files_preview(paths: &[String]) -> String {
     if paths.is_empty() {
         return String::new();
     }
-    if paths.len() == 1 {
-        let p = Path::new(&paths[0]);
-        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or(&paths[0]);
-        name.to_string()
-    } else {
-        format!("{} 个项目", paths.len())
+    let names: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            let parsed = Path::new(path);
+            parsed
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(path)
+                .to_string()
+        })
+        .collect();
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].clone(),
+        2 => format!("{} + {}", names[0], names[1]),
+        _ => format!("{} + {} 等 {} 项", names[0], names[1], names.len()),
     }
 }
 
