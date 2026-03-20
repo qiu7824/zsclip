@@ -13,7 +13,8 @@ use windows_sys::Win32::{
 use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
 use crate::app::state::AppSettings;
 use crate::i18n::{app_title, translate};
-use crate::win_system_ui::{apply_theme_to_menu, nearest_monitor_rect_for_point, nearest_monitor_work_rect_for_point, to_wide};
+use crate::ui::MainUiLayout;
+use crate::win_system_ui::{apply_theme_to_menu, monitor_dpi_for_point, nearest_monitor_rect_for_point, nearest_monitor_work_rect_for_point, to_wide};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MainWindowPosMode {
@@ -32,10 +33,19 @@ fn parse_main_window_pos_mode(mode: &str) -> MainWindowPosMode {
     }
 }
 
-fn clamp_to_rect(x: i32, y: i32, rc: &RECT) -> (i32, i32) {
+fn main_window_layout_for_point(pt: POINT) -> MainUiLayout {
+    unsafe { MainUiLayout::zsclip().scaled(monitor_dpi_for_point(pt)) }
+}
+
+fn main_window_size_for_point(pt: POINT) -> (i32, i32) {
+    let layout = main_window_layout_for_point(pt);
+    (layout.win_w, layout.list_y + layout.list_h + 7)
+}
+
+fn clamp_to_rect(x: i32, y: i32, rc: &RECT, win_w: i32, win_h: i32) -> (i32, i32) {
     (
-        std::cmp::max(rc.left, std::cmp::min(x, std::cmp::max(rc.left, rc.right - crate::app::WIN_W))),
-        std::cmp::max(rc.top, std::cmp::min(y, std::cmp::max(rc.top, rc.bottom - crate::app::WIN_H))),
+        std::cmp::max(rc.left, std::cmp::min(x, std::cmp::max(rc.left, rc.right - win_w))),
+        std::cmp::max(rc.top, std::cmp::min(y, std::cmp::max(rc.top, rc.bottom - win_h))),
     )
 }
 
@@ -50,8 +60,16 @@ fn resolve_main_window_position(
     settings: &AppSettings,
     by_hotkey: bool,
     cursor: POINT,
-) -> (i32, i32) {
-    let requested = parse_main_window_pos_mode(settings.show_pos_mode.as_str());
+) -> (i32, i32, i32, i32) {
+    let requested = if settings.edge_auto_hide {
+        if settings.last_window_x >= 0 && settings.last_window_y >= 0 {
+            MainWindowPosMode::Last
+        } else {
+            MainWindowPosMode::Center
+        }
+    } else {
+        parse_main_window_pos_mode(settings.show_pos_mode.as_str())
+    };
     let (x, y) = match requested {
         MainWindowPosMode::Fixed => (settings.show_fixed_x, settings.show_fixed_y),
         MainWindowPosMode::Last if settings.last_window_x >= 0 && settings.last_window_y >= 0 => {
@@ -62,13 +80,15 @@ fn resolve_main_window_position(
         MainWindowPosMode::Center if by_hotkey => mouse_anchor(settings, cursor),
         _ => {
             let work = unsafe { nearest_monitor_work_rect_for_point(cursor) };
+            let (win_w, win_h) = main_window_size_for_point(cursor);
             (
-                work.left + ((work.right - work.left - crate::app::WIN_W) / 2),
-                work.top + ((work.bottom - work.top - crate::app::WIN_H) / 3),
+                work.left + ((work.right - work.left - win_w) / 2),
+                work.top + ((work.bottom - work.top - win_h) / 3),
             )
         }
     };
     let anchor = POINT { x, y };
+    let (win_w, win_h) = main_window_size_for_point(anchor);
     let work = unsafe { nearest_monitor_work_rect_for_point(anchor) };
     let monitor = unsafe { nearest_monitor_rect_for_point(anchor) };
     let clamp_rect = RECT {
@@ -77,7 +97,28 @@ fn resolve_main_window_position(
         right: std::cmp::min(work.right, monitor.right),
         bottom: std::cmp::min(work.bottom, monitor.bottom),
     };
-    clamp_to_rect(x, y, &clamp_rect)
+    let (mut x, mut y) = clamp_to_rect(x, y, &clamp_rect, win_w, win_h);
+    if settings.edge_auto_hide {
+        let candidates = [
+            ((x - clamp_rect.left).abs(), 0),
+            ((clamp_rect.right - (x + win_w)).abs(), 1),
+            ((y - clamp_rect.top).abs(), 2),
+            ((clamp_rect.bottom - (y + win_h)).abs(), 3),
+        ];
+        let mut best = candidates[0];
+        for candidate in candidates.into_iter().skip(1) {
+            if candidate.0 < best.0 {
+                best = candidate;
+            }
+        }
+        match best.1 {
+            0 => x = clamp_rect.left,
+            1 => x = (clamp_rect.right - win_w).max(clamp_rect.left),
+            2 => y = clamp_rect.top,
+            _ => y = (clamp_rect.bottom - win_h).max(clamp_rect.top),
+        }
+    }
+    (x, y, win_w, win_h)
 }
 
 unsafe fn window_class_name(hwnd: HWND) -> String {
@@ -176,8 +217,8 @@ pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) -> bool {
 pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by_hotkey: bool) {
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
-    let (x, y) = resolve_main_window_position(settings, by_hotkey, pt);
-    SetWindowPos(hwnd, null_mut(), x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    let (x, y, win_w, win_h) = resolve_main_window_position(settings, by_hotkey, pt);
+    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
@@ -186,8 +227,13 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
         crate::app::refresh_window_for_show(hwnd);
         crate::app::reset_search_ui_state(&mut *pst);
         position_main_window(hwnd, &(*pst).settings, by_hotkey);
+        if (*pst).settings.edge_auto_hide {
+            let _ = crate::app::hosts::snap_window_to_nearest_edge(hwnd, &mut *pst);
+        }
         (*pst).edge_hidden = false;
-        (*pst).edge_hidden_side = -1;
+        if !(*pst).settings.edge_auto_hide {
+            (*pst).edge_hidden_side = -1;
+        }
         (*pst).hotkey_passthrough_active = false;
         (*pst).hotkey_passthrough_target = null_mut();
         (*pst).hotkey_passthrough_focus = null_mut();
@@ -211,8 +257,13 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
     if !pst.is_null() {
         crate::app::reset_search_ui_state(&mut *pst);
         position_main_window(hwnd, &(*pst).settings, by_hotkey);
+        if (*pst).settings.edge_auto_hide {
+            let _ = crate::app::hosts::snap_window_to_nearest_edge(hwnd, &mut *pst);
+        }
         (*pst).edge_hidden = false;
-        (*pst).edge_hidden_side = -1;
+        if !(*pst).settings.edge_auto_hide {
+            (*pst).edge_hidden_side = -1;
+        }
         if by_hotkey {
             if let Some((target, focus)) = foreground_focus_snapshot() {
                 (*pst).hotkey_passthrough_active = true;
@@ -268,8 +319,13 @@ pub(crate) unsafe fn remember_window_pos(hwnd: HWND) {
     }
     let mut rc: RECT = zeroed();
     if GetWindowRect(hwnd, &mut rc) != 0 {
-        (*pst).settings.last_window_x = rc.left;
-        (*pst).settings.last_window_y = rc.top;
+        let (save_x, save_y) = if (*pst).settings.edge_auto_hide && (*pst).edge_hidden {
+            ((*pst).edge_restore_x, (*pst).edge_restore_y)
+        } else {
+            (rc.left, rc.top)
+        };
+        (*pst).settings.last_window_x = save_x;
+        (*pst).settings.last_window_y = save_y;
         crate::app::save_settings(&(*pst).settings);
     }
 }

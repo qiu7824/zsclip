@@ -447,6 +447,7 @@ impl AppState {
             role,
             hwnd,
             search_hwnd,
+            search_font: null_mut(),
             theme: Theme::default(),
             icons,
             records: Vec::new(),
@@ -686,7 +687,7 @@ impl AppState {
         if loaded == 0 {
             return;
         }
-        let last_visible = ((self.scroll_y + self.list_view_height()) / ROW_H).max(0) as usize
+        let last_visible = ((self.scroll_y + self.list_view_height()) / self.layout().row_h).max(0) as usize
             + ITEMS_LOAD_AHEAD_ROWS as usize;
         if last_visible >= loaded {
             self.request_tab_page(tab, query, cursor, false);

@@ -311,6 +311,34 @@ pub(crate) unsafe fn window_dpi(hwnd: HWND) -> u32 {
     96
 }
 
+pub(crate) unsafe fn monitor_dpi_for_point(pt: POINT) -> u32 {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    let shcore = LoadLibraryW(to_wide("shcore.dll").as_ptr());
+    if !shcore.is_null() {
+        type FnGetDpiForMonitor = unsafe extern "system" fn(*mut core::ffi::c_void, i32, *mut u32, *mut u32) -> i32;
+        if let Some(f) = core::mem::transmute::<_, Option<FnGetDpiForMonitor>>(GetProcAddress(
+            shcore,
+            b"GetDpiForMonitor\0".as_ptr(),
+        )) {
+            let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+            if !monitor.is_null() {
+                let mut dpi_x = 0u32;
+                let mut dpi_y = 0u32;
+                const MDT_EFFECTIVE_DPI: i32 = 0;
+                if f(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 && dpi_x != 0 {
+                    FreeLibrary(shcore);
+                    return dpi_x;
+                }
+            }
+        }
+        FreeLibrary(shcore);
+    }
+
+    window_dpi(null_mut())
+}
+
 pub(crate) unsafe fn scale_for_window(hwnd: HWND, value: i32) -> i32 {
     let dpi = window_dpi(hwnd).max(96) as i32;
     ((value * dpi) + 48) / 96
@@ -839,3 +867,4 @@ pub(crate) unsafe fn create_drop_source() -> *mut c_void {
         refs: AtomicU32::new(1),
     })) as *mut c_void
 }
+use std::ptr::null_mut;

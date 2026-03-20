@@ -1,4 +1,5 @@
 ﻿use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
@@ -11,7 +12,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::{
         BitBlt, CreateCompatibleDC, DeleteDC,
         CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT, NULL_PEN,
-        SRCCOPY,
+        GetDeviceCaps, LOGPIXELSY, SRCCOPY,
         CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB,
     },
 };
@@ -34,8 +35,29 @@ pub const SETTINGS_NAV_W: i32 = 236;
 pub const SETTINGS_TOP_H: i32 = 84;
 pub const SETTINGS_NAV_Y: i32 = 72;
 pub const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
-pub const SETTINGS_CONTENT_W: i32 = SETTINGS_W - SETTINGS_CONTENT_X - 28;
-pub const SETTINGS_CONTENT_Y: i32 = SETTINGS_TOP_H;
+
+static SETTINGS_UI_DPI: AtomicU32 = AtomicU32::new(96);
+
+pub fn set_settings_ui_dpi(dpi: u32) {
+    SETTINGS_UI_DPI.store(dpi.max(96), Ordering::Relaxed);
+}
+
+pub fn settings_ui_dpi() -> u32 {
+    SETTINGS_UI_DPI.load(Ordering::Relaxed).max(96)
+}
+
+pub fn settings_scale(value: i32) -> i32 {
+    let dpi = settings_ui_dpi() as i64;
+    (((value as i64) * dpi) + 48) as i32 / 96
+}
+
+pub fn settings_w_scaled() -> i32 { settings_scale(SETTINGS_W) }
+pub fn settings_h_scaled() -> i32 { settings_scale(SETTINGS_H) }
+pub fn settings_nav_w_scaled() -> i32 { settings_scale(SETTINGS_NAV_W) }
+pub fn settings_top_h_scaled() -> i32 { settings_scale(SETTINGS_TOP_H) }
+pub fn settings_content_x_scaled() -> i32 { settings_scale(SETTINGS_CONTENT_X) }
+pub fn settings_content_w_scaled() -> i32 { settings_w_scaled() - settings_content_x_scaled() - settings_scale(28) }
+pub fn settings_content_y_scaled() -> i32 { settings_top_h_scaled() }
 
 pub fn ui_text_font_family() -> &'static str {
     crate::win_system_ui::system_ui_text_font_family()
@@ -227,9 +249,14 @@ fn mix(a: u32, b: u32, t: f32) -> u32 {
 }
 
 pub fn settings_nav_item_rect(index: usize) -> RECT {
-    let x = 10;
-    let y = SETTINGS_NAV_Y + 8 + (index as i32) * 44;
-    RECT { left: x, top: y, right: SETTINGS_NAV_W - 10, bottom: y + 36 }
+    let x = settings_scale(10);
+    let y = settings_scale(SETTINGS_NAV_Y + 8 + (index as i32) * 44);
+    RECT {
+        left: x,
+        top: y,
+        right: settings_nav_w_scaled() - settings_scale(10),
+        bottom: y + settings_scale(36),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -510,6 +537,33 @@ impl MainUiLayout {
         }
     }
 
+    pub(crate) fn scaled(self, dpi: u32) -> Self {
+        fn scale(value: i32, dpi: u32) -> i32 {
+            let dpi = (dpi.max(96)) as i32;
+            ((value * dpi) + 48) / 96
+        }
+        Self {
+            win_w: scale(self.win_w, dpi),
+            title_h: scale(self.title_h, dpi),
+            seg_x: scale(self.seg_x, dpi),
+            seg_y: scale(self.seg_y, dpi),
+            seg_w: scale(self.seg_w, dpi),
+            seg_h: scale(self.seg_h, dpi),
+            list_x: scale(self.list_x, dpi),
+            list_y: scale(self.list_y, dpi),
+            list_w: scale(self.list_w, dpi),
+            list_h: scale(self.list_h, dpi),
+            list_pad: scale(self.list_pad, dpi),
+            row_h: scale(self.row_h, dpi),
+            btn_w: scale(self.btn_w, dpi),
+            btn_gap: scale(self.btn_gap, dpi),
+            search_left: scale(self.search_left, dpi),
+            search_top: scale(self.search_top, dpi),
+            search_w: scale(self.search_w, dpi),
+            search_h: scale(self.search_h, dpi),
+        }
+    }
+
     pub(crate) fn list_view_height(self) -> i32 {
         self.list_h - 2 * self.list_pad
     }
@@ -567,16 +621,18 @@ impl MainUiLayout {
         slot: i32,
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
-        let size = 16;
-        let gap = 8;
-        let left = row.right - 10 - size - 12 - slot.max(0) * (size + gap);
+        let size = (self.row_h * 16 / 44).clamp(16, 20);
+        let gap = (self.row_h * 8 / 44).clamp(8, 12);
+        let right_pad = (self.row_h * 10 / 44).clamp(10, 16);
+        let icon_offset = (self.row_h * 12 / 44).clamp(12, 18);
+        let left = row.right - right_pad - size - icon_offset - slot.max(0) * (size + gap);
         let top = row.top + (self.row_h - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
     pub(crate) fn scroll_to_top_button_rect(self) -> UiRect {
-        let size = 36;
-        let margin = 10;
+        let size = (self.row_h * 36 / 44).clamp(32, 52);
+        let margin = (self.row_h * 10 / 44).clamp(10, 16);
         UiRect::new(
             self.list_x + self.list_w - self.list_pad - size - margin,
             self.list_y + self.list_h - self.list_pad - size - margin,
@@ -626,10 +682,12 @@ impl MainUiLayout {
         if self.total_content_height(filtered_len) <= self.list_view_height() {
             return None;
         }
+        let track_gap = (self.row_h * 8 / 44).clamp(8, 12);
+        let track_w = (self.row_h * 6 / 44).clamp(4, 8);
         Some(UiRect::new(
-            self.list_x + self.list_w - self.list_pad - 8 - 2,
+            self.list_x + self.list_w - self.list_pad - track_gap - 2,
             self.list_y + self.list_pad + 2,
-            self.list_x + self.list_w - self.list_pad - 2,
+            self.list_x + self.list_w - self.list_pad - 2 + (track_w - 6).max(0),
             self.list_y + self.list_h - self.list_pad - 2,
         ))
     }
@@ -772,7 +830,9 @@ pub unsafe fn draw_text_ex(
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
     let font_name = resolve_ui_font_family(family);
-    let font = CreateFontW(-size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
+    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
+    let scaled_size = ((size.max(1) * dpi) + 48) / 96;
+    let font = CreateFontW(-scaled_size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
     let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;
@@ -798,7 +858,9 @@ pub unsafe fn draw_text_block_ex(
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
     let font_name = resolve_ui_font_family(family);
-    let font = CreateFontW(-size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
+    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
+    let scaled_size = ((size.max(1) * dpi) + 48) / 96;
+    let font = CreateFontW(-scaled_size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
     let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;

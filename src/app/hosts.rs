@@ -442,19 +442,34 @@ fn edge_docked_rect(state: &AppState) -> RECT {
     }
 }
 
-fn edge_detect_margin_v() -> i32 {
-    EDGE_AUTO_HIDE_MARGIN.max(12)
+fn edge_docked_rect_valid(state: &AppState) -> bool {
+    state.edge_docked_right > state.edge_docked_left && state.edge_docked_bottom > state.edge_docked_top
 }
 
-fn edge_detect_margin_h() -> i32 {
-    edge_detect_margin_v().max(24)
+fn edge_side_valid(side: i32) -> bool {
+    matches!(
+        side,
+        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT | EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM
+    )
+}
+
+unsafe fn edge_auto_hide_peek(hwnd: HWND) -> i32 {
+    scale_for_window(hwnd, EDGE_AUTO_HIDE_PEEK).max(6)
+}
+
+unsafe fn edge_detect_margin_v(hwnd: HWND) -> i32 {
+    scale_for_window(hwnd, EDGE_AUTO_HIDE_MARGIN).max(12)
+}
+
+unsafe fn edge_detect_margin_h(hwnd: HWND) -> i32 {
+    edge_detect_margin_v(hwnd).max(scale_for_window(hwnd, 24))
 }
 
 unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
     let work = nearest_monitor_work_rect_for_window(hwnd);
     let monitor = nearest_monitor_rect_for_window(hwnd);
-    let margin_v = edge_detect_margin_v();
-    let margin_h = edge_detect_margin_h();
+    let margin_v = edge_detect_margin_v(hwnd);
+    let margin_h = edge_detect_margin_h(hwnd);
 
     let candidates = [
         ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT, work, margin_h),
@@ -480,6 +495,23 @@ unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
     best.map(|(_, side, base)| (side, base))
 }
 
+unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    let candidates = [
+        ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT),
+        ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT),
+        ((rc.top - work.top).abs(), EDGE_AUTO_HIDE_TOP),
+        ((work.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM),
+    ];
+    let mut best = candidates[0];
+    for candidate in candidates.into_iter().skip(1) {
+        if candidate.0 < best.0 {
+            best = candidate;
+        }
+    }
+    (best.1, work)
+}
+
 unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
     if let Some((side, base)) = edge_choose_dock_side(hwnd, rc) {
         state.edge_hidden_side = side;
@@ -493,6 +525,113 @@ unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) ->
         clear_edge_dock_state(state);
         false
     }
+}
+
+unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
+    if !edge_side_valid(state.edge_hidden_side) || !edge_docked_rect_valid(state) {
+        return None;
+    }
+    let docked = edge_docked_rect(state);
+    let hot = edge_detect_margin_v(hwnd);
+    Some(match state.edge_hidden_side {
+        EDGE_AUTO_HIDE_LEFT => RECT {
+            left: docked.left,
+            top: docked.top,
+            right: docked.left + hot,
+            bottom: docked.bottom,
+        },
+        EDGE_AUTO_HIDE_RIGHT => RECT {
+            left: docked.right - hot,
+            top: docked.top,
+            right: docked.right,
+            bottom: docked.bottom,
+        },
+        EDGE_AUTO_HIDE_TOP => RECT {
+            left: docked.left,
+            top: docked.top,
+            right: docked.right,
+            bottom: docked.top + hot,
+        },
+        EDGE_AUTO_HIDE_BOTTOM => RECT {
+            left: docked.left,
+            top: docked.bottom - hot,
+            right: docked.right,
+            bottom: docked.bottom,
+        },
+        _ => docked,
+    })
+}
+
+unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Option<(i32, i32)> {
+    if !edge_side_valid(state.edge_hidden_side) || !edge_docked_rect_valid(state) {
+        return None;
+    }
+    let docked = edge_docked_rect(state);
+    let width = (rc.right - rc.left).max(1);
+    let height = (rc.bottom - rc.top).max(1);
+    let peek = edge_auto_hide_peek(hwnd);
+    let x = match state.edge_hidden_side {
+        EDGE_AUTO_HIDE_LEFT => docked.left + peek - width,
+        EDGE_AUTO_HIDE_RIGHT => docked.right - peek,
+        EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM => {
+            state
+                .edge_restore_x
+                .clamp(docked.left, (docked.right - width).max(docked.left))
+        }
+        _ => rc.left,
+    };
+    let y = match state.edge_hidden_side {
+        EDGE_AUTO_HIDE_TOP => docked.top + peek - height,
+        EDGE_AUTO_HIDE_BOTTOM => docked.bottom - peek,
+        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
+            state
+                .edge_restore_y
+                .clamp(docked.top, (docked.bottom - height).max(docked.top))
+        }
+        _ => rc.top,
+    };
+    Some((x, y))
+}
+
+pub(crate) unsafe fn snap_window_to_nearest_edge(hwnd: HWND, state: &mut AppState) -> bool {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+        return false;
+    }
+    let rc = window_rect_for_dock(hwnd);
+    let width = (rc.right - rc.left).max(1);
+    let height = (rc.bottom - rc.top).max(1);
+    let (side, base) = edge_choose_nearest_side(hwnd, &rc);
+    let x = match side {
+        EDGE_AUTO_HIDE_LEFT => base.left,
+        EDGE_AUTO_HIDE_RIGHT => (base.right - width).max(base.left),
+        EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM => {
+            rc.left.clamp(base.left, (base.right - width).max(base.left))
+        }
+        _ => rc.left,
+    };
+    let y = match side {
+        EDGE_AUTO_HIDE_TOP => base.top,
+        EDGE_AUTO_HIDE_BOTTOM => (base.bottom - height).max(base.top),
+        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
+            rc.top.clamp(base.top, (base.bottom - height).max(base.top))
+        }
+        _ => rc.top,
+    };
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        x,
+        y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    state.edge_hidden_side = side;
+    set_edge_docked_rect(state, &base);
+    state.edge_restore_x = x;
+    state.edge_restore_y = y;
+    state.edge_hidden = false;
+    true
 }
 
 pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
@@ -512,32 +651,38 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
 }
 
 pub(super) unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
-    if state.role != WindowRole::Main || !state.settings.edge_auto_hide || state.edge_hidden {
+    if !state.settings.edge_auto_hide || state.edge_hidden {
         return;
     }
 
-    let rc = window_rect_for_dock(hwnd);
+    let mut rc = window_rect_for_dock(hwnd);
     if !update_edge_dock_state(hwnd, state, &rc) {
-        return;
+        if !snap_window_to_nearest_edge(hwnd, state) {
+            return;
+        }
+        rc = window_rect_for_dock(hwnd);
     }
 
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
-    if cursor_over_window_tree(hwnd, cursor) {
+    if should_ignore_outside_click_for_point(cursor) {
         return;
     }
 
     state.edge_restore_x = rc.left;
     state.edge_restore_y = rc.top;
-    let docked = edge_docked_rect(state);
-    let width = (rc.right - rc.left).max(1);
-    let height = (rc.bottom - rc.top).max(1);
-    let (hide_x, hide_y) = match state.edge_hidden_side {
-        EDGE_AUTO_HIDE_LEFT => (docked.left + EDGE_AUTO_HIDE_PEEK - width, rc.top),
-        EDGE_AUTO_HIDE_RIGHT => (docked.right - EDGE_AUTO_HIDE_PEEK, rc.top),
-        EDGE_AUTO_HIDE_TOP => (rc.left, docked.top + EDGE_AUTO_HIDE_PEEK - height),
-        EDGE_AUTO_HIDE_BOTTOM => (rc.left, docked.bottom - EDGE_AUTO_HIDE_PEEK),
-        _ => (rc.left, rc.top),
+    let (hide_x, hide_y) = match edge_hidden_position(hwnd, state, &rc) {
+        Some(pos) => pos,
+        None => {
+            if !snap_window_to_nearest_edge(hwnd, state) {
+                return;
+            }
+            let rc2 = window_rect_for_dock(hwnd);
+            match edge_hidden_position(hwnd, state, &rc2) {
+                Some(pos) => pos,
+                None => return,
+            }
+        }
     };
     SetWindowPos(
         hwnd,
@@ -565,59 +710,34 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
 
+    if state.edge_hidden_side == EDGE_AUTO_HIDE_NONE {
+        let _ = snap_window_to_nearest_edge(hwnd, state);
+    }
+
     let rc = window_rect_for_dock(hwnd);
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
-    let width = (rc.right - rc.left).max(1);
-    let height = (rc.bottom - rc.top).max(1);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
-    let docked = edge_docked_rect(state);
-
-    if !pt_in_rect_screen(&cursor, &RECT {
-        left: monitor.left - 2,
-        top: monitor.top - 2,
-        right: monitor.right + 2,
-        bottom: monitor.bottom + 2,
-    }) {
-        return;
-    }
 
     if state.edge_hidden {
-        let hot = match state.edge_hidden_side {
-            EDGE_AUTO_HIDE_LEFT => RECT {
-                left: docked.left,
-                top: state.edge_restore_y,
-                right: docked.left + EDGE_AUTO_HIDE_MARGIN,
-                bottom: state.edge_restore_y + height,
-            },
-            EDGE_AUTO_HIDE_RIGHT => RECT {
-                left: docked.right - EDGE_AUTO_HIDE_MARGIN,
-                top: state.edge_restore_y,
-                right: docked.right,
-                bottom: state.edge_restore_y + height,
-            },
-            EDGE_AUTO_HIDE_TOP => RECT {
-                left: state.edge_restore_x,
-                top: docked.top,
-                right: state.edge_restore_x + width,
-                bottom: docked.top + EDGE_AUTO_HIDE_MARGIN,
-            },
-            EDGE_AUTO_HIDE_BOTTOM => RECT {
-                left: state.edge_restore_x,
-                top: docked.bottom - EDGE_AUTO_HIDE_MARGIN,
-                right: state.edge_restore_x + width,
-                bottom: docked.bottom,
-            },
-            _ => rc,
-        };
-        if pt_in_rect_screen(&cursor, &hot) || GetForegroundWindow() == hwnd {
+        if let Some(hot) = edge_hotzone_rect(hwnd, state) {
+            if pt_in_rect_screen(&cursor, &hot) {
+                restore_edge_hidden_window(hwnd, state);
+                InvalidateRect(hwnd, null(), 0);
+            }
+        } else {
             restore_edge_hidden_window(hwnd, state);
-            InvalidateRect(hwnd, null(), 0);
         }
         return;
     }
 
-    update_edge_dock_state(hwnd, state, &rc);
+    if !update_edge_dock_state(hwnd, state, &rc) {
+        let _ = snap_window_to_nearest_edge(hwnd, state);
+    }
+    if state.edge_hidden_side != EDGE_AUTO_HIDE_NONE
+        && !should_ignore_outside_click_for_point(cursor)
+    {
+        hide_edge_docked_window(hwnd, state);
+    }
 }
 
 pub(super) unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
@@ -703,7 +823,6 @@ pub(super) unsafe fn handle_mouse_leave_main(hwnd: HWND) {
     if dirty {
         InvalidateRect(hwnd, null(), 0);
     }
-    hide_edge_docked_window(hwnd, state);
 }
 
 pub(super) unsafe fn handle_outside_click_hide(hwnd: HWND) {
@@ -1266,7 +1385,8 @@ pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, 
 pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, new_y: i32) {
     let mut crc: RECT = core::mem::zeroed();
     GetClientRect(hwnd, &mut crc);
-    let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
+    let content_y = settings_content_y_scaled();
+    let view_h = (crc.bottom - crc.top) - content_y;
     let new_y = new_y.clamp(0, settings_page_max_scroll(st.cur_page, view_h));
     if new_y == st.content_scroll_y {
         return;
@@ -1295,7 +1415,7 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     InvalidateRect(hwnd, &mask, 0);
     let scroll_strip = RECT {
         left: crc.right - SCROLL_BAR_W_ACTIVE - SCROLL_BAR_MARGIN - 4,
-        top: SETTINGS_CONTENT_Y,
+        top: content_y,
         right: crc.right,
         bottom: crc.bottom,
     };
@@ -1414,9 +1534,13 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
 }
 
 pub(super) unsafe fn settings_sync_pos_fields_enabled(st: &SettingsWndState) {
+    let edge_hide = st.draft.edge_auto_hide;
     let mode = settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos));
-    let is_follow = mode == "mouse";
-    let is_fixed = mode == "fixed";
+    let is_follow = !edge_hide && mode == "mouse";
+    let is_fixed = !edge_hide && mode == "fixed";
+    if !st.cb_pos.is_null() {
+        EnableWindow(st.cb_pos, if edge_hide { 0 } else { 1 });
+    }
     if !st.ed_dx.is_null() {
         EnableWindow(st.ed_dx, if is_follow { 1 } else { 0 });
     }
@@ -1506,6 +1630,15 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     let edge_hide_old = app.settings.edge_auto_hide;
     let vv_mode_old = app.settings.vv_mode_enabled;
     app.settings = st.draft.clone();
+    if app.settings.edge_auto_hide {
+        let mut rc: RECT = zeroed();
+        if GetWindowRect(st.parent_hwnd, &mut rc) != 0 {
+            app.settings.last_window_x = rc.left;
+            app.settings.last_window_y = rc.top;
+            st.draft.last_window_x = rc.left;
+            st.draft.last_window_y = rc.top;
+        }
+    }
     if !app.settings.grouping_enabled {
         app.current_group_filter = 0;
         app.tab_group_filters = [0, 0];
@@ -2196,7 +2329,11 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
         sync_main_tray_icon(hwnd, state);
         register_hotkey_for(hwnd, state);
         update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
-        position_main_window(hwnd, &state.settings, false);
+        if !state.settings.edge_auto_hide {
+            position_main_window(hwnd, &state.settings, false);
+        } else {
+            let _ = snap_window_to_nearest_edge(hwnd, state);
+        }
     }
     if old_edge_hide && !state.settings.edge_auto_hide {
         restore_edge_hidden_window(hwnd, state);

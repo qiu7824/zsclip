@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::ptr::{null_mut};
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::app::{AppState, ClipItem, ClipKind, Icons};
+use crate::app::{ClipItem, ClipKind, Icons};
 use crate::i18n::tr;
 use crate::win_system_ui::to_wide;
 
@@ -67,9 +67,24 @@ pub(crate) struct UpdateCheckState {
 }
 
 static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
+static ICON_HANDLE_CACHE: OnceLock<Mutex<HashMap<(u8, i32), isize>>> = OnceLock::new();
+static ICO_SEARCH: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_SETTING: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_MIN: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_EXIT: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_TEXT: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_FILE: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_FOLDER: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_TOP: OnceLock<Vec<u8>> = OnceLock::new();
+static ICO_DEL: OnceLock<Vec<u8>> = OnceLock::new();
 
 fn update_check_state() -> &'static Mutex<UpdateCheckState> {
     UPDATE_CHECK_STATE.get_or_init(|| Mutex::new(UpdateCheckState::default()))
+}
+
+fn icon_handle_cache() -> &'static Mutex<HashMap<(u8, i32), isize>> {
+    ICON_HANDLE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 macro_rules! icon_png_pack {
@@ -87,6 +102,22 @@ macro_rules! icon_png_pack {
 }
 
 static ICO_APP: &[u8] = include_bytes!("../assets/icons/icon.ico");
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+#[repr(u8)]
+pub(crate) enum IconAssetKind {
+    App = 0,
+    Search = 1,
+    Setting = 2,
+    Min = 3,
+    Close = 4,
+    Text = 5,
+    Image = 6,
+    File = 7,
+    Folder = 8,
+    Pin = 9,
+    Delete = 10,
+}
 
 pub(crate) unsafe fn open_path_with_shell(path: &str) {
     let op = to_wide("open");
@@ -464,45 +495,78 @@ pub(crate) fn is_directory_item(item: &ClipItem) -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) unsafe fn item_icon_handle(state: &mut AppState, item: &ClipItem) -> isize {
+pub(crate) unsafe fn item_icon_handle(item: &ClipItem, target_px: i32) -> isize {
     match item.kind {
-        ClipKind::Text | ClipKind::Phrase => state.icons.text,
-        ClipKind::Image => state.icons.image,
+        ClipKind::Text | ClipKind::Phrase => icon_handle_for(IconAssetKind::Text, target_px),
+        ClipKind::Image => icon_handle_for(IconAssetKind::Image, target_px),
         ClipKind::Files => {
             if item.file_paths.as_ref().and_then(|v| v.first()).map(|p| Path::new(p).is_dir()).unwrap_or(false) {
-                state.icons.folder
+                icon_handle_for(IconAssetKind::Folder, target_px)
             } else {
-                state.icons.file
+                icon_handle_for(IconAssetKind::File, target_px)
             }
         }
     }
 }
 
 pub(crate) fn load_icons() -> Icons {
-    let search_data = icon_png_pack!("search", "search");
-    let setting_data = icon_png_pack!("setting", "setting");
-    let min_data = icon_png_pack!("min", "min");
-    let exit_data = icon_png_pack!("exit", "exit");
-    let text_data = icon_png_pack!("text", "text");
-    let image_data = icon_png_pack!("image", "image");
-    let file_data = icon_png_pack!("file", "file");
-    let folder_data = icon_png_pack!("fold", "fold");
-    let top_data = icon_png_pack!("top", "top");
-    let del_data = icon_png_pack!("del", "del");
     unsafe {
         Icons {
-            app:    load_icon_from_bytes(ICO_APP,       32, 32),
-            search: load_icon_from_bytes(&search_data,  32, 32),
-            setting:load_icon_from_bytes(&setting_data, 32, 32),
-            min:    load_icon_from_bytes(&min_data,     32, 32),
-            close:  load_icon_from_bytes(&exit_data,    32, 32),
-            text:   load_icon_from_bytes(&text_data,    16, 16),
-            image:  load_icon_from_bytes(&image_data,   16, 16),
-            file:   load_icon_from_bytes(&file_data,    16, 16),
-            folder: load_icon_from_bytes(&folder_data,  16, 16),
-            pin:    load_icon_from_bytes(&top_data,     16, 16),
-            del:    load_icon_from_bytes(&del_data,     16, 16),
+            app:    load_icon_from_bytes(ICO_APP,       64, 64),
+            search: 0,
+            setting:0,
+            min:    0,
+            close:  0,
+            text:   0,
+            image:  0,
+            file:   0,
+            folder: 0,
+            pin:    0,
+            del:    0,
         }
+    }
+}
+
+fn icon_bytes_for(kind: IconAssetKind) -> &'static [u8] {
+    match kind {
+        IconAssetKind::App => ICO_APP,
+        IconAssetKind::Search => ICO_SEARCH.get_or_init(|| icon_png_pack!("search", "search")).as_slice(),
+        IconAssetKind::Setting => ICO_SETTING.get_or_init(|| icon_png_pack!("setting", "setting")).as_slice(),
+        IconAssetKind::Min => ICO_MIN.get_or_init(|| icon_png_pack!("min", "min")).as_slice(),
+        IconAssetKind::Close => ICO_EXIT.get_or_init(|| icon_png_pack!("exit", "exit")).as_slice(),
+        IconAssetKind::Text => ICO_TEXT.get_or_init(|| icon_png_pack!("text", "text")).as_slice(),
+        IconAssetKind::Image => ICO_IMAGE.get_or_init(|| icon_png_pack!("image", "image")).as_slice(),
+        IconAssetKind::File => ICO_FILE.get_or_init(|| icon_png_pack!("file", "file")).as_slice(),
+        IconAssetKind::Folder => ICO_FOLDER.get_or_init(|| icon_png_pack!("fold", "fold")).as_slice(),
+        IconAssetKind::Pin => ICO_TOP.get_or_init(|| icon_png_pack!("top", "top")).as_slice(),
+        IconAssetKind::Delete => ICO_DEL.get_or_init(|| icon_png_pack!("del", "del")).as_slice(),
+    }
+}
+
+fn normalize_requested_icon_size(size: i32) -> i32 {
+    const AVAILABLE: [i32; 7] = [16, 24, 32, 48, 64, 128, 256];
+    let requested = size.max(8);
+    for candidate in AVAILABLE {
+        if requested <= candidate {
+            return candidate;
+        }
+    }
+    256
+}
+
+pub(crate) unsafe fn icon_handle_for(kind: IconAssetKind, target_px: i32) -> isize {
+    let normalized = normalize_requested_icon_size(target_px);
+    if let Ok(mut cache) = icon_handle_cache().lock() {
+        if let Some(handle) = cache.get(&(kind as u8, normalized)) {
+            return *handle;
+        }
+        let handle = load_icon_from_bytes(icon_bytes_for(kind), normalized, normalized);
+        if handle != 0 {
+            cache.insert((kind as u8, normalized), handle);
+        }
+        handle
+    } else {
+        load_icon_from_bytes(icon_bytes_for(kind), normalized, normalized)
     }
 }
 
