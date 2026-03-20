@@ -54,6 +54,8 @@ pub const IDC_SET_TRAYICON: isize = 5060;
 pub const IDC_SET_AUTOHIDE_BLUR: isize = 5061;
 pub const IDC_SET_OPEN_UPDATE: isize = 5062;
 pub const IDC_SET_PASTE_MOVE_TOP: isize = 5063;
+pub const IDC_SET_DEDUPE_FILTER: isize = 5064;
+pub const IDC_SET_HK_RECORD: isize = 6104;
 
 unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();

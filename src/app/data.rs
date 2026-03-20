@@ -1,4 +1,5 @@
 use super::*;
+use rusqlite::OptionalExtension;
 
 struct DbItem {
     id: i64,
@@ -337,7 +338,11 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
     .ok()
 }
 
-pub(super) fn db_insert_item(category: i64, item: &ClipItem) -> rusqlite::Result<i64> {
+pub(super) fn db_insert_item(
+    category: i64,
+    item: &ClipItem,
+    signature: Option<&str>,
+) -> rusqlite::Result<i64> {
     let kind = match item.kind {
         ClipKind::Image => "image",
         ClipKind::Phrase => "phrase",
@@ -345,18 +350,20 @@ pub(super) fn db_insert_item(category: i64, item: &ClipItem) -> rusqlite::Result
         _ => "text",
     };
     let preview = item.preview.clone();
+    let signature = signature.unwrap_or_default().trim().to_string();
     let text_data = item.text.clone();
     let file_paths = item.file_paths.as_ref().map(|paths| paths.join("\n"));
     let image_data = item.image_bytes.clone();
     let image_path = item.image_path.clone();
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO items(category, kind, preview, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
                 preview,
+                signature,
                 text_data,
                 file_paths,
                 image_data,
@@ -368,6 +375,120 @@ pub(super) fn db_insert_item(category: i64, item: &ClipItem) -> rusqlite::Result
             ],
         )?;
         Ok(conn.last_insert_rowid())
+    })
+}
+
+pub(super) fn db_find_duplicate_item_id(
+    category: i64,
+    item: &ClipItem,
+    signature: &str,
+) -> Option<i64> {
+    if !signature.trim().is_empty() {
+        let found = with_db(|conn| {
+            conn.query_row(
+                "SELECT id FROM items WHERE category=? AND signature=? ORDER BY pinned DESC, id DESC LIMIT 1",
+                params![category, signature],
+                |row| row.get::<_, i64>(0),
+            )
+        })
+        .optional()
+        .ok()
+        .flatten();
+        if found.is_some() {
+            return found;
+        }
+    }
+
+    match item.kind {
+        ClipKind::Text | ClipKind::Phrase => item.text.as_ref().and_then(|text| {
+            with_db(|conn| {
+                conn.query_row(
+                    "SELECT id FROM items WHERE category=? AND kind IN ('text','phrase') AND COALESCE(text_data, '')=? ORDER BY pinned DESC, id DESC LIMIT 1",
+                    params![category, text],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .optional()
+            .ok()
+            .flatten()
+        }),
+        ClipKind::Files => item.file_paths.as_ref().and_then(|paths| {
+            let joined = paths.join("\n");
+            with_db(|conn| {
+                conn.query_row(
+                    "SELECT id FROM items WHERE category=? AND kind='files' AND COALESCE(file_paths, '')=? ORDER BY pinned DESC, id DESC LIMIT 1",
+                    params![category, joined],
+                    |row| row.get::<_, i64>(0),
+                )
+            })
+            .optional()
+            .ok()
+            .flatten()
+        }),
+        ClipKind::Image => None,
+    }
+}
+
+pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
+    with_db_mut(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let (
+            category,
+            kind,
+            preview,
+            signature,
+            text_data,
+            file_paths,
+            image_data,
+            image_path,
+            image_width,
+            image_height,
+            pinned,
+            group_id,
+        ) = tx.query_row(
+            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id
+             FROM items WHERE id=?",
+            params![item_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, i64>(11)?,
+                ))
+            },
+        )?;
+
+        tx.execute(
+            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                category,
+                kind,
+                preview,
+                signature,
+                text_data,
+                file_paths,
+                image_data,
+                image_path,
+                image_width,
+                image_height,
+                pinned,
+                group_id,
+            ],
+        )?;
+        let new_id = tx.last_insert_rowid();
+        tx.execute("DELETE FROM items WHERE id=?", params![item_id])?;
+        tx.commit()?;
+        Ok(new_id)
     })
 }
 
@@ -512,16 +633,6 @@ pub(super) fn db_update_item_text(item_id: i64, new_text: &str) -> rusqlite::Res
     })
 }
 
-pub(super) fn db_touch_item_created_at(item_id: i64) -> rusqlite::Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE items SET created_at=CURRENT_TIMESTAMP WHERE id=?",
-            params![item_id],
-        )?;
-        Ok(())
-    })
-}
-
 pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> {
     let mut clone = item.clone();
     clone.id = 0;
@@ -533,7 +644,7 @@ pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> 
     if clone.text.is_none() {
         clone.text = Some(clone.preview.clone());
     }
-    db_insert_item(1, &clone)
+    db_insert_item(1, &clone, None)
 }
 
 pub(super) fn reload_state_from_db(state: &mut AppState) {

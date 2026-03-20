@@ -20,6 +20,12 @@ use crate::ui::{
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
+use crate::win_system_ui::scale_for_window;
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn ShowScrollBar(hwnd: HWND, wbar: i32, bshow: i32) -> i32;
+}
 
 pub const SETTINGS_VIEWPORT_MASK_H: i32 = 14;
 pub const WM_SETTINGS_DROPDOWN_SELECTED: u32 = WM_APP + 91;
@@ -333,13 +339,16 @@ pub unsafe fn create_settings_toggle_plain(
     (label, btn, x, y, label_w, row_h, btn_x, btn_y)
 }
 
-pub unsafe fn create_settings_fonts() -> (*mut c_void, *mut c_void, *mut c_void) {
+pub unsafe fn create_settings_fonts(hwnd: HWND) -> (*mut c_void, *mut c_void, *mut c_void) {
+    let nav_size = scale_for_window(hwnd, 18);
+    let ui_size = scale_for_window(hwnd, 14);
+    let title_size = scale_for_window(hwnd, 20);
     let nav: *mut c_void =
-        CreateFontW(-18, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_icon_font_family()).as_ptr()) as _;
+        CreateFontW(-nav_size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_icon_font_family()).as_ptr()) as _;
     let ui: *mut c_void =
-        CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
+        CreateFontW(-ui_size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
     let title: *mut c_void =
-        CreateFontW(-20, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_display_font_family()).as_ptr()) as _;
+        CreateFontW(-title_size, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_display_font_family()).as_ptr()) as _;
     let default_ui: *mut c_void = if ui.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { ui };
     let default_title: *mut c_void = if title.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { title };
     (nav, default_ui, default_title)
@@ -499,6 +508,8 @@ pub unsafe fn create_settings_listbox(
     if !hwnd.is_null() {
         SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
         SetWindowTheme(hwnd, to_wide("Explorer").as_ptr(), null());
+        ShowScrollBar(hwnd, SB_VERT, 0);
+        ShowScrollBar(hwnd, SB_HORZ, 0);
     }
     hwnd
 }

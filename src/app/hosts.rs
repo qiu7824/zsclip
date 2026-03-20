@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::win_system_ui::{
     create_settings_dropdown_button as settings_create_dropdown_btn,
     create_settings_edit as host_create_settings_edit,
@@ -96,6 +96,29 @@ unsafe fn screen_point_hits_window_scope(hwnd: HWND, pt: POINT) -> bool {
     cursor_over_window_tree(hwnd, pt)
 }
 
+unsafe fn window_class_name(hwnd: HWND) -> String {
+    if hwnd.is_null() {
+        return String::new();
+    }
+    let mut class_buf = [0u16; 64];
+    let class_len = GetClassNameW(hwnd, class_buf.as_mut_ptr(), class_buf.len() as i32);
+    if class_len > 0 {
+        String::from_utf16_lossy(&class_buf[..class_len as usize])
+    } else {
+        String::new()
+    }
+}
+
+unsafe fn screen_point_hits_popup_menu(pt: POINT) -> bool {
+    let hwnd = WindowFromPoint(pt);
+    if hwnd.is_null() {
+        return false;
+    }
+    let root = GetAncestor(hwnd, GA_ROOT);
+    let target = if root.is_null() { hwnd } else { root };
+    window_class_name(target) == "#32768"
+}
+
 unsafe fn any_visible_window_requires_outside_hide() -> bool {
     for hwnd in window_host_hwnds() {
         if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
@@ -140,6 +163,9 @@ unsafe fn any_visible_window_requires_quick_escape_try() -> bool {
 }
 
 unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
+    if screen_point_hits_popup_menu(pt) {
+        return true;
+    }
     for hwnd in window_host_hwnds() {
         if screen_point_hits_window_scope(hwnd, pt) {
             return true;
@@ -685,11 +711,19 @@ pub(super) unsafe fn handle_outside_click_hide(hwnd: HWND) {
     if ptr.is_null() {
         return;
     }
-    if (*ptr).settings.auto_hide_on_blur {
-        hide_hover_preview();
-        ShowWindow(hwnd, SW_HIDE);
-        refresh_low_level_input_hooks();
+    if !(*ptr).settings.auto_hide_on_blur {
+        return;
     }
+    if vv_popup_menu_active() {
+        return;
+    }
+    let mut pt: POINT = zeroed();
+    if GetCursorPos(&mut pt) != 0 && should_ignore_outside_click_for_point(pt) {
+        return;
+    }
+    hide_hover_preview();
+    ShowWindow(hwnd, SW_HIDE);
+    refresh_low_level_input_hooks();
 }
 
 pub(crate) unsafe fn set_main_window_noactivate_mode(hwnd: HWND, enable: bool) {
@@ -1023,6 +1057,16 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             settings_set_text(st.cb_hk_mod, &normalize_hotkey_mod(&s.hotkey_mod));
             settings_set_text(st.cb_hk_key, &normalize_hotkey_key(&s.hotkey_key));
             settings_set_text(st.lb_hk_preview, &hotkey_preview_text(&s.hotkey_mod, &s.hotkey_key));
+            if !st.btn_hk_record.is_null() {
+            settings_set_text(
+                st.btn_hk_record,
+                if st.hotkey_recording {
+                    tr("按下快捷键...", "Press shortcut...")
+                } else {
+                    tr("录制热键", "Record Hotkey")
+                },
+            );
+        }
         }
         SettingsPage::Plugin => {
             let s = &st.draft;
@@ -1053,7 +1097,7 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
 
 fn localized_cloud_status_text(status: &str) -> String {
     let trimmed = status.trim();
-    if trimmed.is_empty() || trimmed == "鏈悓姝?" {
+    if trimmed.is_empty() || trimmed == "未同步" {
         return tr("未同步", "Not synced").to_string();
     }
     if let Some(rest) = trimmed.strip_prefix("失败：") {
@@ -1118,7 +1162,7 @@ pub(super) unsafe fn settings_page0_push_ctrl(
     settings_register_ctrl(st, 0, hwnd, x, y, w, h, true);
 }
 
-pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) {
+pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, redraw_children: bool) {
     if st.ui.scroll_ctrls().is_empty() || st.cur_page != SettingsPage::General.index() {
         return;
     }
@@ -1182,16 +1226,18 @@ pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState) 
     }
     EndDeferWindowPos(hdwp);
 
-    for slot in st.ui.scroll_ctrls() {
-        let hchild = slot.hwnd;
-        let oy = slot.bounds.top;
-        let oh = slot.bounds.bottom - slot.bounds.top;
-        if hchild.is_null() {
-            continue;
-        }
-        let new_y = oy - st.content_scroll_y;
-        if settings_child_visible(new_y, oh, &viewport) {
-            InvalidateRect(hchild, null(), 0);
+    if redraw_children {
+        for slot in st.ui.scroll_ctrls() {
+            let hchild = slot.hwnd;
+            let oy = slot.bounds.top;
+            let oh = slot.bounds.bottom - slot.bounds.top;
+            if hchild.is_null() {
+                continue;
+            }
+            let new_y = oy - st.content_scroll_y;
+            if settings_child_visible(new_y, oh, &viewport) {
+                InvalidateRect(hchild, null(), 0);
+            }
         }
     }
 
@@ -1221,15 +1267,29 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     let mut crc: RECT = core::mem::zeroed();
     GetClientRect(hwnd, &mut crc);
     let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
-    let new_y = new_y.clamp(0, settings_max_scroll(view_h));
+    let new_y = new_y.clamp(0, settings_page_max_scroll(st.cur_page, view_h));
     if new_y == st.content_scroll_y {
         return;
     }
+    let old_y = st.content_scroll_y;
     st.content_scroll_y = new_y;
     settings_scrollbar_show(hwnd, st);
 
     let viewport = settings_viewport_rect(&crc);
-    settings_repos_controls(hwnd, st);
+    let delta_y = old_y - new_y;
+    if delta_y != 0 {
+        ScrollWindowEx(
+            hwnd,
+            0,
+            delta_y,
+            &viewport,
+            &viewport,
+            null_mut(),
+            null_mut(),
+            SW_INVALIDATE | SW_SCROLLCHILDREN,
+        );
+    }
+    settings_repos_controls(hwnd, st, false);
 
     let mask = settings_viewport_mask_rect(&crc);
     InvalidateRect(hwnd, &mask, 0);
@@ -1240,7 +1300,12 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
         bottom: crc.bottom,
     };
     InvalidateRect(hwnd, &scroll_strip, 0);
-    InvalidateRect(hwnd, &viewport, 0);
+    RedrawWindow(
+        hwnd,
+        &viewport,
+        null_mut(),
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+    );
 }
 
 pub(super) unsafe fn settings_scrollbar_show(hwnd: HWND, st: &mut SettingsWndState) {
@@ -1259,6 +1324,20 @@ pub(super) unsafe fn settings_scroll(hwnd: HWND, st: &mut SettingsWndState, delt
 pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, page: usize) {
     let page = page.min(SETTINGS_PAGES.len().saturating_sub(1));
     let old_page = st.cur_page;
+    if old_page == SettingsPage::Hotkey.index() && page != old_page && st.hotkey_recording {
+        st.hotkey_recording = false;
+        if !st.btn_hk_record.is_null() {
+            settings_set_text(st.btn_hk_record, tr("录制热键", "Record Hotkey"));
+            InvalidateRect(st.btn_hk_record, null(), 1);
+        }
+        if !st.lb_hk_preview.is_null() {
+            settings_set_text(
+                st.lb_hk_preview,
+                &hotkey_preview_text(&get_window_text(st.cb_hk_mod), &get_window_text(st.cb_hk_key)),
+            );
+            InvalidateRect(st.lb_hk_preview, null(), 1);
+        }
+    }
     if old_page == page && st.ui.is_built(page) {
         settings_sync_page_state(st, page);
         return;
@@ -1280,8 +1359,9 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
     }
 
     st.content_scroll_y = 0;
+    st.scroll_bar_visible = false;
     if st.cur_page == SettingsPage::General.index() {
-        settings_repos_controls(hwnd, st);
+        settings_repos_controls(hwnd, st, true);
     }
 
     settings_sync_page_state(st, page);
@@ -1390,7 +1470,7 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         st.draft.cloud_sync_interval = {
             let label = get_window_text(st.cb_cloud_interval);
             if label.trim().is_empty() {
-                "1小时".to_string()
+                "1灏忔椂".to_string()
             } else {
                 label
             }
@@ -1481,6 +1561,7 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         IDC_SET_CLOSETRAY => st.draft.close_without_exit,
         IDC_SET_CLICK_HIDE => st.draft.click_hide,
         IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top,
+        IDC_SET_DEDUPE_FILTER => st.draft.dedupe_filter_enabled,
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
@@ -1506,6 +1587,9 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_CLICK_HIDE => st.draft.click_hide = !st.draft.click_hide,
         IDC_SET_PASTE_MOVE_TOP => {
             st.draft.move_pasted_item_to_top = !st.draft.move_pasted_item_to_top
+        }
+        IDC_SET_DEDUPE_FILTER => {
+            st.draft.dedupe_filter_enabled = !st.draft.dedupe_filter_enabled
         }
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
@@ -1615,6 +1699,7 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
 
     st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
     st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w(), ui_font);
 
     let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, 24), sec3.label_w(), 24, ui_font);
     settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, 24), sec3.label_w(), 24);
@@ -1674,6 +1759,13 @@ pub(super) unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, sel
     if sel_idx >= 0 {
         SendMessageW(st.lb_groups, LB_SETCURSEL, sel_idx as WPARAM, 0);
     }
+    let item_h = SendMessageW(st.lb_groups, LB_GETITEMHEIGHT, 0, 0) as i32;
+    let mut rc: RECT = core::mem::zeroed();
+    GetClientRect(st.lb_groups, &mut rc);
+    let view_h = (rc.bottom - rc.top).max(0);
+    let needs_vscroll = item_h > 0 && (groups.len() as i32 * item_h) > view_h;
+    ShowScrollBar(st.lb_groups, SB_VERT, if needs_vscroll { 1 } else { 0 });
+    ShowScrollBar(st.lb_groups, SB_HORZ, 0);
     settings_sync_vv_group_display(st);
 }
 
@@ -1729,7 +1821,9 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     b.label(st, "按键：", key_label_x, sec0.label_y(1, 24), 50, 24);
     st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + 50, sec0.row_y(1), 120);
     if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
+    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, 24), sec0.full_w() - 124, 24);
+    st.btn_hk_record = b.button(st, "录制热键", IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - 110, sec0.row_y(2) - 2, 110);
+    if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
 
     let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
     st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, 110), sec1.row_y(1), 110);
@@ -1756,13 +1850,13 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     st.chk_qs = qs_btn;
     if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
     b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24);
-    st.cb_engine = b.dropdown(st, "筑森搜索（jzxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), 240);
+    st.cb_engine = b.dropdown(st, "筑森搜索（zxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), 240);
     if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
     b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, 24), sec0.label_w(), 24);
     st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
     let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), 130);
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let _ = b.label_auto(st, "占位符：{q}=编码后关键字，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
+    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
     let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
@@ -1894,8 +1988,16 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     let update_state = update_check_state_snapshot();
     let lines = [
         format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
-        "设置界面现在统一使用同一套 section/form 布局。".to_string(),
-        "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。".to_string(),
+        tr(
+            "设置界面现在统一使用同一套 section/form 布局。",
+            "The settings window now uses a unified section/form layout.",
+        )
+        .to_string(),
+        tr(
+            "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。",
+            "New settings can reuse the same cards, field columns, action rows, and spacing.",
+        )
+        .to_string(),
     ];
     let mut y = sec.row_y(0);
     for line in lines.iter() {
@@ -1903,7 +2005,7 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         y += h + 10;
     }
 
-    let (_, label_h) = b.label_auto(st, "开源地址：", sec.left(), y, 72, 24);
+    let (_, label_h) = b.label_auto(st, tr("开源地址：", "Source: "), sec.left(), y, 72, 24);
     let link = b.button(
         st,
         open_source_url_display(),
@@ -1918,7 +2020,7 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     y += label_h.max(32) + 10;
 
     let update_text = if update_state.checking {
-        tr("更新检查中…", "Checking for updates...").to_string()
+        tr("检查更新中…", "Checking for updates...").to_string()
     } else if !update_state.started {
         tr("点击下方按钮后再检查更新。", "Click the button below to check for updates.").to_string()
     } else if update_state.available {
@@ -1943,7 +2045,7 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         if update_state.checking {
             tr("检测中…", "Checking...")
         } else if update_state.available {
-            tr("打开新版本", "Open new version")
+            tr("点击下载最新版本", "Click to download latest version")
         } else if update_state.started {
             tr("再次检查", "Check again")
         } else {
@@ -2004,7 +2106,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
     let text = get_window_text(dis.hwndItem);
 
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
+        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_DEDUPE_FILTER || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
         || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
@@ -2153,3 +2255,4 @@ pub(super) unsafe fn sync_peer_windows_from_settings(source_hwnd: HWND) {
 pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
     refresh_window_state(hwnd, true);
 }
+

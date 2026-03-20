@@ -16,7 +16,7 @@ use windows_sys::Win32::{
 use crate::{
     app::{ensure_item_image_bytes, ClipItem, ClipKind},
     i18n::tr,
-    ui::{draw_round_rect, draw_text, draw_text_ex, Theme},
+    ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_bgra, Theme},
     win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
 };
 
@@ -84,6 +84,7 @@ unsafe extern "system" fn preview_wnd_proc(
                 );
 
                 if let Some((bytes, width, height)) = &data.image {
+                    let bgra = rgba_to_bgra(bytes);
                     let content = RECT {
                         left: 12,
                         top: 40,
@@ -118,7 +119,7 @@ unsafe extern "system" fn preview_wnd_proc(
                         0,
                         *width as i32,
                         *height as i32,
-                        bytes.as_ptr() as _,
+                        bgra.as_ptr() as _,
                         &bmi,
                         DIB_RGB_COLORS,
                         SRCCOPY,
@@ -130,7 +131,7 @@ unsafe extern "system" fn preview_wnd_proc(
                         right: rc.right - 14,
                         bottom: rc.bottom - 14,
                     };
-                    draw_text(hdc as _, &data.body, &body_rc, th.text, 12, false, false);
+                    draw_text_block(hdc as _, &data.body, &body_rc, th.text, 12, false);
                 }
             }
             EndPaint(hwnd, &ps);

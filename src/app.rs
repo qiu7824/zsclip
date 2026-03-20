@@ -40,12 +40,14 @@ use std::ptr::{null, null_mut};
 use self::runtime::*;
 use self::state::*;
 use crate::i18n::{app_title, tr, translate};
+use crate::settings_model::{settings_page_content_total_h, settings_page_max_scroll};
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterHotKey(hwnd: HWND, id: i32, fsmodifiers: u32, vk: u32) -> i32;
     fn UnregisterHotKey(hwnd: HWND, id: i32) -> i32;
     fn EnableWindow(hwnd: HWND, benable: i32) -> i32;
     fn IsWindow(hwnd: HWND) -> i32;
+    fn ShowScrollBar(hwnd: HWND, wbar: i32, bshow: i32) -> i32;
     fn AttachThreadInput(id_attach: u32, id_attach_to: u32, attach: i32) -> i32;
     fn TrackMouseEvent(lpeventtrack: *mut TRACKMOUSEEVENT) -> i32;
 }
@@ -108,7 +110,7 @@ struct TRACKMOUSEEVENT {
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{
     is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell,
     open_source_url, open_source_url_display, restart_explorer_shell, start_update_check,
@@ -123,8 +125,8 @@ use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{settings_max_scroll, CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS, SETTINGS_CONTENT_TOTAL_H};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, send_backspace_times, send_ctrl_v, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -278,7 +280,7 @@ const LLKHF_INJECTED_FLAG: u32 = 0x00000010;
 const VV_TRIGGER_TIMEOUT_MS: u128 = 300;
 const VV_SHOW_RETRY_DELAY_MS: u32 = 30;
 const VV_SHOW_RETRY_MAX: u8 = 10;
-const VV_POPUP_MENU_GRACE_MS: u64 = 450;
+const VV_POPUP_MENU_GRACE_MS: u64 = 900;
 const VV_IMM_POINT_MAX_X_DRIFT: i32 = 120;
 const VV_IMM_POINT_MAX_Y_DRIFT: i32 = 180;
 const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
@@ -1387,11 +1389,27 @@ impl AppState {
     }
 
     fn add_clip_item(&mut self, mut item: ClipItem, signature: String) {
-        if !signature.is_empty() && self.last_signature == signature {
+        if self.settings.dedupe_filter_enabled && !signature.is_empty() && self.last_signature == signature {
             return;
         }
-        self.last_signature = signature;
-        item.id = db_insert_item(0, &item).unwrap_or(0);
+        if self.settings.dedupe_filter_enabled && !signature.is_empty() {
+            if let Some(existing_id) = db_find_duplicate_item_id(0, &item, &signature) {
+                if db_promote_item_to_top(existing_id).is_ok() {
+                    self.last_signature = signature;
+                    self.remove_cached_item(existing_id);
+                    reload_state_from_db(self);
+                    if self.tab_index == 0 {
+                        self.sel_idx = 0;
+                    }
+                    unsafe { sync_peer_windows_from_db(self.hwnd); }
+                    return;
+                }
+            }
+        }
+        if self.settings.dedupe_filter_enabled {
+            self.last_signature = signature.clone();
+        }
+        item.id = db_insert_item(0, &item, Some(signature.as_str())).unwrap_or(0);
         // 回填内存中的 created_at（DB 由 CURRENT_TIMESTAMP 自动填写，内存补齐以便时间分组标头正常工作）
         if item.created_at.is_empty() {
             item.created_at = now_utc_sqlite();
@@ -1680,6 +1698,8 @@ struct SettingsWndState {
     cb_hk_mod: HWND,
     cb_hk_key: HWND,
     lb_hk_preview: HWND,
+    btn_hk_record: HWND,
+    hotkey_recording: bool,
     btn_clip_hist_block: HWND,
     btn_clip_hist_restore: HWND,
     btn_restart_explorer: HWND,
@@ -1723,14 +1743,15 @@ struct SettingsWndState {
 }
 
 /// 计算自绘滚动条拇指矩形（宽度可变：正常=SCROLL_BAR_W，拖拽=SCROLL_BAR_W_ACTIVE）
-fn settings_scrollbar_thumb_w(crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<RECT> {
+fn settings_scrollbar_thumb_w(page: usize, crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<RECT> {
     let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
-    let max_s = settings_max_scroll(view_h);
+    let max_s = settings_page_max_scroll(page, view_h);
     if max_s <= 0 { return None; }
     let track_top    = SETTINGS_CONTENT_Y + 8;
     let track_bottom = crc.bottom - 8;
     let track_h = (track_bottom - track_top).max(1);
-    let thumb_h = ((view_h as f32 / SETTINGS_CONTENT_TOTAL_H as f32) * track_h as f32) as i32;
+    let content_h = settings_page_content_total_h(page).max(view_h + 1);
+    let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
     let thumb_h = thumb_h.max(24);
     let thumb_top = track_top
         + ((scroll_y as f32 / max_s as f32) * (track_h - thumb_h) as f32) as i32;
@@ -1778,7 +1799,7 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
 
             let d = &mut *data;
             let hmod = GetModuleHandleW(null());
-            d.ui_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+            d.ui_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
                 to_wide(ui_text_font_family()).as_ptr()) as _;
             input_dialog_refresh_theme(d);
 
@@ -1859,7 +1880,7 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             if !data_ptr.is_null() {
                 let d = &*data_ptr;
                 let title_rc = RECT { left: 20, top: 12, right: rc.right - 20, bottom: 46 };
-                let title_font: *mut core::ffi::c_void = CreateFontW(-16, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
+                let title_font: *mut core::ffi::c_void = CreateFontW(-scale_for_window(hwnd, 16), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
                     to_wide(ui_display_font_family()).as_ptr()) as _;
                 let old = SelectObject(hdc, title_font as _);
                 SetBkMode(hdc, 1);
@@ -2083,14 +2104,10 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let d = &mut *data;
             let hmod = GetModuleHandleW(null());
 
-            d.ui_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide("Cascadia Mono").as_ptr()) as _;
+            d.ui_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+                to_wide(ui_text_font_family()).as_ptr()) as _;
             edit_dialog_refresh_theme(d);
-            if (d.ui_font as usize) == 0 {
-                d.ui_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                    to_wide("Consolas").as_ptr()) as _;
-            }
-            d.btn_font = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
+            d.btn_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
                 to_wide(ui_text_font_family()).as_ptr()) as _;
 
             let mut rc: RECT = zeroed();
@@ -2388,7 +2405,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let parent_hwnd = cs.lpCreateParams as HWND;
-            let (nav_font, ui_font, title_font) = create_settings_fonts();
+            let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
             let mut st = Box::new(SettingsWndState {
                 parent_hwnd,
                 cur_page: 0,
@@ -2428,6 +2445,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 cb_hk_mod: null_mut(),
                 cb_hk_key: null_mut(),
                 lb_hk_preview: null_mut(),
+                btn_hk_record: null_mut(),
+                hotkey_recording: false,
                 btn_clip_hist_block: null_mut(),
                 btn_clip_hist_restore: null_mut(),
                 btn_restart_explorer: null_mut(),
@@ -2499,12 +2518,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 let mut crc: RECT = core::mem::zeroed();
                 GetClientRect(hwnd, &mut crc);
                 let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
-                let max_s = settings_max_scroll(view_h);
+                let max_s = settings_page_max_scroll(st.cur_page, view_h);
                 // 与 settings_scrollbar_thumb_w 保持一致的轨道范围
                 let track_top    = SETTINGS_CONTENT_Y + 8;
                 let track_bottom = crc.bottom - 8;
                 let track_h = (track_bottom - track_top).max(1);
-                let thumb_h = ((view_h as f32 / SETTINGS_CONTENT_TOTAL_H as f32) * track_h as f32) as i32;
+                let content_h = settings_page_content_total_h(st.cur_page).max(view_h + 1);
+                let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
                 let thumb_h = thumb_h.max(24);
                 let drag_range = (track_h - thumb_h).max(1);
                 let dy = my - st.scroll_drag_start_y;
@@ -2594,7 +2614,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             // 滚动条点击（用 ACTIVE 宽度扩大命中区域，便于点击）
             let mut crc: RECT = core::mem::zeroed();
             GetClientRect(hwnd, &mut crc);
-            if let Some(thumb) = settings_scrollbar_thumb_w(&crc, st.content_scroll_y, SCROLL_BAR_W_ACTIVE) {
+            if let Some(thumb) = settings_scrollbar_thumb_w(st.cur_page, &crc, st.content_scroll_y, SCROLL_BAR_W_ACTIVE) {
                 if mx >= thumb.left - 4 && mx <= thumb.right + 4 && my >= thumb.top && my <= thumb.bottom {
                     st.scroll_dragging = true;
                     st.scroll_drag_start_y = my;
@@ -2610,7 +2630,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let left_edge  = right_edge - SCROLL_BAR_W_ACTIVE - 4;
             if mx >= left_edge && mx <= right_edge + 2 && my >= SETTINGS_CONTENT_Y + 4 && my < crc.bottom - 4 {
                 let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
-                let max_s = settings_max_scroll(view_h);
+                let max_s = settings_page_max_scroll(st.cur_page, view_h);
                 let track_h = (crc.bottom - 8 - (SETTINGS_CONTENT_Y + 8)).max(1);
                 let new_y = ((my - SETTINGS_CONTENT_Y - 8) as f32 / track_h as f32 * max_s as f32) as i32;
                 settings_scroll_to(hwnd, st, new_y);
@@ -2624,6 +2644,39 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let st = &mut *st_ptr;
             let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
             settings_scroll(hwnd, st, if delta > 0 { -60 } else { 60 });
+            0
+        }
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if st_ptr.is_null() {
+                return 0;
+            }
+            let st = &mut *st_ptr;
+            if !st.hotkey_recording {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
+            let vk = wparam as u32;
+            if vk == VK_ESCAPE as u32 {
+                settings_set_hotkey_recording(st, false);
+                return 0;
+            }
+            if vv_is_modifier_vk(vk) {
+                return 0;
+            }
+            if let Some(key_label) = hotkey_key_label_from_vk(vk) {
+                if let Some(mod_label) = hotkey_mod_label_from_pressed_state() {
+                    settings_set_text(st.cb_hk_mod, &mod_label);
+                    settings_set_text(st.cb_hk_key, key_label);
+                    settings_set_hotkey_recording(st, false);
+                } else {
+                    settings_set_text(
+                        st.lb_hk_preview,
+                        tr("请按修饰键 + 按键", "Press modifier + key"),
+                    );
+                    InvalidateRect(st.lb_hk_preview, null(), 1);
+                }
+                return 0;
+            }
             0
         }
         WM_LBUTTONUP => {
@@ -2724,7 +2777,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_PASTE_MOVE_TOP || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == IDC_SET_MAX || dis.CtlID as isize == IDC_SET_POSMODE || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL || dis.CtlID as isize == IDC_SET_VV_SOURCE || dis.CtlID as isize == IDC_SET_VV_GROUP || dis.CtlID as isize == 6101 || dis.CtlID as isize == 6102 || dis.CtlID as isize == 6103 || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 || dis.CtlID as isize == 7201 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_PASTE_MOVE_TOP || dis.CtlID as isize == IDC_SET_DEDUPE_FILTER || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == IDC_SET_MAX || dis.CtlID as isize == IDC_SET_POSMODE || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL || dis.CtlID as isize == IDC_SET_VV_SOURCE || dis.CtlID as isize == IDC_SET_VV_GROUP || dis.CtlID as isize == 6101 || dis.CtlID as isize == 6102 || dis.CtlID as isize == 6103 || dis.CtlID as isize == IDC_SET_HK_RECORD || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 || dis.CtlID as isize == 7201 { th.surface } else { th.bg };
             let bg = CreateSolidBrush(bg_fill);
             let local = RECT { left: 0, top: 0, right: w, bottom: h };
             FillRect(memdc, &local, bg);
@@ -2745,10 +2798,17 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
             match cmd {
-                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_PASTE_MOVE_TOP | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
+                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_PASTE_MOVE_TOP | IDC_SET_DEDUPE_FILTER | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
+                }
+                IDC_SET_HK_RECORD => {
+                    let next = !st.hotkey_recording;
+                    settings_set_hotkey_recording(st, next);
+                    if next {
+                        SetFocus(hwnd);
+                    }
                 }
                 IDC_SET_GROUP_ADD => {
                     if let Some(name) = input_name_dialog(hwnd, "新建分组", "请输入分组名称：", "新分组") {
@@ -2986,8 +3046,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 IDC_SET_SAVE => {
                     settings_collect_to_app(st);
-                    // 刷新标题栏按钮（开机自启 UI 无需弹窗，直接关闭即可）
-                    DestroyWindow(hwnd);
+                    settings_apply_from_app(st);
+                    settings_sync_page_state(st, st.cur_page);
+                    InvalidateRect(hwnd, null(), 1);
                 }
                 IDC_SET_CLOSE => { DestroyWindow(hwnd); }
                 IDC_SET_BTN_OPENCFG => {
@@ -3021,6 +3082,40 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 apply_dark_mode_to_window(hwnd);
                 InvalidateRect(hwnd, null(), 1);
             }
+            0
+        }
+        WM_DPICHANGED => {
+            if lparam != 0 {
+                let suggested = &*(lparam as *const RECT);
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if !st_ptr.is_null() {
+                let st = &mut *st_ptr;
+                if !st.nav_font.is_null() { DeleteObject(st.nav_font as _); }
+                if !st.ui_font.is_null() && st.ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject(st.ui_font as _); }
+                if !st.title_font.is_null() && st.title_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject(st.title_font as _); }
+                let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
+                st.nav_font = nav_font;
+                st.ui_font = ui_font;
+                st.title_font = title_font;
+                settings_set_font(st.btn_save, st.ui_font);
+                settings_set_font(st.btn_close, st.ui_font);
+                for page in 0..SETTINGS_PAGES.len() {
+                    for reg in st.ui.page_regs(page) {
+                        settings_set_font(reg.hwnd, st.ui_font);
+                    }
+                }
+            }
+            InvalidateRect(hwnd, null(), 1);
             0
         }
         WM_CTLCOLORSTATIC => {
@@ -3126,7 +3221,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 // 自绘 WinUI 细条滚动条（仅在滚动时短暂显示，1.5秒后自动隐藏）
                 let view_h = (rc.bottom - rc.top) - SETTINGS_CONTENT_Y;
                 let show_bar = !st_ptr.is_null() && (*st_ptr).scroll_bar_visible
-                    && settings_max_scroll(view_h) > 0;
+                    && settings_page_max_scroll(cur_page, view_h) > 0;
                 if show_bar {
                     let dragging = !st_ptr.is_null() && (*st_ptr).scroll_dragging;
                     let bar_w = if dragging { SCROLL_BAR_W_ACTIVE } else { SCROLL_BAR_W };
@@ -3146,7 +3241,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         SelectObject(memdc, old_br);
                         DeleteObject(track_br as _);
                     }
-                    if let Some(thumb) = settings_scrollbar_thumb_w(&rc, scroll_y, bar_w) {
+                    if let Some(thumb) = settings_scrollbar_thumb_w(cur_page, &rc, scroll_y, bar_w) {
                         let thumb_color = if dragging { th.accent }
                             else if th.bg == rgb(32,32,32) { rgb(120,120,120) }
                             else { rgb(160,160,160) };
@@ -3243,7 +3338,14 @@ unsafe fn open_settings_window(hwnd: HWND) {
         WS_EX_APPWINDOW | WS_EX_DLGMODALFRAME,
         to_wide(SETTINGS_CLASS).as_ptr(),
         to_wide("").as_ptr(),
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE | WS_CLIPCHILDREN,
+        WS_OVERLAPPED
+            | WS_CAPTION
+            | WS_SYSMENU
+            | WS_MINIMIZEBOX
+            | WS_MAXIMIZEBOX
+            | WS_THICKFRAME
+            | WS_VISIBLE
+            | WS_CLIPCHILDREN,
         x,
         y,
         SETTINGS_W,
@@ -3254,12 +3356,6 @@ unsafe fn open_settings_window(hwnd: HWND) {
         owner_hwnd as _,
     );
     if !whd.is_null() {
-        if app.icons.app != 0 {
-            SendMessageW(whd, WM_SETICON, ICON_SMALL as usize, app.icons.app as LPARAM);
-            SendMessageW(whd, WM_SETICON, ICON_BIG as usize, app.icons.app as LPARAM);
-            SetClassLongPtrW(whd, GCLP_HICON, app.icons.app);
-            SetClassLongPtrW(whd, GCLP_HICONSM, app.icons.app);
-        }
         apply_window_corner_preference(whd);
         apply_dark_mode_to_window(whd);
         app.settings_hwnd = whd;
@@ -3668,6 +3764,26 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_DPICHANGED => {
+            if lparam != 0 {
+                let suggested = &*(lparam as *const RECT);
+                SetWindowPos(
+                    hwnd,
+                    null_mut(),
+                    suggested.left,
+                    suggested.top,
+                    suggested.right - suggested.left,
+                    suggested.bottom - suggested.top,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                layout_children(hwnd);
+            }
+            InvalidateRect(hwnd, null(), 1);
+            0
+        }
         WM_CLOSE => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
@@ -3754,7 +3870,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     if search_hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let search_font: *mut core::ffi::c_void = CreateFontW(-14, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
+    let search_font: *mut core::ffi::c_void = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
     let font: *mut core::ffi::c_void = if search_font.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { search_font };
     SendMessageW(search_hwnd, WM_SETFONT, font as WPARAM, 1 as LPARAM);
     SendMessageW(search_hwnd, EM_SETMARGINS, (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM, 0);
@@ -4991,10 +5107,88 @@ unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i
     if !state.settings.move_pasted_item_to_top || item_id <= 0 {
         return;
     }
-    if db_touch_item_created_at(item_id).is_ok() {
+    if db_promote_item_to_top(item_id).is_ok() {
         state.remove_cached_item(item_id);
         reload_state_from_db(state);
         sync_peer_windows_from_db(hwnd);
+    }
+}
+
+fn hotkey_key_label_from_vk(vk: u32) -> Option<&'static str> {
+    match vk {
+        0x41..=0x5A => HOTKEY_KEY_OPTIONS.get((vk - 0x41) as usize).copied(),
+        0x30..=0x39 => HOTKEY_KEY_OPTIONS.get((vk - 0x30 + 26) as usize).copied(),
+        x if x == VK_SPACE as u32 => Some("Space"),
+        x if x == VK_RETURN as u32 => Some("Enter"),
+        x if x == VK_TAB as u32 => Some("Tab"),
+        x if x == VK_ESCAPE as u32 => Some("Esc"),
+        x if x == VK_BACK as u32 => Some("Backspace"),
+        x if x == VK_DELETE as u32 => Some("Delete"),
+        x if x == VK_INSERT as u32 => Some("Insert"),
+        x if x == VK_UP as u32 => Some("Up"),
+        x if x == VK_DOWN as u32 => Some("Down"),
+        x if x == VK_LEFT as u32 => Some("Left"),
+        x if x == VK_RIGHT as u32 => Some("Right"),
+        x if x == VK_HOME as u32 => Some("Home"),
+        x if x == VK_END as u32 => Some("End"),
+        x if x == VK_PRIOR as u32 => Some("PageUp"),
+        x if x == VK_NEXT as u32 => Some("PageDown"),
+        _ => None,
+    }
+}
+
+unsafe fn hotkey_mod_label_from_pressed_state() -> Option<String> {
+    let ctrl = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
+    let alt = (GetAsyncKeyState(VK_MENU as i32) as u16 & 0x8000) != 0;
+    let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
+    let win = (GetAsyncKeyState(VK_LWIN as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_RWIN as i32) as u16 & 0x8000) != 0;
+    if win && !ctrl && !alt && !shift {
+        return Some("Win".to_string());
+    }
+    let mut parts = Vec::new();
+    if ctrl {
+        parts.push("Ctrl");
+    }
+    if alt {
+        parts.push("Alt");
+    }
+    if shift {
+        parts.push("Shift");
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("+"))
+    }
+}
+
+unsafe fn settings_set_hotkey_recording(st: &mut SettingsWndState, recording: bool) {
+    st.hotkey_recording = recording;
+    if !st.btn_hk_record.is_null() {
+        settings_set_text(
+            st.btn_hk_record,
+            if recording {
+                tr("按下快捷键...", "Press shortcut...")
+            } else {
+                tr("录制热键", "Record Hotkey")
+            },
+        );
+        InvalidateRect(st.btn_hk_record, null(), 1);
+    }
+    if !st.lb_hk_preview.is_null() {
+        if recording {
+            settings_set_text(
+                st.lb_hk_preview,
+                tr("请按修饰键 + 按键", "Press modifier + key"),
+            );
+        } else {
+            settings_set_text(
+                st.lb_hk_preview,
+                &hotkey_preview_text(&get_window_text(st.cb_hk_mod), &get_window_text(st.cb_hk_key)),
+            );
+        }
+        InvalidateRect(st.lb_hk_preview, null(), 1);
     }
 }
 
@@ -5373,9 +5567,12 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
         hwnd,
         null(),
     ) as usize;
-    vv_set_popup_menu_active(false);
     PostMessageW(hwnd, WM_NULL, 0, 0);
+    if state.search_on {
+        SetFocus(state.search_hwnd);
+    }
     DestroyMenu(menu);
+    vv_set_popup_menu_active(false);
     cmd
 }
 
@@ -5493,7 +5690,11 @@ unsafe fn paint(hwnd: HWND) {
     DeleteObject(bg_br as _);
 
     if state.icons.app != 0 {
-        draw_icon_tinted(memdc as _, 10, 9, state.icons.app, 18, 18, dark);
+        let app_badge = RECT { left: 6, top: 5, right: 28, bottom: 27 };
+        if dark {
+            draw_round_fill(memdc as _, &app_badge, th.surface2, 6);
+        }
+        draw_icon_tinted_soft(memdc as _, 9, 8, state.icons.app, 16, 16, dark, 88);
     }
     for key in ["search", "setting", "min", "close"] {
         if !title_button_visible(&state.settings, key) {
@@ -5519,8 +5720,9 @@ unsafe fn paint(hwnd: HWND) {
             _ => state.icons.close,
         };
         if icon != 0 {
-            let iw = 16;
-            let ih = 16;
+            let iw = if matches!(key, "search" | "setting") { 16 } else { 14 }
+                .min((rc.right - rc.left - 8).max(12));
+            let ih = iw;
             let ix = rc.left + ((rc.right - rc.left - iw) / 2);
             let iy = rc.top + ((rc.bottom - rc.top - ih) / 2);
             draw_icon_tinted(memdc as _, ix, iy, icon, iw, ih, dark);
@@ -5602,7 +5804,12 @@ unsafe fn paint(hwnd: HWND) {
 
             let icon = item_icon_handle(state, &item);
             if icon != 0 {
-                draw_icon_tinted(memdc as _, row_rc.left + 10, row_rc.top + 12, icon, 20, 20, dark);
+                let (icon_w, icon_h) = match item.kind {
+                    ClipKind::Text | ClipKind::Phrase | ClipKind::Image | ClipKind::Files => (16, 16),
+                };
+                let icon_x = row_rc.left + 12;
+                let icon_y = row_rc.top + ((ROW_H - icon_h) / 2);
+                draw_icon_tinted(memdc as _, icon_x, icon_y, icon, icon_w, icon_h, dark);
             }
 
             if item.pinned && state.icons.pin != 0 {
@@ -6041,6 +6248,8 @@ unsafe fn draw_rgba_image_fit(
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
+    let bgra = crate::ui::rgba_to_bgra(bytes);
+
     StretchDIBits(
         hdc as _,
         draw_x,
@@ -6051,7 +6260,7 @@ unsafe fn draw_rgba_image_fit(
         0,
         width as i32,
         height as i32,
-        bytes.as_ptr() as _,
+        bgra.as_ptr() as _,
         &bmi,
         DIB_RGB_COLORS,
         SRCCOPY,
