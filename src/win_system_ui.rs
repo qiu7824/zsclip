@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::OnceLock;
 
 pub use crate::settings_model::SettingsPage;
 pub use crate::settings_render::{
@@ -20,7 +21,10 @@ pub use crate::settings_ui_host::{
 };
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
-    Graphics::Gdi::{MonitorFromPoint, MonitorFromWindow, MONITOR_DEFAULTTONEAREST},
+    Graphics::Gdi::{
+        GetDC, GetDeviceCaps, MonitorFromPoint, MonitorFromWindow, ReleaseDC, LOGPIXELSX,
+        MONITOR_DEFAULTTONEAREST,
+    },
     System::Ole::DROPEFFECT,
     UI::{
         Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_MENU, VK_V},
@@ -40,6 +44,47 @@ use crate::win_system_params::{
 const HKEY_CURRENT_USER: isize = -2147483647i32 as isize;
 const KEY_READ: u32 = 0x20019;
 const REG_DWORD: u32 = 4;
+const SPI_GETNONCLIENTMETRICS: u32 = 0x0029;
+
+#[repr(C)]
+struct RawLogFontW {
+    lf_height: i32,
+    lf_width: i32,
+    lf_escapement: i32,
+    lf_orientation: i32,
+    lf_weight: i32,
+    lf_italic: u8,
+    lf_underline: u8,
+    lf_strike_out: u8,
+    lf_char_set: u8,
+    lf_out_precision: u8,
+    lf_clip_precision: u8,
+    lf_quality: u8,
+    lf_pitch_and_family: u8,
+    lf_face_name: [u16; 32],
+}
+
+#[repr(C)]
+struct RawNonClientMetricsW {
+    cb_size: u32,
+    i_border_width: i32,
+    i_scroll_width: i32,
+    i_scroll_height: i32,
+    i_caption_width: i32,
+    i_caption_height: i32,
+    lf_caption_font: RawLogFontW,
+    i_sm_caption_width: i32,
+    i_sm_caption_height: i32,
+    lf_sm_caption_font: RawLogFontW,
+    i_menu_width: i32,
+    i_menu_height: i32,
+    lf_menu_font: RawLogFontW,
+    lf_status_font: RawLogFontW,
+    lf_message_font: RawLogFontW,
+    i_padded_border_width: i32,
+}
+
+static SYSTEM_UI_FONT_FAMILY: OnceLock<String> = OnceLock::new();
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -222,6 +267,55 @@ pub(crate) unsafe fn init_dpi_awareness_for_process() {
     FreeLibrary(shcore);
 }
 
+pub(crate) unsafe fn window_dpi(hwnd: HWND) -> u32 {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    if !hwnd.is_null() {
+        let user32 = LoadLibraryW(to_wide("user32.dll").as_ptr());
+        if !user32.is_null() {
+            type FnGetDpiForWindow = unsafe extern "system" fn(HWND) -> u32;
+            type FnGetDpiForSystem = unsafe extern "system" fn() -> u32;
+            if let Some(f) = core::mem::transmute::<_, Option<FnGetDpiForWindow>>(GetProcAddress(
+                user32,
+                b"GetDpiForWindow\0".as_ptr(),
+            )) {
+                let dpi = f(hwnd);
+                if dpi != 0 {
+                    FreeLibrary(user32);
+                    return dpi;
+                }
+            }
+            if let Some(f) = core::mem::transmute::<_, Option<FnGetDpiForSystem>>(GetProcAddress(
+                user32,
+                b"GetDpiForSystem\0".as_ptr(),
+            )) {
+                let dpi = f();
+                if dpi != 0 {
+                    FreeLibrary(user32);
+                    return dpi;
+                }
+            }
+            FreeLibrary(user32);
+        }
+    }
+
+    let screen_dc = GetDC(core::ptr::null_mut());
+    if !screen_dc.is_null() {
+        let dpi = GetDeviceCaps(screen_dc, LOGPIXELSX as i32);
+        ReleaseDC(core::ptr::null_mut(), screen_dc);
+        if dpi > 0 {
+            return dpi as u32;
+        }
+    }
+    96
+}
+
+pub(crate) unsafe fn scale_for_window(hwnd: HWND, value: i32) -> i32 {
+    let dpi = window_dpi(hwnd).max(96) as i32;
+    ((value * dpi) + 48) / 96
+}
+
 pub(crate) unsafe fn init_dark_mode_for_process() {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -330,6 +424,69 @@ pub(crate) unsafe fn system_mouse_hover_time_ms() -> u32 {
         hover_ms
     } else {
         400
+    }
+}
+
+pub(crate) fn system_ui_text_font_family() -> &'static str {
+    SYSTEM_UI_FONT_FAMILY.get_or_init(|| unsafe {
+        let mut metrics = RawNonClientMetricsW {
+            cb_size: core::mem::size_of::<RawNonClientMetricsW>() as u32,
+            i_border_width: 0,
+            i_scroll_width: 0,
+            i_scroll_height: 0,
+            i_caption_width: 0,
+            i_caption_height: 0,
+            lf_caption_font: zeroed_logfont(),
+            i_sm_caption_width: 0,
+            i_sm_caption_height: 0,
+            lf_sm_caption_font: zeroed_logfont(),
+            i_menu_width: 0,
+            i_menu_height: 0,
+            lf_menu_font: zeroed_logfont(),
+            lf_status_font: zeroed_logfont(),
+            lf_message_font: zeroed_logfont(),
+            i_padded_border_width: 0,
+        };
+        if SystemParametersInfoW(
+            SPI_GETNONCLIENTMETRICS,
+            metrics.cb_size,
+            &mut metrics as *mut _ as _,
+            0,
+        ) != 0
+        {
+            let end = metrics
+                .lf_message_font
+                .lf_face_name
+                .iter()
+                .position(|ch| *ch == 0)
+                .unwrap_or(metrics.lf_message_font.lf_face_name.len());
+            let face = String::from_utf16_lossy(&metrics.lf_message_font.lf_face_name[..end])
+                .trim()
+                .to_string();
+            if !face.is_empty() {
+                return face;
+            }
+        }
+        "Segoe UI".to_string()
+    })
+}
+
+const fn zeroed_logfont() -> RawLogFontW {
+    RawLogFontW {
+        lf_height: 0,
+        lf_width: 0,
+        lf_escapement: 0,
+        lf_orientation: 0,
+        lf_weight: 0,
+        lf_italic: 0,
+        lf_underline: 0,
+        lf_strike_out: 0,
+        lf_char_set: 0,
+        lf_out_precision: 0,
+        lf_clip_precision: 0,
+        lf_quality: 0,
+        lf_pitch_and_family: 0,
+        lf_face_name: [0; 32],
     }
 }
 

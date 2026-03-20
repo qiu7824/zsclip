@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
+use std::ptr::{null_mut};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
@@ -18,6 +19,42 @@ use crate::i18n::tr;
 use crate::win_system_ui::to_wide;
 
 const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
+const HKEY_CURRENT_USER_VAL: isize = -2147483647i32 as isize;
+const KEY_READ_VAL: u32 = 0x20019;
+const KEY_SET_VALUE_VAL: u32 = 0x0002;
+const REG_SZ_VAL: u32 = 1;
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+const DISABLED_HOTKEYS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
+const DISABLED_HOTKEYS_VALUE: &str = "DisabledHotkeys";
+
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn RegOpenKeyExW(
+        hkey: isize,
+        lpsubkey: *const u16,
+        uloptions: u32,
+        samdesired: u32,
+        phkresult: *mut isize,
+    ) -> i32;
+    fn RegQueryValueExW(
+        hkey: isize,
+        lpvaluename: *const u16,
+        lpreserved: *mut u32,
+        lptype: *mut u32,
+        lpdata: *mut u8,
+        lpcbdata: *mut u32,
+    ) -> i32;
+    fn RegSetValueExW(
+        hkey: isize,
+        lpvaluename: *const u16,
+        reserved: u32,
+        dwtype: u32,
+        lpdata: *const u8,
+        cbdata: u32,
+    ) -> i32;
+    fn RegDeleteValueW(hkey: isize, lpvaluename: *const u16) -> i32;
+    fn RegCloseKey(hkey: isize) -> i32;
+}
 
 #[derive(Default, Clone)]
 pub(crate) struct UpdateCheckState {
@@ -35,18 +72,21 @@ fn update_check_state() -> &'static Mutex<UpdateCheckState> {
     UPDATE_CHECK_STATE.get_or_init(|| Mutex::new(UpdateCheckState::default()))
 }
 
-// ── 图标数据嵌入二进制（无需外部文件）──────────────────────────────────────
-static ICO_CLIPBOARD: &[u8] = include_bytes!("../assets/icons/clipboard.ico");
-static ICO_SEARCH:    &[u8] = include_bytes!("../assets/icons/search.ico");
-static ICO_SETTING:   &[u8] = include_bytes!("../assets/icons/setting.ico");
-static ICO_MIN:       &[u8] = include_bytes!("../assets/icons/min.ico");
-static ICO_EXIT:      &[u8] = include_bytes!("../assets/icons/exit.ico");
-static ICO_TEXT:      &[u8] = include_bytes!("../assets/icons/text.ico");
-static ICO_IMAGE:     &[u8] = include_bytes!("../assets/icons/image.ico");
-static ICO_FILE:      &[u8] = include_bytes!("../assets/icons/file.ico");
-static ICO_FOLD:      &[u8] = include_bytes!("../assets/icons/fold.ico");
-static ICO_TOP:       &[u8] = include_bytes!("../assets/icons/top.ico");
-static ICO_DEL:       &[u8] = include_bytes!("../assets/icons/del.ico");
+macro_rules! icon_png_pack {
+    ($dir:literal, $name:literal) => {
+        build_ico_from_png_entries(&[
+            (16, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_16x16.png")) as &[u8]),
+            (24, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_24x24.png")) as &[u8]),
+            (32, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_32x32.png")) as &[u8]),
+            (48, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_48x48.png")) as &[u8]),
+            (64, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_64x64.png")) as &[u8]),
+            (128, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_128x128.png")) as &[u8]),
+            (0, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_256x256.png")) as &[u8]),
+        ])
+    };
+}
+
+static ICO_APP: &[u8] = include_bytes!("../assets/icons/icon.ico");
 
 pub(crate) unsafe fn open_path_with_shell(path: &str) {
     let op = to_wide("open");
@@ -215,11 +255,108 @@ where
     });
 }
 
+fn read_disabled_hotkeys_registry() -> Option<String> {
+    unsafe {
+        let mut key = 0isize;
+        let subkey = to_wide(DISABLED_HOTKEYS_KEY);
+        let value = to_wide(DISABLED_HOTKEYS_VALUE);
+        let open = RegOpenKeyExW(
+            HKEY_CURRENT_USER_VAL,
+            subkey.as_ptr(),
+            0,
+            KEY_READ_VAL,
+            &mut key,
+        );
+        if open != 0 {
+            return Some(String::new());
+        }
+
+        let mut ty = 0u32;
+        let mut size = 0u32;
+        let query_size = RegQueryValueExW(
+            key,
+            value.as_ptr(),
+            null_mut(),
+            &mut ty,
+            null_mut(),
+            &mut size,
+        );
+        if query_size != 0 || size == 0 {
+            RegCloseKey(key);
+            return Some(String::new());
+        }
+
+        let mut buf = vec![0u8; size as usize];
+        let query = RegQueryValueExW(
+            key,
+            value.as_ptr(),
+            null_mut(),
+            &mut ty,
+            buf.as_mut_ptr(),
+            &mut size,
+        );
+        RegCloseKey(key);
+        if query != 0 || ty != REG_SZ_VAL {
+            return Some(String::new());
+        }
+
+        let wide_len = (size as usize / 2).saturating_sub(1);
+        let wide = std::slice::from_raw_parts(buf.as_ptr() as *const u16, wide_len);
+        Some(String::from_utf16_lossy(wide))
+    }
+}
+
+fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
+    unsafe {
+        let mut key = 0isize;
+        let subkey = to_wide(DISABLED_HOTKEYS_KEY);
+        let value = to_wide(DISABLED_HOTKEYS_VALUE);
+        let open = RegOpenKeyExW(
+            HKEY_CURRENT_USER_VAL,
+            subkey.as_ptr(),
+            0,
+            KEY_SET_VALUE_VAL | KEY_READ_VAL,
+            &mut key,
+        );
+        if open != 0 {
+            return Err(format!("打开注册表失败: {open}"));
+        }
+
+        if txt.trim().is_empty() {
+            let delete = RegDeleteValueW(key, value.as_ptr());
+            RegCloseKey(key);
+            if delete == 0 || delete == ERROR_FILE_NOT_FOUND {
+                return Ok(());
+            }
+            return Err(format!("删除注册表值失败: {delete}"));
+        }
+
+        let mut wide = to_wide(txt);
+        if *wide.last().unwrap_or(&0) != 0 {
+            wide.push(0);
+        }
+        let set = RegSetValueExW(
+            key,
+            value.as_ptr(),
+            0,
+            REG_SZ_VAL,
+            wide.as_ptr() as *const u8,
+            (wide.len() * 2) as u32,
+        );
+        RegCloseKey(key);
+        if set == 0 {
+            Ok(())
+        } else {
+            Err(format!("写入注册表失败: {set}"))
+        }
+    }
+}
+
 pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
     if !ch.is_ascii_alphanumeric() {
         return Err("无效按键".to_string());
     }
-    let mut chars: BTreeSet<char> = read_disabled_hotkeys_text()
+    let mut chars: BTreeSet<char> = read_disabled_hotkeys_registry()
         .unwrap_or_default()
         .to_uppercase()
         .chars()
@@ -232,7 +369,7 @@ pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(),
         chars.remove(&up);
     }
     let new_text: String = chars.into_iter().collect();
-    set_disabled_hotkeys_text(&new_text)
+    set_disabled_hotkeys_registry(&new_text)
 }
 
 pub(crate) fn restart_explorer_shell() -> Result<(), String> {
@@ -272,31 +409,7 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     a > b
 }
 
-fn read_disabled_hotkeys_text() -> Option<String> {
-    let out = hidden_command("reg")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
-            "/v",
-            "DisabledHotkeys",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return Some(String::new());
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    for line in stdout.lines() {
-        if line.contains("DisabledHotkeys") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if let Some(v) = parts.last() {
-                return Some((*v).trim().to_string());
-            }
-        }
-    }
-    Some(String::new())
-}
-
+#[allow(dead_code)]
 fn set_disabled_hotkeys_text(txt: &str) -> Result<(), String> {
     if txt.trim().is_empty() {
         let out = hidden_command("reg")
@@ -366,28 +479,67 @@ pub(crate) unsafe fn item_icon_handle(state: &mut AppState, item: &ClipItem) -> 
 }
 
 pub(crate) fn load_icons() -> Icons {
+    let search_data = icon_png_pack!("search", "search");
+    let setting_data = icon_png_pack!("setting", "setting");
+    let min_data = icon_png_pack!("min", "min");
+    let exit_data = icon_png_pack!("exit", "exit");
+    let text_data = icon_png_pack!("text", "text");
+    let image_data = icon_png_pack!("image", "image");
+    let file_data = icon_png_pack!("file", "file");
+    let folder_data = icon_png_pack!("fold", "fold");
+    let top_data = icon_png_pack!("top", "top");
+    let del_data = icon_png_pack!("del", "del");
     unsafe {
         Icons {
-            app:    load_icon_from_bytes(ICO_CLIPBOARD, 32, 32),
-            search: load_icon_from_bytes(ICO_SEARCH,    16, 16),
-            setting:load_icon_from_bytes(ICO_SETTING,   16, 16),
-            min:    load_icon_from_bytes(ICO_MIN,        16, 16),
-            close:  load_icon_from_bytes(ICO_EXIT,      16, 16),
-            text:   load_icon_from_bytes(ICO_TEXT,      20, 20),
-            image:  load_icon_from_bytes(ICO_IMAGE,     20, 20),
-            file:   load_icon_from_bytes(ICO_FILE,      20, 20),
-            folder: load_icon_from_bytes(ICO_FOLD,      20, 20),
-            pin:    load_icon_from_bytes(ICO_TOP,       16, 16),
-            del:    load_icon_from_bytes(ICO_DEL,       16, 16),
+            app:    load_icon_from_bytes(ICO_APP,       32, 32),
+            search: load_icon_from_bytes(&search_data,  32, 32),
+            setting:load_icon_from_bytes(&setting_data, 32, 32),
+            min:    load_icon_from_bytes(&min_data,     32, 32),
+            close:  load_icon_from_bytes(&exit_data,    32, 32),
+            text:   load_icon_from_bytes(&text_data,    16, 16),
+            image:  load_icon_from_bytes(&image_data,   16, 16),
+            file:   load_icon_from_bytes(&file_data,    16, 16),
+            folder: load_icon_from_bytes(&folder_data,  16, 16),
+            pin:    load_icon_from_bytes(&top_data,     16, 16),
+            del:    load_icon_from_bytes(&del_data,     16, 16),
         }
     }
+}
+
+fn build_ico_from_png_entries(entries: &[(u8, &[u8])]) -> Vec<u8> {
+    let header_len = 6 + entries.len() * 16;
+    let total_data_len: usize = entries.iter().map(|(_, data)| data.len()).sum();
+    let mut out = Vec::with_capacity(header_len + total_data_len);
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+
+    let mut offset = header_len as u32;
+    for (size, data) in entries {
+        out.push(*size);
+        out.push(*size);
+        out.push(0);
+        out.push(0);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += data.len() as u32;
+    }
+
+    for (_, data) in entries {
+        out.extend_from_slice(data);
+    }
+    out
 }
 
 /// 从 ICO 文件字节流加载指定尺寸的图标句柄。
 unsafe fn load_icon_from_bytes(data: &[u8], w: i32, h: i32) -> isize {
     if data.len() < 6 { return 0; }
     let count = u16::from_le_bytes([data[4], data[5]]) as usize;
-    // 1st pass: exact size match
+    let mut exact = Vec::new();
+    let mut larger = Vec::new();
+    let mut smaller = Vec::new();
     for i in 0..count {
         let base = 6 + i * 16;
         if base + 16 > data.len() { break; }
@@ -395,12 +547,30 @@ unsafe fn load_icon_from_bytes(data: &[u8], w: i32, h: i32) -> isize {
         let icon_h = data[base + 1] as i32;
         let icon_w = if icon_w == 0 { 256 } else { icon_w };
         let icon_h = if icon_h == 0 { 256 } else { icon_h };
-        if icon_w != w || icon_h != h { continue; }
-        if let Some(h) = try_create_icon(data, base, w, h) { return h; }
+        if icon_w == w && icon_h == h {
+            exact.push(base);
+        } else if icon_w >= w && icon_h >= h {
+            larger.push((icon_w * icon_h, base));
+        } else {
+            smaller.push((-(icon_w * icon_h), base));
+        }
     }
-    // 2nd pass: any size, let system scale
-    if count > 0 {
-        if let Some(h) = try_create_icon(data, 6, w, h) { return h; }
+    for base in exact {
+        if let Some(icon) = try_create_icon(data, base, w, h) {
+            return icon;
+        }
+    }
+    larger.sort_by_key(|entry| entry.0);
+    for (_, base) in larger {
+        if let Some(icon) = try_create_icon(data, base, w, h) {
+            return icon;
+        }
+    }
+    smaller.sort_by_key(|entry| entry.0);
+    for (_, base) in smaller {
+        if let Some(icon) = try_create_icon(data, base, w, h) {
+            return icon;
+        }
     }
     0
 }

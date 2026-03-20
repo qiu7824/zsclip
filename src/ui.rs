@@ -20,8 +20,10 @@ use windows_sys::Win32::{
 pub const DT_LEFT: u32 = 0x0000;
 pub const DT_CENTER: u32 = 0x0001;
 pub const DT_VCENTER: u32 = 0x0004;
+pub const DT_WORDBREAK: u32 = 0x0010;
 pub const DT_SINGLELINE: u32 = 0x0020;
 pub const DT_END_ELLIPSIS: u32 = 0x00008000;
+pub const DT_NOPREFIX: u32 = 0x00000800;
 pub const TRANSPARENT: i32 = 1;
 
 pub const SETTINGS_PAGES: [&str; 6] = ["常规", "快捷键", "插件", "分组", "云同步", "关于"];
@@ -35,15 +37,15 @@ pub const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
 pub const SETTINGS_CONTENT_W: i32 = SETTINGS_W - SETTINGS_CONTENT_X - 28;
 pub const SETTINGS_CONTENT_Y: i32 = SETTINGS_TOP_H;
 
-pub const fn ui_text_font_family() -> &'static str {
-    "Segoe UI"
+pub fn ui_text_font_family() -> &'static str {
+    crate::win_system_ui::system_ui_text_font_family()
 }
 
-pub const fn ui_display_font_family() -> &'static str {
-    "Segoe UI"
+pub fn ui_display_font_family() -> &'static str {
+    crate::win_system_ui::system_ui_text_font_family()
 }
 
-pub const fn ui_icon_font_family() -> &'static str {
+pub fn ui_icon_font_family() -> &'static str {
     "Segoe MDL2 Assets"
 }
 
@@ -735,12 +737,24 @@ pub unsafe fn draw_main_segment_bar(
 
     let t0c = if selected == 0 || hover == 0 { th.text } else { th.text_muted };
     let t1c = if selected == 1 || hover == 1 { th.text } else { th.text_muted };
-    draw_text_ex(hdc, "复制记录", tab0, t0c, 11, false, true, "Segoe UI Variable Text");
-    draw_text_ex(hdc, "常用短语", tab1, t1c, 11, false, true, "Segoe UI Variable Text");
+    let tab_font = ui_display_font_family();
+    draw_text_ex(hdc, "复制记录", tab0, t0c, 13, false, true, tab_font);
+    draw_text_ex(hdc, "常用短语", tab1, t1c, 13, false, true, tab_font);
 }
 
 pub unsafe fn draw_text(hdc: *mut core::ffi::c_void, text: &str, rc: &RECT, color: u32, size: i32, bold: bool, center: bool) {
     draw_text_ex(hdc, text, rc, color, size, bold, center, ui_text_font_family());
+}
+
+pub unsafe fn draw_text_block(
+    hdc: *mut core::ffi::c_void,
+    text: &str,
+    rc: &RECT,
+    color: u32,
+    size: i32,
+    bold: bool,
+) {
+    draw_text_block_ex(hdc, text, rc, color, size, bold, ui_text_font_family());
 }
 
 pub unsafe fn draw_text_ex(
@@ -770,6 +784,43 @@ pub unsafe fn draw_text_ex(
     }
 }
 
+pub unsafe fn draw_text_block_ex(
+    hdc: *mut core::ffi::c_void,
+    text: &str,
+    rc: &RECT,
+    color: u32,
+    size: i32,
+    bold: bool,
+    family: &str,
+) {
+    let translated = translate(text);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, color);
+    let weight = if bold { 700 } else { 400 };
+    let font_name = resolve_ui_font_family(family);
+    let font = CreateFontW(-size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
+    let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
+    let old = SelectObject(hdc, font as _);
+    let mut rc2 = *rc;
+    let flags = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX;
+    DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
+    SelectObject(hdc, old);
+    if !font.is_null() && font != GetStockObject(DEFAULT_GUI_FONT) {
+        DeleteObject(font as _);
+    }
+}
+
+pub fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {
+    if bytes.len() < 4 {
+        return bytes.to_vec();
+    }
+    let mut out = bytes.to_vec();
+    for px in out.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    out
+}
+
 /// 鍦ㄦ繁鑹叉ā寮忎笅缁樺埗鍥炬爣鏃讹紝灏嗛粦鑹插浘鏍囧弽鑹蹭负鐧借壊銆?
 /// 娣辫壊妯″紡涓嬫妸鍥炬爣鍙嶈壊涓虹櫧鑹茬増鏈紙涓ゆ缁樺埗鎻愬彇鐪熷疄鍍忕礌锛?
 pub unsafe fn draw_icon_tinted(
@@ -778,6 +829,19 @@ pub unsafe fn draw_icon_tinted(
     icon: isize,
     w: i32, h: i32,
     dark: bool,
+) {
+    draw_icon_tinted_soft(hdc, x, y, icon, w, h, dark, 0);
+}
+
+pub unsafe fn draw_icon_tinted_soft(
+    hdc: *mut core::ffi::c_void,
+    x: i32,
+    y: i32,
+    icon: isize,
+    w: i32,
+    h: i32,
+    dark: bool,
+    soften: u8,
 ) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL};
     if icon == 0 { return; }
@@ -904,7 +968,7 @@ pub unsafe fn draw_icon_tinted(
         let lum = (icon_r * 299 + icon_g * 587 + icon_b * 114) / 1000;
 
         // 娣辫壊鑳屾櫙涓婏細鎶婃殫鑹插浘鏍囧儚绱犳槧灏勪负浜伆/鐧借壊锛屽僵鑹插儚绱犻€傚綋鎻愪寒
-        let (out_r, out_g, out_b) = if lum < 80 {
+        let (mut out_r, mut out_g, mut out_b) = if lum < 80 {
             // 绾粦/娣辩伆鍥炬爣 鈫?绾櫧
             (255u32, 255u32, 255u32)
         } else if lum < 200 {
@@ -925,6 +989,13 @@ pub unsafe fn draw_icon_tinted(
         } else {
             (32, 32, 32)
         };
+
+        if soften > 0 {
+            let k = soften as u32;
+            out_r = ((out_r * (255 - k)) + (bg_r * k)) / 255;
+            out_g = ((out_g * (255 - k)) + (bg_g * k)) / 255;
+            out_b = ((out_b * (255 - k)) + (bg_b * k)) / 255;
+        }
 
         let blend = |fg: u32, bg: u32, a: u32| -> u32 { (fg * a + bg * (255 - a)) / 255 };
         let final_r = blend(out_r, bg_r, alpha);

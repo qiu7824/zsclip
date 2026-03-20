@@ -69,6 +69,7 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
     ensure_table_column(conn, "items", "category", "category INTEGER NOT NULL DEFAULT 0")?;
     ensure_table_column(conn, "items", "kind", "kind TEXT NOT NULL DEFAULT 'text'")?;
     ensure_table_column(conn, "items", "preview", "preview TEXT NOT NULL DEFAULT ''")?;
+    ensure_table_column(conn, "items", "signature", "signature TEXT NOT NULL DEFAULT ''")?;
     ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
     ensure_table_column(conn, "items", "file_paths", "file_paths TEXT")?;
     ensure_table_column(conn, "items", "image_data", "image_data BLOB")?;
@@ -155,6 +156,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             category INTEGER NOT NULL,
             kind TEXT NOT NULL,
             preview TEXT NOT NULL,
+            signature TEXT NOT NULL DEFAULT '',
             text_data TEXT,
             file_paths TEXT,
             image_data BLOB,
@@ -174,6 +176,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_items_category_pinned_id ON items(category, pinned, id DESC);
         CREATE INDEX IF NOT EXISTS idx_items_group_id ON items(group_id, id DESC);
+        CREATE INDEX IF NOT EXISTS idx_items_category_signature ON items(category, signature, id DESC);
         CREATE INDEX IF NOT EXISTS idx_clip_groups_category_sort ON clip_groups(category, sort_order, id);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_clip_groups_category_name ON clip_groups(category, name);
         ",

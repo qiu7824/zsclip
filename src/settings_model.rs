@@ -1,7 +1,6 @@
 use crate::ui::{SETTINGS_CONTENT_W, SETTINGS_CONTENT_X, SETTINGS_CONTENT_Y, SETTINGS_NAV_W};
 use crate::ui::UiRect;
 
-pub const SETTINGS_CONTENT_TOTAL_H: i32 = 1120;
 pub const SCROLL_BAR_W: i32 = 3;
 pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
 pub const SCROLL_BAR_MARGIN: i32 = 3;
@@ -12,10 +11,10 @@ pub const CARD_GENERAL_H: i32 = 470;
 pub const CARD_DATA_Y: i32 = 498;
 pub const CARD_DATA_H: i32 = 96;
 pub const CARD_ACTIONS_Y: i32 = 606;
-pub const CARD_ACTIONS_H: i32 = 150;
-pub const CARD_POSITION_Y: i32 = 768;
+pub const CARD_ACTIONS_H: i32 = 190;
+pub const CARD_POSITION_Y: i32 = 808;
 pub const CARD_POSITION_H: i32 = 168;
-pub const CARD_MAINTAIN_Y: i32 = 948;
+pub const CARD_MAINTAIN_Y: i32 = 988;
 pub const CARD_MAINTAIN_H: i32 = 96;
 
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
@@ -241,6 +240,19 @@ impl SettingsFormSectionLayout {
     pub fn action_x(&self, slot: i32, w: i32) -> i32 { self.body.left + slot * (w + 14) }
 }
 
-pub fn settings_max_scroll(view_h: i32) -> i32 {
-    (SETTINGS_CONTENT_TOTAL_H - view_h).max(0)
+pub fn settings_page_content_total_h(page: usize) -> i32 {
+    let cards = settings_cards_for_page_vec(page);
+    let content_bottom = cards
+        .iter()
+        .map(|section| section.rect.bottom - SETTINGS_CONTENT_Y + 16)
+        .max()
+        .unwrap_or(0);
+    content_bottom.max(0)
+}
+
+pub fn settings_page_max_scroll(page: usize, view_h: i32) -> i32 {
+    if !settings_page_scrollable(page) {
+        return 0;
+    }
+    (settings_page_content_total_h(page) - view_h).max(0)
 }
