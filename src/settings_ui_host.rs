@@ -16,7 +16,9 @@ use windows_sys::Win32::{
 use crate::i18n::{tr, translate};
 use crate::settings_model::{SettingsPage, SETTINGS_PAGE_COUNT};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, resolve_ui_font_family, rgb, ui_display_font_family, ui_icon_font_family, ui_text_font_family, Theme, UiRect, SETTINGS_CONTENT_Y, SETTINGS_NAV_W,
+    draw_round_fill, draw_round_rect, draw_text_ex, resolve_ui_font_family, rgb,
+    settings_content_y_scaled, settings_nav_w_scaled, settings_scale, ui_display_font_family,
+    ui_icon_font_family, ui_text_font_family, Theme, UiRect,
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
@@ -115,6 +117,23 @@ impl SettingsUiRegistry {
     }
 
     pub fn scroll_ctrls(&self) -> &[SettingsCtrlSlot] { &self.scroll_ctrls }
+
+    pub unsafe fn clear_page(&mut self, page: usize) {
+        let page = page.min(SETTINGS_PAGE_COUNT.saturating_sub(1));
+        if let Some(ctrls) = self.page_ctrls.get_mut(page) {
+            for hwnd in ctrls.drain(..) {
+                if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                    DestroyWindow(hwnd);
+                }
+            }
+        }
+        self.regs.retain(|reg| reg.page != page);
+        self.scroll_ctrls
+            .retain(|slot| !slot.hwnd.is_null() && IsWindow(slot.hwnd) != 0);
+        if let Some(flag) = self.built_pages.get_mut(page) {
+            *flag = false;
+        }
+    }
 }
 
 #[link(name = "dwmapi")]
@@ -136,8 +155,8 @@ fn to_wide(s: &str) -> Vec<u16> {
 
 pub fn settings_viewport_rect(window_rc: &RECT) -> RECT {
     RECT {
-        left: SETTINGS_NAV_W,
-        top: SETTINGS_CONTENT_Y,
+        left: settings_nav_w_scaled(),
+        top: settings_content_y_scaled(),
         right: window_rc.right,
         bottom: window_rc.bottom,
     }
@@ -145,10 +164,10 @@ pub fn settings_viewport_rect(window_rc: &RECT) -> RECT {
 
 pub fn settings_viewport_mask_rect(window_rc: &RECT) -> RECT {
     RECT {
-        left: SETTINGS_NAV_W,
-        top: SETTINGS_CONTENT_Y,
+        left: settings_nav_w_scaled(),
+        top: settings_content_y_scaled(),
         right: window_rc.right,
-        bottom: SETTINGS_CONTENT_Y + SETTINGS_VIEWPORT_MASK_H,
+        bottom: settings_content_y_scaled() + settings_scale(SETTINGS_VIEWPORT_MASK_H),
     }
 }
 
@@ -274,7 +293,17 @@ pub unsafe fn create_settings_button(
     w: i32,
     font: *mut c_void,
 ) -> HWND {
-    create_settings_component(parent, text, id, SettingsComponentKind::Button, x, y, w, 32, font)
+    create_settings_component(
+        parent,
+        text,
+        id,
+        SettingsComponentKind::Button,
+        x,
+        y,
+        w,
+        scale_for_window(parent, 32),
+        font,
+    )
 }
 
 pub unsafe fn create_settings_small_button(
@@ -298,7 +327,17 @@ pub unsafe fn create_settings_dropdown_button(
     w: i32,
     font: *mut c_void,
 ) -> HWND {
-    create_settings_component(parent, text, id, SettingsComponentKind::Dropdown, x, y, w, 32, font)
+    create_settings_component(
+        parent,
+        text,
+        id,
+        SettingsComponentKind::Dropdown,
+        x,
+        y,
+        w,
+        scale_for_window(parent, 32),
+        font,
+    )
 }
 
 pub unsafe fn create_settings_toggle_plain(
@@ -311,11 +350,11 @@ pub unsafe fn create_settings_toggle_plain(
     font: *mut c_void,
 ) -> (HWND, HWND, i32, i32, i32, i32, i32, i32) {
     const SS_CENTERIMAGE: u32 = 0x0200;
-    let toggle_w = 44;
-    let toggle_h = 24;
-    let row_h = 32;
-    let gap = 12;
-    let label_w = max(40, w - toggle_w - gap);
+    let toggle_w = scale_for_window(parent, 44);
+    let toggle_h = scale_for_window(parent, 24);
+    let row_h = scale_for_window(parent, 32);
+    let gap = scale_for_window(parent, 12);
+    let label_w = max(scale_for_window(parent, 40), w - toggle_w - gap);
     let label_text = translate(text);
     let label = CreateWindowExW(
         0,
@@ -445,7 +484,7 @@ pub unsafe fn create_settings_edit(
         x,
         y,
         w,
-        28,
+        scale_for_window(parent, 28),
         parent,
         id as usize as _,
         GetModuleHandleW(null()),
@@ -459,7 +498,7 @@ pub unsafe fn create_settings_edit(
             hwnd,
             EM_SETMARGINS_MSG,
             (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
-            ((6 & 0xffff) | ((6 & 0xffff) << 16)) as LPARAM,
+            ((scale_for_window(parent, 6) & 0xffff) | ((scale_for_window(parent, 6) & 0xffff) << 16)) as LPARAM,
         );
     }
     hwnd

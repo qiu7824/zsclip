@@ -2,8 +2,8 @@ use windows_sys::Win32::Foundation::RECT;
 
 use crate::settings_model::{settings_cards_for_page_vec, settings_page_scrollable, settings_title_rect, SettingsSection};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect, Theme,
-    SETTINGS_NAV_GLYPHS, SETTINGS_PAGES, SETTINGS_NAV_W,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect, settings_nav_w_scaled,
+    settings_scale, Theme, SETTINGS_NAV_GLYPHS, SETTINGS_PAGES,
 };
 
 pub const SETTINGS_CLASS: &str = "ZsClipSettings";
@@ -59,9 +59,23 @@ pub const IDC_SET_HK_RECORD: isize = 6104;
 
 unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();
-    draw_round_rect(hdc, &rc, th.surface, th.stroke, 8);
-    let trc = RECT { left: rc.left + 16, top: rc.top + 12, right: rc.right - 16, bottom: rc.top + 34 };
-    draw_text_ex(hdc, section.title, &trc, th.text_muted, 12, true, false, "Segoe UI Variable Text");
+    draw_round_rect(hdc, &rc, th.surface, th.stroke, settings_scale(8));
+    let trc = RECT {
+        left: rc.left + settings_scale(16),
+        top: rc.top + settings_scale(12),
+        right: rc.right - settings_scale(16),
+        bottom: rc.top + settings_scale(34),
+    };
+    draw_text_ex(
+        hdc,
+        section.title,
+        &trc,
+        th.text_muted,
+        settings_scale(12),
+        true,
+        false,
+        "Segoe UI Variable Text",
+    );
 }
 
 pub unsafe fn draw_settings_nav_item(
@@ -73,26 +87,54 @@ pub unsafe fn draw_settings_nav_item(
 ) {
     let item_rc = settings_nav_item_rect(index);
     if selected {
-        draw_round_fill(hdc, &item_rc, th.nav_sel_fill, 6);
-        let bar_h = 16i32;
+        draw_round_fill(hdc, &item_rc, th.nav_sel_fill, settings_scale(6));
+        let bar_h = settings_scale(16);
         let bar_cy = (item_rc.top + item_rc.bottom) / 2;
         let bar = RECT {
-            left: item_rc.left + 3,
+            left: item_rc.left + settings_scale(3),
             top: bar_cy - bar_h / 2,
-            right: item_rc.left + 6,
+            right: item_rc.left + settings_scale(6),
             bottom: bar_cy + bar_h / 2,
         };
-        draw_round_fill(hdc, &bar, th.accent, 2);
+        draw_round_fill(hdc, &bar, th.accent, settings_scale(2));
     } else if hover {
         let hover_color = if th.bg == rgb(32, 32, 32) { rgb(60, 60, 60) } else { rgb(237, 237, 237) };
-        draw_round_fill(hdc, &item_rc, hover_color, 6);
+        draw_round_fill(hdc, &item_rc, hover_color, settings_scale(6));
     }
-    let icon_rc = RECT { left: item_rc.left + 10, top: item_rc.top, right: item_rc.left + 38, bottom: item_rc.bottom };
-    let txt_rc = RECT { left: item_rc.left + 40, top: item_rc.top, right: item_rc.right - 8, bottom: item_rc.bottom };
+    let icon_rc = RECT {
+        left: item_rc.left + settings_scale(10),
+        top: item_rc.top,
+        right: item_rc.left + settings_scale(38),
+        bottom: item_rc.bottom,
+    };
+    let txt_rc = RECT {
+        left: item_rc.left + settings_scale(40),
+        top: item_rc.top,
+        right: item_rc.right - settings_scale(8),
+        bottom: item_rc.bottom,
+    };
     let icon_color = if selected { th.accent } else if hover { th.text } else { th.text_muted };
-    draw_text_ex(hdc, SETTINGS_NAV_GLYPHS[index], &icon_rc, icon_color, 16, false, false, "Segoe Fluent Icons");
+    draw_text_ex(
+        hdc,
+        SETTINGS_NAV_GLYPHS[index],
+        &icon_rc,
+        icon_color,
+        settings_scale(16),
+        false,
+        false,
+        "Segoe Fluent Icons",
+    );
     let label_color = if selected || hover { th.text } else { th.text_muted };
-    draw_text_ex(hdc, SETTINGS_PAGES[index], &txt_rc, label_color, 14, false, false, "Segoe UI Variable Text");
+    draw_text_ex(
+        hdc,
+        SETTINGS_PAGES[index],
+        &txt_rc,
+        label_color,
+        settings_scale(14),
+        false,
+        false,
+        "Segoe UI Variable Text",
+    );
 }
 
 pub unsafe fn draw_settings_page_cards(hdc: *mut core::ffi::c_void, page: usize, scroll_y: i32, th: Theme) {
@@ -107,7 +149,7 @@ pub fn settings_title_rect_win() -> RECT {
 }
 
 pub fn nav_divider_x() -> i32 {
-    SETTINGS_NAV_W
+    settings_nav_w_scaled()
 }
 
 pub unsafe fn draw_settings_page_content(_hdc: *mut core::ffi::c_void, _page: usize, _th: Theme) {}

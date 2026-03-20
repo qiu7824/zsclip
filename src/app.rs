@@ -110,12 +110,12 @@ struct TRACKMOUSEEVENT {
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, settings_nav_item_rect, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_CONTENT_Y, SETTINGS_H, SETTINGS_NAV_W, SETTINGS_PAGES, SETTINGS_W, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
+use crate::ui::{draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, set_settings_ui_dpi, settings_content_y_scaled, settings_h_scaled, settings_nav_item_rect, settings_nav_w_scaled, settings_scale, settings_w_scaled, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_PAGES, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{
-    is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell,
+    icon_handle_for, is_directory_item, item_icon_handle, load_icons, open_parent_folder, open_path_with_shell,
     open_source_url, open_source_url_display, restart_explorer_shell, start_update_check,
     toggle_disabled_hotkey_char, update_check_available, update_check_latest_url_or_default,
-    update_check_state_snapshot,
+    update_check_state_snapshot, IconAssetKind,
 };
 use crate::hover_preview::{hide_hover_preview, show_hover_preview};
 use crate::sticker::show_image_sticker;
@@ -126,7 +126,7 @@ use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
 use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -166,24 +166,6 @@ const EC_RIGHTMARGIN: usize = 0x0002;
 const CLASS_NAME: &str = "ZsClipMain";
 const QUICK_CLASS_NAME: &str = "ZsClipQuick";
 
-pub(crate) const WIN_W: i32 = 300;
-pub(crate) const WIN_H: i32 = 615;
-const TITLE_H: i32 = 35;
-const SEG_X: i32 = 6;
-const SEG_Y: i32 = 36;
-const SEG_W: i32 = 288;
-const SEG_H: i32 = 30;
-const LIST_X: i32 = 6;
-const LIST_Y: i32 = 70;
-const LIST_W: i32 = 288;
-const LIST_H: i32 = 538;
-const LIST_PAD: i32 = 4;
-const ROW_H: i32 = 44;
-const SEARCH_LEFT: i32 = 58;
-const SEARCH_TOP: i32 = 4;
-const SEARCH_W: i32 = 112;
-const SEARCH_H: i32 = 30;
-const SCROLL_STEP: i32 = ROW_H * 2;
 const IDC_SEARCH: isize = 1001;
 const ID_TIMER_CARET: usize = 1;
 const ID_TIMER_PASTE: usize = 2;
@@ -192,6 +174,7 @@ const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
 const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
 const ID_TIMER_VV_SHOW: usize = 6;
 const ID_TIMER_CLOUD_SYNC: usize = 7;
+const ID_TIMER_SETTINGS_SAVE_HINT: usize = 8;
 const STARTUP_RECOVERY_TICKS: u8 = 24;
 const WM_VV_SHOW: u32 = WM_APP + 20;
 const WM_VV_HIDE: u32 = WM_APP + 21;
@@ -238,7 +221,11 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 
 type AppResult<T> = Result<T, io::Error>;
 
-const EDGE_AUTO_HIDE_PEEK: i32 = 6;
+unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
+    MAIN_UI_LAYOUT.scaled(window_dpi(hwnd))
+}
+
+const EDGE_AUTO_HIDE_PEEK: i32 = 2;
 const EDGE_AUTO_HIDE_MARGIN: i32 = 8;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -1208,6 +1195,7 @@ pub(crate) struct AppState {
     pub(crate) role: WindowRole,
     pub(crate) hwnd: HWND,
     pub(crate) search_hwnd: HWND,
+    pub(crate) search_font: *mut core::ffi::c_void,
     pub(crate) theme: Theme,
     pub(crate) icons: Icons,
     pub(crate) records: Vec<ClipItem>,
@@ -1441,60 +1429,64 @@ impl AppState {
 
 
     fn list_view_height(&self) -> i32 {
-        MAIN_UI_LAYOUT.list_view_height()
+        self.layout().list_view_height()
     }
 
     fn total_content_height(&self) -> i32 {
-        MAIN_UI_LAYOUT.total_content_height(self.filtered_indices.len())
+        self.layout().total_content_height(self.filtered_indices.len())
     }
 
     fn clamp_scroll(&mut self) {
-        self.scroll_y = MAIN_UI_LAYOUT.clamp_scroll(self.scroll_y, self.filtered_indices.len());
+        self.scroll_y = self.layout().clamp_scroll(self.scroll_y, self.filtered_indices.len());
     }
 
     fn ensure_visible(&mut self, idx: i32) {
-        self.scroll_y = MAIN_UI_LAYOUT.ensure_visible(self.scroll_y, idx, self.filtered_indices.len());
+        self.scroll_y = self.layout().ensure_visible(self.scroll_y, idx, self.filtered_indices.len());
+    }
+
+    fn layout(&self) -> MainUiLayout {
+        unsafe { main_layout_for_window(self.hwnd) }
     }
 
     fn row_rect(&self, visible_idx: i32) -> Option<RECT> {
-        MAIN_UI_LAYOUT
+        self.layout()
             .row_rect(visible_idx, self.filtered_indices.len(), self.scroll_y)
             .map(Into::into)
     }
 
     fn quick_action_rect_slot(&self, visible_idx: i32, slot: i32) -> Option<RECT> {
-        MAIN_UI_LAYOUT
+        self.layout()
             .quick_action_rect(visible_idx, self.filtered_indices.len(), self.scroll_y, slot)
             .map(Into::into)
     }
 
     fn search_rect(&self) -> RECT {
-        MAIN_UI_LAYOUT.search_rect().into()
+        self.layout().search_rect().into()
     }
 
     fn title_button_rect(&self, key: &str) -> RECT {
-        MAIN_UI_LAYOUT.title_button_rect(key).into()
+        self.layout().title_button_rect(key).into()
     }
 
     fn segment_rects(&self) -> (RECT, RECT) {
-        let (left, right) = MAIN_UI_LAYOUT.segment_rects();
+        let (left, right) = self.layout().segment_rects();
         (left.into(), right.into())
     }
 
     fn scrollbar_track_rect(&self) -> Option<RECT> {
-        MAIN_UI_LAYOUT
+        self.layout()
             .scrollbar_track_rect(self.filtered_indices.len())
             .map(Into::into)
     }
 
     fn scrollbar_thumb_rect(&self) -> Option<RECT> {
-        MAIN_UI_LAYOUT
+        self.layout()
             .scrollbar_thumb_rect(self.filtered_indices.len(), self.scroll_y)
             .map(Into::into)
     }
 
     fn scroll_to_top_rect(&self) -> RECT {
-        MAIN_UI_LAYOUT.scroll_to_top_button_rect().into()
+        self.layout().scroll_to_top_button_rect().into()
     }
 
     fn delete_selected(&mut self) {
@@ -1744,17 +1736,17 @@ struct SettingsWndState {
 
 /// 计算自绘滚动条拇指矩形（宽度可变：正常=SCROLL_BAR_W，拖拽=SCROLL_BAR_W_ACTIVE）
 fn settings_scrollbar_thumb_w(page: usize, crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<RECT> {
-    let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
+    let content_y = settings_content_y_scaled();
+    let view_h = (crc.bottom - crc.top) - content_y;
     let max_s = settings_page_max_scroll(page, view_h);
     if max_s <= 0 { return None; }
-    let track_top    = SETTINGS_CONTENT_Y + 8;
-    let track_bottom = crc.bottom - 8;
+    let track_top = content_y + settings_scale(8);
+    let track_bottom = crc.bottom - settings_scale(8);
     let track_h = (track_bottom - track_top).max(1);
     let content_h = settings_page_content_total_h(page).max(view_h + 1);
     let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
-    let thumb_h = thumb_h.max(24);
-    let thumb_top = track_top
-        + ((scroll_y as f32 / max_s as f32) * (track_h - thumb_h) as f32) as i32;
+    let thumb_h = thumb_h.max(settings_scale(24));
+    let thumb_top = track_top + ((scroll_y as f32 / max_s as f32) * (track_h - thumb_h) as f32) as i32;
     let right = crc.right - SCROLL_BAR_MARGIN;
     Some(RECT {
         left:   right - bar_w,
@@ -2399,6 +2391,68 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     Box::from_raw(data_ptr).saved
 }
 
+unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState) {
+    set_settings_ui_dpi(window_dpi(hwnd));
+    if !st.dropdown_popup.is_null() && IsWindow(st.dropdown_popup) != 0 {
+        DestroyWindow(st.dropdown_popup);
+        st.dropdown_popup = null_mut();
+    }
+    if !st.nav_font.is_null() {
+        DeleteObject(st.nav_font as _);
+    }
+    if !st.ui_font.is_null() && st.ui_font != GetStockObject(DEFAULT_GUI_FONT) {
+        DeleteObject(st.ui_font as _);
+    }
+    if !st.title_font.is_null() && st.title_font != GetStockObject(DEFAULT_GUI_FONT) {
+        DeleteObject(st.title_font as _);
+    }
+    let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
+    st.nav_font = nav_font;
+    st.ui_font = ui_font;
+    st.title_font = title_font;
+
+    let mut crc: RECT = zeroed();
+    GetClientRect(hwnd, &mut crc);
+    let top_margin = settings_scale(24);
+    let btn_h = settings_scale(32);
+    let save_w = settings_scale(72);
+    let close_w = settings_scale(64);
+    let gap = settings_scale(20);
+    let right = crc.right - top_margin;
+    if !st.btn_save.is_null() {
+        MoveWindow(st.btn_save, right - save_w, top_margin, save_w, btn_h, 1);
+        settings_set_font(st.btn_save, st.ui_font);
+    }
+    if !st.btn_close.is_null() {
+        MoveWindow(
+            st.btn_close,
+            right - save_w - gap - close_w,
+            top_margin,
+            close_w,
+            btn_h,
+            1,
+        );
+        settings_set_font(st.btn_close, st.ui_font);
+    }
+    for page in 0..SETTINGS_PAGES.len() {
+        for reg in st.ui.page_regs(page) {
+            settings_set_font(reg.hwnd, st.ui_font);
+        }
+    }
+    let current_page = st.cur_page;
+    st.ui.clear_page(current_page);
+    settings_ensure_page(hwnd, st, current_page);
+    settings_show_page(hwnd, st, current_page);
+    InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn show_settings_saved_feedback(hwnd: HWND, st: &mut SettingsWndState) {
+    settings_set_text(st.btn_save, tr("已保存", "Saved"));
+    InvalidateRect(st.btn_save, null(), 1);
+    KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
+    SetTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT, 1200, None);
+}
+
 // 辅助函数：绘制宽字节文字居中
 unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
@@ -2497,6 +2551,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             for &hh in &[st.btn_save, st.btn_close] {
                 if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
             }
+            refresh_settings_window_metrics(hwnd, &mut st);
             settings_ensure_page(hwnd, &mut st, SettingsPage::General.index());
             settings_apply_from_app(&mut st);
             settings_show_page(hwnd, &mut st, 0);
@@ -2517,15 +2572,16 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 let my = y;
                 let mut crc: RECT = core::mem::zeroed();
                 GetClientRect(hwnd, &mut crc);
-                let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
+                let content_y = settings_content_y_scaled();
+                let view_h = (crc.bottom - crc.top) - content_y;
                 let max_s = settings_page_max_scroll(st.cur_page, view_h);
                 // 与 settings_scrollbar_thumb_w 保持一致的轨道范围
-                let track_top    = SETTINGS_CONTENT_Y + 8;
-                let track_bottom = crc.bottom - 8;
+                let track_top = content_y + settings_scale(8);
+                let track_bottom = crc.bottom - settings_scale(8);
                 let track_h = (track_bottom - track_top).max(1);
                 let content_h = settings_page_content_total_h(st.cur_page).max(view_h + 1);
                 let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
-                let thumb_h = thumb_h.max(24);
+                let thumb_h = thumb_h.max(settings_scale(24));
                 let drag_range = (track_h - thumb_h).max(1);
                 let dy = my - st.scroll_drag_start_y;
                 let new_y = st.scroll_drag_start_scroll + (dy as f32 / drag_range as f32 * max_s as f32) as i32;
@@ -2628,11 +2684,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             // 点击轨道区域（右侧8px内）跳转
             let right_edge = crc.right - SCROLL_BAR_MARGIN;
             let left_edge  = right_edge - SCROLL_BAR_W_ACTIVE - 4;
-            if mx >= left_edge && mx <= right_edge + 2 && my >= SETTINGS_CONTENT_Y + 4 && my < crc.bottom - 4 {
-                let view_h = (crc.bottom - crc.top) - SETTINGS_CONTENT_Y;
+            let content_y = settings_content_y_scaled();
+            if mx >= left_edge && mx <= right_edge + 2 && my >= content_y + settings_scale(4) && my < crc.bottom - settings_scale(4) {
+                let view_h = (crc.bottom - crc.top) - content_y;
                 let max_s = settings_page_max_scroll(st.cur_page, view_h);
-                let track_h = (crc.bottom - 8 - (SETTINGS_CONTENT_Y + 8)).max(1);
-                let new_y = ((my - SETTINGS_CONTENT_Y - 8) as f32 / track_h as f32 * max_s as f32) as i32;
+                let track_h = (crc.bottom - settings_scale(8) - (content_y + settings_scale(8))).max(1);
+                let new_y = ((my - content_y - settings_scale(8)) as f32 / track_h as f32 * max_s as f32) as i32;
                 settings_scroll_to(hwnd, st, new_y);
                 return 0;
             }
@@ -2797,9 +2854,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if st_ptr.is_null() { return 0; }
             let st = &mut *st_ptr;
-            match cmd {
+                match cmd {
                     IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_PASTE_MOVE_TOP | IDC_SET_DEDUPE_FILTER | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 => {
                     settings_toggle_flip(st, cmd);
+                    if cmd == IDC_SET_EDGEHIDE {
+                        settings_sync_pos_fields_enabled(st);
+                    }
                     let sender = lparam as HWND;
                     if !sender.is_null() { InvalidateRect(sender, null(), 1); }
                 }
@@ -3048,6 +3108,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     settings_collect_to_app(st);
                     settings_apply_from_app(st);
                     settings_sync_page_state(st, st.cur_page);
+                    show_settings_saved_feedback(hwnd, st);
                     InvalidateRect(hwnd, null(), 1);
                 }
                 IDC_SET_CLOSE => { DestroyWindow(hwnd); }
@@ -3075,12 +3136,19 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             }
             0
         }
-        WM_THEMECHANGED | WM_SETTINGCHANGE => {
+        WM_THEMECHANGED => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
                 settings_refresh_theme_resources(&mut *st_ptr);
                 apply_dark_mode_to_window(hwnd);
                 InvalidateRect(hwnd, null(), 1);
+            }
+            0
+        }
+        WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if !st_ptr.is_null() {
+                refresh_settings_window_metrics(hwnd, &mut *st_ptr);
             }
             0
         }
@@ -3099,23 +3167,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             }
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
-                let st = &mut *st_ptr;
-                if !st.nav_font.is_null() { DeleteObject(st.nav_font as _); }
-                if !st.ui_font.is_null() && st.ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject(st.ui_font as _); }
-                if !st.title_font.is_null() && st.title_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject(st.title_font as _); }
-                let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
-                st.nav_font = nav_font;
-                st.ui_font = ui_font;
-                st.title_font = title_font;
-                settings_set_font(st.btn_save, st.ui_font);
-                settings_set_font(st.btn_close, st.ui_font);
-                for page in 0..SETTINGS_PAGES.len() {
-                    for reg in st.ui.page_regs(page) {
-                        settings_set_font(reg.hwnd, st.ui_font);
-                    }
-                }
+                refresh_settings_window_metrics(hwnd, &mut *st_ptr);
             }
-            InvalidateRect(hwnd, null(), 1);
             0
         }
         WM_CTLCOLORSTATIC => {
@@ -3165,7 +3218,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 FillRect(memdc, &rc, bg);
                 DeleteObject(bg as _);
 
-                let nav_rc = RECT { left: 0, top: 0, right: SETTINGS_NAV_W, bottom: rc.bottom };
+                let nav_rc = RECT { left: 0, top: 0, right: settings_nav_w_scaled(), bottom: rc.bottom };
                 draw_round_rect(memdc as _, &nav_rc, th.nav_bg, 0, 0);
                 let line_pen = CreatePen(0, 1, th.stroke);
                 let old_pen = SelectObject(memdc, line_pen as _);
@@ -3174,14 +3227,51 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 SelectObject(memdc, old_pen);
                 DeleteObject(line_pen as _);
 
-                let menu_rc = RECT { left: 22, top: 18, right: 50, bottom: 46 };
-                draw_text_ex(memdc as _, "", &menu_rc, th.text_muted, 16, false, false, "Segoe Fluent Icons");
-                let title_rc = RECT { left: 56, top: 18, right: 220, bottom: 50 };
-                draw_text_ex(memdc as _, "设置", &title_rc, th.text, 15, true, false, "Segoe UI Variable Text");
+                let menu_rc = RECT {
+                    left: settings_scale(22),
+                    top: settings_scale(18),
+                    right: settings_scale(50),
+                    bottom: settings_scale(46),
+                };
+                draw_text_ex(
+                    memdc as _,
+                    "",
+                    &menu_rc,
+                    th.text_muted,
+                    settings_scale(16),
+                    false,
+                    false,
+                    "Segoe Fluent Icons",
+                );
+                let title_rc = RECT {
+                    left: settings_scale(56),
+                    top: settings_scale(18),
+                    right: settings_scale(220),
+                    bottom: settings_scale(50),
+                };
+                draw_text_ex(
+                    memdc as _,
+                    "设置",
+                    &title_rc,
+                    th.text,
+                    settings_scale(15),
+                    true,
+                    false,
+                    "Segoe UI Variable Text",
+                );
                 let cur_page = if st_ptr.is_null() { 0 } else { (*st_ptr).cur_page.min(SETTINGS_PAGES.len()-1) };
                 let scroll_y = if st_ptr.is_null() { 0 } else { (*st_ptr).content_scroll_y };
                 let sub_rc = settings_title_rect();
-                draw_text_ex(memdc as _, SETTINGS_PAGES[cur_page], &sub_rc, th.text, 24, true, false, "Segoe UI Variable Display");
+                draw_text_ex(
+                    memdc as _,
+                    SETTINGS_PAGES[cur_page],
+                    &sub_rc,
+                    th.text,
+                    settings_scale(24),
+                    true,
+                    false,
+                    "Segoe UI Variable Display",
+                );
 
                 for i in 0..SETTINGS_PAGES.len() {
                     let selected = !st_ptr.is_null() && (*st_ptr).cur_page == i;
@@ -3219,7 +3309,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 DeleteObject(mask_line as _);
 
                 // 自绘 WinUI 细条滚动条（仅在滚动时短暂显示，1.5秒后自动隐藏）
-                let view_h = (rc.bottom - rc.top) - SETTINGS_CONTENT_Y;
+                let content_y = settings_content_y_scaled();
+                let view_h = (rc.bottom - rc.top) - content_y;
                 let show_bar = !st_ptr.is_null() && (*st_ptr).scroll_bar_visible
                     && settings_page_max_scroll(cur_page, view_h) > 0;
                 if show_bar {
@@ -3227,9 +3318,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let bar_w = if dragging { SCROLL_BAR_W_ACTIVE } else { SCROLL_BAR_W };
                     let track_rc = RECT {
                         left:   rc.right - bar_w - SCROLL_BAR_MARGIN,
-                        top:    SETTINGS_CONTENT_Y + 8,
+                        top:    content_y + settings_scale(8),
                         right:  rc.right - SCROLL_BAR_MARGIN,
-                        bottom: rc.bottom - 8,
+                        bottom: rc.bottom - settings_scale(8),
                     };
                     if dragging {
                         let track_color = if th.bg == rgb(32,32,32) { rgb(70,70,70) } else { rgb(200,200,200) };
@@ -3271,6 +3362,15 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     st.scroll_hide_timer = false;
                     st.scroll_bar_visible = false;
                     InvalidateRect(hwnd, null(), 0);
+                }
+                return 0;
+            }
+            if wparam == ID_TIMER_SETTINGS_SAVE_HINT {
+                let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+                if !st_ptr.is_null() {
+                    KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
+                    settings_set_text((*st_ptr).btn_save, tr("保存", "Save"));
+                    InvalidateRect((*st_ptr).btn_save, null(), 1);
                 }
                 return 0;
             }
@@ -3324,16 +3424,32 @@ unsafe fn open_settings_window(hwnd: HWND) {
     if pst.is_null() { return; }
     let app = &mut *pst;
     if !app.settings_hwnd.is_null() {
+        let st_ptr = GetWindowLongPtrW(app.settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+        if !st_ptr.is_null() {
+            refresh_settings_window_metrics(app.settings_hwnd, &mut *st_ptr);
+        }
         ShowWindow(app.settings_hwnd, SW_SHOW);
         SetForegroundWindow(app.settings_hwnd);
         return;
     }
     ensure_settings_class();
     let hinstance = GetModuleHandleW(null());
-    let sw = GetSystemMetrics(SM_CXSCREEN);
-    let sh = GetSystemMetrics(SM_CYSCREEN);
-    let x = max(0, (sw - SETTINGS_W) / 2);
-    let y = max(0, (sh - SETTINGS_H) / 2);
+    let mut anchor: POINT = zeroed();
+    if GetCursorPos(&mut anchor) == 0 {
+        anchor.x = GetSystemMetrics(SM_CXSCREEN) / 2;
+        anchor.y = GetSystemMetrics(SM_CYSCREEN) / 2;
+    }
+    let mut owner_rc: RECT = zeroed();
+    if !owner_hwnd.is_null() && GetWindowRect(owner_hwnd, &mut owner_rc) != 0 {
+        anchor.x = owner_rc.left + ((owner_rc.right - owner_rc.left) / 2);
+        anchor.y = owner_rc.top + ((owner_rc.bottom - owner_rc.top) / 2);
+    }
+    let work = nearest_monitor_work_rect_for_point(anchor);
+    set_settings_ui_dpi(monitor_dpi_for_point(anchor));
+    let settings_w = settings_w_scaled();
+    let settings_h = settings_h_scaled();
+    let x = max(work.left, work.left + ((work.right - work.left - settings_w) / 2));
+    let y = max(work.top, work.top + ((work.bottom - work.top - settings_h) / 2));
     let whd = CreateWindowExW(
         WS_EX_APPWINDOW | WS_EX_DLGMODALFRAME,
         to_wide(SETTINGS_CLASS).as_ptr(),
@@ -3348,8 +3464,8 @@ unsafe fn open_settings_window(hwnd: HWND) {
             | WS_CLIPCHILDREN,
         x,
         y,
-        SETTINGS_W,
-        SETTINGS_H,
+        settings_w,
+        settings_h,
         owner_hwnd,
         null_mut(),
         hinstance,
@@ -3425,6 +3541,8 @@ pub fn run() -> AppResult<()> {
         }
 
     let title = to_wide(app_title());
+        let startup_layout = main_layout_for_window(null_mut());
+        let startup_h = startup_layout.list_y + startup_layout.list_h + 7;
         let main_hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
             to_wide(WindowRole::Main.class_name()).as_ptr(),
@@ -3432,8 +3550,8 @@ pub fn run() -> AppResult<()> {
             WS_POPUP | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            WIN_W,
-            WIN_H,
+            startup_layout.win_w,
+            startup_h,
             null_mut(),
             null_mut(),
             hinstance,
@@ -3450,8 +3568,8 @@ pub fn run() -> AppResult<()> {
             WS_POPUP | WS_CLIPCHILDREN,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            WIN_W,
-            WIN_H,
+            startup_layout.win_w,
+            startup_h,
             null_mut(),
             null_mut(),
             hinstance,
@@ -3753,6 +3871,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
+            refresh_main_window_metrics(hwnd);
+            0
+        }
         WM_TRAYICON => {
             handle_tray(hwnd, lparam as u32);
             0
@@ -3777,11 +3899,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
             }
-            let ptr = get_state_ptr(hwnd);
-            if !ptr.is_null() {
-                layout_children(hwnd);
-            }
-            InvalidateRect(hwnd, null(), 1);
+            refresh_main_window_metrics(hwnd);
             0
         }
         WM_CLOSE => {
@@ -3827,6 +3945,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     WindowRole::Quick => {
                         KillTimer(hwnd, ID_TIMER_PASTE);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
+                        KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
                         refresh_low_level_input_hooks();
                     }
                 }
@@ -3837,6 +3956,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 clear_window_host((*ptr).role, hwnd);
+                if !(*ptr).search_font.is_null() {
+                    DeleteObject((*ptr).search_font as _);
+                    (*ptr).search_font = null_mut();
+                }
                 (*ptr).icons.destroy();
                 drop(Box::from_raw(ptr));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -3853,15 +3976,16 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         return Err(io::Error::last_os_error());
     }
 
+    let layout = main_layout_for_window(hwnd);
     let search_hwnd = CreateWindowExW(
         0,
         to_wide("EDIT").as_ptr(),
         to_wide("").as_ptr(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | (ES_AUTOHSCROLL as u32),
-        SEARCH_LEFT + 10,
-        SEARCH_TOP + 3,
-        SEARCH_W - 20,
-        SEARCH_H - 6,
+        layout.search_left + 10,
+        layout.search_top + 3,
+        layout.search_w - 20,
+        layout.search_h - 6,
         hwnd,
         IDC_SEARCH as usize as _,
         hinstance,
@@ -3870,9 +3994,6 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     if search_hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
-    let search_font: *mut core::ffi::c_void = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
-    let font: *mut core::ffi::c_void = if search_font.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { search_font };
-    SendMessageW(search_hwnd, WM_SETFONT, font as WPARAM, 1 as LPARAM);
     SendMessageW(search_hwnd, EM_SETMARGINS, (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM, 0);
 
     let icons = load_icons();
@@ -3886,6 +4007,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
     set_window_host(role, hwnd);
     if let Some(state) = unsafe { get_state_mut(hwnd) } {
+        refresh_search_font(state);
         ensure_db();
         if role == WindowRole::Main {
             reload_state_from_db(state);
@@ -3918,6 +4040,8 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         SetTimer(hwnd, ID_TIMER_CARET, 500, None);
         SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
         SetTimer(hwnd, ID_TIMER_CLOUD_SYNC, 5000, None);
+    } else {
+        SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
     }
     Ok(())
 }
@@ -3938,6 +4062,61 @@ unsafe fn layout_children(hwnd: HWND) {
         1,
     );
     ShowWindow(state.search_hwnd, if state.search_on { SW_SHOW } else { SW_HIDE });
+}
+
+unsafe fn refresh_search_font(state: &mut AppState) {
+    let created = CreateFontW(
+        -scale_for_window(state.hwnd, 14),
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(ui_text_font_family()).as_ptr(),
+    ) as *mut core::ffi::c_void;
+    let old_font = state.search_font;
+    state.search_font = created;
+    let font: *mut core::ffi::c_void = if created.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT) as _
+    } else {
+        created
+    };
+    SendMessageW(state.search_hwnd, WM_SETFONT, font as WPARAM, 1 as LPARAM);
+    if !old_font.is_null() {
+        DeleteObject(old_font as _);
+    }
+}
+
+unsafe fn refresh_main_window_metrics(hwnd: HWND) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    let state = &mut *ptr;
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) != 0 {
+        let layout = main_layout_for_window(hwnd);
+        let win_h = layout.list_y + layout.list_h + 7;
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            rc.left,
+            rc.top,
+            layout.win_w,
+            win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+    refresh_search_font(state);
+    layout_children(hwnd);
+    InvalidateRect(hwnd, null(), 1);
 }
 
 pub(crate) unsafe fn reset_search_ui_state(state: &mut AppState) {
@@ -4266,10 +4445,11 @@ unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
     }
     let state = &mut *ptr;
     let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
+    let scroll_step = (state.layout().row_h * 2).max(32);
     if delta > 0 {
-        state.scroll_y -= SCROLL_STEP;
+        state.scroll_y -= scroll_step;
     } else {
-        state.scroll_y += SCROLL_STEP;
+        state.scroll_y += scroll_step;
     }
     state.clamp_scroll();
     state.maybe_request_more_for_active_tab();
@@ -4375,7 +4555,7 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
     let x = get_x_lparam(lparam);
     let y = get_y_lparam(lparam);
 
-    if (0..TITLE_H).contains(&y) {
+    if (0..state.layout().title_h).contains(&y) {
         let mut blocked = false;
         for key in ["search", "setting", "min", "close"] {
             if !title_button_visible(&state.settings, key) {
@@ -4824,7 +5004,7 @@ unsafe fn handle_nchittest(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     };
     ScreenToClient(hwnd, &mut pt);
 
-    if pt.y >= 0 && pt.y < TITLE_H {
+    if pt.y >= 0 && pt.y < state.layout().title_h {
         if state.search_on && pt_in_rect(pt.x, pt.y, &state.search_rect()) {
             return HTCLIENT as LRESULT;
         }
@@ -5689,12 +5869,15 @@ unsafe fn paint(hwnd: HWND) {
     FillRect(memdc, &rc_client, bg_br);
     DeleteObject(bg_br as _);
 
-    if state.icons.app != 0 {
-        let app_badge = RECT { left: 6, top: 5, right: 28, bottom: 27 };
-        if dark {
-            draw_round_fill(memdc as _, &app_badge, th.surface2, 6);
-        }
-        draw_icon_tinted_soft(memdc as _, 9, 8, state.icons.app, 16, 16, dark, 88);
+    let layout = state.layout();
+    let min_pad = scale_for_window(state.hwnd, 6);
+    let app_size = (((layout.title_h * 22) / 35).max(scale_for_window(state.hwnd, 18)))
+        .min((layout.title_h - min_pad * 2).max(scale_for_window(state.hwnd, 18)));
+    let app_icon = icon_handle_for(IconAssetKind::App, app_size);
+    if app_icon != 0 {
+        let app_pad_x = ((layout.title_h - app_size) / 2).max(min_pad);
+        let app_pad_y = ((layout.title_h - app_size) / 2).max(min_pad.saturating_sub(1));
+        draw_icon_tinted_soft(memdc as _, app_pad_x, app_pad_y, app_icon, app_size, app_size, false, 0);
     }
     for key in ["search", "setting", "min", "close"] {
         if !title_button_visible(&state.settings, key) {
@@ -5713,15 +5896,16 @@ unsafe fn paint(hwnd: HWND) {
                 draw_round_rect(memdc as _, &inflate_rect(&rc, -2, -2), col, 0, 6);
             }
         }
+        let slot = rc.right - rc.left;
+        let iw = ((slot * 18 / 36).max(scale_for_window(state.hwnd, 16)))
+            .min((slot - scale_for_window(state.hwnd, 6)).max(scale_for_window(state.hwnd, 16)));
         let icon = match key {
-            "search" => state.icons.search,
-            "setting" => state.icons.setting,
-            "min" => state.icons.min,
-            _ => state.icons.close,
+            "search" => icon_handle_for(IconAssetKind::Search, iw),
+            "setting" => icon_handle_for(IconAssetKind::Setting, iw),
+            "min" => icon_handle_for(IconAssetKind::Min, iw),
+            _ => icon_handle_for(IconAssetKind::Close, iw),
         };
         if icon != 0 {
-            let iw = if matches!(key, "search" | "setting") { 16 } else { 14 }
-                .min((rc.right - rc.left - 8).max(12));
             let ih = iw;
             let ix = rc.left + ((rc.right - rc.left - iw) / 2);
             let iy = rc.top + ((rc.bottom - rc.top - ih) / 2);
@@ -5735,31 +5919,37 @@ unsafe fn paint(hwnd: HWND) {
     }
 
     let seg_rc = RECT {
-        left: SEG_X,
-        top: SEG_Y,
-        right: SEG_X + SEG_W,
-        bottom: SEG_Y + SEG_H,
+        left: layout.seg_x,
+        top: layout.seg_y,
+        right: layout.seg_x + layout.seg_w,
+        bottom: layout.seg_y + layout.seg_h,
     };
     let (tab0, tab1) = state.segment_rects();
     draw_main_segment_bar(memdc as _, &seg_rc, &tab0, &tab1, state.tab_index as i32, state.hover_tab, th);
 
 
     let list_rc = RECT {
-        left: LIST_X,
-        top: LIST_Y,
-        right: LIST_X + LIST_W,
-        bottom: LIST_Y + LIST_H,
+        left: layout.list_x,
+        top: layout.list_y,
+        right: layout.list_x + layout.list_w,
+        bottom: layout.list_y + layout.list_h,
     };
     draw_round_rect(memdc as _, &list_rc, th.surface, th.stroke, 10);
 
     let saved_clip = SaveDC(memdc);
-    IntersectClipRect(memdc, LIST_X + 1, LIST_Y + 1, LIST_X + LIST_W - 1, LIST_Y + LIST_H - 1);
+    IntersectClipRect(
+        memdc,
+        layout.list_x + 1,
+        layout.list_y + 1,
+        layout.list_x + layout.list_w - 1,
+        layout.list_y + layout.list_h - 1,
+    );
     if state.filtered_indices.is_empty() {
         let tr = RECT {
-            left: LIST_X + 20,
-            top: LIST_Y + 20,
-            right: LIST_X + LIST_W - 20,
-            bottom: LIST_Y + LIST_H - 20,
+            left: layout.list_x + 20,
+            top: layout.list_y + 20,
+            right: layout.list_x + layout.list_w - 20,
+            bottom: layout.list_y + layout.list_h - 20,
         };
         let msg = if state.active_load_state().loading {
             "正在加载..."
@@ -5774,12 +5964,12 @@ unsafe fn paint(hwnd: HWND) {
         };
         draw_text(memdc as _, msg, &tr, th.text_muted, 12, false, true);
     } else {
-        let view_top = LIST_Y + LIST_PAD;
-        let view_bottom = LIST_Y + LIST_H - LIST_PAD;
-        let start_idx = max(0, state.scroll_y / ROW_H);
+        let view_top = layout.list_y + layout.list_pad;
+        let view_bottom = layout.list_y + layout.list_h - layout.list_pad;
+        let start_idx = max(0, state.scroll_y / layout.row_h);
         let end_idx = min(
             state.filtered_indices.len() as i32,
-            (state.scroll_y + state.list_view_height()) / ROW_H + 2,
+            (state.scroll_y + state.list_view_height()) / layout.row_h + 2,
         );
 
         for i in start_idx..end_idx {
@@ -5802,32 +5992,47 @@ unsafe fn paint(hwnd: HWND) {
                 DeleteObject(br as _);
             }
 
-            let icon = item_icon_handle(state, &item);
+            let icon_size = (layout.row_h * 18 / 44).max(scale_for_window(state.hwnd, 16));
+            let icon = item_icon_handle(&item, icon_size);
             if icon != 0 {
-                let (icon_w, icon_h) = match item.kind {
-                    ClipKind::Text | ClipKind::Phrase | ClipKind::Image | ClipKind::Files => (16, 16),
-                };
-                let icon_x = row_rc.left + 12;
-                let icon_y = row_rc.top + ((ROW_H - icon_h) / 2);
+                let (icon_w, icon_h) = (icon_size, icon_size);
+                let icon_x = row_rc.left + (layout.row_h * 12 / 44).clamp(10, 18);
+                let icon_y = row_rc.top + ((layout.row_h - icon_h) / 2);
                 draw_icon_tinted(memdc as _, icon_x, icon_y, icon, icon_w, icon_h, dark);
             }
 
-            if item.pinned && state.icons.pin != 0 {
+            if item.pinned {
                 let mut pin_y = row_rc.top + 3;
                 if pin_y < (view_top + 2) {
                     pin_y = view_top + 2;
                 }
                 if (pin_y + 16) <= (view_bottom - 2) {
-                    let pin_x = row_rc.left + 10 + 20 + 2;
-                    draw_icon_tinted(memdc as _, pin_x, pin_y, state.icons.pin, 16, 16, dark);
+                    let pin_x = row_rc.left + (layout.row_h * 32 / 44).clamp(24, 40);
+                    let pin_size = (layout.row_h * 16 / 44).max(scale_for_window(state.hwnd, 16));
+                    let pin_icon = icon_handle_for(IconAssetKind::Pin, pin_size);
+                    if pin_icon != 0 {
+                        draw_icon_tinted(memdc as _, pin_x, pin_y, pin_icon, pin_size, pin_size, dark);
+                    }
                 }
             }
 
             if let Some(del_rc) = row_quick_delete_rect(state, i, &item) {
                 let bg = inflate_rect(&del_rc, 2, 2);
                 draw_round_rect(memdc as _, &bg, th.surface, th.stroke, 10);
-                if state.icons.del != 0 {
-                    draw_icon_tinted(memdc as _, del_rc.left, del_rc.top, state.icons.del, 16, 16, dark);
+                let del_size = (del_rc.right - del_rc.left)
+                    .max(del_rc.bottom - del_rc.top)
+                    .max(scale_for_window(state.hwnd, 16));
+                let del_icon = icon_handle_for(IconAssetKind::Delete, del_size);
+                if del_icon != 0 {
+                    draw_icon_tinted(
+                        memdc as _,
+                        del_rc.left,
+                        del_rc.top,
+                        del_icon,
+                        del_rc.right - del_rc.left,
+                        del_rc.bottom - del_rc.top,
+                        dark,
+                    );
                 }
             }
 
@@ -5839,7 +6044,7 @@ unsafe fn paint(hwnd: HWND) {
                 if let Some((bytes, width, height)) = ensure_item_image_bytes(&item) {
                     draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc);
                 }
-                row_rc.left = preview_rc.right + 10;
+                row_rc.left = preview_rc.right + (layout.row_h * 10 / 44).clamp(8, 14);
             }
             // 图片条目：显示截图时间（本地时间），让用户快速识别
             let display_preview: String;
@@ -5854,10 +6059,10 @@ unsafe fn paint(hwnd: HWND) {
 
         if state.active_load_state().loading {
             let loading_rc = RECT {
-                left: LIST_X + 18,
-                top: LIST_Y + LIST_H - 36,
-                right: LIST_X + LIST_W - 18,
-                bottom: LIST_Y + LIST_H - 12,
+                left: layout.list_x + 18,
+                top: layout.list_y + layout.list_h - (layout.row_h * 36 / 44).clamp(28, 44),
+                right: layout.list_x + layout.list_w - 18,
+                bottom: layout.list_y + layout.list_h - 12,
             };
             draw_text(memdc as _, "继续加载中...", &loading_rc, th.text_muted, 11, false, true);
         }
@@ -6152,17 +6357,18 @@ fn pt_in_rect_screen(pt: &POINT, rc: &RECT) -> bool {
 }
 
 fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
+    let layout = state.layout();
     let inner = RECT {
-        left: LIST_X + LIST_PAD,
-        top: LIST_Y + LIST_PAD,
-        right: LIST_X + LIST_W - LIST_PAD,
-        bottom: LIST_Y + LIST_H - LIST_PAD,
+        left: layout.list_x + layout.list_pad,
+        top: layout.list_y + layout.list_pad,
+        right: layout.list_x + layout.list_w - layout.list_pad,
+        bottom: layout.list_y + layout.list_h - layout.list_pad,
     };
     if !pt_in_rect(x, y, &inner) {
         return -1;
     }
     let yy = y - inner.top + state.scroll_y;
-    let idx = yy / ROW_H;
+    let idx = yy / layout.row_h;
     if idx < 0 || idx >= state.filtered_indices.len() as i32 {
         -1
     } else {
@@ -6179,7 +6385,12 @@ fn row_shows_delete_button(state: &AppState, visible_idx: i32) -> bool {
 }
 
 fn row_text_right_padding(state: &AppState, visible_idx: i32) -> i32 {
-    if row_shows_delete_button(state, visible_idx) { 42 } else { 18 }
+    let layout = state.layout();
+    if row_shows_delete_button(state, visible_idx) {
+        (layout.row_h * 42 / 44).clamp(42, 54)
+    } else {
+        (layout.row_h * 18 / 44).clamp(18, 24)
+    }
 }
 
 fn row_quick_delete_rect(state: &AppState, visible_idx: i32, _item: &ClipItem) -> Option<RECT> {
@@ -6193,14 +6404,14 @@ fn row_inline_preview_rect(row_rc: &RECT, item: &ClipItem, settings: &AppSetting
     if !row_supports_image_preview(item, settings) {
         return None;
     }
-    let size = 30;
+    let size = ((row_rc.bottom - row_rc.top) - 8).clamp(24, 40);
     let left = row_rc.left + 2;
     let top = row_rc.top + ((row_rc.bottom - row_rc.top - size) / 2);
     Some(RECT { left, top, right: left + size, bottom: top + size })
 }
 
 fn scroll_to_top_visible(state: &AppState) -> bool {
-    state.scroll_y > ROW_H
+    state.scroll_y > state.layout().row_h
 }
 
 unsafe fn hovered_item_clone(state: &AppState) -> Option<ClipItem> {
