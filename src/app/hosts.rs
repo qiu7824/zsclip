@@ -1,4 +1,5 @@
 ﻿use super::*;
+use std::time::Duration;
 use crate::win_system_ui::{
     create_settings_dropdown_button as settings_create_dropdown_btn,
     create_settings_edit as host_create_settings_edit,
@@ -184,6 +185,29 @@ unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
                     return true;
                 }
             }
+        }
+    }
+    let popup = current_vv_popup_hwnd();
+    screen_point_hits_window_scope(popup, pt)
+}
+
+unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> bool {
+    if screen_point_hits_window_scope(hwnd, pt) {
+        return true;
+    }
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        let popup = current_vv_popup_hwnd();
+        return screen_point_hits_window_scope(popup, pt);
+    }
+    if screen_point_hits_window_scope((*ptr).settings_hwnd, pt) {
+        return true;
+    }
+    if !(*ptr).settings_hwnd.is_null() {
+        let st_ptr =
+            GetWindowLongPtrW((*ptr).settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+        if !st_ptr.is_null() && screen_point_hits_window_scope((*st_ptr).dropdown_popup, pt) {
+            return true;
         }
     }
     let popup = current_vv_popup_hwnd();
@@ -424,6 +448,9 @@ fn clear_edge_dock_state(state: &mut AppState) {
     state.edge_docked_top = 0;
     state.edge_docked_right = 0;
     state.edge_docked_bottom = 0;
+    state.edge_hide_armed = false;
+    state.edge_hide_grace_until = None;
+    state.edge_restore_wait_leave = false;
 }
 
 fn set_edge_docked_rect(state: &mut AppState, rc: &RECT) {
@@ -455,6 +482,17 @@ fn edge_side_valid(side: i32) -> bool {
 
 unsafe fn edge_auto_hide_peek(hwnd: HWND) -> i32 {
     scale_for_window(hwnd, EDGE_AUTO_HIDE_PEEK).max(6)
+}
+
+fn edge_set_grace(state: &mut AppState, ms: u64) {
+    state.edge_hide_grace_until = Some(Instant::now() + Duration::from_millis(ms));
+}
+
+fn edge_grace_active(state: &AppState) -> bool {
+    state
+        .edge_hide_grace_until
+        .map(|until| until > Instant::now())
+        .unwrap_or(false)
 }
 
 unsafe fn edge_detect_margin_v(hwnd: HWND) -> i32 {
@@ -527,11 +565,23 @@ unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) ->
     }
 }
 
+unsafe fn ensure_edge_dock_state(hwnd: HWND, state: &mut AppState) -> bool {
+    if edge_side_valid(state.edge_hidden_side) && edge_docked_rect_valid(state) {
+        return true;
+    }
+    let rc = window_rect_for_dock(hwnd);
+    if update_edge_dock_state(hwnd, state, &rc) {
+        return true;
+    }
+    snap_window_to_nearest_edge(hwnd, state)
+}
+
 unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
     if !edge_side_valid(state.edge_hidden_side) || !edge_docked_rect_valid(state) {
         return None;
     }
     let docked = edge_docked_rect(state);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
     let hot = edge_detect_margin_v(hwnd);
     Some(match state.edge_hidden_side {
         EDGE_AUTO_HIDE_LEFT => RECT {
@@ -553,10 +603,10 @@ unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
             bottom: docked.top + hot,
         },
         EDGE_AUTO_HIDE_BOTTOM => RECT {
-            left: docked.left,
-            top: docked.bottom - hot,
-            right: docked.right,
-            bottom: docked.bottom,
+            left: monitor.left,
+            top: monitor.bottom - hot,
+            right: monitor.right,
+            bottom: monitor.bottom,
         },
         _ => docked,
     })
@@ -567,6 +617,7 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
         return None;
     }
     let docked = edge_docked_rect(state);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
     let width = (rc.right - rc.left).max(1);
     let height = (rc.bottom - rc.top).max(1);
     let peek = edge_auto_hide_peek(hwnd);
@@ -582,7 +633,7 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
     };
     let y = match state.edge_hidden_side {
         EDGE_AUTO_HIDE_TOP => docked.top + peek - height,
-        EDGE_AUTO_HIDE_BOTTOM => docked.bottom - peek,
+        EDGE_AUTO_HIDE_BOTTOM => monitor.bottom - peek,
         EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
             state
                 .edge_restore_y
@@ -631,6 +682,8 @@ pub(crate) unsafe fn snap_window_to_nearest_edge(hwnd: HWND, state: &mut AppStat
     state.edge_restore_x = x;
     state.edge_restore_y = y;
     state.edge_hidden = false;
+    state.edge_hide_armed = false;
+    ensure_mouse_leave_tracking(hwnd);
     true
 }
 
@@ -638,6 +691,7 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
     if !state.edge_hidden {
         return;
     }
+    state.edge_hidden = true;
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -648,24 +702,39 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     state.edge_hidden = false;
+    state.edge_hide_armed = false;
+    state.edge_restore_wait_leave = false;
+    edge_set_grace(state, 450);
+    ensure_mouse_leave_tracking(hwnd);
 }
 
-pub(super) unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
+pub(crate) unsafe fn try_restore_edge_hidden_window(hwnd: HWND) -> bool {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return false;
+    }
+    let state = &mut *ptr;
+    if !state.edge_hidden {
+        return false;
+    }
+    restore_edge_hidden_window(hwnd, state);
+    InvalidateRect(hwnd, null(), 1);
+    true
+}
+
+unsafe fn hide_edge_docked_window_with_scope(hwnd: HWND, state: &mut AppState, check_scope: bool) {
     if !state.settings.edge_auto_hide || state.edge_hidden {
         return;
     }
 
-    let mut rc = window_rect_for_dock(hwnd);
-    if !update_edge_dock_state(hwnd, state, &rc) {
-        if !snap_window_to_nearest_edge(hwnd, state) {
-            return;
-        }
-        rc = window_rect_for_dock(hwnd);
+    if !ensure_edge_dock_state(hwnd, state) {
+        return;
     }
+    let rc = window_rect_for_dock(hwnd);
 
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
-    if should_ignore_outside_click_for_point(cursor) {
+    if check_scope && edge_window_scope_contains_point(hwnd, cursor) {
         return;
     }
 
@@ -673,17 +742,11 @@ pub(super) unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
     state.edge_restore_y = rc.top;
     let (hide_x, hide_y) = match edge_hidden_position(hwnd, state, &rc) {
         Some(pos) => pos,
-        None => {
-            if !snap_window_to_nearest_edge(hwnd, state) {
-                return;
-            }
-            let rc2 = window_rect_for_dock(hwnd);
-            match edge_hidden_position(hwnd, state, &rc2) {
-                Some(pos) => pos,
-                None => return,
-            }
-        }
+        None => return,
     };
+    state.edge_hidden = true;
+    state.edge_hide_armed = false;
+    state.edge_restore_wait_leave = false;
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -693,7 +756,6 @@ pub(super) unsafe fn hide_edge_docked_window(hwnd: HWND, state: &mut AppState) {
         0,
         SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
-    state.edge_hidden = true;
     hide_hover_preview();
     InvalidateRect(hwnd, null(), 0);
 }
@@ -710,17 +772,13 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
 
-    if state.edge_hidden_side == EDGE_AUTO_HIDE_NONE {
-        let _ = snap_window_to_nearest_edge(hwnd, state);
-    }
-
-    let rc = window_rect_for_dock(hwnd);
     let mut cursor: POINT = zeroed();
     GetCursorPos(&mut cursor);
 
     if state.edge_hidden {
         if let Some(hot) = edge_hotzone_rect(hwnd, state) {
-            if pt_in_rect_screen(&cursor, &hot) {
+            let in_hot = pt_in_rect_screen(&cursor, &hot);
+            if in_hot {
                 restore_edge_hidden_window(hwnd, state);
                 InvalidateRect(hwnd, null(), 0);
             }
@@ -730,14 +788,15 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
 
-    if !update_edge_dock_state(hwnd, state, &rc) {
-        let _ = snap_window_to_nearest_edge(hwnd, state);
+    let inside = edge_window_scope_contains_point(hwnd, cursor);
+    if inside {
+        state.edge_hide_armed = true;
+        return;
     }
-    if state.edge_hidden_side != EDGE_AUTO_HIDE_NONE
-        && !should_ignore_outside_click_for_point(cursor)
-    {
-        hide_edge_docked_window(hwnd, state);
+    if !state.edge_hide_armed || edge_grace_active(state) {
+        return;
     }
+    hide_edge_docked_window_with_scope(hwnd, state, false);
 }
 
 pub(super) unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
@@ -820,6 +879,13 @@ pub(super) unsafe fn handle_mouse_leave_main(hwnd: HWND) {
         dirty = true;
     }
     hide_hover_preview();
+    if state.settings.edge_auto_hide
+        && !state.edge_hidden
+        && !vv_popup_menu_active()
+        && !edge_grace_active(state)
+    {
+        hide_edge_docked_window_with_scope(hwnd, state, false);
+    }
     if dirty {
         InvalidateRect(hwnd, null(), 0);
     }
@@ -919,6 +985,18 @@ pub(super) unsafe fn clear_main_hover_state(hwnd: HWND) {
     hide_hover_preview();
     if dirty {
         InvalidateRect(hwnd, null(), 0);
+    }
+}
+
+pub(crate) unsafe fn note_window_moved_for_edge_hide(hwnd: HWND, state: &mut AppState) {
+    if !state.settings.edge_auto_hide || state.edge_hidden || IsWindowVisible(hwnd) == 0 {
+        return;
+    }
+    let rc = window_rect_for_dock(hwnd);
+    if update_edge_dock_state(hwnd, state, &rc) {
+        state.edge_hide_armed = false;
+    } else {
+        clear_edge_dock_state(state);
     }
 }
 
@@ -1679,6 +1757,8 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     }
     if edge_hide_old && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
+    } else if !edge_hide_old && app.settings.edge_auto_hide {
+        let _ = snap_window_to_nearest_edge(st.parent_hwnd, app);
     }
     refresh_low_level_input_hooks();
     app.refilter();
@@ -1821,48 +1901,48 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
     st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
     st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
     let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片记录", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, "显示图片缩略图", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
     let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
 
-    let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24);
-    st.cb_max = settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), 150, ui_font);
-    settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), 150, 32);
+    let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24));
+    st.cb_max = settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), settings_scale(150), ui_font);
+    settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), settings_scale(150), settings_scale(32));
     if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
 
     st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
     st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
     let _ = settings_create_toggle(hwnd, st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w(), ui_font);
 
-    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, 24), sec3.label_w(), 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, 24), sec3.label_w(), 24);
-    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), 170, ui_font);
-    settings_page0_push_ctrl(st, st.cb_pos, sec3.field_x(), sec3.row_y(0), 170, 32);
+    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), settings_scale(170), ui_font);
+    settings_page0_push_ctrl(st, st.cb_pos, sec3.field_x(), sec3.row_y(0), settings_scale(170), settings_scale(32));
     if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
 
-    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, 24), sec3.label_w(), 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_mouse, sec3.left(), sec3.label_y(1, 24), sec3.label_w(), 24);
+    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_mouse, sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24));
     let mouse_x = sec3.field_x();
-    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec3.row_y(1), 64, ui_font);
-    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + 74, sec3.row_y(1), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec3.row_y(1), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + 74, sec3.row_y(1), 64, 28);
+    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec3.row_y(1), settings_scale(64), ui_font);
+    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64), ui_font);
+    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec3.row_y(1), settings_scale(64), settings_scale(28));
+    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64), settings_scale(28));
 
-    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec3.left(), sec3.label_y(2, 24), sec3.label_w(), 24, ui_font);
-    settings_page0_push_ctrl(st, lbl_fixed, sec3.left(), sec3.label_y(2, 24), sec3.label_w(), 24);
+    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_fixed, sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24));
     let fixed_x = sec3.field_x();
-    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec3.row_y(2), 64, ui_font);
-    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + 74, sec3.row_y(2), 64, ui_font);
-    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec3.row_y(2), 64, 28);
-    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + 74, sec3.row_y(2), 64, 28);
+    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec3.row_y(2), settings_scale(64), ui_font);
+    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64), ui_font);
+    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec3.row_y(2), settings_scale(64), settings_scale(28));
+    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64), settings_scale(28));
 
     let btn_y = sec4.row_y(0);
-    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, 130), btn_y, 130, ui_font);
-    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, 130), btn_y, 130, ui_font);
-    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, 130), btn_y, 130, ui_font);
-    settings_page0_push_ctrl(st, st.btn_open_cfg, sec4.action_x(0, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_db, sec4.action_x(1, 130), btn_y, 130, 32);
-    settings_page0_push_ctrl(st, st.btn_open_data, sec4.action_x(2, 130), btn_y, 130, 32);
+    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130), ui_font);
+    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130), ui_font);
+    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130), ui_font);
+    settings_page0_push_ctrl(st, st.btn_open_cfg, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
+    settings_page0_push_ctrl(st, st.btn_open_db, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
+    settings_page0_push_ctrl(st, st.btn_open_data, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
     for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
@@ -1948,20 +2028,20 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     if !st.chk_hk_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_hk_enable); }
 
     b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, 24), 70, 24);
-    st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), 170);
+    st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), settings_scale(170));
     if !st.cb_hk_mod.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_mod); }
     let key_label_x = sec0.field_x() + 186;
     b.label(st, "按键：", key_label_x, sec0.label_y(1, 24), 50, 24);
-    st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + 50, sec0.row_y(1), 120);
+    st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + settings_scale(50), sec0.row_y(1), settings_scale(120));
     if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, 24), sec0.full_w() - 124, 24);
-    st.btn_hk_record = b.button(st, "录制热键", IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - 110, sec0.row_y(2) - 2, 110);
+    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.full_w() - settings_scale(124), settings_scale(24));
+    st.btn_hk_record = b.button(st, "录制热键", IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
     if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
 
     let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
-    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, 110), sec1.row_y(1), 110);
-    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, 110), sec1.row_y(1), 110);
-    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, 130), sec1.row_y(1), 130);
+    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, settings_scale(110)), sec1.row_y(1), settings_scale(110));
+    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, settings_scale(110)), sec1.row_y(1), settings_scale(110));
+    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, settings_scale(130)), sec1.row_y(1), settings_scale(130));
     for &hh in &[st.btn_clip_hist_block, st.btn_clip_hist_restore, st.btn_restart_explorer] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
@@ -1983,20 +2063,20 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     st.chk_qs = qs_btn;
     if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
     b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24);
-    st.cb_engine = b.dropdown(st, "筑森搜索（zxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), 240);
+    st.cb_engine = b.dropdown(st, "筑森搜索（zxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), settings_scale(240));
     if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
     b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, 24), sec0.label_w(), 24);
     st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
-    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), 130);
+    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), settings_scale(130));
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + 146, sec0.row_y(3) + 4, sec0.field_w_from(sec0.left() + 146), 24);
+    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + settings_scale(146), sec0.row_y(3) + settings_scale(4), sec0.field_w_from(sec0.left() + settings_scale(146)), settings_scale(24));
     let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
     let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(0), sec2.full_w());
     st.chk_mm = mm_btn;
     if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
-    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(1), 170);
+    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(1), settings_scale(170));
     if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
     st.ui.mark_built(page);
 }
@@ -2018,23 +2098,23 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     push(st, st.chk_group_enable);
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
-    let lbl_vv_source = settings_create_label(hwnd, "VV 来源：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24, ui_font);
+    let lbl_vv_source = settings_create_label(hwnd, "VV 来源：", sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
     push(st, lbl_vv_source);
-    st.cb_vv_source = settings_create_dropdown_btn(hwnd, "复制记录", IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), 180, ui_font);
+    st.cb_vv_source = settings_create_dropdown_btn(hwnd, "复制记录", IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180), ui_font);
     if !st.cb_vv_source.is_null() {
         settings_page_push_ctrl(st, page, st.cb_vv_source);
         st.ownerdraw_ctrls.push(st.cb_vv_source);
     }
 
-    let lbl_vv_group = settings_create_label(hwnd, "VV 默认分组：", sec0.left(), sec0.label_y(2, 24), sec0.label_w(), 24, ui_font);
+    let lbl_vv_group = settings_create_label(hwnd, "VV 默认分组：", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
     push(st, lbl_vv_group);
-    st.cb_vv_group = settings_create_dropdown_btn(hwnd, "全部记录", IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), 220, ui_font);
+    st.cb_vv_group = settings_create_dropdown_btn(hwnd, "全部记录", IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220), ui_font);
     if !st.cb_vv_group.is_null() {
         settings_page_push_ctrl(st, page, st.cb_vv_group);
         st.ownerdraw_ctrls.push(st.cb_vv_group);
     }
 
-    let tab_w = 118;
+    let tab_w = settings_scale(118);
     st.btn_group_view_records = settings_create_small_btn(hwnd, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w, ui_font);
     st.btn_group_view_phrases = settings_create_small_btn(hwnd, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + 10, sec1.row_y(0), tab_w, ui_font);
     for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
@@ -2044,18 +2124,18 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         }
     }
 
-    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), 24, ui_font);
+    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24), ui_font);
     push(st, st.lb_group_current);
 
-    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), 220, 22, ui_font);
+    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22), ui_font);
     push(st, lbl3);
 
-    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), 170, ui_font);
+    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170), ui_font);
     if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups); }
 
-    let btn_y = sec1.row_y(3) + 186;
-    let bw = 90;
-    let gap = 10;
+    let btn_y = sec1.row_y(3) + settings_scale(186);
+    let bw = settings_scale(90);
+    let gap = settings_scale(10);
     let x0 = sec1.left();
     st.btn_group_add = settings_create_small_btn(hwnd, "新建分组", IDC_SET_GROUP_ADD, x0, btn_y, bw, ui_font);
     st.btn_group_rename = settings_create_small_btn(hwnd, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap), btn_y, bw, ui_font);
@@ -2085,8 +2165,8 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
         st.ownerdraw_ctrls.push(st.chk_cloud_enable);
     }
     b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24);
-    st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), 150);
-    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, 24), sec0.full_w(), 24);
+    st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), settings_scale(150));
+    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.full_w(), settings_scale(24));
 
     b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24);
     st.ed_cloud_url = b.edit(st, "", IDC_SET_CLOUD_URL, sec1.field_x(), sec1.row_y(0), sec1.field_w());
@@ -2097,8 +2177,8 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
     b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
     st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
 
-    let btn_w = 130;
-    let gap = 14;
+    let btn_w = settings_scale(130);
+    let gap = settings_scale(14);
     let x0 = sec2.left();
     let x1 = x0 + btn_w + gap;
     let btn_sync = b.button(st, "立即同步", IDC_SET_CLOUD_SYNC_NOW, x0, sec2.row_y(0), btn_w);

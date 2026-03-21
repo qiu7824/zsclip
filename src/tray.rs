@@ -97,27 +97,7 @@ fn resolve_main_window_position(
         right: std::cmp::min(work.right, monitor.right),
         bottom: std::cmp::min(work.bottom, monitor.bottom),
     };
-    let (mut x, mut y) = clamp_to_rect(x, y, &clamp_rect, win_w, win_h);
-    if settings.edge_auto_hide {
-        let candidates = [
-            ((x - clamp_rect.left).abs(), 0),
-            ((clamp_rect.right - (x + win_w)).abs(), 1),
-            ((y - clamp_rect.top).abs(), 2),
-            ((clamp_rect.bottom - (y + win_h)).abs(), 3),
-        ];
-        let mut best = candidates[0];
-        for candidate in candidates.into_iter().skip(1) {
-            if candidate.0 < best.0 {
-                best = candidate;
-            }
-        }
-        match best.1 {
-            0 => x = clamp_rect.left,
-            1 => x = (clamp_rect.right - win_w).max(clamp_rect.left),
-            2 => y = clamp_rect.top,
-            _ => y = (clamp_rect.bottom - win_h).max(clamp_rect.top),
-        }
-    }
+    let (x, y) = clamp_to_rect(x, y, &clamp_rect, win_w, win_h);
     (x, y, win_w, win_h)
 }
 
@@ -293,8 +273,16 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
 pub(crate) unsafe fn toggle_window_visibility(hwnd: HWND) {
     let quick = crate::app::quick_window_hwnd();
     if !quick.is_null() && IsWindowVisible(quick) != 0 {
+        if crate::app::hosts::try_restore_edge_hidden_window(quick) {
+            crate::app::refresh_low_level_input_hooks();
+            return;
+        }
         crate::app::set_main_window_noactivate_mode(quick, false);
         ShowWindow(quick, SW_HIDE);
+    }
+    if crate::app::hosts::try_restore_edge_hidden_window(hwnd) {
+        crate::app::refresh_low_level_input_hooks();
+        return;
     }
     if IsWindowVisible(hwnd) != 0 {
         let pst = crate::app::get_state_ptr(hwnd);
@@ -326,13 +314,16 @@ pub(crate) unsafe fn remember_window_pos(hwnd: HWND) {
         };
         (*pst).settings.last_window_x = save_x;
         (*pst).settings.last_window_y = save_y;
-        crate::app::save_settings(&(*pst).settings);
     }
 }
 
 pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
     let quick = crate::app::quick_window_hwnd();
     if !quick.is_null() && IsWindowVisible(quick) != 0 {
+        if crate::app::hosts::try_restore_edge_hidden_window(quick) {
+            crate::app::refresh_low_level_input_hooks();
+            return;
+        }
         let pst = crate::app::get_state_ptr(quick);
         if !pst.is_null() {
             (*pst).hotkey_passthrough_active = false;
@@ -345,6 +336,10 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
         crate::app::refresh_low_level_input_hooks();
     } else if IsWindowVisible(hwnd) != 0 {
         let pst = crate::app::get_state_ptr(hwnd);
+        if crate::app::hosts::try_restore_edge_hidden_window(hwnd) {
+            crate::app::refresh_low_level_input_hooks();
+            return;
+        }
         if !pst.is_null() {
             (*pst).hotkey_passthrough_active = false;
             (*pst).hotkey_passthrough_target = null_mut();

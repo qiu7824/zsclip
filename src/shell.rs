@@ -544,14 +544,7 @@ fn icon_bytes_for(kind: IconAssetKind) -> &'static [u8] {
 }
 
 fn normalize_requested_icon_size(size: i32) -> i32 {
-    const AVAILABLE: [i32; 7] = [16, 24, 32, 48, 64, 128, 256];
-    let requested = size.max(8);
-    for candidate in AVAILABLE {
-        if requested <= candidate {
-            return candidate;
-        }
-    }
-    256
+    size.clamp(8, 256)
 }
 
 pub(crate) unsafe fn icon_handle_for(kind: IconAssetKind, target_px: i32) -> isize {

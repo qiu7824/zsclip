@@ -21,7 +21,7 @@ pub(crate) use self::hosts::{
 use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
 use std::cmp::{max, min};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -202,6 +202,7 @@ const IDM_ROW_EDIT: usize = 41012;
 const IDM_ROW_QUICK_SEARCH: usize = 41013;
 const IDM_ROW_EXPORT_FILE: usize = 41014;
 const IDM_ROW_MAIL_MERGE: usize = 41015;
+const IDM_ROW_DELETE_UNPINNED: usize = 41016;
 const IDM_ROW_GROUP_BASE: usize = 41100;
 const IDM_GROUP_FILTER_ALL: usize = 41200;
 const IDM_GROUP_FILTER_BASE: usize = 41210;
@@ -1220,10 +1221,14 @@ pub(crate) struct AppState {
     pub(crate) hover_scroll: bool,   // 鼠标是否在滚动条区域
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
+    pub(crate) scroll_dragging: bool,
+    pub(crate) scroll_drag_start_y: i32,
+    pub(crate) scroll_drag_start_scroll: i32,
     pub(crate) hover_to_top: bool,
     pub(crate) down_to_top: bool,
     tab_loads: [TabLoadState; 2],
     payload_cache: ItemPayloadCache,
+    image_thumb_cache: ImageThumbnailCache,
     pub(crate) vv_popup_visible: bool,
     pub(crate) vv_popup_pending_target: HWND,
     pub(crate) vv_popup_pending_retries: u8,
@@ -1246,6 +1251,13 @@ pub(crate) struct AppState {
     pub(crate) edge_docked_top: i32,
     pub(crate) edge_docked_right: i32,
     pub(crate) edge_docked_bottom: i32,
+    pub(crate) edge_monitor_left: i32,
+    pub(crate) edge_monitor_top: i32,
+    pub(crate) edge_monitor_right: i32,
+    pub(crate) edge_monitor_bottom: i32,
+    pub(crate) edge_hide_armed: bool,
+    pub(crate) edge_hide_grace_until: Option<Instant>,
+    pub(crate) edge_restore_wait_leave: bool,
     pub(crate) cloud_sync_in_progress: bool,
     pub(crate) cloud_sync_next_due: Option<Instant>,
 }
@@ -1272,13 +1284,15 @@ impl AppState {
             self.delete_selected();
             return;
         }
-        for id in ids {
+        let anchor = self.current_scroll_anchor();
+        for &id in &ids {
             let _ = db_delete_item(id);
             self.remove_cached_item(id);
         }
+        self.remove_items_from_active_tab(&ids);
         self.clear_selection();
-        self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
+        self.restore_scroll_anchor(anchor);
         unsafe { sync_peer_windows_from_db(self.hwnd); }
     }
 
@@ -1313,6 +1327,7 @@ impl AppState {
 
     fn clear_payload_cache(&mut self) {
         self.payload_cache.clear();
+        self.image_thumb_cache.clear();
     }
 
     fn cache_full_item(&mut self, item: ClipItem) {
@@ -1321,6 +1336,64 @@ impl AppState {
 
     fn remove_cached_item(&mut self, id: i64) {
         self.payload_cache.remove(id);
+        self.image_thumb_cache.remove(id);
+    }
+
+    fn current_scroll_anchor(&self) -> Option<(i64, i32)> {
+        let row_h = self.layout().row_h.max(1);
+        let top_visible = (self.scroll_y / row_h).max(0) as usize;
+        let offset = self.scroll_y - (top_visible as i32 * row_h);
+        let src_idx = *self.filtered_indices.get(top_visible)?;
+        let item = self.active_items().get(src_idx)?;
+        if item.id > 0 {
+            Some((item.id, offset))
+        } else {
+            None
+        }
+    }
+
+    fn restore_scroll_anchor(&mut self, anchor: Option<(i64, i32)>) {
+        if let Some((id, offset)) = anchor {
+            let row_h = self.layout().row_h.max(1);
+            if let Some((visible_idx, _)) = self
+                .filtered_indices
+                .iter()
+                .enumerate()
+                .find(|(_, src_idx)| self.active_items().get(**src_idx).map(|item| item.id == id).unwrap_or(false))
+            {
+                self.scroll_y = visible_idx as i32 * row_h + offset;
+            }
+        }
+        self.clamp_scroll();
+        self.maybe_request_more_for_active_tab();
+    }
+
+    fn reload_state_from_db_preserve_scroll(&mut self, anchor: Option<(i64, i32)>) {
+        reload_state_from_db(self);
+        self.restore_scroll_anchor(anchor);
+    }
+
+    fn remove_items_from_active_tab(&mut self, ids: &[i64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let id_set: HashSet<i64> = ids.iter().copied().collect();
+        self.items_for_tab_mut(self.tab_index)
+            .retain(|item| !id_set.contains(&item.id));
+    }
+
+    fn promote_loaded_item_to_top(&mut self, old_id: i64, new_id: i64) -> bool {
+        if old_id <= 0 || new_id <= 0 {
+            return false;
+        }
+        let items = self.items_for_tab_mut(self.tab_index);
+        let Some(pos) = items.iter().position(|item| item.id == old_id) else {
+            return false;
+        };
+        let mut item = items.remove(pos);
+        item.id = new_id;
+        items.insert(0, clip_item_to_summary(&item));
+        true
     }
 
     fn load_item_full_cached(&mut self, id: i64) -> Option<ClipItem> {
@@ -1382,12 +1455,16 @@ impl AppState {
         }
         if self.settings.dedupe_filter_enabled && !signature.is_empty() {
             if let Some(existing_id) = db_find_duplicate_item_id(0, &item, &signature) {
-                if db_promote_item_to_top(existing_id).is_ok() {
+                if let Ok(new_id) = db_promote_item_to_top(existing_id) {
+                    let anchor = self.current_scroll_anchor();
                     self.last_signature = signature;
                     self.remove_cached_item(existing_id);
-                    reload_state_from_db(self);
-                    if self.tab_index == 0 {
-                        self.sel_idx = 0;
+                    self.remove_cached_item(new_id);
+                    if !self.promote_loaded_item_to_top(existing_id, new_id) {
+                        self.reload_state_from_db_preserve_scroll(anchor);
+                    } else {
+                        self.refilter();
+                        self.restore_scroll_anchor(anchor);
                     }
                     unsafe { sync_peer_windows_from_db(self.hwnd); }
                     return;
@@ -1494,13 +1571,15 @@ impl AppState {
             return;
         }
         if let Some(item) = self.current_item_owned() {
+            let anchor = self.current_scroll_anchor();
             if item.id > 0 {
                 let _ = db_delete_item(item.id);
                 self.remove_cached_item(item.id);
             }
+            self.remove_items_from_active_tab(&[item.id]);
             self.clear_selection();
-            self.invalidate_tab_query(self.tab_index, true);
             self.refilter();
+            self.restore_scroll_anchor(anchor);
             unsafe { sync_peer_windows_from_db(self.hwnd); }
         }
     }
@@ -3881,8 +3960,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_MOVE => {
             let ptr = get_state_ptr(hwnd);
-            if !ptr.is_null() && (*ptr).role == WindowRole::Main {
-                remember_window_pos(hwnd);
+            if !ptr.is_null() {
+                if (*ptr).role == WindowRole::Main {
+                    remember_window_pos(hwnd);
+                }
+                note_window_moved_for_edge_hide(hwnd, &mut *ptr);
             }
             0
         }
@@ -3922,6 +4004,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 clear_cloud_sync_results_for_hwnd(hwnd);
                 match (*ptr).role {
                     WindowRole::Main => {
+                        save_settings(&(*ptr).settings);
                         KillTimer(hwnd, ID_TIMER_CARET);
                         KillTimer(hwnd, ID_TIMER_VV_SHOW);
                         KillTimer(hwnd, ID_TIMER_PASTE);
@@ -4205,6 +4288,18 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                 InvalidateRect(hwnd, null(), 1);
             }
         }
+        IDM_ROW_DELETE_UNPINNED => {
+            let anchor = state.current_scroll_anchor();
+            if db_delete_unpinned_items(source_tab_category(state.tab_index)).is_ok() {
+                let active_tab = state.tab_index;
+                state.items_for_tab_mut(active_tab).retain(|item| item.pinned);
+                state.clear_selection();
+                state.refilter();
+                state.restore_scroll_anchor(anchor);
+                sync_peer_windows_from_db(hwnd);
+                InvalidateRect(hwnd, null(), 1);
+            }
+        }
         IDM_ROW_TO_PHRASE => {
             if state.context_row >= 0 {
                 state.sel_idx = state.context_row;
@@ -4425,7 +4520,7 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
         IDM_TRAY_EXIT => {
             DestroyWindow(hwnd);
         }
-        IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
+        IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_DELETE_UNPINNED | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
             execute_row_command(hwnd, state, id);
         }
         _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&id) || (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&id) => {
@@ -4435,6 +4530,20 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
     }
 
     state.context_row = -1;
+}
+
+fn main_scrollbar_drag_target(state: &AppState, y: i32) -> Option<i32> {
+    let track = state.scrollbar_track_rect()?;
+    let thumb = state.scrollbar_thumb_rect()?;
+    let track_h = (track.bottom - track.top).max(1);
+    let thumb_h = (thumb.bottom - thumb.top).max(1);
+    let drag_range = (track_h - thumb_h).max(1);
+    let max_scroll = state.layout().max_scroll(state.filtered_indices.len()).max(0);
+    if max_scroll <= 0 {
+        return Some(0);
+    }
+    let pos = (y - track.top - (thumb_h / 2)).clamp(0, track_h - thumb_h);
+    Some(((pos as f32 / drag_range as f32) * max_scroll as f32) as i32)
 }
 
 
@@ -4471,6 +4580,33 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
     let state = &mut *ptr;
     let x = get_x_lparam(lparam);
     let y = get_y_lparam(lparam);
+
+    if state.scroll_dragging {
+        let track = state.scrollbar_track_rect();
+        let thumb = state.scrollbar_thumb_rect();
+        if let (Some(track), Some(thumb)) = (track, thumb) {
+            let track_h = (track.bottom - track.top).max(1);
+            let thumb_h = (thumb.bottom - thumb.top).max(1);
+            let drag_range = (track_h - thumb_h).max(1);
+            let max_scroll = state.layout().max_scroll(state.filtered_indices.len()).max(0);
+            if max_scroll <= 0 {
+                state.scroll_y = 0;
+            } else {
+                let dy = y - state.scroll_drag_start_y;
+                let new_y =
+                    state.scroll_drag_start_scroll + ((dy as f32 / drag_range as f32) * max_scroll as f32) as i32;
+                state.scroll_y = new_y.clamp(0, max_scroll);
+            }
+            state.maybe_request_more_for_active_tab();
+            state.scroll_fade_alpha = 255;
+            if !state.scroll_fade_timer {
+                state.scroll_fade_timer = true;
+                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
+            }
+            InvalidateRect(hwnd, null(), 0);
+            return;
+        }
+    }
 
     if state.down_row >= 0 && (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0 {
         let dx = (x - state.down_x).abs();
@@ -4595,6 +4731,50 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
         return;
     }
 
+    if let Some(thumb) = state.scrollbar_thumb_rect() {
+        let hit = RECT {
+            left: thumb.left - 8,
+            top: thumb.top,
+            right: thumb.right + 8,
+            bottom: thumb.bottom,
+        };
+        if pt_in_rect(x, y, &hit) {
+            state.scroll_dragging = true;
+            state.scroll_drag_start_y = y;
+            state.scroll_drag_start_scroll = state.scroll_y;
+            state.scroll_fade_alpha = 255;
+            if !state.scroll_fade_timer {
+                state.scroll_fade_timer = true;
+                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
+            }
+            SetCapture(hwnd);
+            InvalidateRect(hwnd, null(), 0);
+            return;
+        }
+    }
+    if let Some(track) = state.scrollbar_track_rect() {
+        let hit = RECT {
+            left: track.left - 8,
+            top: track.top,
+            right: track.right + 8,
+            bottom: track.bottom,
+        };
+        if pt_in_rect(x, y, &hit) {
+            if let Some(target_scroll) = main_scrollbar_drag_target(state, y) {
+                state.scroll_y = target_scroll;
+                state.clamp_scroll();
+                state.maybe_request_more_for_active_tab();
+                state.scroll_fade_alpha = 255;
+                if !state.scroll_fade_timer {
+                    state.scroll_fade_timer = true;
+                    SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
+                }
+                InvalidateRect(hwnd, null(), 0);
+            }
+            return;
+        }
+    }
+
     let (tab0, tab1) = state.segment_rects();
     if pt_in_rect(x, y, &tab0) {
         state.tab_index = 0;
@@ -4659,6 +4839,12 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
     let y = get_y_lparam(lparam);
     let key = state.down_btn;
     state.down_btn = "";
+    if state.scroll_dragging {
+        state.scroll_dragging = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd, null(), 0);
+        return;
+    }
     if !key.is_empty() {
         if !pt_in_rect(x, y, &state.title_button_rect(key)) {
             InvalidateRect(hwnd, null(), 0);
@@ -5287,9 +5473,16 @@ unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i
     if !state.settings.move_pasted_item_to_top || item_id <= 0 {
         return;
     }
-    if db_promote_item_to_top(item_id).is_ok() {
+    if let Ok(new_id) = db_promote_item_to_top(item_id) {
+        let anchor = state.current_scroll_anchor();
         state.remove_cached_item(item_id);
-        reload_state_from_db(state);
+        state.remove_cached_item(new_id);
+        if !state.promote_loaded_item_to_top(item_id, new_id) {
+            state.reload_state_from_db_preserve_scroll(anchor);
+        } else {
+            state.refilter();
+            state.restore_scroll_anchor(anchor);
+        }
         sync_peer_windows_from_db(hwnd);
     }
 }
@@ -5642,6 +5835,12 @@ unsafe fn show_row_menu(
         }
         AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
         AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除所选").as_ref()).as_ptr());
+        AppendMenuW(
+            menu,
+            if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+            IDM_ROW_DELETE_UNPINNED,
+            to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
+        );
     } else {
         match current_kind {
             ClipKind::Image => {
@@ -5656,6 +5855,12 @@ unsafe fn show_row_menu(
                 }
                 AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
+                AppendMenuW(
+                    menu,
+                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    IDM_ROW_DELETE_UNPINNED,
+                    to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
+                );
             }
             ClipKind::Files => {
                 let open_text = if current_is_dir { "打开文件夹" } else { "打开文件" };
@@ -5673,6 +5878,12 @@ unsafe fn show_row_menu(
                 }
                 AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
+                AppendMenuW(
+                    menu,
+                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    IDM_ROW_DELETE_UNPINNED,
+                    to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
+                );
             }
             _ => {
                 let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
@@ -5689,6 +5900,12 @@ unsafe fn show_row_menu(
                 }
                 AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
                 AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
+                AppendMenuW(
+                    menu,
+                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    IDM_ROW_DELETE_UNPINNED,
+                    to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
+                );
             }
         }
     }
@@ -6041,7 +6258,9 @@ unsafe fn paint(hwnd: HWND) {
             if let Some(preview_rc) = row_inline_preview_rect(&row_rc, &item, &state.settings) {
                 let bg = inflate_rect(&preview_rc, 2, 2);
                 draw_round_rect(memdc as _, &bg, th.surface2, th.stroke, 8);
-                if let Some((bytes, width, height)) = ensure_item_image_bytes(&item) {
+                let thumb_px = ((preview_rc.right - preview_rc.left).max(preview_rc.bottom - preview_rc.top) + 8)
+                    .clamp(32, 96) as usize;
+                if let Some((bytes, width, height)) = ensure_item_thumbnail_bytes(state, &item, thumb_px) {
                     draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc);
                 }
                 row_rc.left = preview_rc.right + (layout.row_h * 10 / 44).clamp(8, 14);
@@ -6332,6 +6551,55 @@ pub(crate) fn ensure_item_image_bytes(item: &ClipItem) -> Option<(Vec<u8>, usize
         return Some((bytes, full.image_width, full.image_height));
     }
     full.image_path.as_deref().and_then(load_image_bytes_from_path)
+}
+
+fn build_image_thumbnail_rgba(bytes: &[u8], width: usize, height: usize, max_side: usize) -> Option<ImageThumbnail> {
+    if bytes.len() < 4 || width == 0 || height == 0 || max_side == 0 {
+        return None;
+    }
+    if width <= max_side && height <= max_side {
+        return Some(ImageThumbnail {
+            bytes: bytes.to_vec(),
+            width,
+            height,
+        });
+    }
+    let scale = (max_side as f32 / width as f32).min(max_side as f32 / height as f32);
+    let out_w = ((width as f32 * scale).round() as usize).max(1);
+    let out_h = ((height as f32 * scale).round() as usize).max(1);
+    let mut out = vec![0u8; out_w * out_h * 4];
+    for y in 0..out_h {
+        let src_y = y * height / out_h;
+        for x in 0..out_w {
+            let src_x = x * width / out_w;
+            let src_idx = (src_y * width + src_x) * 4;
+            let dst_idx = (y * out_w + x) * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&bytes[src_idx..src_idx + 4]);
+        }
+    }
+    Some(ImageThumbnail {
+        bytes: out,
+        width: out_w,
+        height: out_h,
+    })
+}
+
+fn ensure_item_thumbnail_bytes(
+    state: &mut AppState,
+    item: &ClipItem,
+    max_side: usize,
+) -> Option<(Vec<u8>, usize, usize)> {
+    if item.id > 0 {
+        if let Some(image) = state.image_thumb_cache.get(item.id) {
+            return Some((image.bytes, image.width, image.height));
+        }
+    }
+    let (bytes, width, height) = ensure_item_image_bytes(item)?;
+    let thumb = build_image_thumbnail_rgba(&bytes, width, height, max_side)?;
+    if item.id > 0 {
+        state.image_thumb_cache.put(item.id, thumb.clone());
+    }
+    Some((thumb.bytes, thumb.width, thumb.height))
 }
 
 fn hash_bytes(data: &[u8]) -> u64 {

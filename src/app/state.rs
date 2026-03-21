@@ -108,7 +108,7 @@ impl Default for AppSettings {
             image_preview_enabled: false,
             quick_delete_button: true,
             move_pasted_item_to_top: false,
-            dedupe_filter_enabled: true,
+            dedupe_filter_enabled: false,
             search_engine: "jzxx".to_string(),
             search_template: search_engine_template("jzxx").to_string(),
             ai_clean_enabled: false,
@@ -282,6 +282,7 @@ impl Default for TabLoadState {
 }
 
 const ITEM_PAYLOAD_CACHE_LIMIT: usize = 256;
+const IMAGE_THUMB_CACHE_LIMIT: usize = 96;
 
 #[derive(Default)]
 pub(super) struct ItemPayloadCache {
@@ -319,6 +320,60 @@ impl ItemPayloadCache {
         self.entries.insert(id, item);
         self.touch(id);
         while self.order.len() > ITEM_PAYLOAD_CACHE_LIMIT {
+            if let Some(evicted) = self.order.pop_front() {
+                self.entries.remove(&evicted);
+            }
+        }
+    }
+
+    fn touch(&mut self, id: i64) {
+        self.order.retain(|cached| *cached != id);
+        self.order.push_back(id);
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct ImageThumbnail {
+    pub(super) bytes: Vec<u8>,
+    pub(super) width: usize,
+    pub(super) height: usize,
+}
+
+#[derive(Default)]
+pub(super) struct ImageThumbnailCache {
+    entries: HashMap<i64, ImageThumbnail>,
+    order: VecDeque<i64>,
+}
+
+impl ImageThumbnailCache {
+    pub(super) fn clear(&mut self) {
+        self.entries.clear();
+        self.order.clear();
+    }
+
+    pub(super) fn shrink_to_fit(&mut self) {
+        self.entries.shrink_to_fit();
+        self.order.shrink_to_fit();
+    }
+
+    pub(super) fn remove(&mut self, id: i64) {
+        self.entries.remove(&id);
+        self.order.retain(|cached| *cached != id);
+    }
+
+    pub(super) fn get(&mut self, id: i64) -> Option<ImageThumbnail> {
+        let image = self.entries.get(&id).cloned()?;
+        self.touch(id);
+        Some(image)
+    }
+
+    pub(super) fn put(&mut self, id: i64, image: ImageThumbnail) {
+        if id <= 0 {
+            return;
+        }
+        self.entries.insert(id, image);
+        self.touch(id);
+        while self.order.len() > IMAGE_THUMB_CACHE_LIMIT {
             if let Some(evicted) = self.order.pop_front() {
                 self.entries.remove(&evicted);
             }
@@ -476,10 +531,14 @@ impl AppState {
             hover_scroll: false,
             scroll_fade_alpha: 0,
             scroll_fade_timer: false,
+            scroll_dragging: false,
+            scroll_drag_start_y: 0,
+            scroll_drag_start_scroll: 0,
             hover_to_top: false,
             down_to_top: false,
             tab_loads: [TabLoadState::default(), TabLoadState::default()],
             payload_cache: ItemPayloadCache::default(),
+            image_thumb_cache: ImageThumbnailCache::default(),
             vv_popup_visible: false,
             vv_popup_pending_target: null_mut(),
             vv_popup_pending_retries: 0,
@@ -502,6 +561,13 @@ impl AppState {
             edge_docked_top: 0,
             edge_docked_right: 0,
             edge_docked_bottom: 0,
+            edge_monitor_left: 0,
+            edge_monitor_top: 0,
+            edge_monitor_right: 0,
+            edge_monitor_bottom: 0,
+            edge_hide_armed: false,
+            edge_hide_grace_until: None,
+            edge_restore_wait_leave: false,
             cloud_sync_in_progress: false,
             cloud_sync_next_due,
         }
@@ -540,6 +606,7 @@ impl AppState {
         self.phrases.shrink_to_fit();
         self.vv_popup_items.shrink_to_fit();
         self.payload_cache.shrink_to_fit();
+        self.image_thumb_cache.shrink_to_fit();
     }
 
     pub(super) fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {

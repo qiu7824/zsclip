@@ -631,13 +631,13 @@ pub unsafe fn draw_settings_button_component(
         SettingsComponentKind::AccentButton => {
             let fill = if pressed { th.accent_pressed } else if hover { th.accent_hover } else { th.accent };
             draw_round_rect(hdc, &rr, fill, fill, 4);
-            draw_text_ex(hdc, text, &rr, rgb(255, 255, 255), 14, false, true, "Segoe UI Variable Text");
+            draw_text_ex(hdc, text, &rr, rgb(255, 255, 255), settings_scale(14), false, true, ui_text_font_family());
         }
         SettingsComponentKind::Button => {
             let fill = if pressed { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
             let border = if pressed || hover { rgb(196, 196, 196) } else { rgb(204, 204, 204) };
             draw_round_rect(hdc, &rr, fill, border, 4);
-            draw_text_ex(hdc, text, &rr, th.text, 14, false, true, "Segoe UI Variable Text");
+            draw_text_ex(hdc, text, &rr, th.text, settings_scale(14), false, true, ui_text_font_family());
         }
         SettingsComponentKind::Toggle => {}
     }
@@ -661,11 +661,21 @@ pub unsafe fn draw_settings_dropdown_button(
     let border = th.control_stroke;
     draw_round_rect(hdc, &rr, fill, border, 6);
 
-    let text_rc = RECT { left: rr.left + 12, top: rr.top, right: rr.right - 28, bottom: rr.bottom };
-    draw_text_ex(hdc, text, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
+    let text_rc = RECT {
+        left: rr.left + settings_scale(12),
+        top: rr.top,
+        right: rr.right - settings_scale(28),
+        bottom: rr.bottom,
+    };
+    draw_text_ex(hdc, text, &text_rc, th.text, settings_scale(14), false, false, ui_text_font_family());
 
-    let arrow_rc = RECT { left: rr.right - 24, top: rr.top, right: rr.right - 8, bottom: rr.bottom };
-    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, 10, false, true, "Segoe UI Symbol");
+    let arrow_rc = RECT {
+        left: rr.right - settings_scale(24),
+        top: rr.top,
+        right: rr.right - settings_scale(8),
+        bottom: rr.bottom,
+    };
+    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, settings_scale(10), false, true, ui_icon_font_family());
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
@@ -702,10 +712,11 @@ struct DropdownPopupState {
 }
 
 unsafe fn dropdown_index_from_y(st: &DropdownPopupState, y: i32) -> i32 {
-    if y < DROPDOWN_PAD || y >= DROPDOWN_PAD + st.item_h * st.visible_rows {
+    let pad = settings_scale(DROPDOWN_PAD);
+    if y < pad || y >= pad + st.item_h * st.visible_rows {
         -1
     } else {
-        let row = ((y - DROPDOWN_PAD) / st.item_h).clamp(0, st.visible_rows - 1);
+        let row = ((y - pad) / st.item_h).clamp(0, st.visible_rows - 1);
         (st.scroll_top + row).clamp(0, st.items.len() as i32 - 1)
     }
 }
@@ -793,8 +804,9 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                     let end = (st.scroll_top + st.visible_rows).min(st.items.len() as i32).max(0) as usize;
                     for (visible_idx, idx) in (start..end).enumerate() {
                         let item = &st.items[idx];
-                        let top = DROPDOWN_PAD + visible_idx as i32 * st.item_h;
-                        let item_rc = RECT { left: DROPDOWN_PAD, top, right: w - DROPDOWN_PAD, bottom: top + st.item_h };
+                        let pad = settings_scale(DROPDOWN_PAD);
+                        let top = pad + visible_idx as i32 * st.item_h;
+                        let item_rc = RECT { left: pad, top, right: w - pad, bottom: top + st.item_h };
                         let selected = st.selected == idx as i32;
                         if selected {
                             let fill = th.nav_sel_fill;
@@ -805,17 +817,32 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                             let bar = RECT { left: item_rc.left + 4, top: cy - 8, right: item_rc.left + 7, bottom: cy + 8 };
                             draw_round_fill(memdc as _, &bar, th.accent, 2);
                         }
-                        let text_rc = RECT { left: item_rc.left + 18, top: item_rc.top, right: item_rc.right - 12, bottom: item_rc.bottom };
-                        draw_text_ex(memdc as _, item, &text_rc, th.text, 14, false, false, "Segoe UI Variable Text");
+                        let text_rc = RECT {
+                            left: item_rc.left + settings_scale(18),
+                            top: item_rc.top,
+                            right: item_rc.right - settings_scale(12),
+                            bottom: item_rc.bottom,
+                        };
+                        draw_text_ex(memdc as _, item, &text_rc, th.text, settings_scale(14), false, false, ui_text_font_family());
                     }
                     if dropdown_max_scroll(st) > 0 {
                         if st.scroll_top > 0 {
-                            let top_hint = RECT { left: w - 22, top: 6, right: w - 8, bottom: 20 };
-                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, 8, false, true, "Segoe UI Symbol");
+                            let top_hint = RECT {
+                                left: w - settings_scale(22),
+                                top: settings_scale(6),
+                                right: w - settings_scale(8),
+                                bottom: settings_scale(20),
+                            };
+                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, settings_scale(8), false, true, ui_icon_font_family());
                         }
                         if st.scroll_top < dropdown_max_scroll(st) {
-                            let bottom_hint = RECT { left: w - 22, top: h - 20, right: w - 8, bottom: h - 6 };
-                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, 8, false, true, "Segoe UI Symbol");
+                            let bottom_hint = RECT {
+                                left: w - settings_scale(22),
+                                top: h - settings_scale(20),
+                                right: w - settings_scale(8),
+                                bottom: h - settings_scale(6),
+                            };
+                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, settings_scale(8), false, true, ui_icon_font_family());
                         }
                     }
                 }
@@ -864,7 +891,7 @@ pub unsafe fn show_settings_dropdown_popup(
     let hinstance = GetModuleHandleW(null());
     let items_vec = items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let visible_rows = (items_vec.len() as i32).clamp(1, 8);
-    let height = DROPDOWN_PAD * 2 + DROPDOWN_ITEM_H * visible_rows;
+    let height = settings_scale(DROPDOWN_PAD) * 2 + settings_scale(DROPDOWN_ITEM_H) * visible_rows;
     let max_scroll = (items_vec.len() as i32 - visible_rows).max(0);
     let scroll_top = (selected as i32 - visible_rows / 2).clamp(0, max_scroll);
     let state = Box::new(DropdownPopupState {
@@ -873,7 +900,7 @@ pub unsafe fn show_settings_dropdown_popup(
         items: items_vec,
         selected: selected as i32,
         hover: -1,
-        item_h: DROPDOWN_ITEM_H,
+        item_h: settings_scale(DROPDOWN_ITEM_H),
         scroll_top,
         visible_rows,
     });

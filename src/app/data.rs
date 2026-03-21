@@ -532,6 +532,16 @@ pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {
     })
 }
 
+pub(super) fn db_delete_unpinned_items(category: i64) -> rusqlite::Result<usize> {
+    with_db(|conn| {
+        let affected = conn.execute(
+            "DELETE FROM items WHERE category=? AND pinned=0",
+            params![category],
+        )?;
+        Ok(affected)
+    })
+}
+
 pub(super) fn db_load_groups(category: i64) -> Vec<ClipGroup> {
     with_db(|conn| {
         let mut stmt = conn.prepare(
