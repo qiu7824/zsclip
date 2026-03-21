@@ -4,15 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
 use crate::i18n::translate;
-use crate::time_utils::{gregorian_to_days, local_offset_secs, unix_secs_to_parts};
-use crate::win_system_ui::{is_dark_mode, system_accent, to_wide};
+use crate::time_utils::{gregorian_to_days, utc_secs_to_local_parts};
+use crate::win_system_ui::{create_scaled_font_for_hdc, is_dark_mode, system_accent, to_wide};
 
 use windows_sys::Win32::{
     Foundation::RECT,
     Graphics::Gdi::{
-        BitBlt, CreateCompatibleDC, DeleteDC,
-        CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT, NULL_PEN,
-        GetDeviceCaps, LOGPIXELSY, SRCCOPY,
+        BitBlt, CreateCompatibleDC, DeleteDC, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
+        GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT,
+        NULL_PEN, SRCCOPY,
         CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB,
     },
 };
@@ -69,16 +69,6 @@ pub fn ui_display_font_family() -> &'static str {
 
 pub fn ui_icon_font_family() -> &'static str {
     "Segoe MDL2 Assets"
-}
-
-pub fn resolve_ui_font_family(family: &str) -> &str {
-    match family {
-        "" => ui_text_font_family(),
-        "Segoe UI Variable Text" => ui_text_font_family(),
-        "Segoe UI Variable Display" => ui_display_font_family(),
-        "Segoe Fluent Icons" => ui_icon_font_family(),
-        other => other,
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -292,7 +282,7 @@ pub(crate) struct ClipItem {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClipListState {
-    pub(crate) filtered_indices: Vec<usize>,
+    pub(crate) visible_len: usize,
     pub(crate) tab_index: usize,
     pub(crate) search_on: bool,
     pub(crate) search_text: String,
@@ -316,9 +306,8 @@ fn current_local_day() -> i64 {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-        + local_offset_secs();
-    let (y, m, d, _, _, _) = unix_secs_to_parts(now_secs);
+        .unwrap_or(0);
+    let (y, m, d, _, _, _) = utc_secs_to_local_parts(now_secs);
     gregorian_to_days(y, m, d)
 }
 
@@ -326,9 +315,8 @@ fn current_local_year() -> i32 {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-        + local_offset_secs();
-    let (y, _, _, _, _, _) = unix_secs_to_parts(now_secs);
+        .unwrap_or(0);
+    let (y, _, _, _, _, _) = utc_secs_to_local_parts(now_secs);
     y
 }
 
@@ -408,7 +396,7 @@ pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTime
 impl Default for ClipListState {
     fn default() -> Self {
         Self {
-            filtered_indices: Vec::new(),
+            visible_len: 0,
             tab_index: 0,
             search_on: false,
             search_text: String::new(),
@@ -426,18 +414,18 @@ impl Default for ClipListState {
 
 impl ClipListState {
     pub(crate) fn apply_visible_len(&mut self, len: usize) {
-        self.filtered_indices = (0..len).collect();
+        self.visible_len = len;
         self.sync_visible_state();
     }
 
     fn sync_visible_state(&mut self) {
-        if self.sel_idx >= self.filtered_indices.len() as i32 {
-            self.sel_idx = if self.filtered_indices.is_empty() { -1 } else { 0 };
+        if self.sel_idx >= self.visible_len as i32 {
+            self.sel_idx = if self.visible_len == 0 { -1 } else { 0 };
         }
-        if self.hover_idx >= self.filtered_indices.len() as i32 {
+        if self.hover_idx >= self.visible_len as i32 {
             self.hover_idx = -1;
         }
-        let max_idx = self.filtered_indices.len() as i32;
+        let max_idx = self.visible_len as i32;
         self.selected_rows = self
             .selected_rows
             .iter()
@@ -474,7 +462,8 @@ impl ClipListState {
         let mut src: Vec<usize> = self
             .selected_visible_rows()
             .into_iter()
-            .filter_map(|v| self.filtered_indices.get(v as usize).copied())
+            .filter(|v| *v >= 0 && (*v as usize) < self.visible_len)
+            .map(|v| v as usize)
             .collect();
         src.sort_unstable();
         src.dedup();
@@ -829,10 +818,7 @@ pub unsafe fn draw_text_ex(
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
-    let font_name = resolve_ui_font_family(family);
-    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
-    let scaled_size = ((size.max(1) * dpi) + 48) / 96;
-    let font = CreateFontW(-scaled_size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
+    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
     let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;
@@ -857,10 +843,7 @@ pub unsafe fn draw_text_block_ex(
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
-    let font_name = resolve_ui_font_family(family);
-    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
-    let scaled_size = ((size.max(1) * dpi) + 48) / 96;
-    let font = CreateFontW(-scaled_size, 0, 0, 0, weight, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(font_name).as_ptr());
+    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
     let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
     let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;

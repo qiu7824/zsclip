@@ -16,13 +16,13 @@ use windows_sys::Win32::{
 use crate::i18n::{tr, translate};
 use crate::settings_model::{SettingsPage, SETTINGS_PAGE_COUNT};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, resolve_ui_font_family, rgb,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb,
     settings_content_y_scaled, settings_nav_w_scaled, settings_scale, ui_display_font_family,
     ui_icon_font_family, ui_text_font_family, Theme, UiRect,
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_ui::scale_for_window;
+use crate::win_system_ui::{create_font_px, scale_for_window};
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -570,8 +570,7 @@ pub unsafe fn draw_text_wide_centered(
     font_name: &str,
 ) {
     let hdc = hdc as _;
-    let font: *mut c_void =
-        CreateFontW(-size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(resolve_ui_font_family(font_name)).as_ptr()) as _;
+    let font: *mut c_void = create_font_px(font_name, size, 400);
     let old = SelectObject(hdc, font as _);
     SetBkMode(hdc, 1);
     SetTextColor(hdc, color);

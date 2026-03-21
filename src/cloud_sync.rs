@@ -1,5 +1,6 @@
 ﻿use crate::i18n::tr;
 use serde::{Deserialize, Serialize};
+use crate::time_utils::utc_secs_to_local_parts;
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -115,14 +116,29 @@ fn sync_snapshot(
     let local_stamp = local_state_stamp(paths);
     let remote_manifest = download_remote_manifest(config, remote)?;
     if let Some(manifest) = remote_manifest {
+        let version_cmp = compare_versions(&manifest.version, env!("CARGO_PKG_VERSION"));
         if manifest.updated_at > local_stamp.saturating_add(5) {
+            if version_cmp.is_gt() {
+                return Err(format!(
+                    "{}{}{}",
+                    tr("云端备份版本较新（", "Cloud backup version is newer ("),
+                    manifest.version,
+                    tr("），请先升级当前程序。", "). Please upgrade this app first."),
+                ));
+            }
             let outcome = restore_remote_backup(config, remote, paths)?;
             return Ok(CloudSyncOutcome {
-                status_text: format!("云端较新，已恢复到本地（{}）。", manifest.version),
+                status_text: format!(
+                    "{}{}，{}{}。",
+                    tr("云端较新，已恢复到本地（版本 ", "Cloud copy was newer and has been restored locally (version "),
+                    manifest.version,
+                    tr("时间 ", "time "),
+                    format_unix_ts(manifest.updated_at)
+                ),
                 ..outcome
             });
         }
-        if local_stamp <= manifest.updated_at.saturating_add(5) {
+        if local_stamp <= manifest.updated_at.saturating_add(5) && version_cmp.is_eq() {
             return Ok(CloudSyncOutcome {
                 status_text: "本地与云端已同步，无需更新。".to_string(),
                 reload_settings: false,
@@ -193,14 +209,33 @@ fn restore_remote_backup(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
+    if let Some(manifest) = download_remote_manifest(config, remote)? {
+        if compare_versions(&manifest.version, env!("CARGO_PKG_VERSION")).is_gt() {
+            return Err(format!(
+                "{}{}{}",
+                tr("云端备份版本较新（", "Cloud backup version is newer ("),
+                manifest.version,
+                tr("），请先升级当前程序。", "). Please upgrade this app first."),
+            ));
+        }
+    }
     let download_path = temp_file_path("cloud-backup", "zip");
     if !download_file(config, &remote.backup_url, &download_path)? {
         return Err("云端没有找到可恢复的备份。".to_string());
     }
+    let local_backup = create_local_restore_backup(paths)?;
     restore_snapshot_archive(paths, &download_path)?;
     let _ = fs::remove_file(download_path);
     Ok(CloudSyncOutcome {
-        status_text: "已从云端恢复数据备份。".to_string(),
+        status_text: if let Some(path) = local_backup {
+            format!(
+                "{}{}",
+                tr("已从云端恢复数据备份，本地旧数据已备份到：", "Cloud backup restored. Previous local data was backed up to: "),
+                path.to_string_lossy()
+            )
+        } else {
+            "已从云端恢复数据备份。".to_string()
+        },
         reload_settings: true,
         reload_data: true,
     })
@@ -263,6 +298,25 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, stamp: u64) -> Result<PathBuf
     Ok(archive_path)
 }
 
+fn create_local_restore_backup(paths: &CloudSyncPaths) -> Result<Option<PathBuf>, String> {
+    if !local_data_exists(paths) {
+        return Ok(None);
+    }
+    let stamp = local_state_stamp(paths).max(unix_now());
+    let temp_archive = create_snapshot_archive(paths, stamp)?;
+    let backup_dir = paths.data_dir.join("restore-backups");
+    fs::create_dir_all(&backup_dir).map_err(|err| err.to_string())?;
+    let final_path = backup_dir.join(format!("before-restore-{}.zip", stamp));
+    fs::rename(&temp_archive, &final_path)
+        .or_else(|_| {
+            fs::copy(&temp_archive, &final_path)
+                .map(|_| ())
+                .and_then(|_| fs::remove_file(&temp_archive))
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(Some(final_path))
+}
+
 fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Result<(), String> {
     let extract_root = temp_dir_path("snapshot-restore");
     if extract_root.exists() {
@@ -315,6 +369,18 @@ fn local_state_stamp(paths: &CloudSyncPaths) -> u64 {
         stamp = stamp.max(dir_modified_secs(&images_dir));
     }
     stamp
+}
+
+fn local_data_exists(paths: &CloudSyncPaths) -> bool {
+    if paths.settings_file.exists() || paths.db_file.exists() {
+        return true;
+    }
+    let images_dir = paths.data_dir.join("images");
+    images_dir.exists()
+        && fs::read_dir(images_dir)
+            .ok()
+            .and_then(|mut entries| entries.next().transpose().ok().flatten())
+            .is_some()
 }
 
 fn file_modified_secs(path: &Path) -> u64 {
@@ -626,7 +692,28 @@ fn unix_now() -> u64 {
 }
 
 fn format_unix_ts(value: u64) -> String {
-    format!("{value}")
+    if value == 0 {
+        return tr("未知时间", "Unknown time").to_owned();
+    }
+    let (y, m, d, h, min, _) = utc_secs_to_local_parts(value as i64);
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", y, m, d, h, min)
+}
+
+fn compare_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    fn parse(value: &str) -> Vec<u32> {
+        value
+            .trim()
+            .trim_start_matches(['v', 'V'])
+            .split('.')
+            .map(|part| part.parse::<u32>().ok().unwrap_or(0))
+            .collect()
+    }
+    let mut a = parse(left);
+    let mut b = parse(right);
+    let max_len = a.len().max(b.len()).max(3);
+    a.resize(max_len, 0);
+    b.resize(max_len, 0);
+    a.cmp(&b)
 }
 
 fn wal_file_for(path: &Path) -> PathBuf {

@@ -1,4 +1,41 @@
 use super::*;
+use std::ptr::{null, null_mut};
+
+const CLOUD_WEBDAV_PASS_ENCRYPTED_KEY: &str = "cloud_webdav_pass_encrypted";
+const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
+
+#[repr(C)]
+struct DataBlob {
+    cb_data: u32,
+    pb_data: *mut u8,
+}
+
+#[link(name = "crypt32")]
+unsafe extern "system" {
+    fn CryptProtectData(
+        p_data_in: *const DataBlob,
+        sz_data_descr: *const u16,
+        p_optional_entropy: *const DataBlob,
+        pv_reserved: *mut core::ffi::c_void,
+        p_prompt_struct: *mut core::ffi::c_void,
+        dw_flags: u32,
+        p_data_out: *mut DataBlob,
+    ) -> i32;
+    fn CryptUnprotectData(
+        p_data_in: *const DataBlob,
+        ppsz_data_descr: *mut *mut u16,
+        p_optional_entropy: *const DataBlob,
+        pv_reserved: *mut core::ffi::c_void,
+        p_prompt_struct: *mut core::ffi::c_void,
+        dw_flags: u32,
+        p_data_out: *mut DataBlob,
+    ) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn LocalFree(hmem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+}
 
 static DATA_DIR_CACHE: OnceLock<PathBuf> = OnceLock::new();
 const AUTOSTART_VALUE_NAME: &str = "ZSClip";
@@ -93,14 +130,14 @@ pub(super) fn settings_file() -> PathBuf {
 
 pub(super) fn load_settings() -> AppSettings {
     match fs::read_to_string(settings_file()) {
-        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Ok(text) => load_settings_from_text(&text),
         Err(_) => AppSettings::default(),
     }
 }
 
 pub(crate) fn save_settings(settings: &AppSettings) {
     let _ = fs::create_dir_all(data_dir());
-    if let Ok(text) = serde_json::to_string_pretty(settings) {
+    if let Ok(text) = serialize_settings(settings) {
         let _ = fs::write(settings_file(), text);
     }
 }
@@ -111,6 +148,141 @@ pub(super) fn current_cloud_sync_paths() -> CloudSyncPaths {
         settings_file: settings_file(),
         db_file: db_file(),
     }
+}
+
+fn load_settings_from_text(text: &str) -> AppSettings {
+    let mut settings = serde_json::from_str::<AppSettings>(text).unwrap_or_default();
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(enc) = value
+            .get(CLOUD_WEBDAV_PASS_ENCRYPTED_KEY)
+            .and_then(|v| v.as_str())
+        {
+            if let Some(password) = decrypt_secret_from_storage(enc) {
+                settings.cloud_webdav_pass = password;
+            }
+        }
+    }
+    settings
+}
+
+fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Error> {
+    let mut value = serde_json::to_value(settings)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "cloud_webdav_pass".to_string(),
+            serde_json::Value::String(String::new()),
+        );
+        if settings.cloud_webdav_pass.trim().is_empty() {
+            obj.remove(CLOUD_WEBDAV_PASS_ENCRYPTED_KEY);
+        } else if let Some(enc) = encrypt_secret_for_storage(&settings.cloud_webdav_pass) {
+            obj.insert(
+                CLOUD_WEBDAV_PASS_ENCRYPTED_KEY.to_string(),
+                serde_json::Value::String(enc),
+            );
+        }
+    }
+    serde_json::to_string_pretty(&value)
+}
+
+fn encrypt_secret_for_storage(secret: &str) -> Option<String> {
+    if secret.is_empty() {
+        return Some(String::new());
+    }
+    unsafe { protect_bytes(secret.as_bytes()).map(|bytes| hex_encode(&bytes)) }
+}
+
+fn decrypt_secret_from_storage(encoded: &str) -> Option<String> {
+    if encoded.trim().is_empty() {
+        return Some(String::new());
+    }
+    let raw = hex_decode(encoded)?;
+    unsafe { unprotect_bytes(&raw).and_then(|bytes| String::from_utf8(bytes).ok()) }
+}
+
+unsafe fn protect_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    let input = DataBlob {
+        cb_data: bytes.len() as u32,
+        pb_data: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = DataBlob {
+        cb_data: 0,
+        pb_data: null_mut(),
+    };
+    let ok = CryptProtectData(
+        &input,
+        null(),
+        null(),
+        null_mut(),
+        null_mut(),
+        CRYPTPROTECT_UI_FORBIDDEN,
+        &mut output,
+    );
+    if ok == 0 || output.pb_data.is_null() {
+        return None;
+    }
+    let result = std::slice::from_raw_parts(output.pb_data, output.cb_data as usize).to_vec();
+    let _ = LocalFree(output.pb_data as *mut core::ffi::c_void);
+    Some(result)
+}
+
+unsafe fn unprotect_bytes(bytes: &[u8]) -> Option<Vec<u8>> {
+    let input = DataBlob {
+        cb_data: bytes.len() as u32,
+        pb_data: bytes.as_ptr() as *mut u8,
+    };
+    let mut output = DataBlob {
+        cb_data: 0,
+        pb_data: null_mut(),
+    };
+    let ok = CryptUnprotectData(
+        &input,
+        null_mut(),
+        null(),
+        null_mut(),
+        null_mut(),
+        CRYPTPROTECT_UI_FORBIDDEN,
+        &mut output,
+    );
+    if ok == 0 || output.pb_data.is_null() {
+        return None;
+    }
+    let result = std::slice::from_raw_parts(output.pb_data, output.cb_data as usize).to_vec();
+    let _ = LocalFree(output.pb_data as *mut core::ffi::c_void);
+    Some(result)
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    fn nibble(ch: u8) -> Option<u8> {
+        match ch {
+            b'0'..=b'9' => Some(ch - b'0'),
+            b'a'..=b'f' => Some(ch - b'a' + 10),
+            b'A'..=b'F' => Some(ch - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut idx = 0;
+    while idx < bytes.len() {
+        let hi = nibble(bytes[idx])?;
+        let lo = nibble(bytes[idx + 1])?;
+        out.push((hi << 4) | lo);
+        idx += 2;
+    }
+    Some(out)
 }
 
 pub(super) fn cloud_sync_config_from_settings(settings: &AppSettings) -> CloudSyncConfig {

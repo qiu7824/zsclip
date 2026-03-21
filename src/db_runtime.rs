@@ -10,16 +10,15 @@ thread_local! {
 static DB_MIGRATED: OnceLock<()> = OnceLock::new();
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-    let pragma = format!("PRAGMA table_info({table})");
-    let mut stmt = conn.prepare(&pragma)?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let name: String = row.get(1)?;
-        if name.eq_ignore_ascii_case(column) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let table = validate_schema_table(table)?;
+    let exists = conn
+        .query_row(
+            "SELECT name FROM pragma_table_info(?) WHERE lower(name)=lower(?) LIMIT 1",
+            [table, column],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(exists.is_some())
 }
 
 fn ensure_table_column(
@@ -29,12 +28,70 @@ fn ensure_table_column(
     definition: &str,
 ) -> rusqlite::Result<()> {
     if !table_has_column(conn, table, column)? {
+        let table = validate_schema_table(table)?;
+        let definition = validate_schema_column_definition(table, column, definition)?;
         conn.execute(
             &format!("ALTER TABLE {table} ADD COLUMN {definition}"),
             [],
         )?;
     }
     Ok(())
+}
+
+fn validate_schema_table(table: &str) -> rusqlite::Result<&'static str> {
+    match table {
+        "items" => Ok("items"),
+        "clip_groups" => Ok("clip_groups"),
+        _ => Err(rusqlite::Error::InvalidParameterName(format!(
+            "unsupported schema table: {table}"
+        ))),
+    }
+}
+
+fn validate_schema_column_definition(
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> rusqlite::Result<&'static str> {
+    match (table, column, definition) {
+        ("items", "category", "category INTEGER NOT NULL DEFAULT 0") => {
+            Ok("category INTEGER NOT NULL DEFAULT 0")
+        }
+        ("items", "kind", "kind TEXT NOT NULL DEFAULT 'text'") => {
+            Ok("kind TEXT NOT NULL DEFAULT 'text'")
+        }
+        ("items", "preview", "preview TEXT NOT NULL DEFAULT ''") => {
+            Ok("preview TEXT NOT NULL DEFAULT ''")
+        }
+        ("items", "signature", "signature TEXT NOT NULL DEFAULT ''") => {
+            Ok("signature TEXT NOT NULL DEFAULT ''")
+        }
+        ("items", "text_data", "text_data TEXT") => Ok("text_data TEXT"),
+        ("items", "file_paths", "file_paths TEXT") => Ok("file_paths TEXT"),
+        ("items", "image_data", "image_data BLOB") => Ok("image_data BLOB"),
+        ("items", "image_path", "image_path TEXT") => Ok("image_path TEXT"),
+        ("items", "image_width", "image_width INTEGER NOT NULL DEFAULT 0") => {
+            Ok("image_width INTEGER NOT NULL DEFAULT 0")
+        }
+        ("items", "image_height", "image_height INTEGER NOT NULL DEFAULT 0") => {
+            Ok("image_height INTEGER NOT NULL DEFAULT 0")
+        }
+        ("items", "pinned", "pinned INTEGER NOT NULL DEFAULT 0") => {
+            Ok("pinned INTEGER NOT NULL DEFAULT 0")
+        }
+        ("items", "group_id", "group_id INTEGER NOT NULL DEFAULT 0") => {
+            Ok("group_id INTEGER NOT NULL DEFAULT 0")
+        }
+        ("items", "created_at", "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP") => {
+            Ok("created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
+        }
+        ("clip_groups", "category", "category INTEGER NOT NULL DEFAULT 0") => {
+            Ok("category INTEGER NOT NULL DEFAULT 0")
+        }
+        _ => Err(rusqlite::Error::InvalidParameterName(format!(
+            "unsupported schema definition: {table}.{column}"
+        ))),
+    }
 }
 
 fn migrate_clip_groups_schema(conn: &Connection) -> rusqlite::Result<()> {

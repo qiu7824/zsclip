@@ -25,12 +25,21 @@ const PREVIEW_W_TEXT: i32 = 420;
 const PREVIEW_H_TEXT: i32 = 220;
 const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
+const WM_HOVER_IMAGE_READY: u32 = WM_APP + 41;
+
+struct HoverPreviewImageResult {
+    item_id: i64,
+    image: Option<(Vec<u8>, usize, usize)>,
+}
 
 struct HoverPreviewData {
     item_id: i64,
     header: String,
     body: String,
     image: Option<(Vec<u8>, usize, usize)>,
+    image_width: usize,
+    image_height: usize,
+    loading_item_id: i64,
     last_x: i32,
     last_y: i32,
     last_w: i32,
@@ -124,7 +133,7 @@ unsafe extern "system" fn preview_wnd_proc(
                         DIB_RGB_COLORS,
                         SRCCOPY,
                     );
-                } else {
+                } else if !data.body.is_empty() {
                     let body_rc = RECT {
                         left: 14,
                         top: 42,
@@ -132,12 +141,44 @@ unsafe extern "system" fn preview_wnd_proc(
                         bottom: rc.bottom - 14,
                     };
                     draw_text_block(hdc as _, &data.body, &body_rc, th.text, 12, false);
+                } else {
+                    let body_rc = RECT {
+                        left: 14,
+                        top: 42,
+                        right: rc.right - 14,
+                        bottom: rc.bottom - 14,
+                    };
+                    draw_text_block(
+                        hdc as _,
+                        tr("正在加载预览…", "Loading preview..."),
+                        &body_rc,
+                        th.text_muted,
+                        12,
+                        false,
+                    );
                 }
             }
             EndPaint(hwnd, &ps);
             0
         }
         WM_NCHITTEST => HTTRANSPARENT as LRESULT,
+        WM_HOVER_IMAGE_READY => {
+            let payload_ptr = lparam as *mut HoverPreviewImageResult;
+            if payload_ptr.is_null() {
+                return 0;
+            }
+            let payload = Box::from_raw(payload_ptr);
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            if !ptr.is_null() {
+                let data = &mut *ptr;
+                if data.item_id == payload.item_id {
+                    data.image = payload.image;
+                    data.loading_item_id = 0;
+                    InvalidateRect(hwnd, null(), 1);
+                }
+            }
+            0
+        }
         WM_NCDESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
             if !ptr.is_null() {
@@ -182,6 +223,9 @@ unsafe fn create_preview_window() -> HWND {
             header: String::new(),
             body: String::new(),
             image: None,
+            image_width: 0,
+            image_height: 0,
+            loading_item_id: 0,
             last_x: i32::MIN,
             last_y: i32::MIN,
             last_w: 0,
@@ -245,8 +289,33 @@ fn limit_file_preview(paths: &[String], max_items: usize) -> String {
 pub(crate) unsafe fn hide_hover_preview() {
     let hwnd = preview_hwnd();
     if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+        if !ptr.is_null() {
+            (*ptr).loading_item_id = 0;
+        }
         ShowWindow(hwnd, SW_HIDE);
     }
+}
+
+fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) {
+    let hwnd_raw = hwnd as isize;
+    std::thread::spawn(move || {
+        let payload = Box::new(HoverPreviewImageResult {
+            item_id: item.id,
+            image: ensure_item_image_bytes(&item),
+        });
+        unsafe {
+            let hwnd = hwnd_raw as HWND;
+            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_HOVER_IMAGE_READY,
+                    0,
+                    Box::into_raw(payload) as LPARAM,
+                );
+            }
+        }
+    });
 }
 
 pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y: i32) {
@@ -276,13 +345,13 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
             .unwrap_or_else(|| item.preview.clone()),
         ClipKind::Image => String::new(),
     };
-    let image = if item.kind == ClipKind::Image {
-        ensure_item_image_bytes(item)
+    let image_shape = if item.kind == ClipKind::Image {
+        Some((item.image_width, item.image_height))
     } else {
         None
     };
 
-    let (w, h) = if image.is_some() {
+    let (w, h) = if image_shape.is_some() {
         (PREVIEW_W_IMAGE, PREVIEW_H_IMAGE)
     } else {
         (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
@@ -300,11 +369,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     y = y.max(wa.top);
 
     let data = &mut *ptr;
-    let same_image_shape = data
-        .image
-        .as_ref()
-        .map(|(_, iw, ih)| (*iw, *ih))
-        == image.as_ref().map(|(_, iw, ih)| (*iw, *ih));
+    let same_image_shape = image_shape == Some((data.image_width, data.image_height));
     let same_content = data.item_id == item.id
         && data.header == header
         && data.body == body
@@ -316,10 +381,44 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         return;
     }
 
+    if visible && same_content {
+        data.last_x = x;
+        data.last_y = y;
+        data.last_w = w;
+        data.last_h = h;
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            w,
+            h,
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+        return;
+    }
+
+    let image = if item.kind == ClipKind::Image {
+        if let Some(bytes) = item.image_bytes.as_ref() {
+            Some((bytes.clone(), item.image_width, item.image_height))
+        } else {
+            if data.loading_item_id != item.id {
+                data.loading_item_id = item.id;
+                spawn_hover_image_load(hwnd, item.clone());
+            }
+            None
+        }
+    } else {
+        data.loading_item_id = 0;
+        None
+    };
+
     data.item_id = item.id;
     data.header = header;
     data.body = body;
     data.image = image;
+    data.image_width = image_shape.map(|shape| shape.0).unwrap_or(0);
+    data.image_height = image_shape.map(|shape| shape.1).unwrap_or(0);
     data.last_x = x;
     data.last_y = y;
     data.last_w = w;

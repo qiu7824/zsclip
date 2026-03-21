@@ -91,7 +91,7 @@ unsafe fn screen_point_hits_window_scope(hwnd: HWND, pt: POINT) -> bool {
     if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
         return false;
     }
-    if pt_in_rect_screen(&pt, &window_rect_for_dock(hwnd)) {
+    if point_in_rect_screen(&pt, &window_rect_for_dock(hwnd)) {
         return true;
     }
     cursor_over_window_tree(hwnd, pt)
@@ -118,32 +118,6 @@ unsafe fn screen_point_hits_popup_menu(pt: POINT) -> bool {
     let root = GetAncestor(hwnd, GA_ROOT);
     let target = if root.is_null() { hwnd } else { root };
     window_class_name(target) == "#32768"
-}
-
-unsafe fn any_visible_window_requires_outside_hide() -> bool {
-    for hwnd in window_host_hwnds() {
-        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
-            continue;
-        }
-        let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
-            return true;
-        }
-    }
-    false
-}
-
-unsafe fn any_visible_window_requires_outside_hide_try() -> bool {
-    for hwnd in window_host_hwnds_try() {
-        if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
-            continue;
-        }
-        let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
-            return true;
-        }
-    }
-    false
 }
 
 unsafe fn any_visible_window_requires_quick_escape_try() -> bool {
@@ -191,7 +165,7 @@ unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
     screen_point_hits_window_scope(popup, pt)
 }
 
-unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> bool {
+pub(super) unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> bool {
     if screen_point_hits_window_scope(hwnd, pt) {
         return true;
     }
@@ -214,67 +188,28 @@ unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> bool {
     screen_point_hits_window_scope(popup, pt)
 }
 
-unsafe extern "system" fn outside_hide_mouse_hook_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    let popup_menu_active = vv_hook_state()
-        .try_lock()
-        .ok()
-        .map(|guard| {
-            guard.popup_menu_active
-                || guard
-                    .popup_menu_grace_until
-                    .map(|until| until > Instant::now())
-                    .unwrap_or(false)
-        })
-        .unwrap_or(false);
-    if popup_menu_active {
-        return CallNextHookEx(null_mut(), code, wparam, lparam);
+unsafe fn window_needs_outside_hide_timer(hwnd: HWND) -> bool {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
+        return false;
     }
-    if code >= 0
-        && matches!(wparam as u32, WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN)
-        && any_visible_window_requires_outside_hide_try()
-    {
-        let data = &*(lparam as *const MSLLHOOKSTRUCT);
-        let pt = data.pt;
-        if !should_ignore_outside_click_for_point(pt) {
-            for hwnd in window_host_hwnds_try() {
-                if hwnd.is_null() || IsWindowVisible(hwnd) == 0 {
-                    continue;
-                }
-                let ptr = get_state_ptr(hwnd);
-                if !ptr.is_null() && (*ptr).settings.auto_hide_on_blur {
-                    let _ = PostMessageW(hwnd, WM_OUTSIDE_CLICK_HIDE, 0, 0);
-                }
-            }
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return false;
+    }
+    let state = &*ptr;
+    state.settings.auto_hide_on_blur && (state.role == WindowRole::Quick || state.main_window_noactivate)
+}
+
+unsafe fn refresh_outside_hide_timers() {
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() || IsWindow(hwnd) == 0 {
+            continue;
         }
-    }
-    CallNextHookEx(null_mut(), code, wparam, lparam)
-}
-
-pub(super) unsafe fn ensure_outside_hide_mouse_hook() {
-    let Ok(mut handle) = outside_hide_mouse_hook_handle().lock() else {
-        return;
-    };
-    if *handle == 0 {
-        *handle = SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(outside_hide_mouse_hook_proc),
-            GetModuleHandleW(null()),
-            0,
-        ) as isize;
-    }
-}
-
-unsafe fn disable_outside_hide_mouse_hook() {
-    let Ok(mut handle) = outside_hide_mouse_hook_handle().lock() else {
-        return;
-    };
-    if *handle != 0 {
-        UnhookWindowsHookEx(*handle as _);
-        *handle = 0;
+        if window_needs_outside_hide_timer(hwnd) {
+            SetTimer(hwnd, ID_TIMER_OUTSIDE_HIDE, 60, None);
+        } else {
+            KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
+        }
     }
 }
 
@@ -353,11 +288,7 @@ unsafe fn disable_quick_escape_keyboard_hook() {
 }
 
 pub(crate) unsafe fn refresh_low_level_input_hooks() {
-    if any_visible_window_requires_outside_hide() {
-        ensure_outside_hide_mouse_hook();
-    } else {
-        disable_outside_hide_mouse_hook();
-    }
+    refresh_outside_hide_timers();
 
     if any_visible_window_requires_quick_escape_try() {
         ensure_quick_escape_keyboard_hook();
@@ -367,7 +298,11 @@ pub(crate) unsafe fn refresh_low_level_input_hooks() {
 }
 
 pub(crate) unsafe fn shutdown_low_level_input_hooks() {
-    disable_outside_hide_mouse_hook();
+    for hwnd in window_host_hwnds() {
+        if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+            KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
+        }
+    }
     disable_quick_escape_keyboard_hook();
 }
 
@@ -530,11 +465,18 @@ unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
             _ => best = Some((dist, side, base)),
         }
     }
-    best.map(|(_, side, base)| (side, base))
+    best.map(|(_, side, base)| {
+        if side == EDGE_AUTO_HIDE_BOTTOM {
+            (side, monitor)
+        } else {
+            (side, base)
+        }
+    })
 }
 
 unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
     let work = nearest_monitor_work_rect_for_window(hwnd);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
     let candidates = [
         ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT),
         ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT),
@@ -547,7 +489,11 @@ unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
             best = candidate;
         }
     }
-    (best.1, work)
+    if best.1 == EDGE_AUTO_HIDE_BOTTOM {
+        (best.1, monitor)
+    } else {
+        (best.1, work)
+    }
 }
 
 unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
@@ -581,7 +527,6 @@ unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
         return None;
     }
     let docked = edge_docked_rect(state);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
     let hot = edge_detect_margin_v(hwnd);
     Some(match state.edge_hidden_side {
         EDGE_AUTO_HIDE_LEFT => RECT {
@@ -603,10 +548,10 @@ unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
             bottom: docked.top + hot,
         },
         EDGE_AUTO_HIDE_BOTTOM => RECT {
-            left: monitor.left,
-            top: monitor.bottom - hot,
-            right: monitor.right,
-            bottom: monitor.bottom,
+            left: docked.left,
+            top: docked.bottom - hot,
+            right: docked.right,
+            bottom: docked.bottom,
         },
         _ => docked,
     })
@@ -617,7 +562,6 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
         return None;
     }
     let docked = edge_docked_rect(state);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
     let width = (rc.right - rc.left).max(1);
     let height = (rc.bottom - rc.top).max(1);
     let peek = edge_auto_hide_peek(hwnd);
@@ -633,7 +577,7 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
     };
     let y = match state.edge_hidden_side {
         EDGE_AUTO_HIDE_TOP => docked.top + peek - height,
-        EDGE_AUTO_HIDE_BOTTOM => monitor.bottom - peek,
+        EDGE_AUTO_HIDE_BOTTOM => docked.bottom - peek,
         EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
             state
                 .edge_restore_y
@@ -691,7 +635,6 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
     if !state.edge_hidden {
         return;
     }
-    state.edge_hidden = true;
     SetWindowPos(
         hwnd,
         HWND_TOPMOST,
@@ -777,7 +720,7 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
 
     if state.edge_hidden {
         if let Some(hot) = edge_hotzone_rect(hwnd, state) {
-            let in_hot = pt_in_rect_screen(&cursor, &hot);
+            let in_hot = point_in_rect_screen(&cursor, &hot);
             if in_hot {
                 restore_edge_hidden_window(hwnd, state);
                 InvalidateRect(hwnd, null(), 0);
@@ -891,12 +834,17 @@ pub(super) unsafe fn handle_mouse_leave_main(hwnd: HWND) {
     }
 }
 
-pub(super) unsafe fn handle_outside_click_hide(hwnd: HWND) {
+pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
+    if ptr.is_null() || IsWindowVisible(hwnd) == 0 {
         return;
     }
-    if !(*ptr).settings.auto_hide_on_blur {
+    let state = &mut *ptr;
+    if !state.settings.auto_hide_on_blur {
+        KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
+        return;
+    }
+    if !(state.role == WindowRole::Quick || state.main_window_noactivate) {
         return;
     }
     if vv_popup_menu_active() {
@@ -904,6 +852,13 @@ pub(super) unsafe fn handle_outside_click_hide(hwnd: HWND) {
     }
     let mut pt: POINT = zeroed();
     if GetCursorPos(&mut pt) != 0 && should_ignore_outside_click_for_point(pt) {
+        return;
+    }
+    let mouse_down =
+        (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0
+            || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
+            || (GetAsyncKeyState(VK_MBUTTON as i32) as u16 & 0x8000) != 0;
+    if !mouse_down {
         return;
     }
     hide_hover_preview();
@@ -1508,11 +1463,12 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
 
 pub(super) unsafe fn settings_scrollbar_show(hwnd: HWND, st: &mut SettingsWndState) {
     st.scroll_bar_visible = true;
-    if st.scroll_hide_timer {
-        KillTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
-    }
-    st.scroll_hide_timer = true;
-    SetTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR, 1500, None);
+    start_flagged_timer(
+        hwnd,
+        ID_TIMER_SETTINGS_SCROLLBAR,
+        1500,
+        &mut st.scroll_hide_timer,
+    );
 }
 
 pub(super) unsafe fn settings_scroll(hwnd: HWND, st: &mut SettingsWndState, delta: i32) {
@@ -1752,8 +1708,8 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     schedule_cloud_sync(app, false);
     let new_max = app.settings.max_items;
     if new_max > 0 {
-        db_prune_items(new_max);
-        reload_state_from_db(app);
+                                    db_prune_items(0, new_max);
+        reload_state_from_db_persisting(app);
     }
     if edge_hide_old && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
@@ -1900,9 +1856,9 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
     st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
     st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
     st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "VV 模式", IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "显示图片缩略图", IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "快速删除按钮", IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, tr("VV 模式", "VV Mode"), IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, tr("显示图片缩略图", "Show image thumbnails"), IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
+    let _ = settings_create_toggle(hwnd, st, tr("快速删除按钮", "Quick delete button"), IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
 
     let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24), ui_font);
     settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24));
@@ -2010,7 +1966,7 @@ pub(super) unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) 
         settings_groups_refresh_list(st, ids[new_idx as usize]);
         let pst = get_state_ptr(st.parent_hwnd);
         if !pst.is_null() {
-            reload_state_from_db(&mut *pst);
+            reload_state_from_db_persisting(&mut *pst);
             InvalidateRect(st.parent_hwnd, null(), 1);
         }
     }
@@ -2035,7 +1991,7 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + settings_scale(50), sec0.row_y(1), settings_scale(120));
     if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
     st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.full_w() - settings_scale(124), settings_scale(24));
-    st.btn_hk_record = b.button(st, "录制热键", IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
+    st.btn_hk_record = b.button(st, tr("录制热键", "Record Hotkey"), IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
     if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
 
     let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
@@ -2098,17 +2054,17 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     push(st, st.chk_group_enable);
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
-    let lbl_vv_source = settings_create_label(hwnd, "VV 来源：", sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
+    let lbl_vv_source = settings_create_label(hwnd, tr("VV 来源：", "VV Source:"), sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
     push(st, lbl_vv_source);
-    st.cb_vv_source = settings_create_dropdown_btn(hwnd, "复制记录", IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180), ui_font);
+    st.cb_vv_source = settings_create_dropdown_btn(hwnd, source_tab_label(0), IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180), ui_font);
     if !st.cb_vv_source.is_null() {
         settings_page_push_ctrl(st, page, st.cb_vv_source);
         st.ownerdraw_ctrls.push(st.cb_vv_source);
     }
 
-    let lbl_vv_group = settings_create_label(hwnd, "VV 默认分组：", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
+    let lbl_vv_group = settings_create_label(hwnd, tr("VV 默认分组：", "VV Default Group:"), sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
     push(st, lbl_vv_group);
-    st.cb_vv_group = settings_create_dropdown_btn(hwnd, "全部记录", IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220), ui_font);
+    st.cb_vv_group = settings_create_dropdown_btn(hwnd, source_tab_all_label(0), IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220), ui_font);
     if !st.cb_vv_group.is_null() {
         settings_page_push_ctrl(st, page, st.cb_vv_group);
         st.ownerdraw_ctrls.push(st.cb_vv_group);
@@ -2418,7 +2374,7 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
     if old_edge_hide && !state.settings.edge_auto_hide {
         restore_edge_hidden_window(hwnd, state);
     }
-    reload_state_from_db(state);
+    reload_state_from_db_persisting(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
     refresh_settings_window_from_app(state);
@@ -2438,7 +2394,7 @@ pub(super) unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
             sync_main_tray_icon(hwnd, state);
         }
     }
-    reload_state_from_db(state);
+    reload_state_from_db_persisting(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
 }

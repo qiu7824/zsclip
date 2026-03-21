@@ -22,12 +22,16 @@ pub use crate::settings_ui_host::{
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::{
-        GetDC, GetDeviceCaps, MonitorFromPoint, MonitorFromWindow, ReleaseDC, LOGPIXELSX,
+        CreateFontW, GetDC, GetDeviceCaps, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
+        LOGPIXELSX, LOGPIXELSY,
         MONITOR_DEFAULTTONEAREST,
     },
     System::Ole::DROPEFFECT,
     UI::{
-        Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_MENU, VK_V},
+        Input::KeyboardAndMouse::{
+            keybd_event, GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+            KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT, VK_V,
+        },
         WindowsAndMessaging::{
             GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
             IsWindow, SetForegroundWindow, SystemParametersInfoW, WindowFromPoint,
@@ -150,6 +154,66 @@ pub(crate) fn to_wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+pub(crate) fn resolve_ui_font_family(family: &str) -> &str {
+    match family {
+        "" => system_ui_text_font_family(),
+        "Segoe UI Variable Text" => system_ui_text_font_family(),
+        "Segoe UI Variable Display" => system_ui_text_font_family(),
+        "Segoe Fluent Icons" => "Segoe MDL2 Assets",
+        other => other,
+    }
+}
+
+pub(crate) unsafe fn create_scaled_font_for_hdc(
+    hdc: *mut c_void,
+    family: &str,
+    size: i32,
+    weight: i32,
+) -> *mut c_void {
+    let font_name = resolve_ui_font_family(family);
+    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
+    let scaled_size = ((size.max(1) * dpi) + 48) / 96;
+    CreateFontW(
+        -scaled_size,
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(font_name).as_ptr(),
+    ) as _
+}
+
+pub(crate) unsafe fn create_font_px(
+    family: &str,
+    pixel_size: i32,
+    weight: i32,
+) -> *mut c_void {
+    CreateFontW(
+        -pixel_size.max(1),
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(resolve_ui_font_family(family)).as_ptr(),
+    ) as _
+}
+
 fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }
@@ -193,10 +257,38 @@ pub(crate) fn system_accent() -> u32 {
 }
 
 pub(crate) unsafe fn send_ctrl_v() {
-    keybd_event(VK_CONTROL as u8, 0, 0, 0);
-    keybd_event(VK_V as u8, 0, 0, 0);
-    keybd_event(VK_V as u8, 0, KEYEVENTF_KEYUP, 0);
-    keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+    fn key_input(vk: u16, flags: u32) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: vk,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
+    }
+
+    let shift_down = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
+    let mut inputs = Vec::with_capacity(if shift_down { 6 } else { 4 });
+    if shift_down {
+        inputs.push(key_input(VK_SHIFT as u16, KEYEVENTF_KEYUP));
+    }
+    inputs.push(key_input(VK_CONTROL as u16, 0));
+    inputs.push(key_input(VK_V as u16, 0));
+    inputs.push(key_input(VK_V as u16, KEYEVENTF_KEYUP));
+    inputs.push(key_input(VK_CONTROL as u16, KEYEVENTF_KEYUP));
+    if shift_down {
+        inputs.push(key_input(VK_SHIFT as u16, 0));
+    }
+    let _ = SendInput(
+        inputs.len() as u32,
+        inputs.as_mut_ptr(),
+        core::mem::size_of::<INPUT>() as i32,
+    );
 }
 
 pub(crate) unsafe fn send_backspace_times(count: u8) {

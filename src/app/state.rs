@@ -176,9 +176,9 @@ pub(super) fn source_tab_category(tab: usize) -> i64 {
 
 pub(super) fn source_tab_all_label(tab: usize) -> &'static str {
     if normalize_source_tab(tab) == 1 {
-        "全部短语"
+        tr("全部短语", "All Phrases")
     } else {
-        "全部记录"
+        tr("全部记录", "All Records")
     }
 }
 
@@ -414,7 +414,6 @@ pub(super) struct CloudSyncResult {
 
 static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
 static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
-static OUTSIDE_HIDE_MOUSE_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static QUICK_ESCAPE_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 pub(super) static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
 static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
@@ -426,10 +425,6 @@ pub(super) fn vv_hook_state() -> &'static Mutex<VvHookState> {
 
 pub(super) fn vv_hook_handle() -> &'static Mutex<isize> {
     VV_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
-}
-
-pub(super) fn outside_hide_mouse_hook_handle() -> &'static Mutex<isize> {
-    OUTSIDE_HIDE_MOUSE_HOOK.get_or_init(|| Mutex::new(0))
 }
 
 pub(super) fn quick_escape_keyboard_hook_handle() -> &'static Mutex<isize> {
@@ -531,6 +526,7 @@ impl AppState {
             hover_scroll: false,
             scroll_fade_alpha: 0,
             scroll_fade_timer: false,
+            search_debounce_timer: false,
             scroll_dragging: false,
             scroll_drag_start_y: 0,
             scroll_drag_start_scroll: 0,
@@ -561,10 +557,6 @@ impl AppState {
             edge_docked_top: 0,
             edge_docked_right: 0,
             edge_docked_bottom: 0,
-            edge_monitor_left: 0,
-            edge_monitor_top: 0,
-            edge_monitor_right: 0,
-            edge_monitor_bottom: 0,
             edge_hide_armed: false,
             edge_hide_grace_until: None,
             edge_restore_wait_leave: false,
@@ -638,9 +630,20 @@ impl AppState {
         if self.sel_idx < 0 {
             return None;
         }
-        let visible_idx = self.sel_idx as usize;
-        let src_idx = *self.filtered_indices.get(visible_idx)?;
+        let src_idx = self.visible_src_idx(self.sel_idx as usize)?;
         self.active_items().get(src_idx)
+    }
+
+    pub(super) fn visible_count(&self) -> usize {
+        self.visible_len
+    }
+
+    pub(super) fn visible_src_idx(&self, visible_idx: usize) -> Option<usize> {
+        if visible_idx < self.visible_len {
+            Some(visible_idx)
+        } else {
+            None
+        }
     }
 
     pub(super) fn current_item_owned(&self) -> Option<ClipItem> {

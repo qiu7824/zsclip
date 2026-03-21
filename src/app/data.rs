@@ -27,7 +27,7 @@ fn split_paths_blob(value: Option<String>) -> Option<Vec<String>> {
     if paths.is_empty() { None } else { Some(paths) }
 }
 
-fn row_to_clip_item(row: DbItem) -> ClipItem {
+fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
     let kind = match row.kind.as_str() {
         "image" => ClipKind::Image,
         "phrase" => ClipKind::Phrase,
@@ -52,9 +52,9 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
         id: row.id,
         kind,
         preview,
-        text: row.text,
+        text: if summary_only { None } else { row.text },
         file_paths,
-        image_bytes: row.image_bytes,
+        image_bytes: if summary_only { None } else { row.image_bytes },
         image_path: row.image_path,
         image_width: row.image_width.max(0) as usize,
         image_height: row.image_height.max(0) as usize,
@@ -64,41 +64,12 @@ fn row_to_clip_item(row: DbItem) -> ClipItem {
     }
 }
 
+fn row_to_clip_item(row: DbItem) -> ClipItem {
+    row_to_clip_item_impl(row, false)
+}
+
 fn row_to_clip_item_summary(row: DbItem) -> ClipItem {
-    let kind = match row.kind.as_str() {
-        "image" => ClipKind::Image,
-        "phrase" => ClipKind::Phrase,
-        "files" => ClipKind::Files,
-        _ => ClipKind::Text,
-    };
-    let file_paths = if matches!(kind, ClipKind::Files) {
-        split_paths_blob(row.file_paths.or(row.text))
-    } else {
-        None
-    };
-    let preview = if matches!(kind, ClipKind::Files) {
-        file_paths
-            .as_ref()
-            .map(|paths| build_files_preview(paths))
-            .filter(|value| !value.is_empty())
-            .unwrap_or(row.preview)
-    } else {
-        row.preview
-    };
-    ClipItem {
-        id: row.id,
-        kind,
-        preview,
-        text: None,
-        file_paths,
-        image_bytes: None,
-        image_path: row.image_path,
-        image_width: row.image_width.max(0) as usize,
-        image_height: row.image_height.max(0) as usize,
-        pinned: row.pinned == 1,
-        group_id: row.group_id,
-        created_at: row.created_at,
-    }
+    row_to_clip_item_impl(row, true)
 }
 
 pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
@@ -136,9 +107,8 @@ fn current_local_day_value() -> i64 {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-        + local_offset_secs();
-    let (year, month, day, _, _, _) = unix_secs_to_parts(now_secs);
+        .unwrap_or(0);
+    let (year, month, day, _, _, _) = utc_secs_to_local_parts(now_secs);
     gregorian_to_days(year, month, day)
 }
 
@@ -445,8 +415,9 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             image_height,
             pinned,
             group_id,
+            created_at,
         ) = tx.query_row(
-            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id
+            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
              FROM items WHERE id=?",
             params![item_id],
             |row| {
@@ -463,13 +434,14 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
                     row.get::<_, i64>(9)?,
                     row.get::<_, i64>(10)?,
                     row.get::<_, i64>(11)?,
+                    row.get::<_, String>(12)?,
                 ))
             },
         )?;
 
         tx.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, created_at)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
@@ -483,6 +455,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
                 image_height,
                 pinned,
                 group_id,
+                created_at,
             ],
         )?;
         let new_id = tx.last_insert_rowid();
@@ -502,23 +475,23 @@ pub(super) fn db_update_item_pinned(id: i64, pinned: bool) -> rusqlite::Result<(
     })
 }
 
-pub(super) fn db_prune_items(max_items: usize) {
+pub(super) fn db_prune_items(category: i64, max_items: usize) {
     if max_items == 0 {
         return;
     }
     let _ = with_db(|conn| {
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM items WHERE pinned=0",
-                [],
+                "SELECT COUNT(*) FROM items WHERE category=? AND pinned=0",
+                params![category],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap_or(0);
         let excess = count - max_items as i64;
         if excess > 0 {
             conn.execute(
-                "DELETE FROM items WHERE id IN (SELECT id FROM items WHERE pinned=0 ORDER BY id ASC LIMIT ?)",
-                params![excess],
+                "DELETE FROM items WHERE id IN (SELECT id FROM items WHERE category=? AND pinned=0 ORDER BY id ASC LIMIT ?)",
+                params![category, excess],
             )?;
         }
         Ok(())
@@ -657,21 +630,22 @@ pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> 
     db_insert_item(1, &clone, None)
 }
 
-pub(super) fn reload_state_from_db(state: &mut AppState) {
+pub(super) fn reload_state_from_db(state: &mut AppState) -> bool {
     ensure_db();
+    let mut settings_changed = false;
     state.clear_payload_cache();
     state.record_groups = db_load_groups(0);
     state.phrase_groups = db_load_groups(1);
     if state.settings.vv_source_tab > 1 {
         state.settings.vv_source_tab = 0;
-        save_settings(&state.settings);
+        settings_changed = true;
     }
     let vv_groups = state.groups_for_tab(state.settings.vv_source_tab);
     if state.settings.vv_group_id > 0
         && !vv_groups.iter().any(|group| group.id == state.settings.vv_group_id)
     {
         state.settings.vv_group_id = 0;
-        save_settings(&state.settings);
+        settings_changed = true;
     }
     for idx in 0..state.tab_group_filters.len() {
         let gid = state.tab_group_filters[idx];
@@ -686,4 +660,5 @@ pub(super) fn reload_state_from_db(state: &mut AppState) {
     state.scroll_y = 0;
     state.invalidate_all_queries();
     state.refilter();
+    settings_changed
 }
