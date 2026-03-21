@@ -51,6 +51,8 @@ struct RemoteLayout {
 struct CloudSyncManifest {
     version: String,
     updated_at: u64,
+    #[serde(default)]
+    snapshot_hash: String,
     backup_name: String,
 }
 
@@ -114,9 +116,20 @@ fn sync_snapshot(
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
     let local_stamp = local_state_stamp(paths);
+    let local_hash = local_state_hash(paths)?;
     let remote_manifest = download_remote_manifest(config, remote)?;
     if let Some(manifest) = remote_manifest {
         let version_cmp = compare_versions(&manifest.version, env!("CARGO_PKG_VERSION"));
+        if !manifest.snapshot_hash.is_empty()
+            && manifest.snapshot_hash == local_hash
+            && !version_cmp.is_gt()
+        {
+            return Ok(CloudSyncOutcome {
+                status_text: tr("本地与云端已同步，无需更新。", "Local and cloud data are already in sync.").to_string(),
+                reload_settings: false,
+                reload_data: false,
+            });
+        }
         if manifest.updated_at > local_stamp.saturating_add(5) {
             if version_cmp.is_gt() {
                 return Err(format!(
@@ -138,7 +151,10 @@ fn sync_snapshot(
                 ..outcome
             });
         }
-        if local_stamp <= manifest.updated_at.saturating_add(5) && version_cmp.is_eq() {
+        if local_stamp <= manifest.updated_at.saturating_add(5)
+            && version_cmp.is_eq()
+            && (manifest.snapshot_hash.is_empty() || manifest.snapshot_hash == local_hash)
+        {
             return Ok(CloudSyncOutcome {
                 status_text: "本地与云端已同步，无需更新。".to_string(),
                 reload_settings: false,
@@ -154,6 +170,7 @@ fn sync_snapshot(
     let manifest = CloudSyncManifest {
         version: env!("CARGO_PKG_VERSION").to_string(),
         updated_at: stamp,
+        snapshot_hash: local_hash,
         backup_name: BACKUP_FILE_NAME.to_string(),
     };
     let manifest_path = write_temp_json_file("manifest", &manifest)?;
@@ -371,6 +388,17 @@ fn local_state_stamp(paths: &CloudSyncPaths) -> u64 {
     stamp
 }
 
+fn local_state_hash(paths: &CloudSyncPaths) -> Result<String, String> {
+    let mut hasher = Fnv64::new();
+    hash_path_contents(&mut hasher, &paths.settings_file, "settings.json")?;
+    hash_path_contents(&mut hasher, &paths.db_file, "clipboard.db")?;
+    let images_dir = paths.data_dir.join("images");
+    if images_dir.exists() {
+        hash_dir_contents(&mut hasher, &images_dir, Path::new("images"))?;
+    }
+    Ok(format!("{:016x}", hasher.finish()))
+}
+
 fn local_data_exists(paths: &CloudSyncPaths) -> bool {
     if paths.settings_file.exists() || paths.db_file.exists() {
         return true;
@@ -390,6 +418,62 @@ fn file_modified_secs(path: &Path) -> u64 {
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|dur| dur.as_secs())
         .unwrap_or(0)
+}
+
+struct Fnv64 {
+    value: u64,
+}
+
+impl Fnv64 {
+    const OFFSET: u64 = 0xcbf29ce484222325;
+    const PRIME: u64 = 0x100000001b3;
+
+    fn new() -> Self {
+        Self { value: Self::OFFSET }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.value ^= *byte as u64;
+            self.value = self.value.wrapping_mul(Self::PRIME);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.value
+    }
+}
+
+fn hash_path_contents(hasher: &mut Fnv64, path: &Path, label: &str) -> Result<(), String> {
+    hasher.update(label.as_bytes());
+    if !path.exists() {
+        hasher.update(&[0]);
+        return Ok(());
+    }
+    hasher.update(&[1]);
+    let bytes = fs::read(path).map_err(|err| err.to_string())?;
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(&bytes);
+    Ok(())
+}
+
+fn hash_dir_contents(hasher: &mut Fnv64, dir: &Path, prefix: &Path) -> Result<(), String> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|err| err.to_string())?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+    for entry in entries {
+        let path = entry.path();
+        let rel = prefix.join(entry.file_name());
+        if path.is_dir() {
+            hash_dir_contents(hasher, &path, &rel)?;
+        } else {
+            let rel_s = rel.to_string_lossy();
+            hash_path_contents(hasher, &path, &rel_s)?;
+        }
+    }
+    Ok(())
 }
 
 fn dir_modified_secs(path: &Path) -> u64 {

@@ -120,6 +120,12 @@ pub(crate) enum IconAssetKind {
 }
 
 pub(crate) unsafe fn open_path_with_shell(path: &str) {
+    if let Some((scheme, _)) = path.split_once("://") {
+        let scheme = scheme.trim().to_ascii_lowercase();
+        if scheme != "http" && scheme != "https" {
+            return;
+        }
+    }
     let op = to_wide("open");
     let wp = to_wide(path);
     ShellExecuteW(std::ptr::null_mut(), op.as_ptr(), wp.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
