@@ -1,6 +1,8 @@
 ﻿use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::gdiplus;
 use crate::i18n::translate;
@@ -37,6 +39,7 @@ pub const SETTINGS_NAV_Y: i32 = 72;
 pub const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
 
 static SETTINGS_UI_DPI: AtomicU32 = AtomicU32::new(96);
+static DARK_ICON_CACHE: OnceLock<Mutex<HashMap<(isize, i32, i32, u8), Vec<u32>>>> = OnceLock::new();
 
 pub fn set_settings_ui_dpi(dpi: u32) {
     SETTINGS_UI_DPI.store(dpi.max(96), Ordering::Relaxed);
@@ -379,8 +382,8 @@ pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTime
             .strip_prefix("time:")
             .or_else(|| lower.strip_prefix("date:"))
             .map(|v| v.to_string())
-            .or_else(|| token.strip_prefix("鏃堕棿:").map(|v| v.to_string()))
-            .or_else(|| token.strip_prefix("鏃ユ湡:").map(|v| v.to_string()));
+            .or_else(|| token.strip_prefix("时间:").map(|v| v.to_string()))
+            .or_else(|| token.strip_prefix("日期:").map(|v| v.to_string()));
         if let Some(value) = time_value {
             if let Some(filter) = parse_time_filter(&value) {
                 time_filter = Some(filter);
@@ -610,18 +613,46 @@ impl MainUiLayout {
         slot: i32,
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
-        let size = (self.row_h * 16 / 44).clamp(16, 20);
-        let gap = (self.row_h * 8 / 44).clamp(8, 12);
-        let right_pad = (self.row_h * 10 / 44).clamp(10, 16);
-        let icon_offset = (self.row_h * 12 / 44).clamp(12, 18);
+        let size = (self.row_h * 16 / 44).max(16);
+        let gap = (self.row_h * 8 / 44).max(8);
+        let right_pad = (self.row_h * 10 / 44).max(10);
+        let icon_offset = (self.row_h * 12 / 44).max(12);
         let left = row.right - right_pad - size - icon_offset - slot.max(0) * (size + gap);
         let top = row.top + (self.row_h - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
+    pub(crate) fn row_icon_rect(
+        self,
+        visible_idx: i32,
+        filtered_len: usize,
+        scroll_y: i32,
+    ) -> Option<UiRect> {
+        let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
+        let size = (self.row_h * 18 / 44).max(16);
+        let left_pad = (self.row_h * 12 / 44).max(10);
+        let left = row.left + left_pad;
+        let top = row.top + (self.row_h - size) / 2;
+        Some(UiRect::new(left, top, left + size, top + size))
+    }
+
+    pub(crate) fn row_pin_rect(
+        self,
+        visible_idx: i32,
+        filtered_len: usize,
+        scroll_y: i32,
+    ) -> Option<UiRect> {
+        let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
+        let size = (self.row_h * 16 / 44).max(16);
+        let left_pad = (self.row_h * 32 / 44).max(24);
+        let left = row.left + left_pad;
+        let top = row.top + (self.row_h - size) / 2;
+        Some(UiRect::new(left, top, left + size, top + size))
+    }
+
     pub(crate) fn scroll_to_top_button_rect(self) -> UiRect {
-        let size = (self.row_h * 36 / 44).clamp(32, 52);
-        let margin = (self.row_h * 10 / 44).clamp(10, 16);
+        let size = (self.row_h * 36 / 44).max(32);
+        let margin = (self.row_h * 10 / 44).max(10);
         UiRect::new(
             self.list_x + self.list_w - self.list_pad - size - margin,
             self.list_y + self.list_h - self.list_pad - size - margin,
@@ -671,8 +702,8 @@ impl MainUiLayout {
         if self.total_content_height(filtered_len) <= self.list_view_height() {
             return None;
         }
-        let track_gap = (self.row_h * 8 / 44).clamp(8, 12);
-        let track_w = (self.row_h * 6 / 44).clamp(4, 8);
+        let track_gap = (self.row_h * 8 / 44).max(8);
+        let track_w = (self.row_h * 6 / 44).max(4);
         Some(UiRect::new(
             self.list_x + self.list_w - self.list_pad - track_gap - 2,
             self.list_y + self.list_pad + 2,
@@ -825,9 +856,6 @@ pub unsafe fn draw_text_ex(
     let flags = (if center { DT_CENTER } else { DT_LEFT }) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
     DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
     SelectObject(hdc, old);
-    if !font.is_null() && font != GetStockObject(DEFAULT_GUI_FONT) {
-        DeleteObject(font as _);
-    }
 }
 
 pub unsafe fn draw_text_block_ex(
@@ -850,9 +878,6 @@ pub unsafe fn draw_text_block_ex(
     let flags = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX;
     DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
     SelectObject(hdc, old);
-    if !font.is_null() && font != GetStockObject(DEFAULT_GUI_FONT) {
-        DeleteObject(font as _);
-    }
 }
 
 pub fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {
@@ -894,74 +919,101 @@ pub unsafe fn draw_icon_tinted_soft(
         DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
         return;
     }
+    let n = (w * h) as usize;
+    let derived = {
+        let cache = DARK_ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut cache = match cache.lock() {
+            Ok(cache) => cache,
+            Err(_) => {
+                DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+                return;
+            }
+        };
+        if let Some(cached) = cache.get(&(icon, w, h, soften)) {
+            cached.clone()
+        } else {
+            let make_dib = |bg: u32| -> (*mut core::ffi::c_void, *mut core::ffi::c_void, *mut u32) {
+                let dc = CreateCompatibleDC(hdc);
+                let mut bmi: BITMAPINFO = core::mem::zeroed();
+                bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
+                bmi.bmiHeader.biWidth = w;
+                bmi.bmiHeader.biHeight = -h;
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+                let mut ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+                let dib = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut ptr, core::ptr::null_mut(), 0);
+                if dib.is_null() || ptr.is_null() {
+                    DeleteDC(dc);
+                    return (core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut());
+                }
+                SelectObject(dc, dib as _);
+                let br = CreateSolidBrush(bg);
+                let rc = RECT { left: 0, top: 0, right: w, bottom: h };
+                FillRect(dc, &rc, br);
+                DeleteObject(br as _);
+                DrawIconEx(dc, 0, 0, icon as _, w, h, 0, core::ptr::null_mut(), DI_NORMAL);
+                (dc, dib, ptr as *mut u32)
+            };
 
-    // 涓ゆ缁樺埗娉曟彁鍙栧甫 alpha 鐨勫浘鏍囷紝鍐嶄互鐏?鐧借壊閲嶇粯鍒扮洰鏍?DC
-    // pass1: 鐧藉簳 鈫?鍥炬爣鍍忕礌 = alpha*icon_color + (1-alpha)*255
-    // pass2: 榛戝簳 鈫?鍥炬爣鍍忕礌 = alpha*icon_color
-    // alpha = 1 - (pass1 - pass2) / 255
-    // icon_color = pass2 / alpha
-    // 鏈€缁堜互浜伆鑹茬粯鍒跺埌鐩爣锛堜繚鐣?alpha锛?
+            let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32);
+            let (dc_b, dib_b, px_b) = make_dib(0x00000000u32);
+            if dc_w.is_null() || dc_b.is_null() {
+                if !dc_w.is_null() { DeleteDC(dc_w); }
+                if !dc_b.is_null() { DeleteDC(dc_b); }
+                DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+                return;
+            }
 
-    let make_dib = |bg: u32| -> (*mut core::ffi::c_void, *mut core::ffi::c_void, *mut u32) {
-        let dc = CreateCompatibleDC(hdc);
-        let mut bmi: BITMAPINFO = core::mem::zeroed();
-        bmi.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-        bmi.bmiHeader.biWidth = w;
-        bmi.bmiHeader.biHeight = -h;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-        let mut ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-        let dib = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut ptr, core::ptr::null_mut(), 0);
-        if dib.is_null() || ptr.is_null() {
-            DeleteDC(dc);
-            return (core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut());
+            let src_w = core::slice::from_raw_parts(px_w, n);
+            let src_b = core::slice::from_raw_parts(px_b, n);
+            let mut derived = vec![0u32; n];
+            for i in 0..n {
+                let w_px = src_w[i];
+                let b_px = src_b[i];
+                let wr = ((w_px >> 16) & 0xFF) as i32;
+                let wg = ((w_px >> 8) & 0xFF) as i32;
+                let wb = (w_px & 0xFF) as i32;
+                let br = ((b_px >> 16) & 0xFF) as i32;
+                let bg = ((b_px >> 8) & 0xFF) as i32;
+                let bb = (b_px & 0xFF) as i32;
+                let ar = 255 - (wr - br).clamp(0, 255);
+                let ag = 255 - (wg - bg).clamp(0, 255);
+                let ab = 255 - (wb - bb).clamp(0, 255);
+                let alpha = ((ar + ag + ab) / 3).clamp(0, 255) as u32;
+                if alpha < 8 {
+                    continue;
+                }
+                let icon_r = ((br * 255 / ar.max(1)) as u32).min(255);
+                let icon_g = ((bg * 255 / ag.max(1)) as u32).min(255);
+                let icon_b = ((bb * 255 / ab.max(1)) as u32).min(255);
+                let lum = (icon_r * 299 + icon_g * 587 + icon_b * 114) / 1000;
+                let (mut out_r, mut out_g, mut out_b) = if lum < 80 {
+                    (255u32, 255u32, 255u32)
+                } else if lum < 200 {
+                    let bright = (255 - lum + 180).min(255);
+                    (bright, bright, bright)
+                } else {
+                    (icon_r, icon_g, icon_b)
+                };
+                if soften > 0 {
+                    let k = soften as u32;
+                    let base = 32u32;
+                    out_r = ((out_r * (255 - k)) + (base * k)) / 255;
+                    out_g = ((out_g * (255 - k)) + (base * k)) / 255;
+                    out_b = ((out_b * (255 - k)) + (base * k)) / 255;
+                }
+                derived[i] = (alpha << 24) | (out_r << 16) | (out_g << 8) | out_b;
+            }
+            DeleteObject(dib_w as _);
+            DeleteObject(dib_b as _);
+            DeleteDC(dc_w);
+            DeleteDC(dc_b);
+            cache.insert((icon, w, h, soften), derived.clone());
+            derived
         }
-        SelectObject(dc, dib as _);
-        // 濉厖鑳屾櫙鑹?
-        let br = CreateSolidBrush(bg);
-        let rc = RECT { left: 0, top: 0, right: w, bottom: h };
-        FillRect(dc, &rc, br);
-        DeleteObject(br as _);
-        DrawIconEx(dc, 0, 0, icon as _, w, h, 0, core::ptr::null_mut(), DI_NORMAL);
-        (dc, dib, ptr as *mut u32)
     };
 
-    let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32); // 鐧藉簳
-    let (dc_b, dib_b, px_b) = make_dib(0x00000000u32); // 榛戝簳
-
-    if dc_w.is_null() || dc_b.is_null() {
-        if !dc_w.is_null() { DeleteDC(dc_w); }
-        if !dc_b.is_null() { DeleteDC(dc_b); }
-        DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
-        return;
-    }
-
-    // 鍒涘缓杈撳嚭 DIB
-    let dc_out = CreateCompatibleDC(hdc);
-    let mut bmi_out: BITMAPINFO = core::mem::zeroed();
-    bmi_out.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
-    bmi_out.bmiHeader.biWidth = w;
-    bmi_out.bmiHeader.biHeight = -h;
-    bmi_out.bmiHeader.biPlanes = 1;
-    bmi_out.bmiHeader.biBitCount = 32;
-    bmi_out.bmiHeader.biCompression = BI_RGB;
-    let mut px_out_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-    let dib_out = CreateDIBSection(dc_out, &bmi_out, DIB_RGB_COLORS, &mut px_out_ptr, core::ptr::null_mut(), 0);
-    if dib_out.is_null() || px_out_ptr.is_null() {
-        DeleteDC(dc_w); DeleteDC(dc_b); DeleteDC(dc_out);
-        DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
-        return;
-    }
-    SelectObject(dc_out, dib_out as _);
-
-    let n = (w * h) as usize;
-    let src_w = core::slice::from_raw_parts(px_w, n);
-    let src_b = core::slice::from_raw_parts(px_b, n);
-    let dst   = core::slice::from_raw_parts_mut(px_out_ptr as *mut u32, n);
-
-    // 浠庣洰鏍?DC 璇诲彇鑳屾櫙鑹诧紙鐢ㄤ簬 premix锛?
-    // 鑾峰彇鐩爣 DC 褰撳墠瀵瑰簲鍖哄煙鐨勮儗鏅儚绱狅紙璇诲彇褰撳墠 hdc 鍐呭锛?
     let dc_bg = CreateCompatibleDC(hdc);
     let mut bmi_bg: BITMAPINFO = core::mem::zeroed();
     bmi_bg.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
@@ -980,81 +1032,51 @@ pub unsafe fn draw_icon_tinted_soft(
         &[] as &[u32]
     };
 
+    let dc_out = CreateCompatibleDC(hdc);
+    let mut bmi_out: BITMAPINFO = core::mem::zeroed();
+    bmi_out.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi_out.bmiHeader.biWidth = w;
+    bmi_out.bmiHeader.biHeight = -h;
+    bmi_out.bmiHeader.biPlanes = 1;
+    bmi_out.bmiHeader.biBitCount = 32;
+    bmi_out.bmiHeader.biCompression = BI_RGB;
+    let mut px_out_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+    let dib_out = CreateDIBSection(dc_out, &bmi_out, DIB_RGB_COLORS, &mut px_out_ptr, core::ptr::null_mut(), 0);
+    if dib_out.is_null() || px_out_ptr.is_null() {
+        if !dib_bg.is_null() { DeleteObject(dib_bg as _); }
+        DeleteDC(dc_bg);
+        DeleteDC(dc_out);
+        DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+        return;
+    }
+    SelectObject(dc_out, dib_out as _);
+    let dst = core::slice::from_raw_parts_mut(px_out_ptr as *mut u32, n);
+
+    let blend = |fg: u32, bg: u32, a: u32| -> u32 { (fg * a + bg * (255 - a)) / 255 };
     for i in 0..n {
-        let w_px = src_w[i];
-        let b_px = src_b[i];
-
-        let wr = ((w_px >> 16) & 0xFF) as i32;
-        let wg = ((w_px >> 8)  & 0xFF) as i32;
-        let wb = ( w_px        & 0xFF) as i32;
-
-        let br = ((b_px >> 16) & 0xFF) as i32;
-        let bg = ((b_px >> 8)  & 0xFF) as i32;
-        let bb = ( b_px        & 0xFF) as i32;
-
-        // alpha锛堟瘡閫氶亾锛? diff = white - black = (1-a)*255, so a = 1 - diff/255
-        let ar = 255 - (wr - br).clamp(0, 255);
-        let ag = 255 - (wg - bg).clamp(0, 255);
-        let ab = 255 - (wb - bb).clamp(0, 255);
-        let alpha = ((ar + ag + ab) / 3) as u32;
-
-        if alpha < 8 {
-            // 瀹屽叏閫忔槑锛氱洿鎺ョ敤鑳屾櫙鑹?
-            dst[i] = if i < src_bg.len() { src_bg[i] & 0x00FFFFFF } else { 0x00202020 };
-            continue;
-        }
-
-        // 鍘熷浘鏍囬鑹诧紙浠庨粦搴曠増鏈仮澶嶏級
-        let icon_r = ((br * 255 / ar.max(1)) as u32).min(255);
-        let icon_g = ((bg * 255 / ag.max(1)) as u32).min(255);
-        let icon_b = ((bb * 255 / ab.max(1)) as u32).min(255);
-
-        // 鍥炬爣浜害
-        let lum = (icon_r * 299 + icon_g * 587 + icon_b * 114) / 1000;
-
-        // 娣辫壊鑳屾櫙涓婏細鎶婃殫鑹插浘鏍囧儚绱犳槧灏勪负浜伆/鐧借壊锛屽僵鑹插儚绱犻€傚綋鎻愪寒
-        let (mut out_r, mut out_g, mut out_b) = if lum < 80 {
-            // 绾粦/娣辩伆鍥炬爣 鈫?绾櫧
-            (255u32, 255u32, 255u32)
-        } else if lum < 200 {
-            // 涓伆 鈫?浜伆
-            let bright = (255 - lum + 180).min(255);
-            (bright, bright, bright)
-        } else {
-            // 宸叉槸浜壊/褰╄壊 鈫?淇濈暀
-            (icon_r, icon_g, icon_b)
-        };
-
-        // 涓庤儗鏅?alpha 鍚堟垚
+        let fg = derived[i];
+        let alpha = (fg >> 24) & 0xFF;
         let (bg_r, bg_g, bg_b) = if i < src_bg.len() {
             let bg_px = src_bg[i];
             (((bg_px >> 16) & 0xFF) as u32,
-             ((bg_px >> 8)  & 0xFF) as u32,
-             ( bg_px        & 0xFF) as u32)
+             ((bg_px >> 8) & 0xFF) as u32,
+             (bg_px & 0xFF) as u32)
         } else {
             (32, 32, 32)
         };
-
-        if soften > 0 {
-            let k = soften as u32;
-            out_r = ((out_r * (255 - k)) + (bg_r * k)) / 255;
-            out_g = ((out_g * (255 - k)) + (bg_g * k)) / 255;
-            out_b = ((out_b * (255 - k)) + (bg_b * k)) / 255;
-        }
-
-        let blend = |fg: u32, bg: u32, a: u32| -> u32 { (fg * a + bg * (255 - a)) / 255 };
+        let out_r = (fg >> 16) & 0xFF;
+        let out_g = (fg >> 8) & 0xFF;
+        let out_b = fg & 0xFF;
         let final_r = blend(out_r, bg_r, alpha);
         let final_g = blend(out_g, bg_g, alpha);
         let final_b = blend(out_b, bg_b, alpha);
-
         dst[i] = (final_r << 16) | (final_g << 8) | final_b;
     }
 
     BitBlt(hdc, x, y, w, h, dc_out, 0, 0, SRCCOPY);
 
-    DeleteObject(dib_w as _); DeleteDC(dc_w);
-    DeleteObject(dib_b as _); DeleteDC(dc_b);
-    DeleteObject(dib_out as _); DeleteDC(dc_out);
     if !dib_bg.is_null() { DeleteObject(dib_bg as _); }
+    DeleteObject(dib_out as _);
     DeleteDC(dc_bg);
+    DeleteDC(dc_out);
 }

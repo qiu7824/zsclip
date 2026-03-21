@@ -51,7 +51,7 @@ static HOVER_HWND: OnceLock<isize> = OnceLock::new();
 unsafe extern "system" fn preview_wnd_proc(
     hwnd: HWND,
     msg: u32,
-    _wparam: WPARAM,
+    wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
@@ -187,7 +187,7 @@ unsafe extern "system" fn preview_wnd_proc(
             }
             0
         }
-        _ => DefWindowProcW(hwnd, msg, 0, lparam),
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 

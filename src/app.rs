@@ -995,7 +995,7 @@ unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
     }
 }
 
-unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -1133,7 +1133,7 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
             }
             0
         }
-        _ => DefWindowProcW(hwnd, msg, 0, lparam),
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -5123,12 +5123,11 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     let (tab0, tab1) = state.segment_rects();
     if state.settings.grouping_enabled && (pt_in_rect(x, y, &tab0) || pt_in_rect(x, y, &tab1)) {
         let target_tab = if pt_in_rect(x, y, &tab1) { 1usize } else { 0usize };
-        state.tab_index = target_tab;
-        state.current_group_filter = state.tab_group_filters[target_tab];
         let mut pt: POINT = zeroed();
         GetCursorPos(&mut pt);
         let cmd = show_group_filter_menu(hwnd, pt.x, pt.y, target_tab, state);
         if cmd == IDM_GROUP_FILTER_ALL {
+            state.tab_index = target_tab;
             state.tab_group_filters[target_tab] = 0;
             state.current_group_filter = 0;
             state.scroll_y = 0;
@@ -5137,6 +5136,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
         } else if (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&cmd) {
             let idx = cmd - IDM_GROUP_FILTER_BASE;
             if let Some(group_id) = state.groups_for_tab(target_tab).get(idx).map(|g| g.id) {
+                state.tab_index = target_tab;
                 state.tab_group_filters[target_tab] = group_id;
                 state.current_group_filter = group_id;
                 state.scroll_y = 0;
@@ -5201,6 +5201,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
         hwnd,
         x,
         y,
+        state.tab_index,
         state,
         state.context_selection_count(),
         state.context_selection_has_unpinned(),
@@ -6064,6 +6065,7 @@ unsafe fn begin_row_drag_export(hwnd: HWND, state: &mut AppState, visible_idx: i
     if paths.is_empty() {
         return false;
     }
+    ReleaseCapture();
     begin_file_drag(hwnd, &paths)
 }
 
@@ -6071,6 +6073,7 @@ unsafe fn show_row_menu(
     hwnd: HWND,
     x: i32,
     y: i32,
+    tab_index: usize,
     state: &AppState,
     selected_count: usize,
     has_unpinned: bool,
@@ -6083,7 +6086,7 @@ unsafe fn show_row_menu(
         return 0;
     }
     apply_theme_to_menu(menu as _);
-    let groups = state.groups_for_tab(state.tab_index);
+    let groups = state.groups_for_tab(tab_index);
     let group_menu = if state.settings.grouping_enabled { CreatePopupMenu() } else { null_mut() };
     if !group_menu.is_null() {
         apply_theme_to_menu(group_menu as _);
@@ -6236,9 +6239,6 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
         null(),
     ) as usize;
     PostMessageW(hwnd, WM_NULL, 0, 0);
-    if state.search_on {
-        SetFocus(state.search_hwnd);
-    }
     DestroyMenu(menu);
     vv_set_popup_menu_active(false);
     cmd
@@ -6517,26 +6517,24 @@ unsafe fn paint(hwnd: HWND) {
                 DeleteObject(br as _);
             }
 
-            let icon_size = (layout.row_h * 18 / 44).max(scale_for_window(state.hwnd, 16));
-            let icon = item_icon_handle(&item, icon_size);
-            if icon != 0 {
-                let (icon_w, icon_h) = (icon_size, icon_size);
-                let icon_x = row_rc.left + (layout.row_h * 12 / 44).clamp(10, 18);
-                let icon_y = row_rc.top + ((layout.row_h - icon_h) / 2);
-                draw_icon_tinted(memdc as _, icon_x, icon_y, icon, icon_w, icon_h, dark);
+            if let Some(icon_rc) = layout.row_icon_rect(i, state.visible_count(), state.scroll_y) {
+                let icon_w = icon_rc.right - icon_rc.left;
+                let icon_h = icon_rc.bottom - icon_rc.top;
+                let icon = item_icon_handle(&item, icon_w.max(icon_h));
+                if icon != 0 {
+                    draw_icon_tinted(memdc as _, icon_rc.left, icon_rc.top, icon, icon_w, icon_h, dark);
+                }
             }
 
             if item.pinned {
-                let mut pin_y = row_rc.top + 3;
-                if pin_y < (view_top + 2) {
-                    pin_y = view_top + 2;
-                }
-                if (pin_y + 16) <= (view_bottom - 2) {
-                    let pin_x = row_rc.left + (layout.row_h * 32 / 44).clamp(24, 40);
-                    let pin_size = (layout.row_h * 16 / 44).max(scale_for_window(state.hwnd, 16));
-                    let pin_icon = icon_handle_for(IconAssetKind::Pin, pin_size);
-                    if pin_icon != 0 {
-                        draw_icon_tinted(memdc as _, pin_x, pin_y, pin_icon, pin_size, pin_size, dark);
+                if let Some(pin_rc) = layout.row_pin_rect(i, state.visible_count(), state.scroll_y) {
+                    let pin_w = pin_rc.right - pin_rc.left;
+                    let pin_h = pin_rc.bottom - pin_rc.top;
+                    if pin_rc.top >= (view_top + 2) && pin_rc.bottom <= (view_bottom - 2) {
+                        let pin_icon = icon_handle_for(IconAssetKind::Pin, pin_w.max(pin_h));
+                        if pin_icon != 0 {
+                            draw_icon_tinted(memdc as _, pin_rc.left, pin_rc.top, pin_icon, pin_w, pin_h, dark);
+                        }
                     }
                 }
             }
@@ -7016,9 +7014,9 @@ fn row_shows_delete_button(state: &AppState, visible_idx: i32) -> bool {
 fn row_text_right_padding(state: &AppState, visible_idx: i32) -> i32 {
     let layout = state.layout();
     if row_shows_delete_button(state, visible_idx) {
-        (layout.row_h * 42 / 44).clamp(42, 54)
+        (layout.row_h * 42 / 44).max(42)
     } else {
-        (layout.row_h * 18 / 44).clamp(18, 24)
+        (layout.row_h * 18 / 44).max(18)
     }
 }
 
@@ -7033,7 +7031,7 @@ fn row_inline_preview_rect(row_rc: &RECT, item: &ClipItem, settings: &AppSetting
     if !row_supports_image_preview(item, settings) {
         return None;
     }
-    let size = ((row_rc.bottom - row_rc.top) - 8).clamp(24, 40);
+    let size = ((row_rc.bottom - row_rc.top) - 8).max(24);
     let left = row_rc.left + 2;
     let top = row_rc.top + ((row_rc.bottom - row_rc.top - size) / 2);
     Some(RECT { left, top, right: left + size, bottom: top + size })

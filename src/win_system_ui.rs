@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 pub use crate::settings_model::SettingsPage;
 pub use crate::settings_render::{
@@ -89,6 +90,7 @@ struct RawNonClientMetricsW {
 }
 
 static SYSTEM_UI_FONT_FAMILY: OnceLock<String> = OnceLock::new();
+static SCALED_FONT_CACHE: OnceLock<Mutex<HashMap<(String, i32, i32, i32), isize>>> = OnceLock::new();
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -173,22 +175,50 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
     let font_name = resolve_ui_font_family(family);
     let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
     let scaled_size = ((size.max(1) * dpi) + 48) / 96;
-    CreateFontW(
-        -scaled_size,
-        0,
-        0,
-        0,
-        weight,
-        0,
-        0,
-        0,
-        1,
-        0,
-        0,
-        5,
-        0,
-        to_wide(font_name).as_ptr(),
-    ) as _
+    let key = (font_name.to_string(), dpi, scaled_size, weight);
+    let cache = SCALED_FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut fonts) = cache.lock() {
+        if let Some(font) = fonts.get(&key) {
+            return *font as _;
+        }
+        let font = CreateFontW(
+            -scaled_size,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            5,
+            0,
+            to_wide(font_name).as_ptr(),
+        ) as isize;
+        if font != 0 {
+            fonts.insert(key, font);
+        }
+        font as _
+    } else {
+        CreateFontW(
+            -scaled_size,
+            0,
+            0,
+            0,
+            weight,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            5,
+            0,
+            to_wide(font_name).as_ptr(),
+        ) as _
+    }
 }
 
 pub(crate) unsafe fn create_font_px(

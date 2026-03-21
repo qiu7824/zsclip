@@ -42,6 +42,11 @@ const STICKER_BTN_H: i32 = 24;
 const STICKER_BTN_GAP: i32 = 6;
 const STICKER_ZOOM_IN_KEY: u32 = VK_OEM_PLUS as u32;
 const STICKER_ZOOM_OUT_KEY: u32 = VK_OEM_MINUS as u32;
+const WM_STICKER_IMAGE_READY: u32 = WM_APP + 52;
+
+struct StickerImageResult {
+    image: Option<(Vec<u8>, usize, usize)>,
+}
 
 struct StickerData {
     width: i32,
@@ -50,6 +55,7 @@ struct StickerData {
     zoom_pct: i32,
     hover_btn: i32,
     down_btn: i32,
+    loading: bool,
 }
 
 fn sticker_btn_rect(hwnd: HWND, index: i32) -> RECT {
@@ -163,6 +169,27 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_RBUTTONUP => { DestroyWindow(hwnd); 0 }
+        WM_STICKER_IMAGE_READY => {
+            let payload_ptr = lparam as *mut StickerImageResult;
+            if payload_ptr.is_null() {
+                return 0;
+            }
+            let payload = Box::from_raw(payload_ptr);
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            if !ptr.is_null() {
+                let data = &mut *ptr;
+                data.loading = false;
+                if let Some((mut bytes, width, height)) = payload.image {
+                    for px in bytes.chunks_exact_mut(4) { px.swap(0, 2); }
+                    data.width = width as i32;
+                    data.height = height as i32;
+                    data.bgra = bytes;
+                    sticker_apply_zoom(hwnd, data);
+                }
+                InvalidateRect(hwnd, null(), 0);
+            }
+            0
+        }
         WM_KEYDOWN => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
             if (wparam as u32) == VK_ESCAPE as u32 { DestroyWindow(hwnd); return 0; }
@@ -221,24 +248,37 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 draw_text(memdc as _, labels[idx], &brc, txt, 14, false, true);
             }
             let content = RECT { left: 12, top: STICKER_BAR_H + 2, right: rc.right - 12, bottom: rc.bottom - 12 };
-            let avail_w = max(1, content.right - content.left);
-            let avail_h = max(1, content.bottom - content.top);
-            let zoom = data.zoom_pct.clamp(20, 400) as f32 / 100.0;
-            let iw = max(1, (data.width as f32 * zoom).round() as i32);
-            let ih = max(1, (data.height as f32 * zoom).round() as i32);
-            let scale = (avail_w as f32 / iw as f32).min(avail_h as f32 / ih as f32).min(1.0);
-            let dw = max(1, (iw as f32 * scale).round() as i32);
-            let dh = max(1, (ih as f32 * scale).round() as i32);
-            let dx = content.left + (avail_w - dw) / 2;
-            let dy = content.top + (avail_h - dh) / 2;
-            let mut bmi: BITMAPINFO = zeroed();
-            bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = data.width;
-            bmi.bmiHeader.biHeight = -data.height;
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB;
-            StretchDIBits(memdc, dx, dy, dw, dh, 0, 0, data.width, data.height, data.bgra.as_ptr() as _, &bmi, DIB_RGB_COLORS, SRCCOPY);
+            if data.loading || data.bgra.is_empty() {
+                draw_text_ex(
+                    memdc as _,
+                    tr("正在加载预览…", "Loading preview..."),
+                    &content,
+                    th.text_muted,
+                    12,
+                    false,
+                    true,
+                    "Segoe UI",
+                );
+            } else {
+                let avail_w = max(1, content.right - content.left);
+                let avail_h = max(1, content.bottom - content.top);
+                let zoom = data.zoom_pct.clamp(20, 400) as f32 / 100.0;
+                let iw = max(1, (data.width as f32 * zoom).round() as i32);
+                let ih = max(1, (data.height as f32 * zoom).round() as i32);
+                let scale = (avail_w as f32 / iw as f32).min(avail_h as f32 / ih as f32).min(1.0);
+                let dw = max(1, (iw as f32 * scale).round() as i32);
+                let dh = max(1, (ih as f32 * scale).round() as i32);
+                let dx = content.left + (avail_w - dw) / 2;
+                let dy = content.top + (avail_h - dh) / 2;
+                let mut bmi: BITMAPINFO = zeroed();
+                bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
+                bmi.bmiHeader.biWidth = data.width;
+                bmi.bmiHeader.biHeight = -data.height;
+                bmi.bmiHeader.biPlanes = 1;
+                bmi.bmiHeader.biBitCount = 32;
+                bmi.bmiHeader.biCompression = BI_RGB;
+                StretchDIBits(memdc, dx, dy, dw, dh, 0, 0, data.width, data.height, data.bgra.as_ptr() as _, &bmi, DIB_RGB_COLORS, SRCCOPY);
+            }
             BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memdc, 0, 0, SRCCOPY);
             SelectObject(memdc, oldbmp); DeleteObject(membmp as _); DeleteDC(memdc);
             EndPaint(hwnd, &ps);
@@ -269,16 +309,37 @@ unsafe fn ensure_sticker_class() {
 }
 
 pub(crate) unsafe fn show_image_sticker(item: &ClipItem) {
-    let Some((bytes, width, height)) = ensure_item_image_bytes(item) else { return; };
     ensure_sticker_class();
-    let mut bgra = bytes;
-    for px in bgra.chunks_exact_mut(4) { px.swap(0,2); }
-    let data = Box::new(StickerData { width: width as i32, height: height as i32, bgra, zoom_pct: 100, hover_btn: 0, down_btn: 0 });
+    let data = Box::new(StickerData {
+        width: item.image_width.max(1) as i32,
+        height: item.image_height.max(1) as i32,
+        bgra: Vec::new(),
+        zoom_pct: 100,
+        hover_btn: 0,
+        down_btn: 0,
+        loading: true,
+    });
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
-    let w = min(760, max(260, width as i32 + 24));
-    let h = min(760, max(180, height as i32 + STICKER_BAR_H + 24));
+    let w = min(760, max(260, data.width + 24));
+    let h = min(760, max(180, data.height + STICKER_BAR_H + 24));
     let hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, to_wide(STICKER_CLASS).as_ptr(), to_wide("").as_ptr(), WS_POPUP | WS_VISIBLE | WS_THICKFRAME, pt.x + 16, pt.y + 16, w, h, null_mut(), null_mut(), GetModuleHandleW(null()), Box::into_raw(data) as _);
-    if !hwnd.is_null() { ShowWindow(hwnd, SW_SHOW); InvalidateRect(hwnd, null(), 0); }
+    if !hwnd.is_null() {
+        ShowWindow(hwnd, SW_SHOW);
+        InvalidateRect(hwnd, null(), 0);
+        let hwnd_raw = hwnd as isize;
+        let item = item.clone();
+        std::thread::spawn(move || {
+            let payload = Box::new(StickerImageResult {
+                image: ensure_item_image_bytes(&item),
+            });
+            unsafe {
+                let hwnd = hwnd_raw as HWND;
+                if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                    let _ = PostMessageW(hwnd, WM_STICKER_IMAGE_READY, 0, Box::into_raw(payload) as LPARAM);
+                }
+            }
+        });
+    }
 }
 
