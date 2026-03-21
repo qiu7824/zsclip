@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+﻿use std::cmp::{max, min};
 use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
@@ -9,12 +9,13 @@ use windows_sys::Win32::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC, DeleteObject, EndPaint, FillRect, PAINTSTRUCT, SelectObject, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY, WHITE_BRUSH,
     },
     System::LibraryLoader::GetModuleHandleW,
-    UI::{Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_UP}, WindowsAndMessaging::*},
+    UI::{Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_OEM_MINUS, VK_OEM_PLUS, VK_UP}, WindowsAndMessaging::*},
 };
 
 use crate::{
     app::{ensure_item_image_bytes, ClipItem},
-    ui::{draw_round_rect, draw_text, draw_text_ex, rgb},
+    i18n::tr,
+    ui::{draw_round_rect, draw_text, draw_text_ex, rgb, Theme},
     win_system_ui::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide},
 };
 
@@ -39,6 +40,8 @@ const STICKER_BAR_H: i32 = 36;
 const STICKER_BTN_W: i32 = 28;
 const STICKER_BTN_H: i32 = 24;
 const STICKER_BTN_GAP: i32 = 6;
+const STICKER_ZOOM_IN_KEY: u32 = VK_OEM_PLUS as u32;
+const STICKER_ZOOM_OUT_KEY: u32 = VK_OEM_MINUS as u32;
 
 struct StickerData {
     width: i32,
@@ -164,8 +167,8 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
             if (wparam as u32) == VK_ESCAPE as u32 { DestroyWindow(hwnd); return 0; }
             if !ptr.is_null() {
-                if (wparam as u32) == 0xBB || (wparam as u32) == VK_UP as u32 { (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10); sticker_apply_zoom(hwnd, &*ptr); InvalidateRect(hwnd, null(), 0); return 0; }
-                if (wparam as u32) == 0xBD || (wparam as u32) == VK_DOWN as u32 { (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10); sticker_apply_zoom(hwnd, &*ptr); InvalidateRect(hwnd, null(), 0); return 0; }
+                if (wparam as u32) == STICKER_ZOOM_IN_KEY || (wparam as u32) == VK_UP as u32 { (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10); sticker_apply_zoom(hwnd, &*ptr); InvalidateRect(hwnd, null(), 0); return 0; }
+                if (wparam as u32) == STICKER_ZOOM_OUT_KEY || (wparam as u32) == VK_DOWN as u32 { (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10); sticker_apply_zoom(hwnd, &*ptr); InvalidateRect(hwnd, null(), 0); return 0; }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
@@ -196,24 +199,25 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let hdc = BeginPaint(hwnd, &mut ps);
             let mut rc: RECT = zeroed();
             GetClientRect(hwnd, &mut rc);
+            let th = Theme::default();
             let memdc = CreateCompatibleDC(hdc);
             let membmp = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
             let oldbmp = SelectObject(memdc, membmp as _);
-            let bg = CreateSolidBrush(rgb(245, 247, 250));
+            let bg = CreateSolidBrush(th.bg);
             FillRect(memdc, &rc, bg); DeleteObject(bg as _);
-            draw_round_rect(memdc as _, &rc, rgb(252,252,252), rgb(220,225,230), 8);
+            draw_round_rect(memdc as _, &rc, th.surface, th.stroke, 8);
             let bar = RECT { left: 1, top: 1, right: rc.right - 1, bottom: STICKER_BAR_H };
-            draw_round_rect(memdc as _, &bar, rgb(248,250,252), rgb(248,250,252), 8);
-            draw_text_ex(memdc as _, "贴图", &RECT{ left: 14, top: 8, right: 120, bottom: 30 }, rgb(32,32,32), 13, true, false, "Segoe UI Variable Text");
+            draw_round_rect(memdc as _, &bar, th.surface2, th.surface2, 8);
+            draw_text_ex(memdc as _, tr("贴图", "Sticker"), &RECT{ left: 14, top: 8, right: 120, bottom: 30 }, th.text, 13, true, false, "Segoe UI");
             let labels = ["×", "+", "−"];
             for idx in 0..3 {
                 let brc = sticker_btn_rect(hwnd, idx as i32);
                 let hover = data.hover_btn == (idx as i32 + 1);
                 let down = data.down_btn == (idx as i32 + 1);
-                let fill = if idx == 0 && hover { rgb(232,17,35) } else if down { rgb(230,235,240) } else if hover { rgb(238,242,246) } else { rgb(252,252,252) };
-                let stroke = if idx == 0 && hover { rgb(232,17,35) } else { rgb(220,225,230) };
+                let fill = if idx == 0 && hover { th.close_hover } else if down { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
+                let stroke = if idx == 0 && hover { th.close_hover } else { th.control_stroke };
                 draw_round_rect(memdc as _, &brc, fill, stroke, 4);
-                let txt = if idx == 0 && hover { rgb(255,255,255) } else { rgb(80,80,80) };
+                let txt = if idx == 0 && hover { rgb(255,255,255) } else { th.text };
                 draw_text(memdc as _, labels[idx], &brc, txt, 14, false, true);
             }
             let content = RECT { left: 12, top: STICKER_BAR_H + 2, right: rc.right - 12, bottom: rc.bottom - 12 };
@@ -277,3 +281,4 @@ pub(crate) unsafe fn show_image_sticker(item: &ClipItem) {
     let hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, to_wide(STICKER_CLASS).as_ptr(), to_wide("").as_ptr(), WS_POPUP | WS_VISIBLE | WS_THICKFRAME, pt.x + 16, pt.y + 16, w, h, null_mut(), null_mut(), GetModuleHandleW(null()), Box::into_raw(data) as _);
     if !hwnd.is_null() { ShowWindow(hwnd, SW_SHOW); InvalidateRect(hwnd, null(), 0); }
 }
+

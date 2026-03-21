@@ -11,5 +11,6 @@
 /_refs/
 **/*.pdb
 **/*.exe
+zsclip.zip
 .DS_Store
 .vscode/

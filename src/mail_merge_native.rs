@@ -214,8 +214,18 @@ foreach($candidate in $excel.Workbooks){
 }
 if ($null -eq $wb) { $wb = $excel.Workbooks.Open($excelPath, 0, $true, 5) }
 try {
-  if ([string]::IsNullOrWhiteSpace($sheetName)) { $sheetName = [string]$wb.Worksheets(1).Name }
-  $ws = $wb.Worksheets.Item($sheetName)
+  $ws = $null
+  if ([string]::IsNullOrWhiteSpace($sheetName)) {
+    $ws = $wb.Worksheets(1)
+  } else {
+    foreach($candidate in $wb.Worksheets){
+      if ([string]::Equals([string]$candidate.Name, [string]$sheetName, [System.StringComparison]::Ordinal)) {
+        $ws = $candidate
+        break
+      }
+    }
+  }
+  if ($null -eq $ws) { throw 'SheetNotFound' }
   $bestRow = 1; $bestScore = -999999
   for($r=1; $r -le 20; $r++){
     $lastCol = [int]$ws.Cells($r, $ws.Columns.Count).End(-4159).Column
@@ -268,8 +278,19 @@ foreach($candidate in $excel.Workbooks){
 if ($null -eq $wb) { $wb = $excel.Workbooks.Open($excelPath, 0, $true, 5) }
 try {
   $sheets = @(); foreach($ws in $wb.Worksheets){ $sheets += [string]$ws.Name }
-  if ([string]::IsNullOrWhiteSpace($sheetName)) { $sheetName = [string]$wb.Worksheets(1).Name }
-  $ws = $wb.Worksheets.Item($sheetName)
+  $ws = $null
+  if ([string]::IsNullOrWhiteSpace($sheetName)) {
+    $ws = $wb.Worksheets(1)
+    $sheetName = [string]$ws.Name
+  } else {
+    foreach($candidate in $wb.Worksheets){
+      if ([string]::Equals([string]$candidate.Name, [string]$sheetName, [System.StringComparison]::Ordinal)) {
+        $ws = $candidate
+        break
+      }
+    }
+  }
+  if ($null -eq $ws) { throw 'SheetNotFound' }
   $lastCol = [int]$ws.Cells($headerRow, $ws.Columns.Count).End(-4159).Column
   try { $lastRow = [int]$ws.Cells($ws.Rows.Count, 1).End(-4162).Row } catch { $lastRow = [int]$ws.UsedRange.Rows.Count }
   $headers = @(); $values = @()
@@ -345,8 +366,18 @@ foreach($candidate in $excel.Workbooks){
 }
 if ($null -eq $wb) { $wb = $excel.Workbooks.Open($excelPath, 0, $true, 5) }
 try {
-  if ([string]::IsNullOrWhiteSpace($sheetName)) { $sheetName = [string]$wb.Worksheets(1).Name }
-  $ws = $wb.Worksheets.Item($sheetName)
+  $ws = $null
+  if ([string]::IsNullOrWhiteSpace($sheetName)) {
+    $ws = $wb.Worksheets(1)
+  } else {
+    foreach($candidate in $wb.Worksheets){
+      if ([string]::Equals([string]$candidate.Name, [string]$sheetName, [System.StringComparison]::Ordinal)) {
+        $ws = $candidate
+        break
+      }
+    }
+  }
+  if ($null -eq $ws) { throw 'SheetNotFound' }
   $lastCol = [int]$ws.Cells($headerRow, $ws.Columns.Count).End(-4159).Column
   try { $lastRow = [int]$ws.Cells($ws.Rows.Count, 1).End(-4162).Row } catch { $lastRow = [int]$ws.UsedRange.Rows.Count }
   $values = @()

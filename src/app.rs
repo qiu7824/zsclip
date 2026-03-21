@@ -22,9 +22,7 @@ use arboard::{Clipboard, ImageData};
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::collections::hash_map::DefaultHasher;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::mem::{size_of, zeroed};
 use std::ops::{Deref, DerefMut};
@@ -123,10 +121,10 @@ use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_windo
 use crate::tray::{add_tray_icon_localized, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
 use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction, CloudSyncConfig, CloudSyncOutcome, CloudSyncPaths};
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
-use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, local_offset_secs, now_utc_sqlite, unix_secs_to_parts};
+use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
 use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -147,7 +145,7 @@ use windows_sys::Win32::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture, keybd_event,
             KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_LBUTTON, VK_MENU, VK_PRIOR, VK_NEXT, VK_SPACE,
-            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_NUMPAD1, VK_NUMPAD9,
+            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_MBUTTON, VK_NUMPAD1, VK_NUMPAD9, VK_RBUTTON,
         },
         Shell::{DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject},
         WindowsAndMessaging::*,
@@ -167,7 +165,7 @@ const CLASS_NAME: &str = "ZsClipMain";
 const QUICK_CLASS_NAME: &str = "ZsClipQuick";
 
 const IDC_SEARCH: isize = 1001;
-const ID_TIMER_CARET: usize = 1;
+const ID_TIMER_STARTUP_RECOVERY: usize = 1;
 const ID_TIMER_PASTE: usize = 2;
 const ID_TIMER_SCROLL_FADE: usize = 3;
 const ID_TIMER_SETTINGS_SCROLLBAR: usize = 4; // settings 滚动条自动隐藏
@@ -175,14 +173,18 @@ const ID_TIMER_EDGE_AUTO_HIDE: usize = 5;
 const ID_TIMER_VV_SHOW: usize = 6;
 const ID_TIMER_CLOUD_SYNC: usize = 7;
 const ID_TIMER_SETTINGS_SAVE_HINT: usize = 8;
+const ID_TIMER_OUTSIDE_HIDE: usize = 9;
+const ID_TIMER_VV_WATCH: usize = 10;
+const ID_TIMER_SEARCH_DEBOUNCE: usize = 11;
 const STARTUP_RECOVERY_TICKS: u8 = 24;
+const LLKHF_LOWER_IL_INJECTED_FLAG: u32 = 0x0000_0002;
 const WM_VV_SHOW: u32 = WM_APP + 20;
 const WM_VV_HIDE: u32 = WM_APP + 21;
 const WM_VV_SELECT: u32 = WM_APP + 22;
 const WM_ITEMS_PAGE_READY: u32 = WM_APP + 30;
 const WM_UPDATE_CHECK_READY: u32 = WM_APP + 31;
-const WM_OUTSIDE_CLICK_HIDE: u32 = WM_APP + 32;
 const WM_CLOUD_SYNC_READY: u32 = WM_APP + 33;
+const WM_IMAGE_PASTE_READY: u32 = WM_APP + 34;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -221,6 +223,29 @@ const WM_MOUSEHOVER: u32 = 0x02A1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 
 type AppResult<T> = Result<T, io::Error>;
+
+struct ImagePasteReadyResult {
+    image: Option<(Vec<u8>, usize, usize)>,
+    target: isize,
+    hide_main: bool,
+    backspaces: u8,
+}
+
+unsafe fn start_flagged_timer(hwnd: HWND, timer_id: usize, period_ms: u32, flag: &mut bool) {
+    *flag = true;
+    SetTimer(hwnd, timer_id, period_ms, None);
+}
+
+unsafe fn stop_flagged_timer(hwnd: HWND, timer_id: usize, flag: &mut bool) {
+    KillTimer(hwnd, timer_id);
+    *flag = false;
+}
+
+unsafe fn show_main_scrollbar_feedback(hwnd: HWND, state: &mut AppState, erase: bool) {
+    state.scroll_fade_alpha = 255;
+    start_flagged_timer(hwnd, ID_TIMER_SCROLL_FADE, 50, &mut state.scroll_fade_timer);
+    InvalidateRect(hwnd, null(), erase as i32);
+}
 
 unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
     MAIN_UI_LAYOUT.scaled(window_dpi(hwnd))
@@ -818,7 +843,7 @@ unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lpara
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
     let data = &*(lparam as *const KBDLLHOOKSTRUCT);
-    if (data.flags & LLKHF_INJECTED_FLAG) != 0 {
+    if (data.flags & (LLKHF_INJECTED_FLAG | LLKHF_LOWER_IL_INJECTED_FLAG)) != 0 {
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
 
@@ -916,12 +941,19 @@ unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lpara
             .map(|t| t.elapsed().as_millis() <= VV_TRIGGER_TIMEOUT_MS)
             .unwrap_or(false);
         if hook.last_was_v && hook.last_v_target == fg as isize && within_timeout {
+            let target = if !fg.is_null() && IsWindow(fg) != 0 {
+                fg
+            } else {
+                hook.last_v_target as HWND
+            };
             hook.popup_active = false;
             hook.popup_target = 0;
             hook.last_was_v = false;
             hook.last_v_target = 0;
             hook.last_v_at = None;
-            PostMessageW(main_hwnd, WM_VV_SHOW, fg as usize, 0);
+            if !target.is_null() && IsWindow(target) != 0 {
+                PostMessageW(main_hwnd, WM_VV_SHOW, target as usize, 0);
+            }
         } else {
             hook.last_was_v = true;
             hook.last_v_target = fg as isize;
@@ -987,7 +1019,16 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
                 draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 12);
 
                 let title_rc = RECT { left: 14, top: 10, right: 150, bottom: 30 };
-                draw_text_ex(hdc as _, "VV 模式", &title_rc, th.text, 13, true, false, "Segoe UI Variable Display");
+                draw_text_ex(
+                    hdc as _,
+                    tr("VV 模式", "VV Mode"),
+                    &title_rc,
+                    th.text,
+                    13,
+                    true,
+                    false,
+                    "Segoe UI Variable Display",
+                );
                 let group_rc = vv_popup_group_rect();
                 draw_round_fill(hdc as _, &group_rc, th.bg, 10);
                 draw_round_rect(hdc as _, &group_rc, th.bg, th.stroke, 10);
@@ -1013,7 +1054,16 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
                 draw_text_ex(hdc as _, "v", &arrow_rc, th.text_muted, 11, true, true, "Segoe UI Variable Text");
 
                 let sub_rc = RECT { left: 14, top: 34, right: rc.right - 14, bottom: 52 };
-                draw_text_ex(hdc as _, "输入 1-9 直接粘贴，Esc 取消", &sub_rc, th.text_muted, 11, false, false, "Segoe UI Variable Text");
+                draw_text_ex(
+                    hdc as _,
+                    tr("输入 1-9 直接粘贴，Esc 取消", "Press 1-9 to paste, Esc to cancel"),
+                    &sub_rc,
+                    th.text_muted,
+                    11,
+                    false,
+                    false,
+                    "Segoe UI Variable Text",
+                );
 
                 if state.vv_popup_items.is_empty() {
                     let empty_rc = RECT {
@@ -1024,7 +1074,7 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, _wparam: WPARA
                     };
                     draw_text_ex(
                         hdc as _,
-                        "当前分组暂无记录",
+                        tr("当前分组暂无记录", "No records in this group"),
                         &empty_rc,
                         th.text_muted,
                         12,
@@ -1134,8 +1184,9 @@ unsafe fn quick_search_open(settings: &AppSettings, text: &str) {
     if raw.chars().count() > 200 { raw = raw.chars().take(200).collect(); }
     let q = raw.replace(['\r', '\n'], " ");
     let enc = url_encode_component(&q);
+    let raw_enc = url_encode_component(&raw);
     let tpl = if settings.search_template.trim().is_empty() { search_engine_template(&settings.search_engine).to_string() } else { settings.search_template.clone() };
-    let url = tpl.replace("{key}", &enc).replace("{q}", &enc).replace("{raw}", &q);
+    let url = tpl.replace("{key}", &enc).replace("{q}", &enc).replace("{raw}", &raw_enc);
     open_path_with_shell(&url);
 }
 
@@ -1221,6 +1272,7 @@ pub(crate) struct AppState {
     pub(crate) hover_scroll: bool,   // 鼠标是否在滚动条区域
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
+    pub(crate) search_debounce_timer: bool,
     pub(crate) scroll_dragging: bool,
     pub(crate) scroll_drag_start_y: i32,
     pub(crate) scroll_drag_start_scroll: i32,
@@ -1251,10 +1303,6 @@ pub(crate) struct AppState {
     pub(crate) edge_docked_top: i32,
     pub(crate) edge_docked_right: i32,
     pub(crate) edge_docked_bottom: i32,
-    pub(crate) edge_monitor_left: i32,
-    pub(crate) edge_monitor_top: i32,
-    pub(crate) edge_monitor_right: i32,
-    pub(crate) edge_monitor_bottom: i32,
     pub(crate) edge_hide_armed: bool,
     pub(crate) edge_hide_grace_until: Option<Instant>,
     pub(crate) edge_restore_wait_leave: bool,
@@ -1343,8 +1391,7 @@ impl AppState {
         let row_h = self.layout().row_h.max(1);
         let top_visible = (self.scroll_y / row_h).max(0) as usize;
         let offset = self.scroll_y - (top_visible as i32 * row_h);
-        let src_idx = *self.filtered_indices.get(top_visible)?;
-        let item = self.active_items().get(src_idx)?;
+        let item = self.active_items().get(top_visible)?;
         if item.id > 0 {
             Some((item.id, offset))
         } else {
@@ -1355,11 +1402,10 @@ impl AppState {
     fn restore_scroll_anchor(&mut self, anchor: Option<(i64, i32)>) {
         if let Some((id, offset)) = anchor {
             let row_h = self.layout().row_h.max(1);
-            if let Some((visible_idx, _)) = self
-                .filtered_indices
+            if let Some(visible_idx) = self
+                .active_items()
                 .iter()
-                .enumerate()
-                .find(|(_, src_idx)| self.active_items().get(**src_idx).map(|item| item.id == id).unwrap_or(false))
+                .position(|item| item.id == id)
             {
                 self.scroll_y = visible_idx as i32 * row_h + offset;
             }
@@ -1369,7 +1415,7 @@ impl AppState {
     }
 
     fn reload_state_from_db_preserve_scroll(&mut self, anchor: Option<(i64, i32)>) {
-        reload_state_from_db(self);
+        reload_state_from_db_persisting(self);
         self.restore_scroll_anchor(anchor);
     }
 
@@ -1494,7 +1540,7 @@ impl AppState {
         }
         let max_items = self.settings.max_items; // 0 = 无限制；仅限制非置顶条目
         if max_items > 0 {
-            db_prune_items(max_items);
+            db_prune_items(0, max_items);
             self.invalidate_tab_query(0, self.tab_index == 0);
         }
         if self.tab_index == 0 {
@@ -1510,15 +1556,17 @@ impl AppState {
     }
 
     fn total_content_height(&self) -> i32 {
-        self.layout().total_content_height(self.filtered_indices.len())
+        self.layout().total_content_height(self.visible_count())
     }
 
     fn clamp_scroll(&mut self) {
-        self.scroll_y = self.layout().clamp_scroll(self.scroll_y, self.filtered_indices.len());
+        self.scroll_y = self.layout().clamp_scroll(self.scroll_y, self.visible_count());
     }
 
     fn ensure_visible(&mut self, idx: i32) {
-        self.scroll_y = self.layout().ensure_visible(self.scroll_y, idx, self.filtered_indices.len());
+        self.scroll_y = self
+            .layout()
+            .ensure_visible(self.scroll_y, idx, self.visible_count());
     }
 
     fn layout(&self) -> MainUiLayout {
@@ -1527,13 +1575,13 @@ impl AppState {
 
     fn row_rect(&self, visible_idx: i32) -> Option<RECT> {
         self.layout()
-            .row_rect(visible_idx, self.filtered_indices.len(), self.scroll_y)
+            .row_rect(visible_idx, self.visible_count(), self.scroll_y)
             .map(Into::into)
     }
 
     fn quick_action_rect_slot(&self, visible_idx: i32, slot: i32) -> Option<RECT> {
         self.layout()
-            .quick_action_rect(visible_idx, self.filtered_indices.len(), self.scroll_y, slot)
+            .quick_action_rect(visible_idx, self.visible_count(), self.scroll_y, slot)
             .map(Into::into)
     }
 
@@ -1552,13 +1600,13 @@ impl AppState {
 
     fn scrollbar_track_rect(&self) -> Option<RECT> {
         self.layout()
-            .scrollbar_track_rect(self.filtered_indices.len())
+            .scrollbar_track_rect(self.visible_count())
             .map(Into::into)
     }
 
     fn scrollbar_thumb_rect(&self) -> Option<RECT> {
         self.layout()
-            .scrollbar_thumb_rect(self.filtered_indices.len(), self.scroll_y)
+            .scrollbar_thumb_rect(self.visible_count(), self.scroll_y)
             .map(Into::into)
     }
 
@@ -1659,7 +1707,7 @@ unsafe fn apply_ready_cloud_syncs(hwnd: HWND, state: &mut AppState) {
                 if outcome.reload_settings {
                     apply_loaded_settings(hwnd, state);
                 } else if outcome.reload_data {
-                    reload_state_from_db(state);
+                    reload_state_from_db_persisting(state);
                     layout_children(hwnd);
                     InvalidateRect(hwnd, null(), 1);
                 } else {
@@ -1740,6 +1788,7 @@ struct SettingsWndState {
     scroll_drag_start_scroll: i32,    // 拖拽起始scroll_y
     scroll_bar_visible: bool,         // 滚动条当前是否可见（auto-hide）
     scroll_hide_timer: bool,          // 渐隐 timer 是否运行中
+    save_hint_timer: bool,
     ui: SettingsUiRegistry,
     btn_save: HWND,
     btn_close: HWND,
@@ -2525,11 +2574,24 @@ unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState)
     InvalidateRect(hwnd, null(), 1);
 }
 
+fn reload_state_from_db_persisting(state: &mut AppState) {
+    if reload_state_from_db(state) {
+        save_settings(&state.settings);
+    }
+}
+
 unsafe fn show_settings_saved_feedback(hwnd: HWND, st: &mut SettingsWndState) {
     settings_set_text(st.btn_save, tr("已保存", "Saved"));
     InvalidateRect(st.btn_save, null(), 1);
-    KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
-    SetTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT, 1200, None);
+    start_flagged_timer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT, 1200, &mut st.save_hint_timer);
+}
+
+unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWndState) {
+    if st.scroll_dragging {
+        st.scroll_dragging = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd, null(), 0);
+    }
 }
 
 // 辅助函数：绘制宽字节文字居中
@@ -2548,6 +2610,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 scroll_drag_start_scroll: 0,
                 scroll_bar_visible: false,
                 scroll_hide_timer: false,
+                save_hint_timer: false,
                 ui: SettingsUiRegistry::new(),
                 nav_hot: -1,
                 btn_save: null_mut(),
@@ -2818,10 +2881,16 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_LBUTTONUP => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() && (*st_ptr).scroll_dragging {
-                (*st_ptr).scroll_dragging = false;
-                ReleaseCapture();
+                cancel_settings_scroll_drag(hwnd, &mut *st_ptr);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CAPTURECHANGED | WM_CANCELMODE => {
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if !st_ptr.is_null() {
+                cancel_settings_scroll_drag(hwnd, &mut *st_ptr);
+            }
+            0
         }
         WM_SETTINGS_DROPDOWN_SELECTED => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
@@ -2956,7 +3025,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             Ok(group) => {
                                 settings_groups_refresh_list(st, group.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
                             }
                             Err(e) => {
             MessageBoxW(
@@ -2982,7 +3051,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             } else {
                                 settings_groups_refresh_list(st, g.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
                             }
                         }
                     } else {
@@ -3013,7 +3082,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             } else {
                                 settings_groups_refresh_list(st, 0);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
                             }
                         }
                     }
@@ -3437,8 +3506,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
                 if !st_ptr.is_null() {
                     let st = &mut *st_ptr;
-                    KillTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
-                    st.scroll_hide_timer = false;
+                    stop_flagged_timer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR, &mut st.scroll_hide_timer);
                     st.scroll_bar_visible = false;
                     InvalidateRect(hwnd, null(), 0);
                 }
@@ -3447,9 +3515,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             if wparam == ID_TIMER_SETTINGS_SAVE_HINT {
                 let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
                 if !st_ptr.is_null() {
-                    KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
-                    settings_set_text((*st_ptr).btn_save, tr("保存", "Save"));
-                    InvalidateRect((*st_ptr).btn_save, null(), 1);
+                    let st = &mut *st_ptr;
+                    stop_flagged_timer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT, &mut st.save_hint_timer);
+                    settings_set_text(st.btn_save, tr("保存", "Save"));
+                    InvalidateRect(st.btn_save, null(), 1);
                 }
                 return 0;
             }
@@ -3459,6 +3528,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_DESTROY => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
+                cancel_settings_scroll_drag(hwnd, &mut *st_ptr);
+                KillTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
+                KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
                 let parent = (*st_ptr).parent_hwnd;
                 if !(*st_ptr).dropdown_popup.is_null() { if IsWindow((*st_ptr).dropdown_popup) != 0 { DestroyWindow((*st_ptr).dropdown_popup); } (*st_ptr).dropdown_popup = null_mut(); }
                 if !(*st_ptr).nav_font.is_null() { DeleteObject((*st_ptr).nav_font as _); }
@@ -3725,11 +3797,17 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_TIMER => {
-            if wparam == ID_TIMER_CARET {
+            if wparam == ID_TIMER_STARTUP_RECOVERY {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    retry_startup_integrations(hwnd, &mut *ptr);
+                }
+                return 0;
+            }
+            if wparam == ID_TIMER_VV_WATCH {
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
-                    retry_startup_integrations(hwnd, state);
                     if state.vv_popup_visible
                         && !vv_popup_menu_active()
                         && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
@@ -3761,20 +3839,37 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             if wparam == ID_TIMER_PASTE {
                 KillTimer(hwnd, ID_TIMER_PASTE);
+                let mut should_send_paste = true;
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     let target = state.paste_target_override;
                     if !target.is_null() {
-                        let _ = force_foreground_window(target);
-                        restore_hotkey_focus_target(state, target);
+                        should_send_paste = force_foreground_window(target);
+                        if should_send_paste {
+                            restore_hotkey_focus_target(state, target);
+                            should_send_paste = can_send_ctrl_v_to_target(state, target);
+                        }
                     }
-                    send_backspace_times(state.paste_backspace_count);
+                    if should_send_paste {
+                        send_backspace_times(state.paste_backspace_count);
+                    }
                     state.paste_backspace_count = 0;
                     state.paste_target_override = null_mut();
                     clear_hotkey_passthrough_state(state);
                 }
-                send_ctrl_v();
+                if should_send_paste {
+                    send_ctrl_v();
+                }
+                return 0;
+            }
+            if wparam == ID_TIMER_SEARCH_DEBOUNCE {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    stop_search_debounce_timer(hwnd, state);
+                    apply_search_filter(hwnd, state);
+                }
                 return 0;
             }
             if wparam == ID_TIMER_SCROLL_FADE {
@@ -3788,8 +3883,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         // 每帧减少 25（约10帧渐隐）
                         state.scroll_fade_alpha = state.scroll_fade_alpha.saturating_sub(30);
                         if state.scroll_fade_alpha == 0 {
-                            KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
-                            state.scroll_fade_timer = false;
+                            stop_flagged_timer(hwnd, ID_TIMER_SCROLL_FADE, &mut state.scroll_fade_timer);
                         }
                     }
                     InvalidateRect(hwnd, null(), 0);
@@ -3798,6 +3892,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             if wparam == ID_TIMER_EDGE_AUTO_HIDE {
                 handle_edge_auto_hide_tick(hwnd);
+                return 0;
+            }
+            if wparam == ID_TIMER_OUTSIDE_HIDE {
+                hosts::handle_outside_hide_tick(hwnd);
                 return 0;
             }
             if wparam == ID_TIMER_CLOUD_SYNC {
@@ -3816,7 +3914,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 }
                 return 0;
             }
-            InvalidateRect(hwnd, null(), 0);
             0
         }
         WM_COMMAND => {
@@ -3849,6 +3946,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_LBUTTONUP => {
             handle_lbutton_up(hwnd, lparam);
+            0
+        }
+        WM_CAPTURECHANGED | WM_CANCELMODE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                cancel_main_scroll_drag(hwnd, &mut *ptr);
+            }
             0
         }
         WM_LBUTTONDBLCLK => {
@@ -3898,10 +4002,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let state = &mut *ptr;
-                state.vv_popup_pending_target = wparam as HWND;
-                state.vv_popup_pending_retries = VV_SHOW_RETRY_MAX;
-                KillTimer(hwnd, ID_TIMER_VV_SHOW);
-                SetTimer(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS, None);
+                let mut target = wparam as HWND;
+                if target.is_null() || IsWindow(target) == 0 {
+                    let fg = GetForegroundWindow();
+                    if !fg.is_null() && IsWindow(fg) != 0 {
+                        target = fg;
+                    }
+                }
+                if !target.is_null() && IsWindow(target) != 0 {
+                    state.vv_popup_pending_target = target;
+                    state.vv_popup_pending_retries = VV_SHOW_RETRY_MAX;
+                    KillTimer(hwnd, ID_TIMER_VV_SHOW);
+                    SetTimer(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS, None);
+                } else {
+                    state.vv_popup_pending_target = null_mut();
+                    state.vv_popup_pending_retries = 0;
+                }
             }
             0
         }
@@ -3933,6 +4049,38 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_IMAGE_PASTE_READY => {
+            if lparam == 0 {
+                return 0;
+            }
+            let payload = Box::from_raw(lparam as *mut ImagePasteReadyResult);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if let Some((bytes, width, height)) = payload.image {
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        if clipboard
+                            .set_image(ImageData {
+                                width,
+                                height,
+                                bytes: Cow::Owned(bytes),
+                            })
+                            .is_ok()
+                        {
+                            set_ignore_clipboard_for_all_hosts(450);
+                            paste_after_clipboard_ready_to_target(
+                                hwnd,
+                                state,
+                                payload.target as HWND,
+                                payload.hide_main,
+                                payload.backspaces,
+                            );
+                        }
+                    }
+                }
+            }
+            0
+        }
         WM_UPDATE_CHECK_READY => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0 {
@@ -3940,13 +4088,27 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
-        WM_OUTSIDE_CLICK_HIDE => {
-            handle_outside_click_hide(hwnd);
-            0
-        }
         WM_ACTIVATEAPP => {
             if wparam == 0 {
                 clear_main_hover_state(hwnd);
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    if state.settings.auto_hide_on_blur
+                        && !state.main_window_noactivate
+                        && state.role != WindowRole::Quick
+                        && !vv_popup_menu_active()
+                    {
+                        let mut pt: POINT = zeroed();
+                        if GetCursorPos(&mut pt) == 0
+                            || !hosts::edge_window_scope_contains_point(hwnd, pt)
+                        {
+                            hide_hover_preview();
+                            ShowWindow(hwnd, SW_HIDE);
+                            refresh_low_level_input_hooks();
+                        }
+                    }
+                }
             }
             0
         }
@@ -3981,7 +4143,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
             }
-            refresh_main_window_metrics(hwnd);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                refresh_main_window_layout_only(hwnd, &mut *ptr);
+            }
             0
         }
         WM_CLOSE => {
@@ -4000,15 +4165,20 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_DESTROY => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
+                cancel_main_scroll_drag(hwnd, &mut *ptr);
                 clear_page_load_results_for_hwnd(hwnd);
                 clear_cloud_sync_results_for_hwnd(hwnd);
                 match (*ptr).role {
                     WindowRole::Main => {
                         save_settings(&(*ptr).settings);
-                        KillTimer(hwnd, ID_TIMER_CARET);
+                        KillTimer(hwnd, ID_TIMER_STARTUP_RECOVERY);
+                        KillTimer(hwnd, ID_TIMER_VV_WATCH);
                         KillTimer(hwnd, ID_TIMER_VV_SHOW);
                         KillTimer(hwnd, ID_TIMER_PASTE);
+                        KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
+                        KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
+                        KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
                         KillTimer(hwnd, ID_TIMER_CLOUD_SYNC);
                         let popup = current_vv_popup_hwnd();
                         if !popup.is_null() && IsWindow(popup) != 0 {
@@ -4027,8 +4197,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     }
                     WindowRole::Quick => {
                         KillTimer(hwnd, ID_TIMER_PASTE);
+                        KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
+                        KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
                         refresh_low_level_input_hooks();
                     }
                 }
@@ -4093,7 +4265,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         refresh_search_font(state);
         ensure_db();
         if role == WindowRole::Main {
-            reload_state_from_db(state);
+            reload_state_from_db_persisting(state);
             register_hotkey_for(hwnd, state);
             update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
@@ -4120,7 +4292,8 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
     if role == WindowRole::Main {
-        SetTimer(hwnd, ID_TIMER_CARET, 500, None);
+        SetTimer(hwnd, ID_TIMER_STARTUP_RECOVERY, 500, None);
+        SetTimer(hwnd, ID_TIMER_VV_WATCH, 500, None);
         SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, 120, None);
         SetTimer(hwnd, ID_TIMER_CLOUD_SYNC, 5000, None);
     } else {
@@ -4197,6 +4370,10 @@ unsafe fn refresh_main_window_metrics(hwnd: HWND) {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
+    refresh_main_window_layout_only(hwnd, state);
+}
+
+unsafe fn refresh_main_window_layout_only(hwnd: HWND, state: &mut AppState) {
     refresh_search_font(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
@@ -4205,6 +4382,9 @@ unsafe fn refresh_main_window_metrics(hwnd: HWND) {
 pub(crate) unsafe fn reset_search_ui_state(state: &mut AppState) {
     if !state.search_on && state.search_text.is_empty() {
         return;
+    }
+    if !state.hwnd.is_null() && state.search_debounce_timer {
+        stop_search_debounce_timer(state.hwnd, state);
     }
     state.search_on = false;
     state.search_text.clear();
@@ -4248,23 +4428,32 @@ unsafe fn close_search_ui(hwnd: HWND, state: &mut AppState) {
     if !state.search_on && state.search_text.is_empty() {
         return;
     }
+    if state.search_debounce_timer {
+        stop_search_debounce_timer(hwnd, state);
+    }
     reset_search_ui_state(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
 }
 
+fn select_context_row(state: &mut AppState) -> bool {
+    if state.context_row < 0 {
+        return false;
+    }
+    state.sel_idx = state.context_row;
+    true
+}
+
 unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
     match cmd {
         IDM_ROW_PASTE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 paste_selected(hwnd, state);
                 InvalidateRect(hwnd, null(), 0);
             }
         }
         IDM_ROW_COPY => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if state.context_selection_count() > 1 {
                     copy_selected_rows_combined(state);
                 } else {
@@ -4275,15 +4464,13 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_PIN => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 state.toggle_pin_rows();
                 InvalidateRect(hwnd, null(), 1);
             }
         }
         IDM_ROW_DELETE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 state.delete_selected_rows();
                 InvalidateRect(hwnd, null(), 1);
             }
@@ -4301,8 +4488,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_TO_PHRASE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 let items = state.selected_items_for_use();
                 if items.is_empty() {
                     if let Some(item) = state.current_item_for_use() {
@@ -4322,8 +4508,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_STICKER => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if item.kind == ClipKind::Image {
                         show_image_sticker(&item);
@@ -4332,8 +4517,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_SAVE_IMAGE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if item.kind == ClipKind::Image {
                         if let Some(path) = save_image_item(&item) {
@@ -4346,8 +4530,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_OPEN_PATH => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
                         for p in paths { open_path_with_shell(p); }
@@ -4356,8 +4539,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_OPEN_FOLDER => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
                         for p in paths { open_parent_folder(p); }
@@ -4366,8 +4548,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_COPY_PATH => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 let items = state.selected_items_for_use();
                 let mut lines = Vec::new();
                 if items.is_empty() {
@@ -4385,8 +4566,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_QUICK_SEARCH => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     let text = match item.kind {
                         ClipKind::Text | ClipKind::Phrase => item.text.clone().unwrap_or_else(|| item.preview.clone()),
@@ -4398,8 +4578,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_EXPORT_FILE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(path) = materialize_item_as_file(&item) {
                         if let Some(parent) = path.parent().and_then(|p| p.to_str()) { open_path_with_shell(parent); }
@@ -4411,8 +4590,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if !state.settings.super_mail_merge_enabled {
                 return;
             }
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(path) = item.file_paths.as_ref().and_then(|v| v.first()) {
                         launch_mail_merge_window_with_excel(hwnd, Some(path));
@@ -4423,14 +4601,13 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_EDIT => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 if let Some(item) = state.current_item_owned() {
                     let item_id = item.id;
                     let title = format!("编辑 — {}", item.preview.chars().take(40).collect::<String>());
                     let saved = show_edit_item_dialog(hwnd, item_id, &title);
                     if saved {
-                        reload_state_from_db(state);
+                        reload_state_from_db_persisting(state);
                         state.refilter();
                         sync_peer_windows_from_db(hwnd);
                         InvalidateRect(hwnd, null(), 1);
@@ -4439,12 +4616,11 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             }
         }
         IDM_ROW_GROUP_REMOVE => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 let ids = state.selected_db_ids();
                 if !ids.is_empty() {
                     let _ = db_assign_group(&ids, 0);
-                    reload_state_from_db(state);
+                    reload_state_from_db_persisting(state);
                     sync_peer_windows_from_db(hwnd);
                     InvalidateRect(hwnd, null(), 1);
                 }
@@ -4462,14 +4638,13 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             InvalidateRect(hwnd, null(), 1);
         }
         _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&cmd) => {
-            if state.context_row >= 0 {
-                state.sel_idx = state.context_row;
+            if select_context_row(state) {
                 let idx = cmd - IDM_ROW_GROUP_BASE;
                 if let Some(group_id) = state.groups_for_tab(state.tab_index).get(idx).map(|g| g.id) {
                     let ids = state.selected_db_ids();
                     if !ids.is_empty() {
                         let _ = db_assign_group(&ids, group_id);
-                        reload_state_from_db(state);
+                        reload_state_from_db_persisting(state);
                         state.refilter();
                         sync_peer_windows_from_db(hwnd);
                         InvalidateRect(hwnd, null(), 1);
@@ -4506,10 +4681,12 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
 
     if id == IDC_SEARCH as usize && code == EN_CHANGE_CODE {
         state.search_text = get_window_text(state.search_hwnd);
-        state.sel_idx = 0;
-        state.scroll_y = 0;
-        state.refilter();
-        InvalidateRect(hwnd, null(), 1);
+        start_flagged_timer(
+            hwnd,
+            ID_TIMER_SEARCH_DEBOUNCE,
+            180,
+            &mut state.search_debounce_timer,
+        );
         return;
     }
 
@@ -4538,7 +4715,7 @@ fn main_scrollbar_drag_target(state: &AppState, y: i32) -> Option<i32> {
     let track_h = (track.bottom - track.top).max(1);
     let thumb_h = (thumb.bottom - thumb.top).max(1);
     let drag_range = (track_h - thumb_h).max(1);
-    let max_scroll = state.layout().max_scroll(state.filtered_indices.len()).max(0);
+    let max_scroll = state.layout().max_scroll(state.visible_count()).max(0);
     if max_scroll <= 0 {
         return Some(0);
     }
@@ -4562,13 +4739,7 @@ unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
     }
     state.clamp_scroll();
     state.maybe_request_more_for_active_tab();
-    // 显示滚动条并启动渐隐 timer
-    state.scroll_fade_alpha = 255;
-    if !state.scroll_fade_timer {
-        state.scroll_fade_timer = true;
-        SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None); // 50ms ≈ 20fps
-    }
-    InvalidateRect(hwnd, null(), 1);
+    show_main_scrollbar_feedback(hwnd, state, true);
 }
 
 unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
@@ -4588,7 +4759,7 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
             let track_h = (track.bottom - track.top).max(1);
             let thumb_h = (thumb.bottom - thumb.top).max(1);
             let drag_range = (track_h - thumb_h).max(1);
-            let max_scroll = state.layout().max_scroll(state.filtered_indices.len()).max(0);
+            let max_scroll = state.layout().max_scroll(state.visible_count()).max(0);
             if max_scroll <= 0 {
                 state.scroll_y = 0;
             } else {
@@ -4598,12 +4769,7 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
                 state.scroll_y = new_y.clamp(0, max_scroll);
             }
             state.maybe_request_more_for_active_tab();
-            state.scroll_fade_alpha = 255;
-            if !state.scroll_fade_timer {
-                state.scroll_fade_timer = true;
-                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
-            }
-            InvalidateRect(hwnd, null(), 0);
+            show_main_scrollbar_feedback(hwnd, state, false);
             return;
         }
     }
@@ -4657,11 +4823,7 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
         .unwrap_or(false);
     // 悬停时立即显示滚动条（满透明）
     if state.hover_scroll && !was_hover_scroll {
-        state.scroll_fade_alpha = 255;
-        if !state.scroll_fade_timer {
-            state.scroll_fade_timer = true;
-            SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
-        }
+        show_main_scrollbar_feedback(hwnd, state, false);
     }
 
     state.hover_to_top = scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
@@ -4742,13 +4904,8 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
             state.scroll_dragging = true;
             state.scroll_drag_start_y = y;
             state.scroll_drag_start_scroll = state.scroll_y;
-            state.scroll_fade_alpha = 255;
-            if !state.scroll_fade_timer {
-                state.scroll_fade_timer = true;
-                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
-            }
+            show_main_scrollbar_feedback(hwnd, state, false);
             SetCapture(hwnd);
-            InvalidateRect(hwnd, null(), 0);
             return;
         }
     }
@@ -4764,12 +4921,7 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
                 state.scroll_y = target_scroll;
                 state.clamp_scroll();
                 state.maybe_request_more_for_active_tab();
-                state.scroll_fade_alpha = 255;
-                if !state.scroll_fade_timer {
-                    state.scroll_fade_timer = true;
-                    SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
-                }
-                InvalidateRect(hwnd, null(), 0);
+                show_main_scrollbar_feedback(hwnd, state, false);
             }
             return;
         }
@@ -4804,7 +4956,7 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
         let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
         if !ctrl && !shift && state.hotkey_passthrough_active && !state.hotkey_passthrough_edit.is_null() {
             let mut handled = false;
-            if let Some(src_idx) = state.filtered_indices.get(idx as usize).copied() {
+            if let Some(src_idx) = state.visible_src_idx(idx as usize) {
                 if let Some(item) = state.active_items().get(src_idx).cloned() {
                     if let Some(del_rc) = row_quick_delete_rect(state, idx, &item) {
                         if !pt_in_rect(x, y, &del_rc) {
@@ -4840,9 +4992,7 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
     let key = state.down_btn;
     state.down_btn = "";
     if state.scroll_dragging {
-        state.scroll_dragging = false;
-        ReleaseCapture();
-        InvalidateRect(hwnd, null(), 0);
+        cancel_main_scroll_drag(hwnd, state);
         return;
     }
     if !key.is_empty() {
@@ -4883,11 +5033,7 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
         state.down_to_top = false;
         if activate {
             state.scroll_y = 0;
-            state.scroll_fade_alpha = 255;
-            if !state.scroll_fade_timer {
-                state.scroll_fade_timer = true;
-                SetTimer(hwnd, ID_TIMER_SCROLL_FADE, 50, None);
-            }
+            show_main_scrollbar_feedback(hwnd, state, false);
         }
         InvalidateRect(hwnd, null(), 0);
         return;
@@ -4906,7 +5052,7 @@ unsafe fn handle_lbutton_up(hwnd: HWND, lparam: LPARAM) {
         return;
     }
     state.sel_idx = idx;
-    if let Some(src_idx) = state.filtered_indices.get(idx as usize).copied() {
+    if let Some(src_idx) = state.visible_src_idx(idx as usize) {
         if let Some(item) = state.active_items().get(src_idx).cloned() {
             if let Some(del_rc) = row_quick_delete_rect(state, idx, &item) {
                 if pt_in_rect(x, y, &del_rc) {
@@ -5078,7 +5224,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
     let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
     match vk {
         x if x == VK_UP as u32 => {
-            if state.filtered_indices.is_empty() { return; }
+            if state.visible_count() == 0 { return; }
             let new_idx = if state.sel_idx <= 0 { 0 } else { state.sel_idx - 1 };
             if shift {
                 // Shift+Up: 扩展选择
@@ -5097,9 +5243,9 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
             InvalidateRect(hwnd, null(), 0);
         }
         x if x == VK_DOWN as u32 => {
-            if state.filtered_indices.is_empty() { return; }
+            if state.visible_count() == 0 { return; }
             let new_idx = if state.sel_idx < 0 { 0 }
-                else { min(state.filtered_indices.len() as i32 - 1, state.sel_idx + 1) };
+                else { min(state.visible_count() as i32 - 1, state.sel_idx + 1) };
             if shift {
                 if state.selection_anchor < 0 { state.selection_anchor = state.sel_idx; }
                 state.sel_idx = new_idx;
@@ -5129,7 +5275,7 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
         // Ctrl+A: 全选
         0x41 if ctrl => {
             state.selected_rows.clear();
-            for i in 0..state.filtered_indices.len() as i32 {
+            for i in 0..state.visible_count() as i32 {
                 state.selected_rows.insert(i);
             }
             state.selection_anchor = 0;
@@ -5257,12 +5403,17 @@ unsafe fn capture_clipboard(hwnd: HWND) {
 
     if let Ok(img) = clipboard.get_image() {
         let bytes = img.bytes.into_owned();
-        let image_path = write_image_bytes_to_output_path(&bytes, img.width as u32, img.height as u32);
+        let Some((bytes, norm_w, norm_h)) =
+            normalize_captured_image_rgba(bytes, img.width, img.height)
+        else {
+            return;
+        };
+        let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
         let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
         let sig = format!(
             "img:{}:{}:{}",
-            img.width,
-            img.height,
+            norm_w,
+            norm_h,
             hash_bytes(bytes.as_slice())
         );
         // 图片预览：用当前本地时间作为标识（HH:MM:SS），便于用户识别截图时间
@@ -5276,8 +5427,8 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                 file_paths: None,
                 image_bytes,
                 image_path: image_path.map(|p| p.to_string_lossy().to_string()),
-                image_width: img.width,
-                image_height: img.height,
+                image_width: norm_w,
+                image_height: norm_h,
                 pinned: false,
                 group_id: 0,
                 created_at: String::new(),
@@ -5416,6 +5567,67 @@ unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> 
     ok
 }
 
+fn spawn_async_image_paste_load(
+    hwnd: HWND,
+    item_id: i64,
+    target: HWND,
+    hide_main: bool,
+    backspaces: u8,
+) {
+    let hwnd_raw = hwnd as isize;
+    let target_raw = target as isize;
+    std::thread::spawn(move || {
+        let image = db_load_item_full(item_id).and_then(|full| {
+            if let Some(bytes) = full.image_bytes {
+                Some((bytes, full.image_width, full.image_height))
+            } else {
+                full.image_path
+                    .as_deref()
+                    .and_then(load_image_bytes_from_path)
+            }
+        });
+        let payload = Box::new(ImagePasteReadyResult {
+            image,
+            target: target_raw,
+            hide_main,
+            backspaces,
+        });
+        unsafe {
+            let hwnd = hwnd_raw as HWND;
+            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_IMAGE_PASTE_READY,
+                    0,
+                    Box::into_raw(payload) as LPARAM,
+                );
+            }
+        }
+    });
+}
+
+unsafe fn queue_async_image_paste_if_needed(
+    hwnd: HWND,
+    _state: &mut AppState,
+    item_ref: &ClipItem,
+    target: HWND,
+    hide_main: bool,
+    backspaces: u8,
+) -> bool {
+    if item_ref.kind != ClipKind::Image
+        || item_ref.id <= 0
+        || item_ref.image_bytes.is_some()
+        || item_ref.image_path.is_some()
+    {
+        return false;
+    }
+    if target.is_null() || IsWindow(target) == 0 {
+        return false;
+    }
+    spawn_async_image_paste_load(hwnd, item_ref.id, target, hide_main, backspaces);
+    true
+}
+
 unsafe fn apply_selected_to_clipboard(state: &mut AppState) -> bool {
     let Some(item_ref) = state.current_item().cloned() else {
         return false;
@@ -5484,6 +5696,29 @@ unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i
             state.restore_scroll_anchor(anchor);
         }
         sync_peer_windows_from_db(hwnd);
+    }
+}
+
+unsafe fn stop_search_debounce_timer(hwnd: HWND, state: &mut AppState) {
+    stop_flagged_timer(
+        hwnd,
+        ID_TIMER_SEARCH_DEBOUNCE,
+        &mut state.search_debounce_timer,
+    );
+}
+
+unsafe fn apply_search_filter(hwnd: HWND, state: &mut AppState) {
+    state.sel_idx = 0;
+    state.scroll_y = 0;
+    state.refilter();
+    InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn cancel_main_scroll_drag(hwnd: HWND, state: &mut AppState) {
+    if state.scroll_dragging {
+        state.scroll_dragging = false;
+        ReleaseCapture();
+        InvalidateRect(hwnd, null(), 0);
     }
 }
 
@@ -5582,6 +5817,23 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
         clear_main_hover_state(hwnd);
         return;
     }
+    let async_target = effective_paste_target(state, hwnd);
+    if queue_async_image_paste_if_needed(
+        hwnd,
+        state,
+        &item_ref,
+        async_target,
+        state.settings.click_hide,
+        0,
+    ) {
+        maybe_promote_pasted_item(hwnd, state, item_ref.id);
+        state.clear_selection();
+        clear_main_hover_state(hwnd);
+        if state.settings.click_hide {
+            ShowWindow(hwnd, SW_HIDE);
+        }
+        return;
+    }
     if !apply_item_to_clipboard(state, &item_ref) {
         return;
     }
@@ -5602,6 +5854,17 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
     let Some(item) = item else {
         return;
     };
+    if queue_async_image_paste_if_needed(
+        hwnd,
+        state,
+        &item,
+        target,
+        state.settings.click_hide,
+        backspaces,
+    ) {
+        maybe_promote_pasted_item(hwnd, state, item.id);
+        return;
+    }
     if !apply_item_to_clipboard(state, &item) {
         return;
     }
@@ -5704,14 +5967,22 @@ unsafe fn create_shell_data_object(paths: &[PathBuf]) -> Option<*mut core::ffi::
 }
 
 unsafe fn begin_file_drag(_hwnd: HWND, paths: &[PathBuf]) -> bool {
+    let init_hr = OleInitialize(null());
+    if init_hr < 0 && init_hr != RPC_E_CHANGED_MODE_HR {
+        return false;
+    }
     let Some(data_obj) = create_shell_data_object(paths) else {
+        if init_hr >= 0 {
+            OleUninitialize();
+        }
         return false;
     };
     let drop_source = create_drop_source();
-    let init_hr = OleInitialize(null());
-    if init_hr < 0 && init_hr != RPC_E_CHANGED_MODE_HR {
+    if drop_source.is_null() {
         release_raw_com(data_obj);
-        release_raw_com(drop_source);
+        if init_hr >= 0 {
+            OleUninitialize();
+        }
         return false;
     }
 
@@ -5780,7 +6051,7 @@ unsafe fn begin_row_drag_export(hwnd: HWND, state: &mut AppState, visible_idx: i
     if visible_idx < 0 {
         return false;
     }
-    let Some(src_idx) = state.filtered_indices.get(visible_idx as usize).copied() else {
+    let Some(src_idx) = state.visible_src_idx(visible_idx as usize) else {
         return false;
     };
     let Some(item) = state.active_items().get(src_idx).cloned() else {
@@ -5994,6 +6265,21 @@ unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND) {
     let target_thread = GetWindowThreadProcessId(target, null_mut());
     let focus_thread = GetWindowThreadProcessId(focus, null_mut());
 
+    // 如果目标窗口当前已经有有效的子控件焦点，就尊重当前输入点，
+    // 不再把焦点强拉回热键弹出瞬间保存的旧控件。
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if target_thread != 0 && GetGUIThreadInfo(target_thread, &mut info) != 0 {
+        let current_focus = info.hwndFocus;
+        if !current_focus.is_null()
+            && IsWindow(current_focus) != 0
+            && GetAncestor(current_focus, GA_ROOT) == target
+            && current_focus != target
+        {
+            return;
+        }
+    }
+
     let attach_target = target_thread != 0
         && target_thread != current_thread
         && AttachThreadInput(current_thread, target_thread, 1) != 0;
@@ -6010,6 +6296,29 @@ unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND) {
     if attach_target {
         let _ = AttachThreadInput(current_thread, target_thread, 0);
     }
+}
+
+unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -> bool {
+    if target.is_null() || IsWindow(target) == 0 {
+        return false;
+    }
+    if GetForegroundWindow() != target {
+        return false;
+    }
+    let target_thread = GetWindowThreadProcessId(target, null_mut());
+    if target_thread == 0 {
+        return true;
+    }
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if GetGUIThreadInfo(target_thread, &mut info) == 0 {
+        return true;
+    }
+    let focus = info.hwndFocus;
+    if focus.is_null() {
+        return true;
+    }
+    GetAncestor(focus, GA_ROOT) == target || focus == target || focus == state.hotkey_passthrough_focus
 }
 
 unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
@@ -6161,31 +6470,31 @@ unsafe fn paint(hwnd: HWND) {
         layout.list_x + layout.list_w - 1,
         layout.list_y + layout.list_h - 1,
     );
-    if state.filtered_indices.is_empty() {
-        let tr = RECT {
+    if state.visible_count() == 0 {
+        let text_rect = RECT {
             left: layout.list_x + 20,
             top: layout.list_y + 20,
             right: layout.list_x + layout.list_w - 20,
             bottom: layout.list_y + layout.list_h - 20,
         };
         let msg = if state.active_load_state().loading {
-            "正在加载..."
+            tr("正在加载...", "Loading...")
         } else if state.active_load_state().error.is_some() {
-            "加载失败，请稍后重试"
+            tr("加载失败，请稍后重试", "Loading failed. Please try again.")
         } else if state.settings.grouping_enabled && state.current_group_filter != 0 {
-            "当前分组暂无记录"
+            tr("当前分组暂无记录", "No records in this group")
         } else if state.tab_index == 0 {
-            "暂无剪贴板记录"
+            tr("暂无剪贴板记录", "No clipboard records yet")
         } else {
-            "暂无短语"
+            tr("暂无短语", "No phrases yet")
         };
-        draw_text(memdc as _, msg, &tr, th.text_muted, 12, false, true);
+        draw_text(memdc as _, msg, &text_rect, th.text_muted, 12, false, true);
     } else {
         let view_top = layout.list_y + layout.list_pad;
         let view_bottom = layout.list_y + layout.list_h - layout.list_pad;
         let start_idx = max(0, state.scroll_y / layout.row_h);
         let end_idx = min(
-            state.filtered_indices.len() as i32,
+            state.visible_count() as i32,
             (state.scroll_y + state.list_view_height()) / layout.row_h + 2,
         );
 
@@ -6196,8 +6505,7 @@ unsafe fn paint(hwnd: HWND) {
             if row_rc.bottom <= view_top || row_rc.top >= view_bottom {
                 continue;
             }
-            let src_idx = state.filtered_indices[i as usize];
-            let item = state.active_items()[src_idx].clone();
+            let item = state.active_items()[i as usize].clone();
 
             if state.row_is_selected(i) {
                 let br = CreateSolidBrush(th.item_selected);
@@ -6594,7 +6902,13 @@ fn ensure_item_thumbnail_bytes(
             return Some((image.bytes, image.width, image.height));
         }
     }
-    let (bytes, width, height) = ensure_item_image_bytes(item)?;
+    let (bytes, width, height) = if let Some(bytes) = &item.image_bytes {
+        (bytes.clone(), item.image_width, item.image_height)
+    } else if let Some(path) = item.image_path.as_ref() {
+        load_image_bytes_from_path(path)?
+    } else {
+        return None;
+    };
     let thumb = build_image_thumbnail_rgba(&bytes, width, height, max_side)?;
     if item.id > 0 {
         state.image_thumb_cache.put(item.id, thumb.clone());
@@ -6602,10 +6916,61 @@ fn ensure_item_thumbnail_bytes(
     Some((thumb.bytes, thumb.width, thumb.height))
 }
 
-fn hash_bytes(data: &[u8]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    data.hash(&mut hasher);
-    hasher.finish()
+fn normalize_captured_image_rgba(
+    bytes: Vec<u8>,
+    width: usize,
+    height: usize,
+) -> Option<(Vec<u8>, usize, usize)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let expected = width.checked_mul(height)?.checked_mul(4)?;
+    if bytes.len() < expected {
+        return None;
+    }
+    const MAX_CAPTURE_PIXELS: usize = 16_000_000;
+    const MAX_CAPTURE_SIDE: usize = 8192;
+    if width <= MAX_CAPTURE_SIDE
+        && height <= MAX_CAPTURE_SIDE
+        && width.saturating_mul(height) <= MAX_CAPTURE_PIXELS
+    {
+        return Some((bytes, width, height));
+    }
+
+    let scale_by_pixels =
+        ((MAX_CAPTURE_PIXELS as f64) / ((width as f64) * (height as f64))).sqrt();
+    let scale_by_side = (MAX_CAPTURE_SIDE as f64 / width as f64)
+        .min(MAX_CAPTURE_SIDE as f64 / height as f64);
+    let scale = scale_by_pixels.min(scale_by_side).min(1.0);
+    let out_w = ((width as f64 * scale).round() as usize).max(1);
+    let out_h = ((height as f64 * scale).round() as usize).max(1);
+    let mut out = vec![0u8; out_w.checked_mul(out_h)?.checked_mul(4)?];
+    for y in 0..out_h {
+        let src_y = y * height / out_h;
+        for x in 0..out_w {
+            let src_x = x * width / out_w;
+            let src_idx = (src_y * width + src_x) * 4;
+            let dst_idx = (y * out_w + x) * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&bytes[src_idx..src_idx + 4]);
+        }
+    }
+    Some((out, out_w, out_h))
+}
+
+fn hash_bytes(data: &[u8]) -> String {
+    const OFFSET_A: u64 = 0xcbf29ce484222325;
+    const OFFSET_B: u64 = 0x84222325cbf29ce4;
+    const PRIME_A: u64 = 0x100000001b3;
+    const PRIME_B: u64 = 0x10000000161;
+    let mut a = OFFSET_A ^ (data.len() as u64);
+    let mut b = OFFSET_B ^ ((data.len() as u64).rotate_left(17));
+    for &byte in data {
+        a ^= byte as u64;
+        a = a.wrapping_mul(PRIME_A);
+        b ^= (byte as u64).rotate_left(1);
+        b = b.wrapping_mul(PRIME_B);
+    }
+    format!("{:016x}{:016x}", a, b)
 }
 
 fn loword(v: u32) -> u16 {
@@ -6618,10 +6983,6 @@ fn hiword(v: u32) -> u16 {
 
 fn pt_in_rect(x: i32, y: i32, rc: &RECT) -> bool {
     x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom
-}
-
-fn pt_in_rect_screen(pt: &POINT, rc: &RECT) -> bool {
-    pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom
 }
 
 fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
@@ -6637,7 +6998,7 @@ fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
     }
     let yy = y - inner.top + state.scroll_y;
     let idx = yy / layout.row_h;
-    if idx < 0 || idx >= state.filtered_indices.len() as i32 {
+    if idx < 0 || idx >= state.visible_count() as i32 {
         -1
     } else {
         idx
@@ -6686,8 +7047,7 @@ unsafe fn hovered_item_clone(state: &AppState) -> Option<ClipItem> {
     if state.hover_idx < 0 {
         return None;
     }
-    let src_idx = *state.filtered_indices.get(state.hover_idx as usize)?;
-    state.active_items().get(src_idx).cloned()
+    state.active_items().get(state.hover_idx as usize).cloned()
 }
 
 fn inflate_rect(rc: &RECT, dx: i32, dy: i32) -> RECT {

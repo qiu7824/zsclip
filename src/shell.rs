@@ -440,53 +440,6 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     a > b
 }
 
-#[allow(dead_code)]
-fn set_disabled_hotkeys_text(txt: &str) -> Result<(), String> {
-    if txt.trim().is_empty() {
-        let out = hidden_command("reg")
-            .args([
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
-                "/v",
-                "DisabledHotkeys",
-                "/f",
-            ])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if out.status.success() {
-            return Ok(());
-        }
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if stderr.contains("Unable to find") || stderr.contains("系统找不到指定") {
-            return Ok(());
-        }
-        return Err(if stderr.trim().is_empty() {
-            "删除注册表值失败".to_string()
-        } else {
-            stderr
-        });
-    }
-    let out = hidden_command("reg")
-        .args([
-            "add",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",
-            "/v",
-            "DisabledHotkeys",
-            "/t",
-            "REG_SZ",
-            "/d",
-            txt,
-            "/f",
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).to_string())
-    }
-}
-
 pub(crate) fn is_directory_item(item: &ClipItem) -> bool {
     item.file_paths
         .as_ref()
