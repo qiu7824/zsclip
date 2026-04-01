@@ -1,5 +1,6 @@
 ﻿use super::*;
 use std::time::Duration;
+use crate::shell::image_ocr_status_text;
 use crate::win_system_ui::{
     create_settings_dropdown_button as settings_create_dropdown_btn,
     create_settings_edit as host_create_settings_edit,
@@ -174,16 +175,6 @@ pub(super) unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> 
         let popup = current_vv_popup_hwnd();
         return screen_point_hits_window_scope(popup, pt);
     }
-    if screen_point_hits_window_scope((*ptr).settings_hwnd, pt) {
-        return true;
-    }
-    if !(*ptr).settings_hwnd.is_null() {
-        let st_ptr =
-            GetWindowLongPtrW((*ptr).settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-        if !st_ptr.is_null() && screen_point_hits_window_scope((*st_ptr).dropdown_popup, pt) {
-            return true;
-        }
-    }
     let popup = current_vv_popup_hwnd();
     screen_point_hits_window_scope(popup, pt)
 }
@@ -209,6 +200,45 @@ unsafe fn refresh_outside_hide_timers() {
             SetTimer(hwnd, ID_TIMER_OUTSIDE_HIDE, 60, None);
         } else {
             KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
+        }
+    }
+}
+
+unsafe fn window_needs_edge_auto_hide_timer(hwnd: HWND) -> bool {
+    if hwnd.is_null() || IsWindow(hwnd) == 0 || IsWindowVisible(hwnd) == 0 {
+        return false;
+    }
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return false;
+    }
+    if !(*ptr).settings_hwnd.is_null() && IsWindowVisible((*ptr).settings_hwnd) != 0 {
+        return false;
+    }
+    (*ptr).settings.edge_auto_hide
+}
+
+unsafe fn edge_auto_hide_timer_interval(hwnd: HWND) -> u32 {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return EDGE_AUTO_HIDE_TIMER_MS;
+    }
+    if edge_animation_active(&*ptr) {
+        EDGE_AUTO_HIDE_ANIM_TIMER_MS
+    } else {
+        EDGE_AUTO_HIDE_TIMER_MS
+    }
+}
+
+unsafe fn refresh_edge_auto_hide_timers() {
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() || IsWindow(hwnd) == 0 {
+            continue;
+        }
+        if window_needs_edge_auto_hide_timer(hwnd) {
+            SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, edge_auto_hide_timer_interval(hwnd), None);
+        } else {
+            KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
         }
     }
 }
@@ -289,6 +319,7 @@ unsafe fn disable_quick_escape_keyboard_hook() {
 
 pub(crate) unsafe fn refresh_low_level_input_hooks() {
     refresh_outside_hide_timers();
+    refresh_edge_auto_hide_timers();
 
     if any_visible_window_requires_quick_escape_try() {
         ensure_quick_escape_keyboard_hook();
@@ -301,6 +332,7 @@ pub(crate) unsafe fn shutdown_low_level_input_hooks() {
     for hwnd in window_host_hwnds() {
         if !hwnd.is_null() && IsWindow(hwnd) != 0 {
             KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
+            KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
         }
     }
     disable_quick_escape_keyboard_hook();
@@ -376,7 +408,7 @@ pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
     null_mut()
 }
 
-fn clear_edge_dock_state(state: &mut AppState) {
+pub(crate) fn clear_edge_dock_state(state: &mut AppState) {
     state.edge_hidden = false;
     state.edge_hidden_side = EDGE_AUTO_HIDE_NONE;
     state.edge_docked_left = 0;
@@ -384,8 +416,10 @@ fn clear_edge_dock_state(state: &mut AppState) {
     state.edge_docked_right = 0;
     state.edge_docked_bottom = 0;
     state.edge_hide_armed = false;
+    state.edge_hide_pending_until = None;
     state.edge_hide_grace_until = None;
     state.edge_restore_wait_leave = false;
+    state.edge_anim_until = None;
 }
 
 fn set_edge_docked_rect(state: &mut AppState, rc: &RECT) {
@@ -423,9 +457,121 @@ fn edge_set_grace(state: &mut AppState, ms: u64) {
     state.edge_hide_grace_until = Some(Instant::now() + Duration::from_millis(ms));
 }
 
+pub(crate) fn edge_interaction_grace_ms() -> u64 {
+    0
+}
+
+fn edge_set_hide_pending(state: &mut AppState, ms: u64) {
+    let now = Instant::now();
+    let base = state
+        .edge_hide_grace_until
+        .filter(|until| *until > now)
+        .unwrap_or(now);
+    state.edge_hide_pending_until = Some(base + Duration::from_millis(ms));
+}
+
 fn edge_grace_active(state: &AppState) -> bool {
     state
         .edge_hide_grace_until
+        .map(|until| until > Instant::now())
+        .unwrap_or(false)
+}
+
+pub(crate) fn edge_animation_active(state: &AppState) -> bool {
+    state
+        .edge_anim_until
+        .map(|until| until > Instant::now())
+        .unwrap_or(false)
+}
+
+unsafe fn begin_edge_animation(
+    hwnd: HWND,
+    state: &mut AppState,
+    from_x: i32,
+    from_y: i32,
+    to_x: i32,
+    to_y: i32,
+    duration_ms: u64,
+) {
+    state.edge_anim_from_x = from_x;
+    state.edge_anim_from_y = from_y;
+    state.edge_anim_to_x = to_x;
+    state.edge_anim_to_y = to_y;
+    state.edge_anim_until = Some(Instant::now() + Duration::from_millis(duration_ms));
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        from_x,
+        from_y,
+        0,
+        0,
+        SWP_NOSIZE
+            | SWP_NOACTIVATE
+            | SWP_NOZORDER
+            | SWP_NOOWNERZORDER
+            | SWP_NOSENDCHANGING
+            | SWP_ASYNCWINDOWPOS
+            | SWP_SHOWWINDOW,
+    );
+}
+
+unsafe fn edge_step_animation(hwnd: HWND, state: &mut AppState) -> bool {
+    let Some(until) = state.edge_anim_until else {
+        return false;
+    };
+    let now = Instant::now();
+    let total_ms = EDGE_AUTO_HIDE_ANIM_MS as f32;
+    let remain_ms = until.saturating_duration_since(now).as_millis() as f32;
+    let t = if remain_ms <= 0.0 {
+        1.0
+    } else {
+        (1.0 - (remain_ms / total_ms)).clamp(0.0, 1.0)
+    };
+    let eased = 1.0 - (1.0 - t) * (1.0 - t);
+    let x = state.edge_anim_from_x
+        + ((state.edge_anim_to_x - state.edge_anim_from_x) as f32 * eased).round() as i32;
+    let y = state.edge_anim_from_y
+        + ((state.edge_anim_to_y - state.edge_anim_from_y) as f32 * eased).round() as i32;
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        0,
+        0,
+        SWP_NOSIZE
+            | SWP_NOACTIVATE
+            | SWP_NOZORDER
+            | SWP_NOOWNERZORDER
+            | SWP_NOSENDCHANGING
+            | SWP_ASYNCWINDOWPOS
+            | SWP_SHOWWINDOW,
+    );
+    if t >= 1.0 {
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            state.edge_anim_to_x,
+            state.edge_anim_to_y,
+            0,
+            0,
+            SWP_NOSIZE
+                | SWP_NOACTIVATE
+                | SWP_NOZORDER
+                | SWP_NOOWNERZORDER
+                | SWP_NOSENDCHANGING
+                | SWP_ASYNCWINDOWPOS
+                | SWP_SHOWWINDOW,
+        );
+        state.edge_anim_until = None;
+        return false;
+    }
+    true
+}
+
+fn edge_hide_pending_active(state: &AppState) -> bool {
+    state
+        .edge_hide_pending_until
         .map(|until| until > Instant::now())
         .unwrap_or(false)
 }
@@ -465,13 +611,8 @@ unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
             _ => best = Some((dist, side, base)),
         }
     }
-    best.map(|(_, side, base)| {
-        if side == EDGE_AUTO_HIDE_BOTTOM {
-            (side, monitor)
-        } else {
-            (side, base)
-        }
-    })
+    let _ = monitor;
+    best.map(|(_, side, base)| (side, base))
 }
 
 unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
@@ -489,11 +630,8 @@ unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
             best = candidate;
         }
     }
-    if best.1 == EDGE_AUTO_HIDE_BOTTOM {
-        (best.1, monitor)
-    } else {
-        (best.1, work)
-    }
+    let _ = monitor;
+    (best.1, work)
 }
 
 unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
@@ -516,10 +654,7 @@ unsafe fn ensure_edge_dock_state(hwnd: HWND, state: &mut AppState) -> bool {
         return true;
     }
     let rc = window_rect_for_dock(hwnd);
-    if update_edge_dock_state(hwnd, state, &rc) {
-        return true;
-    }
-    snap_window_to_nearest_edge(hwnd, state)
+    update_edge_dock_state(hwnd, state, &rc)
 }
 
 unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
@@ -527,6 +662,7 @@ unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
         return None;
     }
     let docked = edge_docked_rect(state);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
     let hot = edge_detect_margin_v(hwnd);
     Some(match state.edge_hidden_side {
         EDGE_AUTO_HIDE_LEFT => RECT {
@@ -549,9 +685,9 @@ unsafe fn edge_hotzone_rect(hwnd: HWND, state: &AppState) -> Option<RECT> {
         },
         EDGE_AUTO_HIDE_BOTTOM => RECT {
             left: docked.left,
-            top: docked.bottom - hot,
+            top: monitor.bottom - hot,
             right: docked.right,
-            bottom: docked.bottom,
+            bottom: monitor.bottom,
         },
         _ => docked,
     })
@@ -562,6 +698,7 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
         return None;
     }
     let docked = edge_docked_rect(state);
+    let monitor = nearest_monitor_rect_for_window(hwnd);
     let width = (rc.right - rc.left).max(1);
     let height = (rc.bottom - rc.top).max(1);
     let peek = edge_auto_hide_peek(hwnd);
@@ -577,7 +714,7 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
     };
     let y = match state.edge_hidden_side {
         EDGE_AUTO_HIDE_TOP => docked.top + peek - height,
-        EDGE_AUTO_HIDE_BOTTOM => docked.bottom - peek,
+        EDGE_AUTO_HIDE_BOTTOM => monitor.bottom - peek,
         EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
             state
                 .edge_restore_y
@@ -619,7 +756,7 @@ pub(crate) unsafe fn snap_window_to_nearest_edge(hwnd: HWND, state: &mut AppStat
         y,
         0,
         0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        SWP_NOSIZE | SWP_NOACTIVATE,
     );
     state.edge_hidden_side = side;
     set_edge_docked_rect(state, &base);
@@ -627,6 +764,10 @@ pub(crate) unsafe fn snap_window_to_nearest_edge(hwnd: HWND, state: &mut AppStat
     state.edge_restore_y = y;
     state.edge_hidden = false;
     state.edge_hide_armed = false;
+    state.edge_hide_pending_until = None;
+    state.edge_restore_wait_leave = false;
+    state.edge_anim_until = None;
+    edge_set_grace(state, edge_interaction_grace_ms());
     ensure_mouse_leave_tracking(hwnd);
     true
 }
@@ -635,20 +776,23 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
     if !state.edge_hidden {
         return;
     }
-    SetWindowPos(
+    let rc = window_rect_for_dock(hwnd);
+    begin_edge_animation(
         hwnd,
-        HWND_TOPMOST,
+        state,
+        rc.left,
+        rc.top,
         state.edge_restore_x,
         state.edge_restore_y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        EDGE_AUTO_HIDE_ANIM_MS,
     );
     state.edge_hidden = false;
     state.edge_hide_armed = false;
+    state.edge_hide_pending_until = None;
     state.edge_restore_wait_leave = false;
-    edge_set_grace(state, 450);
+    edge_set_grace(state, EDGE_AUTO_HIDE_RESTORE_GRACE_MS);
     ensure_mouse_leave_tracking(hwnd);
+    refresh_low_level_input_hooks();
 }
 
 pub(crate) unsafe fn try_restore_edge_hidden_window(hwnd: HWND) -> bool {
@@ -680,6 +824,9 @@ unsafe fn hide_edge_docked_window_with_scope(hwnd: HWND, state: &mut AppState, c
     if check_scope && edge_window_scope_contains_point(hwnd, cursor) {
         return;
     }
+    let wait_leave_after_hide = edge_hotzone_rect(hwnd, state)
+        .map(|hot| point_in_rect_screen(&cursor, &hot))
+        .unwrap_or(false);
 
     state.edge_restore_x = rc.left;
     state.edge_restore_y = rc.top;
@@ -689,18 +836,20 @@ unsafe fn hide_edge_docked_window_with_scope(hwnd: HWND, state: &mut AppState, c
     };
     state.edge_hidden = true;
     state.edge_hide_armed = false;
-    state.edge_restore_wait_leave = false;
-    SetWindowPos(
+    state.edge_hide_pending_until = None;
+    state.edge_restore_wait_leave = wait_leave_after_hide;
+    begin_edge_animation(
         hwnd,
-        HWND_TOPMOST,
+        state,
+        rc.left,
+        rc.top,
         hide_x,
         hide_y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        EDGE_AUTO_HIDE_ANIM_MS,
     );
     hide_hover_preview();
     InvalidateRect(hwnd, null(), 0);
+    refresh_low_level_input_hooks();
 }
 
 pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
@@ -709,6 +858,12 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
+    if state.edge_anim_until.is_some() {
+        if !edge_step_animation(hwnd, state) {
+            refresh_low_level_input_hooks();
+        }
+        return;
+    }
     if !state.settings.edge_auto_hide {
         restore_edge_hidden_window(hwnd, state);
         clear_edge_dock_state(state);
@@ -721,6 +876,12 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     if state.edge_hidden {
         if let Some(hot) = edge_hotzone_rect(hwnd, state) {
             let in_hot = point_in_rect_screen(&cursor, &hot);
+            if state.edge_restore_wait_leave {
+                if !in_hot {
+                    state.edge_restore_wait_leave = false;
+                }
+                return;
+            }
             if in_hot {
                 restore_edge_hidden_window(hwnd, state);
                 InvalidateRect(hwnd, null(), 0);
@@ -734,12 +895,24 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     let inside = edge_window_scope_contains_point(hwnd, cursor);
     if inside {
         state.edge_hide_armed = true;
+        state.edge_hide_pending_until = None;
         return;
     }
-    if !state.edge_hide_armed || edge_grace_active(state) {
+    if edge_grace_active(state) {
+        return;
+    }
+    if !state.edge_hide_armed {
+        return;
+    }
+    if state.edge_hide_pending_until.is_none() {
+        edge_set_hide_pending(state, EDGE_AUTO_HIDE_DELAY_MS);
+        return;
+    }
+    if edge_hide_pending_active(state) {
         return;
     }
     hide_edge_docked_window_with_scope(hwnd, state, false);
+    refresh_low_level_input_hooks();
 }
 
 pub(super) unsafe fn ensure_mouse_leave_tracking(hwnd: HWND) {
@@ -825,9 +998,13 @@ pub(super) unsafe fn handle_mouse_leave_main(hwnd: HWND) {
     if state.settings.edge_auto_hide
         && !state.edge_hidden
         && !vv_popup_menu_active()
-        && !edge_grace_active(state)
     {
-        hide_edge_docked_window_with_scope(hwnd, state, false);
+        let mut pt: POINT = zeroed();
+        if GetCursorPos(&mut pt) != 0 {
+            if edge_window_scope_contains_point(hwnd, pt) {
+                ensure_mouse_leave_tracking(hwnd);
+            }
+        }
     }
     if dirty {
         InvalidateRect(hwnd, null(), 0);
@@ -944,12 +1121,18 @@ pub(super) unsafe fn clear_main_hover_state(hwnd: HWND) {
 }
 
 pub(crate) unsafe fn note_window_moved_for_edge_hide(hwnd: HWND, state: &mut AppState) {
-    if !state.settings.edge_auto_hide || state.edge_hidden || IsWindowVisible(hwnd) == 0 {
+    if !state.settings.edge_auto_hide
+        || state.edge_hidden
+        || edge_animation_active(state)
+        || IsWindowVisible(hwnd) == 0
+    {
         return;
     }
     let rc = window_rect_for_dock(hwnd);
     if update_edge_dock_state(hwnd, state, &rc) {
         state.edge_hide_armed = false;
+        state.edge_hide_pending_until = None;
+        edge_set_grace(state, edge_interaction_grace_ms());
     } else {
         clear_edge_dock_state(state);
     }
@@ -1203,7 +1386,30 @@ pub(super) unsafe fn settings_invalidate_page_ctrls(
 
 pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
     match SettingsPage::from_index(page) {
-        SettingsPage::General => settings_sync_pos_fields_enabled(st),
+        SettingsPage::General => {
+            settings_sync_pos_fields_enabled(st);
+            let sound_enabled = st.draft.paste_success_sound_enabled;
+            if !st.cb_paste_sound.is_null() {
+                settings_set_text(
+                    st.cb_paste_sound,
+                    &paste_sound_display(&st.draft.paste_success_sound_kind),
+                );
+                EnableWindow(
+                    st.cb_paste_sound,
+                    if sound_enabled { 1 } else { 0 },
+                );
+            }
+            if !st.btn_paste_sound_pick.is_null() {
+                settings_set_text(
+                    st.btn_paste_sound_pick,
+                    &paste_sound_file_button_text(&st.draft.paste_success_sound_path),
+                );
+                EnableWindow(
+                    st.btn_paste_sound_pick,
+                    if sound_enabled && st.draft.paste_success_sound_kind == "custom" { 1 } else { 0 },
+                );
+            }
+        }
         SettingsPage::Hotkey => {
             let s = &st.draft;
             settings_set_text(st.cb_hk_mod, &normalize_hotkey_mod(&s.hotkey_mod));
@@ -1218,12 +1424,40 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     tr("录制热键", "Record Hotkey")
                 },
             );
-        }
+            }
+            if !st.cb_plain_hk_mod.is_null() {
+                settings_set_text(st.cb_plain_hk_mod, &normalize_hotkey_mod(&s.plain_paste_hotkey_mod));
+                EnableWindow(st.cb_plain_hk_mod, if s.plain_paste_hotkey_enabled { 1 } else { 0 });
+            }
+            if !st.cb_plain_hk_key.is_null() {
+                settings_set_text(st.cb_plain_hk_key, &normalize_hotkey_key(&s.plain_paste_hotkey_key));
+                EnableWindow(st.cb_plain_hk_key, if s.plain_paste_hotkey_enabled { 1 } else { 0 });
+            }
+            if !st.lb_plain_hk_preview.is_null() {
+                settings_set_text(
+                    st.lb_plain_hk_preview,
+                    &hotkey_preview_text(&s.plain_paste_hotkey_mod, &s.plain_paste_hotkey_key),
+                );
+            }
         }
         SettingsPage::Plugin => {
             let s = &st.draft;
             settings_set_text(st.cb_engine, &search_engine_display(&s.search_engine));
             settings_set_text(st.ed_tpl, &s.search_template);
+            settings_set_text(st.cb_ocr_provider, &image_ocr_provider_display(&s.image_ocr_provider));
+            settings_set_text(st.ed_ocr_cloud_url, &s.image_ocr_cloud_url);
+            settings_set_text(st.ed_ocr_cloud_token, &s.image_ocr_cloud_token);
+            let cloud_enabled = s.image_ocr_provider == "cloud";
+            if !st.ed_ocr_cloud_url.is_null() {
+                EnableWindow(st.ed_ocr_cloud_url, if cloud_enabled { 1 } else { 0 });
+            }
+            if !st.ed_ocr_cloud_token.is_null() {
+                EnableWindow(st.ed_ocr_cloud_token, if cloud_enabled { 1 } else { 0 });
+            }
+            settings_set_text(
+                st.lb_ocr_status,
+                &image_ocr_status_text(&s.image_ocr_provider, &s.image_ocr_cloud_url),
+            );
         }
         SettingsPage::Group => settings_sync_group_page(st),
         SettingsPage::Cloud => {
@@ -1299,8 +1533,12 @@ pub(super) unsafe fn settings_page_push_ctrl(
     st: &mut SettingsWndState,
     page: usize,
     hwnd: HWND,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
 ) {
-    settings_register_ctrl(st, page, hwnd, 0, 0, 0, 0, false);
+    settings_register_ctrl(st, page, hwnd, x, y, w, h, crate::settings_model::settings_page_scrollable(page));
 }
 
 pub(super) unsafe fn settings_page0_push_ctrl(
@@ -1311,25 +1549,26 @@ pub(super) unsafe fn settings_page0_push_ctrl(
     w: i32,
     h: i32,
 ) {
-    settings_register_ctrl(st, 0, hwnd, x, y, w, h, true);
+    settings_page_push_ctrl(st, 0, hwnd, x, y, w, h);
 }
 
 pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, redraw_children: bool) {
-    if st.ui.scroll_ctrls().is_empty() || st.cur_page != SettingsPage::General.index() {
+    let slots: Vec<_> = st.ui.scroll_ctrls_for_page(st.cur_page).copied().collect();
+    if slots.is_empty() || !crate::settings_model::settings_page_scrollable(st.cur_page) {
         return;
     }
 
     let mut crc: RECT = core::mem::zeroed();
     GetClientRect(hwnd, &mut crc);
     let viewport = settings_viewport_rect(&crc);
-    let mut dirty: Vec<RECT> = Vec::with_capacity(st.ui.scroll_ctrls().len() * 2);
+    let mut dirty: Vec<RECT> = Vec::with_capacity(slots.len() * 2);
 
-    let hdwp = BeginDeferWindowPos(st.ui.scroll_ctrls().len() as i32);
+    let hdwp = BeginDeferWindowPos(slots.len() as i32);
     if hdwp.is_null() {
         return;
     }
     let mut hdwp = hdwp;
-    for slot in st.ui.scroll_ctrls() {
+    for slot in slots.iter() {
         let hchild = slot.hwnd;
         let ox = slot.bounds.left;
         let oy = slot.bounds.top;
@@ -1379,7 +1618,7 @@ pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, 
     EndDeferWindowPos(hdwp);
 
     if redraw_children {
-        for slot in st.ui.scroll_ctrls() {
+        for slot in slots.iter() {
             let hchild = slot.hwnd;
             let oy = slot.bounds.top;
             let oh = slot.bounds.bottom - slot.bounds.top;
@@ -1426,6 +1665,7 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     }
     let old_y = st.content_scroll_y;
     st.content_scroll_y = new_y;
+    st.page_scroll_y[st.cur_page] = new_y;
     settings_scrollbar_show(hwnd, st);
 
     let viewport = settings_viewport_rect(&crc);
@@ -1497,41 +1737,49 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
         return;
     }
 
+    if st.scroll_dragging {
+        cancel_settings_scroll_drag(hwnd, st);
+    }
+    if !st.dropdown_popup.is_null() {
+        if IsWindow(st.dropdown_popup) != 0 {
+            DestroyWindow(st.dropdown_popup);
+        }
+        st.dropdown_popup = null_mut();
+    }
+
     SendMessageW(hwnd, WM_SETREDRAW, 0, 0);
-    settings_ensure_page(hwnd, st, page);
     st.cur_page = page;
-
-    for reg in st.ui.page_regs(old_page) {
-        if !reg.hwnd.is_null() {
-            ShowWindow(reg.hwnd, SW_HIDE);
-        }
+    if crate::settings_model::settings_page_scrollable(page) {
+        st.content_scroll_y = st.page_scroll_y[page];
+    } else {
+        st.page_scroll_y[page] = 0;
+        st.content_scroll_y = 0;
     }
-    for reg in st.ui.page_regs(st.cur_page) {
-        if !reg.hwnd.is_null() {
-            ShowWindow(reg.hwnd, SW_SHOW);
-        }
-    }
-
-    st.content_scroll_y = 0;
     st.scroll_bar_visible = false;
-    if st.cur_page == SettingsPage::General.index() {
+    settings_ensure_page(hwnd, st, page);
+
+    for other_page in 0..SETTINGS_PAGES.len() {
+        for reg in st.ui.page_regs(other_page) {
+            if reg.hwnd.is_null() {
+                continue;
+            }
+            ShowWindow(reg.hwnd, if other_page == st.cur_page { SW_SHOW } else { SW_HIDE });
+        }
+    }
+
+    if crate::settings_model::settings_page_scrollable(st.cur_page) {
         settings_repos_controls(hwnd, st, true);
     }
 
     settings_sync_page_state(st, page);
     SendMessageW(hwnd, WM_SETREDRAW, 1, 0);
-    let mut rc: RECT = core::mem::zeroed();
-    if GetClientRect(hwnd, &mut rc) != 0 {
-        let viewport = settings_viewport_rect(&rc);
-        RedrawWindow(
-            hwnd,
-            &viewport,
-            null_mut(),
-            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
-        );
-    } else {
-        InvalidateRect(hwnd, null(), 1);
-    }
+    InvalidateRect(hwnd, null(), 1);
+    RedrawWindow(
+        hwnd,
+        null(),
+        null_mut(),
+        RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+    );
 }
 
 pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
@@ -1552,6 +1800,12 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     settings_set_text(st.ed_fx, &s.show_fixed_x.to_string());
     settings_set_text(st.ed_fy, &s.show_fixed_y.to_string());
     settings_set_text(st.cb_pos, settings_dropdown_label_for_pos_mode(&s.show_pos_mode));
+    if !st.cb_paste_sound.is_null() {
+        settings_set_text(
+            st.cb_paste_sound,
+            &paste_sound_display(&s.paste_success_sound_kind),
+        );
+    }
     settings_sync_page_state(st, SettingsPage::General.index());
     if st.ui.is_built(SettingsPage::Hotkey.index()) {
         settings_sync_page_state(st, SettingsPage::Hotkey.index());
@@ -1600,9 +1854,19 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     st.draft.show_fixed_x = get_window_text(st.ed_fx).parse::<i32>().ok().unwrap_or(120);
     st.draft.show_fixed_y = get_window_text(st.ed_fy).parse::<i32>().ok().unwrap_or(120);
     st.draft.show_pos_mode = settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos));
+    if st.ui.is_built(SettingsPage::General.index()) && !st.cb_paste_sound.is_null() {
+        st.draft.paste_success_sound_kind =
+            paste_sound_key_from_display(&get_window_text(st.cb_paste_sound)).to_string();
+    }
     if st.ui.is_built(SettingsPage::Hotkey.index()) && !st.cb_hk_mod.is_null() && !st.cb_hk_key.is_null() {
         st.draft.hotkey_mod = normalize_hotkey_mod(&get_window_text(st.cb_hk_mod));
         st.draft.hotkey_key = normalize_hotkey_key(&get_window_text(st.cb_hk_key));
+        if !st.cb_plain_hk_mod.is_null() && !st.cb_plain_hk_key.is_null() {
+            st.draft.plain_paste_hotkey_mod =
+                normalize_hotkey_mod(&get_window_text(st.cb_plain_hk_mod));
+            st.draft.plain_paste_hotkey_key =
+                normalize_hotkey_key(&get_window_text(st.cb_plain_hk_key));
+        }
     }
     if st.ui.is_built(SettingsPage::Plugin.index()) && !st.cb_engine.is_null() {
         st.draft.search_engine = search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
@@ -1614,6 +1878,10 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
                 tpl
             }
         };
+        st.draft.image_ocr_provider =
+            image_ocr_provider_key_from_display(&get_window_text(st.cb_ocr_provider)).to_string();
+        st.draft.image_ocr_cloud_url = get_window_text(st.ed_ocr_cloud_url);
+        st.draft.image_ocr_cloud_token = get_window_text(st.ed_ocr_cloud_token);
     }
     st.draft.vv_source_tab = settings_vv_source_current(st);
     let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
@@ -1628,7 +1896,7 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         st.draft.cloud_sync_interval = {
             let label = get_window_text(st.cb_cloud_interval);
             if label.trim().is_empty() {
-                "1灏忔椂".to_string()
+                "1小时".to_string()
             } else {
                 label
             }
@@ -1661,8 +1929,15 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         "{}+{}+{}",
         app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key
     );
+    let plain_hotkey_old = format!(
+        "{}+{}+{}",
+        app.settings.plain_paste_hotkey_enabled,
+        app.settings.plain_paste_hotkey_mod,
+        app.settings.plain_paste_hotkey_key
+    );
     let edge_hide_old = app.settings.edge_auto_hide;
     let vv_mode_old = app.settings.vv_mode_enabled;
+    let persistent_search_old = app.settings.persistent_search_box;
     app.settings = st.draft.clone();
     if app.settings.edge_auto_hide {
         let mut rc: RECT = zeroed();
@@ -1676,6 +1951,7 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     if !app.settings.grouping_enabled {
         app.current_group_filter = 0;
         app.tab_group_filters = [0, 0];
+        remember_shared_tab_view_state(app);
     }
     save_settings(&app.settings);
     if autostart_old != app.settings.auto_start {
@@ -1699,6 +1975,15 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     if hotkey_old != hotkey_new {
         register_hotkey_for(st.parent_hwnd, app);
     }
+    let plain_hotkey_new = format!(
+        "{}+{}+{}",
+        app.settings.plain_paste_hotkey_enabled,
+        app.settings.plain_paste_hotkey_mod,
+        app.settings.plain_paste_hotkey_key
+    );
+    if plain_hotkey_old != plain_hotkey_new {
+        register_plain_paste_hotkey_for(st.parent_hwnd, app);
+    }
     if vv_mode_old != app.settings.vv_mode_enabled {
         update_vv_mode_hook(st.parent_hwnd, app.settings.vv_mode_enabled);
         if !app.settings.vv_mode_enabled {
@@ -1713,11 +1998,16 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     }
     if edge_hide_old && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
-    } else if !edge_hide_old && app.settings.edge_auto_hide {
-        let _ = snap_window_to_nearest_edge(st.parent_hwnd, app);
+    } else if !edge_hide_old && app.settings.edge_auto_hide && IsWindowVisible(st.parent_hwnd) != 0 {
+        clear_edge_dock_state(app);
+        note_window_moved_for_edge_hide(st.parent_hwnd, app);
     }
     refresh_low_level_input_hooks();
     app.refilter();
+    if persistent_search_old != app.settings.persistent_search_box {
+        prepare_search_ui_for_show(st.parent_hwnd, app);
+    }
+    layout_children(st.parent_hwnd);
     sync_peer_windows_from_settings(st.parent_hwnd);
     InvalidateRect(st.parent_hwnd, null(), 1);
 }
@@ -1731,6 +2021,8 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         IDC_SET_CLICK_HIDE => st.draft.click_hide,
         IDC_SET_PASTE_MOVE_TOP => st.draft.move_pasted_item_to_top,
         IDC_SET_DEDUPE_FILTER => st.draft.dedupe_filter_enabled,
+        IDC_SET_PERSIST_SEARCH => st.draft.persistent_search_box,
+        IDC_SET_PASTE_SOUND_ENABLE => st.draft.paste_success_sound_enabled,
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
@@ -1740,9 +2032,11 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled,
+        IDC_SET_PLAIN_HK_ENABLE => st.draft.plain_paste_hotkey_enabled,
         7102 => st.draft.quick_search_enabled,
         7101 => st.draft.ai_clean_enabled,
         7103 => st.draft.super_mail_merge_enabled,
+        7104 => st.draft.qr_quick_enabled,
         _ => false,
     }
 }
@@ -1760,6 +2054,10 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_DEDUPE_FILTER => {
             st.draft.dedupe_filter_enabled = !st.draft.dedupe_filter_enabled
         }
+        IDC_SET_PERSIST_SEARCH => st.draft.persistent_search_box = !st.draft.persistent_search_box,
+        IDC_SET_PASTE_SOUND_ENABLE => {
+            st.draft.paste_success_sound_enabled = !st.draft.paste_success_sound_enabled
+        }
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
@@ -1771,9 +2069,13 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
         6101 => st.draft.hotkey_enabled = !st.draft.hotkey_enabled,
+        IDC_SET_PLAIN_HK_ENABLE => {
+            st.draft.plain_paste_hotkey_enabled = !st.draft.plain_paste_hotkey_enabled
+        }
         7102 => st.draft.quick_search_enabled = !st.draft.quick_search_enabled,
         7101 => st.draft.ai_clean_enabled = !st.draft.ai_clean_enabled,
         7103 => st.draft.super_mail_merge_enabled = !st.draft.super_mail_merge_enabled,
+        7104 => st.draft.qr_quick_enabled = !st.draft.qr_quick_enabled,
         _ => {}
     }
 }
@@ -1785,35 +2087,47 @@ struct SettingsPageBuilder {
 }
 
 impl SettingsPageBuilder {
-    unsafe fn add(&self, st: &mut SettingsWndState, hwnd: HWND) -> HWND {
-        if !hwnd.is_null() { settings_page_push_ctrl(st, self.page, hwnd); }
+    unsafe fn add(&self, st: &mut SettingsWndState, hwnd: HWND, x: i32, y: i32, w: i32, h: i32) -> HWND {
+        if !hwnd.is_null() { settings_page_push_ctrl(st, self.page, hwnd, x, y, w, h); }
         hwnd
     }
 
     unsafe fn label(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
-        self.add(st, settings_create_label(self.hwnd, text, x, y, w, h, self.font))
+        self.add(st, settings_create_label(self.hwnd, text, x, y, w, h, self.font), x, y, w, h)
     }
 
     unsafe fn label_auto(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, min_h: i32) -> (HWND, i32) {
         let (hwnd, h) = settings_create_label_auto(self.hwnd, text, x, y, w, min_h, self.font);
-        (self.add(st, hwnd), h)
+        (self.add(st, hwnd, x, y, w, h), h)
     }
 
     unsafe fn button(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font))
+        self.add(st, settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(32))
     }
 
     unsafe fn dropdown(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font))
+        self.add(st, settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(32))
     }
 
     unsafe fn edit(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_edit(self.hwnd, text, id, x, y, w, self.font))
+        self.add(st, settings_create_edit(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(28))
+    }
+
+    unsafe fn password_edit(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
+        self.add(st, settings_create_password_edit(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(28))
     }
 
     unsafe fn toggle_row(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> (HWND, HWND) {
         let (label, btn, ..) = settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
-        (self.add(st, label), self.add(st, btn))
+        let label_h = settings_scale(24);
+        let btn_w = settings_scale(44);
+        let btn_h = settings_scale(24);
+        let btn_x = x + w - btn_w;
+        let btn_y = y + ((settings_scale(32) - btn_h).max(0) / 2);
+        (
+            self.add(st, label, x, y, w - btn_w - settings_scale(16), label_h),
+            self.add(st, btn, btn_x, btn_y, btn_w, btn_h),
+        )
     }
 }
 
@@ -1869,6 +2183,52 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
     st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
     st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
     let _ = settings_create_toggle(hwnd, st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w(), ui_font);
+    st.chk_persistent_search = settings_create_toggle(hwnd, st, "常驻搜索框", IDC_SET_PERSIST_SEARCH, sec2.left(), sec2.row_y(3), sec2.full_w(), ui_font);
+    st.chk_paste_sound = settings_create_toggle(hwnd, st, "粘贴成功声音", IDC_SET_PASTE_SOUND_ENABLE, sec2.left(), sec2.row_y(4), sec2.full_w(), ui_font);
+    let lbl_sound = settings_create_label(hwnd, "提示音：", sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_sound, sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    st.cb_paste_sound = settings_create_dropdown_btn(
+        hwnd,
+        &paste_sound_display("default"),
+        IDC_SET_PASTE_SOUND_KIND,
+        sec2.field_x(),
+        sec2.row_y(5),
+        settings_scale(170),
+        ui_font,
+    );
+    settings_page0_push_ctrl(
+        st,
+        st.cb_paste_sound,
+        sec2.field_x(),
+        sec2.row_y(5),
+        settings_scale(170),
+        settings_scale(32),
+    );
+    if !st.cb_paste_sound.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_paste_sound);
+    }
+    let lbl_sound_file = settings_create_label(hwnd, "声音文件：", sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24), ui_font);
+    settings_page0_push_ctrl(st, lbl_sound_file, sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    st.btn_paste_sound_pick = settings_create_small_btn(
+        hwnd,
+        &paste_sound_file_button_text(""),
+        IDC_SET_PASTE_SOUND_PICK,
+        sec2.field_x(),
+        sec2.row_y(6),
+        settings_scale(240),
+        ui_font,
+    );
+    settings_page0_push_ctrl(
+        st,
+        st.btn_paste_sound_pick,
+        sec2.field_x(),
+        sec2.row_y(6),
+        settings_scale(240),
+        settings_scale(32),
+    );
+    if !st.btn_paste_sound_pick.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_paste_sound_pick);
+    }
 
     let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
     settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24));
@@ -1994,6 +2354,66 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     st.btn_hk_record = b.button(st, tr("录制热键", "Record Hotkey"), IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
     if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
 
+    let (_plain_lbl, plain_btn) = b.toggle_row(
+        st,
+        tr("启用纯文本粘贴快捷键", "Enable plain-text paste hotkey"),
+        IDC_SET_PLAIN_HK_ENABLE,
+        sec0.left(),
+        sec0.row_y(3),
+        sec0.full_w(),
+    );
+    st.chk_plain_hk_enable = plain_btn;
+    if !st.chk_plain_hk_enable.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_plain_hk_enable);
+    }
+    b.label(
+        st,
+        tr("纯文本修饰键：", "Plain modifiers:"),
+        sec0.left(),
+        sec0.label_y(4, 24),
+        settings_scale(110),
+        24,
+    );
+    st.cb_plain_hk_mod = b.dropdown(
+        st,
+        "Ctrl+Shift",
+        IDC_SET_PLAIN_HK_MOD,
+        sec0.field_x(),
+        sec0.row_y(4),
+        settings_scale(170),
+    );
+    if !st.cb_plain_hk_mod.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_plain_hk_mod);
+    }
+    let plain_key_label_x = sec0.field_x() + settings_scale(186);
+    b.label(
+        st,
+        tr("纯文本按键：", "Plain key:"),
+        plain_key_label_x,
+        sec0.label_y(4, 24),
+        settings_scale(90),
+        24,
+    );
+    st.cb_plain_hk_key = b.dropdown(
+        st,
+        "V",
+        IDC_SET_PLAIN_HK_KEY,
+        plain_key_label_x + settings_scale(90),
+        sec0.row_y(4),
+        settings_scale(120),
+    );
+    if !st.cb_plain_hk_key.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_plain_hk_key);
+    }
+    st.lb_plain_hk_preview = b.label(
+        st,
+        &hotkey_preview_text("Ctrl+Shift", "V"),
+        sec0.left(),
+        sec0.label_y(5, settings_scale(24)),
+        sec0.full_w(),
+        settings_scale(24),
+    );
+
     let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
     st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, settings_scale(110)), sec1.row_y(1), settings_scale(110));
     st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, settings_scale(110)), sec1.row_y(1), settings_scale(110));
@@ -2012,7 +2432,7 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     let page = SettingsPage::Plugin.index();
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
-    let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
 
     let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
@@ -2026,14 +2446,35 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), settings_scale(130));
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
     let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + settings_scale(146), sec0.row_y(3) + settings_scale(4), sec0.field_w_from(sec0.left() + settings_scale(146)), settings_scale(24));
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec1.left(), sec1.row_y(0), sec1.full_w());
+
+    b.label(st, tr("识别来源：", "Provider:"), sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24);
+    st.cb_ocr_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_OCR_PROVIDER, sec1.field_x(), sec1.row_y(0), settings_scale(220));
+    if !st.cb_ocr_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_ocr_provider); }
+    st.lb_ocr_status = b.label(st, tr("图片 OCR：已关闭", "Image OCR: disabled"), sec1.left(), sec1.label_y(1, settings_scale(24)), sec1.full_w(), settings_scale(24));
+    b.label(st, tr("云 API 地址：", "Cloud API URL:"), sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
+    st.ed_ocr_cloud_url = b.edit(st, "", IDC_SET_OCR_CLOUD_URL, sec1.field_x(), sec1.row_y(2), sec1.field_w());
+    b.label(st, tr("云 API Token：", "Cloud API Token:"), sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
+    st.ed_ocr_cloud_token = b.password_edit(
+        st,
+        "",
+        IDC_SET_OCR_CLOUD_TOKEN,
+        sec1.field_x(),
+        sec1.row_y(3),
+        sec1.field_w(),
+    );
+    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec2.left(), sec2.row_y(0), sec2.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
-    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(0), sec2.full_w());
+    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(1), sec2.full_w());
     st.chk_mm = mm_btn;
     if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
-    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(1), settings_scale(170));
+    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(2), settings_scale(170));
     if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
+    let (_qr_lbl, qr_btn) = b.toggle_row(st, "启用快捷转换二维码", 7104, sec2.left(), sec2.row_y(3), sec2.full_w());
+    st.chk_qr = qr_btn;
+    if !st.chk_qr.is_null() { st.ownerdraw_ctrls.push(st.chk_qr); }
+    st.btn_plugin_downloads = b.button(st, tr("独立插件下载", "Standalone plugin downloads"), IDC_SET_PLUGIN_DOWNLOADS, sec2.left(), sec2.row_y(4), settings_scale(170));
+    if !st.btn_plugin_downloads.is_null() { st.ownerdraw_ctrls.push(st.btn_plugin_downloads); }
     st.ui.mark_built(page);
 }
 
@@ -2043,30 +2484,30 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     let sec0 = SettingsFormSectionLayout::new(page, 0, 104);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
 
-    let push = |st: &mut SettingsWndState, hh: HWND| {
-        if !hh.is_null() { settings_page_push_ctrl(st, page, hh); }
+    let push = |st: &mut SettingsWndState, hh: HWND, x: i32, y: i32, w: i32, h: i32| {
+        if !hh.is_null() { settings_page_push_ctrl(st, page, hh, x, y, w, h); }
     };
 
     let (group_lbl, group_btn, _lx, _ly, _lw, _lh, _bx, _by) = settings_create_toggle_plain(hwnd, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    push(st, group_lbl);
+    push(st, group_lbl, sec0.left(), sec0.row_y(0), sec0.full_w() - settings_scale(60), settings_scale(24));
     st.chk_group_enable = group_btn;
     settings_set_font(st.chk_group_enable, ui_font);
-    push(st, st.chk_group_enable);
+    push(st, st.chk_group_enable, sec0.left() + sec0.full_w() - settings_scale(44), sec0.row_y(0) + settings_scale(4), settings_scale(44), settings_scale(24));
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
     let lbl_vv_source = settings_create_label(hwnd, tr("VV 来源：", "VV Source:"), sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
-    push(st, lbl_vv_source);
+    push(st, lbl_vv_source, sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24));
     st.cb_vv_source = settings_create_dropdown_btn(hwnd, source_tab_label(0), IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180), ui_font);
     if !st.cb_vv_source.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_source);
+        settings_page_push_ctrl(st, page, st.cb_vv_source, sec0.field_x(), sec0.row_y(1), settings_scale(180), settings_scale(32));
         st.ownerdraw_ctrls.push(st.cb_vv_source);
     }
 
     let lbl_vv_group = settings_create_label(hwnd, tr("VV 默认分组：", "VV Default Group:"), sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
-    push(st, lbl_vv_group);
+    push(st, lbl_vv_group, sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24));
     st.cb_vv_group = settings_create_dropdown_btn(hwnd, source_tab_all_label(0), IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220), ui_font);
     if !st.cb_vv_group.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_group);
+        settings_page_push_ctrl(st, page, st.cb_vv_group, sec0.field_x(), sec0.row_y(2), settings_scale(220), settings_scale(32));
         st.ownerdraw_ctrls.push(st.cb_vv_group);
     }
 
@@ -2075,19 +2516,19 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     st.btn_group_view_phrases = settings_create_small_btn(hwnd, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + 10, sec1.row_y(0), tab_w, ui_font);
     for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
         if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh);
+            settings_page_push_ctrl(st, page, hh, if hh == st.btn_group_view_records { sec1.left() } else { sec1.left() + tab_w + 10 }, sec1.row_y(0), tab_w, settings_scale(32));
             st.ownerdraw_ctrls.push(hh);
         }
     }
 
     st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24), ui_font);
-    push(st, st.lb_group_current);
+    push(st, st.lb_group_current, sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24));
 
     let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22), ui_font);
-    push(st, lbl3);
+    push(st, lbl3, sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22));
 
     st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170), ui_font);
-    if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups); }
+    if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170)); }
 
     let btn_y = sec1.row_y(3) + settings_scale(186);
     let bw = settings_scale(90);
@@ -2100,7 +2541,8 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     st.btn_group_down = settings_create_small_btn(hwnd, "下移", IDC_SET_GROUP_DOWN, x0 + (bw + gap) * 4, btn_y, bw, ui_font);
     for &hh in &[st.btn_group_add, st.btn_group_rename, st.btn_group_delete, st.btn_group_up, st.btn_group_down] {
         if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh);
+            let idx = if hh == st.btn_group_add { 0 } else if hh == st.btn_group_rename { 1 } else if hh == st.btn_group_delete { 2 } else if hh == st.btn_group_up { 3 } else { 4 };
+            settings_page_push_ctrl(st, page, hh, x0 + (bw + gap) * idx, btn_y, bw, settings_scale(32));
             st.ownerdraw_ctrls.push(hh);
         }
     }
@@ -2129,7 +2571,7 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
     b.label(st, "用户名：", sec1.left(), sec1.label_y(1, 24), sec1.label_w(), 24);
     st.ed_cloud_user = b.edit(st, "", IDC_SET_CLOUD_USER, sec1.field_x(), sec1.row_y(1), sec1.field_w());
     b.label(st, "密码：", sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
-    st.ed_cloud_pass = b.add(st, settings_create_password_edit(hwnd, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w(), st.ui_font));
+    st.ed_cloud_pass = b.password_edit(st, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w());
     b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
     st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
 
@@ -2275,11 +2717,11 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
     let text = get_window_text(dis.hwndItem);
 
     if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_DEDUPE_FILTER || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
+        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_DEDUPE_FILTER || cid == IDC_SET_PERSIST_SEARCH || cid == IDC_SET_PASTE_SOUND_ENABLE || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
         || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
-        || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103
+        || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103 || cid == 7104
     {
         let checked = settings_toggle_get(st, cid);
         draw_settings_toggle_component(hdc as _, &rc, hover, checked, th);
@@ -2296,8 +2738,9 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
         } else {
             rgb(24, 92, 189)
         };
+        let font_px = scale_for_window(dis.hwndItem, 14).max(12);
         let font = CreateFontW(
-            -14,
+            -font_px,
             0,
             0,
             0,
@@ -2336,6 +2779,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
     let kind = if cid == IDC_SET_MAX
         || cid == IDC_SET_POSMODE
         || cid == IDC_SET_CLOUD_INTERVAL
+        || cid == IDC_SET_PASTE_SOUND_KIND
         || cid == IDC_SET_VV_GROUP
         || cid == IDC_SET_VV_SOURCE
         || cid == 6102
@@ -2367,8 +2811,9 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
         update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
         if !state.settings.edge_auto_hide {
             position_main_window(hwnd, &state.settings, false);
-        } else {
-            let _ = snap_window_to_nearest_edge(hwnd, state);
+        } else if IsWindowVisible(hwnd) != 0 {
+            clear_edge_dock_state(state);
+            note_window_moved_for_edge_hide(hwnd, state);
         }
     }
     if old_edge_hide && !state.settings.edge_auto_hide {
@@ -2377,6 +2822,7 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
     reload_state_from_db_persisting(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
+    refresh_low_level_input_hooks();
     refresh_settings_window_from_app(state);
 }
 
@@ -2397,6 +2843,7 @@ pub(super) unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
     reload_state_from_db_persisting(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
+    refresh_low_level_input_hooks();
 }
 
 pub(super) unsafe fn sync_peer_windows_from_db(source_hwnd: HWND) {

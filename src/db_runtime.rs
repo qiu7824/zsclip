@@ -67,6 +67,9 @@ fn validate_schema_column_definition(
             Ok("signature TEXT NOT NULL DEFAULT ''")
         }
         ("items", "text_data", "text_data TEXT") => Ok("text_data TEXT"),
+        ("items", "source_app", "source_app TEXT NOT NULL DEFAULT ''") => {
+            Ok("source_app TEXT NOT NULL DEFAULT ''")
+        }
         ("items", "file_paths", "file_paths TEXT") => Ok("file_paths TEXT"),
         ("items", "image_data", "image_data BLOB") => Ok("image_data BLOB"),
         ("items", "image_path", "image_path TEXT") => Ok("image_path TEXT"),
@@ -128,6 +131,12 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
     ensure_table_column(conn, "items", "preview", "preview TEXT NOT NULL DEFAULT ''")?;
     ensure_table_column(conn, "items", "signature", "signature TEXT NOT NULL DEFAULT ''")?;
     ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "source_app",
+        "source_app TEXT NOT NULL DEFAULT ''",
+    )?;
     ensure_table_column(conn, "items", "file_paths", "file_paths TEXT")?;
     ensure_table_column(conn, "items", "image_data", "image_data BLOB")?;
     ensure_table_column(conn, "items", "image_path", "image_path TEXT")?;
@@ -215,6 +224,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             preview TEXT NOT NULL,
             signature TEXT NOT NULL DEFAULT '',
             text_data TEXT,
+            source_app TEXT NOT NULL DEFAULT '',
             file_paths TEXT,
             image_data BLOB,
             image_path TEXT,

@@ -13,10 +13,10 @@ pub const CARD_GENERAL_H: i32 = 470;
 pub const CARD_DATA_Y: i32 = 498;
 pub const CARD_DATA_H: i32 = 96;
 pub const CARD_ACTIONS_Y: i32 = 606;
-pub const CARD_ACTIONS_H: i32 = 190;
-pub const CARD_POSITION_Y: i32 = 808;
+pub const CARD_ACTIONS_H: i32 = 360;
+pub const CARD_POSITION_Y: i32 = 978;
 pub const CARD_POSITION_H: i32 = 168;
-pub const CARD_MAINTAIN_Y: i32 = 988;
+pub const CARD_MAINTAIN_Y: i32 = 1158;
 pub const CARD_MAINTAIN_H: i32 = 96;
 
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
@@ -74,15 +74,15 @@ pub struct SettingsFormCardSpec {
 }
 
 const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 3 },
+    SettingsFormCardSpec { rows: 6 },
     SettingsFormCardSpec { rows: 2 },
     SettingsFormCardSpec { rows: 2 },
 ];
 
 const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 1 },
-    SettingsFormCardSpec { rows: 3 },
+    SettingsFormCardSpec { rows: 5 },
+    SettingsFormCardSpec { rows: 7 },
 ];
 
 const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
@@ -101,7 +101,7 @@ pub fn settings_title_rect() -> UiRect {
 }
 
 pub fn settings_page_scrollable(page: usize) -> bool {
-    matches!(SettingsPage::from_index(page), SettingsPage::General)
+    !matches!(SettingsPage::from_index(page), SettingsPage::About)
 }
 
 pub fn settings_form_section_height(rows: i32) -> i32 {
@@ -171,7 +171,7 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
         ),
         SettingsPage::Plugin => settings_make_form_cards(
             16,
-            ["搜索插件", "AI 文本清洗", "超级邮件合并"],
+            ["搜索插件", "图片 OCR", "AI 文本清洗 / 超级邮件合并 / 二维码 / 独立插件"],
             PLUGIN_FORM_SECTIONS,
         ),
         SettingsPage::Group => vec![

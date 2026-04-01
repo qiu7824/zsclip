@@ -37,6 +37,18 @@ pub(super) const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
     ("custom", "自定义", "https://example.com/search?q={q}"),
 ];
 
+pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 2] = [
+    ("off", "关闭"),
+    ("cloud", "云 API"),
+];
+
+pub(super) const PASTE_SOUND_OPTIONS: [(&str, &str); 4] = [
+    ("default", "默认"),
+    ("soft", "柔和"),
+    ("bright", "清脆"),
+    ("custom", "自定义文件"),
+];
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AppSettings {
@@ -65,8 +77,15 @@ pub(crate) struct AppSettings {
     pub(crate) quick_delete_button: bool,
     pub(crate) move_pasted_item_to_top: bool,
     pub(crate) dedupe_filter_enabled: bool,
+    pub(crate) persistent_search_box: bool,
+    pub(crate) paste_success_sound_enabled: bool,
+    pub(crate) paste_success_sound_kind: String,
+    pub(crate) paste_success_sound_path: String,
     pub(crate) search_engine: String,
     pub(crate) search_template: String,
+    pub(crate) plain_paste_hotkey_enabled: bool,
+    pub(crate) plain_paste_hotkey_mod: String,
+    pub(crate) plain_paste_hotkey_key: String,
     pub(crate) ai_clean_enabled: bool,
     pub(crate) super_mail_merge_enabled: bool,
     pub(crate) grouping_enabled: bool,
@@ -77,6 +96,10 @@ pub(crate) struct AppSettings {
     pub(crate) cloud_webdav_pass: String,
     pub(crate) cloud_remote_dir: String,
     pub(crate) cloud_last_sync_status: String,
+    pub(crate) image_ocr_provider: String,
+    pub(crate) image_ocr_cloud_url: String,
+    pub(crate) image_ocr_cloud_token: String,
+    pub(crate) qr_quick_enabled: bool,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
 }
@@ -109,8 +132,15 @@ impl Default for AppSettings {
             quick_delete_button: true,
             move_pasted_item_to_top: false,
             dedupe_filter_enabled: false,
+            persistent_search_box: false,
+            paste_success_sound_enabled: false,
+            paste_success_sound_kind: "default".to_string(),
+            paste_success_sound_path: String::new(),
             search_engine: "jzxx".to_string(),
             search_template: search_engine_template("jzxx").to_string(),
+            plain_paste_hotkey_enabled: false,
+            plain_paste_hotkey_mod: "Ctrl+Shift".to_string(),
+            plain_paste_hotkey_key: "V".to_string(),
             ai_clean_enabled: false,
             super_mail_merge_enabled: false,
             grouping_enabled: true,
@@ -121,6 +151,10 @@ impl Default for AppSettings {
             cloud_webdav_pass: String::new(),
             cloud_remote_dir: "ZSClip".to_string(),
             cloud_last_sync_status: "未同步".to_string(),
+            image_ocr_provider: "off".to_string(),
+            image_ocr_cloud_url: String::new(),
+            image_ocr_cloud_token: String::new(),
+            qr_quick_enabled: false,
             last_window_x: -1,
             last_window_y: -1,
         }
@@ -149,6 +183,51 @@ pub(super) fn search_engine_key_from_display(label: &str) -> &'static str {
         .find(|(_, name, _)| *name == label || translate(name).as_ref() == label)
         .map(|(k, _, _)| *k)
         .unwrap_or("jzxx")
+}
+
+pub(super) fn image_ocr_provider_display(key: &str) -> String {
+    IMAGE_OCR_PROVIDER_OPTIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, name)| translate(name).into_owned())
+        .unwrap_or_else(|| translate(IMAGE_OCR_PROVIDER_OPTIONS[0].1).into_owned())
+}
+
+pub(super) fn image_ocr_provider_key_from_display(label: &str) -> &'static str {
+    IMAGE_OCR_PROVIDER_OPTIONS
+        .iter()
+        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
+        .map(|(k, _)| *k)
+        .unwrap_or("off")
+}
+
+pub(super) fn paste_sound_display(key: &str) -> String {
+    PASTE_SOUND_OPTIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, name)| translate(name).into_owned())
+        .unwrap_or_else(|| translate(PASTE_SOUND_OPTIONS[0].1).into_owned())
+}
+
+pub(super) fn paste_sound_key_from_display(label: &str) -> &'static str {
+    PASTE_SOUND_OPTIONS
+        .iter()
+        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
+        .map(|(k, _)| *k)
+        .unwrap_or("default")
+}
+
+pub(super) fn paste_sound_file_button_text(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return tr("选择文件", "Choose file").to_string();
+    }
+    std::path::Path::new(trimmed)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| trimmed.to_string())
 }
 
 pub(super) fn group_name_for_display(
@@ -233,10 +312,10 @@ pub(super) fn title_button_visible(_settings: &AppSettings, _key: &str) -> bool 
     true
 }
 
-#[derive(Default)]
 pub(super) struct VvHookState {
     pub(super) main_hwnd: isize,
     pub(super) enabled: bool,
+    pub(super) trigger_vk: u32,
     pub(super) last_v_target: isize,
     pub(super) last_was_v: bool,
     pub(super) last_v_at: Option<Instant>,
@@ -244,6 +323,38 @@ pub(super) struct VvHookState {
     pub(super) popup_target: isize,
     pub(super) popup_menu_active: bool,
     pub(super) popup_menu_grace_until: Option<Instant>,
+}
+
+impl Default for VvHookState {
+    fn default() -> Self {
+        Self {
+            main_hwnd: 0,
+            enabled: false,
+            trigger_vk: b'V' as u32,
+            last_v_target: 0,
+            last_was_v: false,
+            last_v_at: None,
+            popup_active: false,
+            popup_target: 0,
+            popup_menu_active: false,
+            popup_menu_grace_until: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SharedTabViewState {
+    tab_index: usize,
+    tab_group_filters: [i64; 2],
+}
+
+impl Default for SharedTabViewState {
+    fn default() -> Self {
+        Self {
+            tab_index: 0,
+            tab_group_filters: [0, 0],
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -418,6 +529,7 @@ static QUICK_ESCAPE_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 pub(super) static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
 static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
 static CLOUD_SYNC_RESULTS: OnceLock<Mutex<VecDeque<CloudSyncResult>>> = OnceLock::new();
+static SHARED_TAB_VIEW_STATE: OnceLock<Mutex<SharedTabViewState>> = OnceLock::new();
 
 pub(super) fn vv_hook_state() -> &'static Mutex<VvHookState> {
     VV_HOOK_STATE.get_or_init(|| Mutex::new(VvHookState::default()))
@@ -437,6 +549,10 @@ pub(super) fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
 
 pub(super) fn cloud_sync_results() -> &'static Mutex<VecDeque<CloudSyncResult>> {
     CLOUD_SYNC_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn shared_tab_view_state() -> &'static Mutex<SharedTabViewState> {
+    SHARED_TAB_VIEW_STATE.get_or_init(|| Mutex::new(SharedTabViewState::default()))
 }
 
 pub(super) fn clear_page_load_results_for_hwnd(hwnd: HWND) {
@@ -493,7 +609,7 @@ impl AppState {
         } else {
             None
         };
-        Self {
+        let mut state = Self {
             role,
             hwnd,
             search_hwnd,
@@ -512,10 +628,18 @@ impl AppState {
             down_y: 0,
             hover_tab: -1,
             last_signature: String::new(),
+            last_capture_signature: String::new(),
+            last_capture_source_app: String::new(),
+            recent_capture_signatures: VecDeque::new(),
+            last_capture_at: None,
+            last_clipboard_seq: 0,
             ignore_clipboard_until: None,
+            recent_programmatic_clipboard_signature: String::new(),
+            recent_programmatic_clipboard_until: None,
             settings,
             tray_icon_registered: false,
             hotkey_registered: false,
+            plain_paste_hotkey_registered: false,
             hotkey_conflict_notified: false,
             startup_recovery_ticks: if role == WindowRole::Main {
                 STARTUP_RECOVERY_TICKS
@@ -548,6 +672,7 @@ impl AppState {
             hotkey_passthrough_target: null_mut(),
             hotkey_passthrough_focus: null_mut(),
             hotkey_passthrough_edit: null_mut(),
+            plain_text_paste_mode: false,
             main_window_noactivate: false,
             edge_hidden: false,
             edge_hidden_side: EDGE_AUTO_HIDE_NONE,
@@ -558,11 +683,19 @@ impl AppState {
             edge_docked_right: 0,
             edge_docked_bottom: 0,
             edge_hide_armed: false,
+            edge_hide_pending_until: None,
             edge_hide_grace_until: None,
             edge_restore_wait_leave: false,
+            edge_anim_from_x: 0,
+            edge_anim_from_y: 0,
+            edge_anim_to_x: 0,
+            edge_anim_to_y: 0,
+            edge_anim_until: None,
             cloud_sync_in_progress: false,
             cloud_sync_next_due,
-        }
+        };
+        apply_shared_tab_view_state(&mut state);
+        state
     }
 
     pub(super) fn items_for_tab(&self, tab: usize) -> &Vec<ClipItem> {
@@ -650,7 +783,7 @@ impl AppState {
         self.current_item().cloned()
     }
 
-    pub(super) fn refilter(&mut self) {
+    pub(crate) fn refilter(&mut self) {
         self.ensure_tab_query_loaded(self.list.tab_index);
         let visible_len = self.active_items().len();
         self.list.apply_visible_len(visible_len);
@@ -821,5 +954,25 @@ impl AppState {
     pub(super) fn selected_source_indices(&self) -> Vec<usize> {
         self.list.selected_source_indices()
     }
+}
+
+pub(crate) fn remember_shared_tab_view_state(state: &AppState) {
+    if let Ok(mut shared) = shared_tab_view_state().lock() {
+        shared.tab_index = normalize_source_tab(state.tab_index);
+        shared.tab_group_filters = state.tab_group_filters;
+    }
+}
+
+pub(crate) fn apply_shared_tab_view_state(state: &mut AppState) -> bool {
+    let Ok(shared) = shared_tab_view_state().lock() else {
+        return false;
+    };
+    let next_tab = normalize_source_tab(shared.tab_index);
+    let next_filters = shared.tab_group_filters;
+    let changed = state.tab_index != next_tab || state.tab_group_filters != next_filters;
+    state.tab_index = next_tab;
+    state.tab_group_filters = next_filters;
+    state.current_group_filter = next_filters[next_tab];
+    changed
 }
 

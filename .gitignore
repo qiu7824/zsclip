@@ -14,3 +14,13 @@
 zsclip.zip
 .DS_Store
 .vscode/
+/.dotnet-home/
+/.winapp/
+ocr_err.txt
+ocr_out.txt
+windowsappsdk-samples.zip
+/tools/windows-app-sdk-ocr-helper/**/bin/
+/tools/windows-app-sdk-ocr-helper/**/obj/
+/tools/windows-app-sdk-ocr-helper/publish/
+/tools/windows-app-sdk-ocr-helper/**/*.msix
+/tools/windows-app-sdk-ocr-helper/**/*.pfx
