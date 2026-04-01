@@ -5,7 +5,7 @@
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.7.4>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.7.5>
 - Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
 - Password: `7dvb`
 
@@ -136,6 +136,17 @@ Benefits:
 - `Ctrl + P`: pin or unpin the current item
 - `Delete`: delete the current item
 - `Esc`: close search, clear selection, or hide the window
+
+## Search Syntax
+
+The search box no longer shows inline hint text. Common examples:
+
+- Plain keyword: `contract`
+- Date search: `date:2026-3-26`
+- Time search: `time:2026-3-26`
+- App search: `app:Word`
+- App name with spaces: `app:"Visual Studio Code"`
+- Combined search: `date:2026-3-26 app:Word contract`
 
 ## VV Mode
 

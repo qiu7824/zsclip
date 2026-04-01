@@ -8,6 +8,7 @@ pub use crate::settings_render::{
     draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x,
     settings_title_rect_win,
 };
+use crate::i18n::translate;
 pub use crate::settings_ui_host::{
     create_settings_button, create_settings_component, create_settings_dropdown_button, create_settings_edit,
     create_settings_fonts, create_settings_label, create_settings_label_auto, create_settings_listbox,
@@ -23,7 +24,8 @@ pub use crate::settings_ui_host::{
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::{
-        CreateFontW, GetDC, GetDeviceCaps, MonitorFromPoint, MonitorFromWindow, ReleaseDC,
+        CreateFontW, DrawTextW, GetDC, GetDeviceCaps, GetStockObject, MonitorFromPoint,
+        MonitorFromWindow, ReleaseDC, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT,
         LOGPIXELSX, LOGPIXELSY,
         MONITOR_DEFAULTTONEAREST,
     },
@@ -242,6 +244,64 @@ pub(crate) unsafe fn create_font_px(
         0,
         to_wide(resolve_ui_font_family(family)).as_ptr(),
     ) as _
+}
+
+pub(crate) unsafe fn draw_translated_text_line(
+    hdc: *mut c_void,
+    text: &str,
+    rc: &mut RECT,
+    color: u32,
+    size: i32,
+    weight: i32,
+    center: bool,
+    family: &str,
+    transparent_mode: i32,
+    flags_extra: u32,
+) {
+    let translated = translate(text);
+    SetBkMode(hdc as _, transparent_mode);
+    SetTextColor(hdc as _, color);
+    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
+    let font = if font.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT) as *mut c_void
+    } else {
+        font
+    };
+    let old = SelectObject(hdc as _, font as _);
+    let flags =
+        (if center { crate::ui::DT_CENTER } else { crate::ui::DT_LEFT })
+        | crate::ui::DT_VCENTER
+        | crate::ui::DT_SINGLELINE
+        | crate::ui::DT_END_ELLIPSIS
+        | flags_extra;
+    DrawTextW(hdc as _, to_wide(translated.as_ref()).as_ptr(), -1, rc, flags);
+    SelectObject(hdc as _, old);
+}
+
+pub(crate) unsafe fn draw_translated_text_block(
+    hdc: *mut c_void,
+    text: &str,
+    rc: &mut RECT,
+    color: u32,
+    size: i32,
+    weight: i32,
+    family: &str,
+    transparent_mode: i32,
+    flags_extra: u32,
+) {
+    let translated = translate(text);
+    SetBkMode(hdc as _, transparent_mode);
+    SetTextColor(hdc as _, color);
+    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
+    let font = if font.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT) as *mut c_void
+    } else {
+        font
+    };
+    let old = SelectObject(hdc as _, font as _);
+    let flags = crate::ui::DT_LEFT | crate::ui::DT_WORDBREAK | crate::ui::DT_NOPREFIX | flags_extra;
+    DrawTextW(hdc as _, to_wide(translated.as_ref()).as_ptr(), -1, rc, flags);
+    SelectObject(hdc as _, old);
 }
 
 fn rgb(r: u8, g: u8, b: u8) -> u32 {

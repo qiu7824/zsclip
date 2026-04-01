@@ -5,15 +5,16 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::gdiplus;
-use crate::i18n::translate;
 use crate::time_utils::{gregorian_to_days, utc_secs_to_local_parts};
-use crate::win_system_ui::{create_scaled_font_for_hdc, is_dark_mode, system_accent, to_wide};
+use crate::win_system_ui::{
+    draw_translated_text_block, draw_translated_text_line, is_dark_mode, system_accent,
+};
 
 use windows_sys::Win32::{
     Foundation::RECT,
     Graphics::Gdi::{
-        BitBlt, CreateCompatibleDC, DeleteDC, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-        GetStockObject, RoundRect, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT,
+        BitBlt, CreateCompatibleDC, DeleteDC, CreateSolidBrush, DeleteObject, FillRect,
+        GetStockObject, RoundRect, SelectObject,
         NULL_PEN, SRCCOPY,
         CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB,
     },
@@ -273,6 +274,7 @@ pub(crate) struct ClipItem {
     pub(crate) kind: ClipKind,
     pub(crate) preview: String,
     pub(crate) text: Option<String>,
+    pub(crate) source_app: String,
     pub(crate) file_paths: Option<Vec<String>>,
     pub(crate) image_bytes: Option<Vec<u8>>,
     pub(crate) image_path: Option<String>,
@@ -368,32 +370,113 @@ fn parse_time_filter(raw: &str) -> Option<SearchTimeFilter> {
     }
 }
 
-pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTimeFilter>) {
-    let mut text_terms = Vec::new();
-    let mut time_filter = None;
-
-    for token in query.split_whitespace() {
-        let token = token.trim();
-        if token.is_empty() {
+fn tokenize_search_query(query: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    for ch in query.chars() {
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
             continue;
         }
-        let lower = token.to_lowercase();
-        let time_value = lower
-            .strip_prefix("time:")
-            .or_else(|| lower.strip_prefix("date:"))
-            .map(|v| v.to_string())
-            .or_else(|| token.strip_prefix("时间:").map(|v| v.to_string()))
-            .or_else(|| token.strip_prefix("日期:").map(|v| v.to_string()));
-        if let Some(value) = time_value {
+        match ch {
+            '"' | '\'' => {
+                quote = Some(ch);
+            }
+            c if c.is_whitespace() => {
+                if !current.trim().is_empty() {
+                    tokens.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        tokens.push(current.trim().to_string());
+    }
+    tokens
+}
+
+fn prefixed_search_value<'a>(token: &'a str, ascii_prefix: &str, cn_prefixes: &[&str]) -> Option<&'a str> {
+    let lower = token.to_lowercase();
+    if let Some(value) = lower.strip_prefix(ascii_prefix) {
+        let start = token.len().saturating_sub(value.len());
+        return Some(&token[start..]);
+    }
+    for prefix in cn_prefixes {
+        if let Some(value) = token.strip_prefix(prefix) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn is_prefixed_search_token(token: &str) -> bool {
+    prefixed_search_value(token, "time:", &["时间:", "时间：", "日期:", "日期："]).is_some()
+        || prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："]).is_some()
+        || prefixed_search_value(token, "app:", &["应用:", "应用："]).is_some()
+}
+
+fn collect_prefixed_value(tokens: &[String], start: usize, initial: &str) -> (String, usize) {
+    let mut parts = Vec::new();
+    if !initial.trim().is_empty() {
+        parts.push(initial.trim().to_string());
+    }
+    let mut index = start + 1;
+    while index < tokens.len() {
+        let token = tokens[index].trim();
+        if token.is_empty() || is_prefixed_search_token(token) {
+            break;
+        }
+        parts.push(token.to_string());
+        index += 1;
+    }
+    (parts.join(" ").trim().to_string(), index)
+}
+
+pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTimeFilter>, Option<String>) {
+    let mut text_terms = Vec::new();
+    let mut time_filter = None;
+    let mut app_filter = None;
+
+    let tokens = tokenize_search_query(query);
+    let mut index = 0usize;
+    while index < tokens.len() {
+        let token = tokens[index].trim();
+        if token.is_empty() {
+            index += 1;
+            continue;
+        }
+
+        if let Some(initial) = prefixed_search_value(token, "time:", &["时间:", "时间：", "日期:", "日期："]) 
+            .or_else(|| prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："])) {
+            let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
             if let Some(filter) = parse_time_filter(&value) {
                 time_filter = Some(filter);
+                index = next_index;
                 continue;
             }
         }
-        text_terms.push(lower);
+
+        if let Some(initial) = prefixed_search_value(token, "app:", &["应用:", "应用："]) {
+            let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
+            if !value.trim().is_empty() {
+                app_filter = Some(value.trim().to_lowercase());
+                index = next_index;
+                continue;
+            }
+        }
+
+        text_terms.push(token.to_lowercase());
+        index += 1;
     }
 
-    (text_terms, time_filter)
+    (text_terms, time_filter, app_filter)
 }
 
 impl Default for ClipListState {
@@ -845,17 +928,20 @@ pub unsafe fn draw_text_ex(
     center: bool,
     family: &str,
 ) {
-    let translated = translate(text);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
-    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
-    let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
-    let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;
-    let flags = (if center { DT_CENTER } else { DT_LEFT }) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
-    DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
-    SelectObject(hdc, old);
+    draw_translated_text_line(
+        hdc,
+        text,
+        &mut rc2,
+        color,
+        size,
+        weight,
+        center,
+        family,
+        TRANSPARENT,
+        0,
+    );
 }
 
 pub unsafe fn draw_text_block_ex(
@@ -867,17 +953,19 @@ pub unsafe fn draw_text_block_ex(
     bold: bool,
     family: &str,
 ) {
-    let translated = translate(text);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, color);
     let weight = if bold { 700 } else { 400 };
-    let font = create_scaled_font_for_hdc(hdc, family, size, weight);
-    let font = if font.is_null() { GetStockObject(DEFAULT_GUI_FONT) } else { font };
-    let old = SelectObject(hdc, font as _);
     let mut rc2 = *rc;
-    let flags = DT_LEFT | DT_WORDBREAK | DT_NOPREFIX;
-    DrawTextW(hdc, to_wide(translated.as_ref()).as_ptr(), -1, &mut rc2, flags);
-    SelectObject(hdc, old);
+    draw_translated_text_block(
+        hdc,
+        text,
+        &mut rc2,
+        color,
+        size,
+        weight,
+        family,
+        TRANSPARENT,
+        0,
+    );
 }
 
 pub fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {

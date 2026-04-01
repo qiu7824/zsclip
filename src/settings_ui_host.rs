@@ -14,7 +14,7 @@ use windows_sys::Win32::{
 };
 
 use crate::i18n::{tr, translate};
-use crate::settings_model::{SettingsPage, SETTINGS_PAGE_COUNT};
+use crate::settings_model::SETTINGS_PAGE_COUNT;
 use crate::ui::{
     draw_round_fill, draw_round_rect, draw_text_ex, rgb,
     settings_content_y_scaled, settings_nav_w_scaled, settings_scale, ui_display_font_family,
@@ -22,7 +22,7 @@ use crate::ui::{
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_ui::{create_font_px, scale_for_window};
+use crate::win_system_ui::{create_font_px, scale_for_window, window_dpi};
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -71,6 +71,7 @@ impl SettingsCtrlReg {
 #[derive(Clone, Copy, Debug)]
 pub struct SettingsCtrlSlot {
     pub hwnd: HWND,
+    pub page: usize,
     pub bounds: UiRect,
 }
 
@@ -107,8 +108,8 @@ impl SettingsUiRegistry {
         if let Some(list) = self.page_ctrls.get_mut(page) {
             list.push(reg.hwnd);
         }
-        if page == SettingsPage::General.index() && reg.scrollable {
-            self.scroll_ctrls.push(SettingsCtrlSlot { hwnd: reg.hwnd, bounds: reg.bounds });
+        if reg.scrollable {
+            self.scroll_ctrls.push(SettingsCtrlSlot { hwnd: reg.hwnd, page, bounds: reg.bounds });
         }
     }
 
@@ -116,7 +117,9 @@ impl SettingsUiRegistry {
         self.regs.iter().filter(move |reg| reg.page == page)
     }
 
-    pub fn scroll_ctrls(&self) -> &[SettingsCtrlSlot] { &self.scroll_ctrls }
+    pub fn scroll_ctrls_for_page(&self, page: usize) -> impl Iterator<Item = &SettingsCtrlSlot> {
+        self.scroll_ctrls.iter().filter(move |slot| slot.page == page)
+    }
 
     pub unsafe fn clear_page(&mut self, page: usize) {
         let page = page.min(SETTINGS_PAGE_COUNT.saturating_sub(1));
@@ -129,7 +132,7 @@ impl SettingsUiRegistry {
         }
         self.regs.retain(|reg| reg.page != page);
         self.scroll_ctrls
-            .retain(|slot| !slot.hwnd.is_null() && IsWindow(slot.hwnd) != 0);
+            .retain(|slot| slot.page != page && !slot.hwnd.is_null() && IsWindow(slot.hwnd) != 0);
         if let Some(flag) = self.built_pages.get_mut(page) {
             *flag = false;
         }
@@ -590,24 +593,29 @@ pub unsafe fn draw_settings_toggle_component(
     FillRect(hdc, rc, bg);
     DeleteObject(bg as _);
 
-    let tw = 40;
-    let thh = 20;
+    let row_h = (rc.bottom - rc.top).max(24);
+    let row_w = (rc.right - rc.left).max(48);
+    let thh = ((row_h * 20) / 32).clamp(20, row_h - 4);
+    let tw = ((thh * 40) / 20).clamp(thh + 12, row_w - 6);
     let cx = rc.left + (rc.right - rc.left - tw) / 2;
     let cy = rc.top + (rc.bottom - rc.top - thh) / 2;
     let track = RECT { left: cx, top: cy, right: cx + tw, bottom: cy + thh };
+    let radius = (thh / 2).max(6);
 
     if checked {
-        draw_round_rect(hdc, &track, th.accent, th.accent, 10);
-        let k = 14;
+        draw_round_rect(hdc, &track, th.accent, th.accent, radius);
+        let k = ((thh * 14) / 20).max(12);
         let ky = cy + (thh - k) / 2;
-        let krc = RECT { left: cx + tw - k - 3, top: ky, right: cx + tw - 3, bottom: ky + k };
+        let knob_pad = ((thh - k) / 2).max(3);
+        let krc = RECT { left: cx + tw - k - knob_pad, top: ky, right: cx + tw - knob_pad, bottom: ky + k };
         draw_round_rect(hdc, &krc, rgb(255, 255, 255), rgb(255, 255, 255), 7);
     } else {
         let border = if hover { rgb(28, 28, 28) } else { rgb(136, 136, 136) };
-        draw_round_rect(hdc, &track, th.bg, border, 10);
-        let k = 12;
+        draw_round_rect(hdc, &track, th.bg, border, radius);
+        let k = ((thh * 12) / 20).max(10);
         let ky = cy + (thh - k) / 2;
-        let krc = RECT { left: cx + 4, top: ky, right: cx + 16, bottom: ky + k };
+        let knob_pad = ((thh - k) / 2).max(4);
+        let krc = RECT { left: cx + knob_pad, top: ky, right: cx + knob_pad + k, bottom: ky + k };
         let knob_color = if hover { rgb(28, 28, 28) } else { rgb(102, 102, 102) };
         draw_round_rect(hdc, &krc, knob_color, knob_color, 6);
     }
@@ -623,6 +631,8 @@ pub unsafe fn draw_settings_button_component(
     th: Theme,
 ) {
     let rr = RECT { left: rc.left + 1, top: rc.top + 1, right: rc.right - 1, bottom: rc.bottom - 1 };
+    let control_h = (rr.bottom - rr.top).max(24);
+    let text_px = ((control_h * 14) / 32).max(12);
     match kind {
         SettingsComponentKind::Dropdown => {
             draw_settings_dropdown_button(hdc, &rr, text, hover, pressed, th);
@@ -630,13 +640,13 @@ pub unsafe fn draw_settings_button_component(
         SettingsComponentKind::AccentButton => {
             let fill = if pressed { th.accent_pressed } else if hover { th.accent_hover } else { th.accent };
             draw_round_rect(hdc, &rr, fill, fill, 4);
-            draw_text_ex(hdc, text, &rr, rgb(255, 255, 255), settings_scale(14), false, true, ui_text_font_family());
+            draw_text_ex(hdc, text, &rr, rgb(255, 255, 255), text_px, false, true, ui_text_font_family());
         }
         SettingsComponentKind::Button => {
             let fill = if pressed { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
             let border = if pressed || hover { rgb(196, 196, 196) } else { rgb(204, 204, 204) };
             draw_round_rect(hdc, &rr, fill, border, 4);
-            draw_text_ex(hdc, text, &rr, th.text, settings_scale(14), false, true, ui_text_font_family());
+            draw_text_ex(hdc, text, &rr, th.text, text_px, false, true, ui_text_font_family());
         }
         SettingsComponentKind::Toggle => {}
     }
@@ -656,25 +666,30 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rc.right - 1,
         bottom: rc.bottom - 1,
     };
+    let control_h = (rr.bottom - rr.top).max(24);
+    let text_px = ((control_h * 14) / 32).max(12);
+    let arrow_px = ((control_h * 10) / 32).max(9);
+    let text_pad = (control_h * 12 / 32).max(10);
+    let arrow_w = (control_h * 20 / 32).max(18);
     let fill = if pressed { th.button_pressed } else { th.surface };
     let border = th.control_stroke;
     draw_round_rect(hdc, &rr, fill, border, 6);
 
     let text_rc = RECT {
-        left: rr.left + settings_scale(12),
+        left: rr.left + text_pad,
         top: rr.top,
-        right: rr.right - settings_scale(28),
+        right: rr.right - arrow_w,
         bottom: rr.bottom,
     };
-    draw_text_ex(hdc, text, &text_rc, th.text, settings_scale(14), false, false, ui_text_font_family());
+    draw_text_ex(hdc, text, &text_rc, th.text, text_px, false, false, ui_text_font_family());
 
     let arrow_rc = RECT {
-        left: rr.right - settings_scale(24),
+        left: rr.right - arrow_w,
         top: rr.top,
-        right: rr.right - settings_scale(8),
+        right: rr.right - (control_h * 8 / 32).max(6),
         bottom: rr.bottom,
     };
-    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, settings_scale(10), false, true, ui_icon_font_family());
+    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, arrow_px, false, true, ui_icon_font_family());
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
@@ -781,6 +796,8 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
         WM_ACTIVATE => 0,
         WM_ERASEBKGND => 1,
         WM_PAINT => {
+            let dpi = window_dpi(hwnd);
+            crate::ui::set_settings_ui_dpi(dpi);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);

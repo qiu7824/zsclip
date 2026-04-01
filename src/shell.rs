@@ -1,16 +1,17 @@
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsStr;
 use std::os::windows::process::CommandExt;
+use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::{null_mut};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
+use base64::Engine;
 use windows_sys::Win32::{
     UI::{
         Shell::ShellExecuteW,
-        WindowsAndMessaging::{
-            CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL,
-        },
+        WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL},
     },
 };
 
@@ -22,11 +23,14 @@ const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
 const HKEY_CURRENT_USER_VAL: isize = -2147483647i32 as isize;
 const KEY_READ_VAL: u32 = 0x20019;
 const KEY_SET_VALUE_VAL: u32 = 0x0002;
+const KEY_CREATE_SUB_KEY_VAL: u32 = 0x0004;
 const REG_SZ_VAL: u32 = 1;
+const REG_DWORD_VAL: u32 = 4;
 const ERROR_FILE_NOT_FOUND: i32 = 2;
 const DISABLED_HOTKEYS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
 const DISABLED_HOTKEYS_VALUE: &str = "DisabledHotkeys";
-
+const CLIPBOARD_SETTINGS_KEY: &str = r"Software\Microsoft\Clipboard";
+const CLIPBOARD_HISTORY_VALUE: &str = "EnableClipboardHistory";
 #[link(name = "advapi32")]
 unsafe extern "system" {
     fn RegOpenKeyExW(
@@ -52,9 +56,30 @@ unsafe extern "system" {
         lpdata: *const u8,
         cbdata: u32,
     ) -> i32;
+    fn RegCreateKeyExW(
+        hkey: isize,
+        lpsubkey: *const u16,
+        reserved: u32,
+        lpclass: *mut u16,
+        dwoptions: u32,
+        samdesired: u32,
+        lpsecurityattributes: *const core::ffi::c_void,
+        phkresult: *mut isize,
+        lpdwdisposition: *mut u32,
+    ) -> i32;
     fn RegDeleteValueW(hkey: isize, lpvaluename: *const u16) -> i32;
     fn RegCloseKey(hkey: isize) -> i32;
 }
+
+#[link(name = "winmm")]
+unsafe extern "system" {
+    fn PlaySoundW(pszsound: *const u16, hmod: isize, fdwsound: u32) -> i32;
+}
+
+const SND_ASYNC: u32 = 0x0001;
+const SND_FILENAME: u32 = 0x00020000;
+const SND_NODEFAULT: u32 = 0x0002;
+const SND_MEMORY: u32 = 0x0004;
 
 #[derive(Default, Clone)]
 pub(crate) struct UpdateCheckState {
@@ -71,6 +96,9 @@ static ICON_HANDLE_CACHE: OnceLock<Mutex<HashMap<(u8, i32), isize>>> = OnceLock:
 static ICO_SEARCH: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_SETTING: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_MIN: OnceLock<Vec<u8>> = OnceLock::new();
+static PASTE_SOUND_DEFAULT: &[u8] = include_bytes!("../assets/sounds/paste_default.wav");
+static PASTE_SOUND_SOFT: &[u8] = include_bytes!("../assets/sounds/paste_soft.wav");
+static PASTE_SOUND_BRIGHT: &[u8] = include_bytes!("../assets/sounds/paste_bright.wav");
 static ICO_EXIT: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_TEXT: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
@@ -148,6 +176,80 @@ pub(crate) fn hidden_command(program: &str) -> Command {
     cmd
 }
 
+pub(crate) fn image_ocr_status_text(provider: &str, cloud_url: &str) -> String {
+    match provider {
+        "cloud" => {
+            if cloud_url.trim().is_empty() {
+                tr("\u{4e91} API\u{ff1a}\u{672a}\u{914d}\u{7f6e}\u{5730}\u{5740}", "Cloud API: URL not configured").to_string()
+            } else {
+                tr("\u{4e91} API\u{ff1a}\u{5df2}\u{914d}\u{7f6e}", "Cloud API: configured").to_string()
+            }
+        }
+        _ => tr("\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}", "Image OCR: disabled").to_string(),
+    }
+}
+
+pub(crate) fn run_cloud_ocr_api(
+    url: &str,
+    token: &str,
+    image_bytes: &[u8],
+) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err(tr("\u{8bf7}\u{5148}\u{5728}\u{8bbe}\u{7f6e} > \u{63d2}\u{4ef6}\u{4e2d}\u{914d}\u{7f6e}\u{4e91} API \u{5730}\u{5740}", "Please configure the Cloud API URL in Settings > Plugins").to_string());
+    }
+    let json_body = serde_json::json!({
+        "image_base64": base64::engine::general_purpose::STANDARD.encode(image_bytes),
+        "mime_type": "image/png"
+    });
+    let request_path = std::env::temp_dir().join(format!(
+        "zsclip_ocr_{}_{}.json",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
+    std::fs::write(&request_path, json_body.to_string()).map_err(|e| e.to_string())?;
+    let mut cmd = hidden_command("curl.exe");
+    cmd.args(["-sS", "-L", "-X", "POST", url, "-H", "Content-Type: application/json"]);
+    if !token.trim().is_empty() {
+        cmd.args(["-H", &format!("Authorization: Bearer {}", token.trim())]);
+    }
+    cmd.args(["--data-binary", &format!("@{}", request_path.to_string_lossy())]);
+    let output = cmd.output().map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&request_path);
+    let output = output?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            tr("\u{4e91} OCR \u{8bf7}\u{6c42}\u{5931}\u{8d25}", "Cloud OCR request failed").to_string()
+        } else {
+            stderr
+        });
+    }
+    parse_cloud_ocr_text(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_cloud_ocr_text(body: &str) -> Result<String, String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let text = json
+        .get("text")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("result").and_then(|v| v.as_str()))
+        .or_else(|| json.get("output_text").and_then(|v| v.as_str()))
+        .or_else(|| json.get("data").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
+        .or_else(|| {
+            json.get("choices")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.first())
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.get("content"))
+                .and_then(|v| v.as_str())
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    text.ok_or_else(|| tr("\u{4e91} OCR \u{8fd4}\u{56de}\u{4e2d}\u{672a}\u{627e}\u{5230}\u{53ef}\u{7528}\u{6587}\u{672c}\u{5b57}\u{6bb5}", "Cloud OCR response does not contain recognized text").to_string())
+}
+
 pub(crate) fn open_source_url() -> &'static str {
     option_env!("CARGO_PKG_REPOSITORY").unwrap_or("")
 }
@@ -155,7 +257,7 @@ pub(crate) fn open_source_url() -> &'static str {
 pub(crate) fn open_source_url_display() -> &'static str {
     if open_source_url().trim().is_empty() {
         tr(
-            "未配置（可在 Cargo.toml 的 package.repository 中配置）",
+            "\u{672a}\u{914d}\u{7f6e}\u{ff08}\u{53ef}\u{5728} Cargo.toml \u{7684} package.repository \u{4e2d}\u{914d}\u{7f6e}\u{ff09}",
             "Not configured (set package.repository in Cargo.toml)",
         )
     } else {
@@ -356,7 +458,7 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
             &mut key,
         );
         if open != 0 {
-            return Err(format!("打开注册表失败: {open}"));
+            return Err(format!("\u{6253}\u{5f00}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {open}"));
         }
 
         if txt.trim().is_empty() {
@@ -365,7 +467,7 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
             if delete == 0 || delete == ERROR_FILE_NOT_FOUND {
                 return Ok(());
             }
-            return Err(format!("删除注册表值失败: {delete}"));
+            return Err(format!("\u{5220}\u{9664}\u{6ce8}\u{518c}\u{8868}\u{503c}\u{5931}\u{8d25}: {delete}"));
         }
 
         let mut wide = to_wide(txt);
@@ -384,14 +486,53 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
         if set == 0 {
             Ok(())
         } else {
-            Err(format!("写入注册表失败: {set}"))
+            Err(format!("\u{5199}\u{5165}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {set}"))
+        }
+    }
+}
+
+fn set_clipboard_history_enabled_registry(enabled: bool) -> Result<(), String> {
+    unsafe {
+        let mut key = 0isize;
+        let mut disposition = 0u32;
+        let subkey = to_wide(CLIPBOARD_SETTINGS_KEY);
+        let value = to_wide(CLIPBOARD_HISTORY_VALUE);
+        let open = RegCreateKeyExW(
+            HKEY_CURRENT_USER_VAL,
+            subkey.as_ptr(),
+            0,
+            null_mut(),
+            0,
+            KEY_READ_VAL | KEY_SET_VALUE_VAL | KEY_CREATE_SUB_KEY_VAL,
+            core::ptr::null(),
+            &mut key,
+            &mut disposition,
+        );
+        if open != 0 {
+            return Err(format!("打开剪贴板设置失败: {open}"));
+        }
+
+        let data: u32 = if enabled { 1 } else { 0 };
+        let set = RegSetValueExW(
+            key,
+            value.as_ptr(),
+            0,
+            REG_DWORD_VAL,
+            &data as *const u32 as *const u8,
+            core::mem::size_of::<u32>() as u32,
+        );
+        RegCloseKey(key);
+        if set == 0 {
+            Ok(())
+        } else {
+            Err(format!("写入剪贴板历史设置失败: {set}"))
         }
     }
 }
 
 pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
     if !ch.is_ascii_alphanumeric() {
-        return Err("无效按键".to_string());
+        return Err("\u{65e0}\u{6548}\u{6309}\u{952e}".to_string());
     }
     let mut chars: BTreeSet<char> = read_disabled_hotkeys_registry()
         .unwrap_or_default()
@@ -407,6 +548,12 @@ pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(),
     }
     let new_text: String = chars.into_iter().collect();
     set_disabled_hotkeys_registry(&new_text)
+}
+
+pub(crate) fn set_system_clipboard_history_enabled(enabled: bool) -> Result<(), String> {
+    set_clipboard_history_enabled_registry(enabled)?;
+    toggle_disabled_hotkey_char('V', !enabled)?;
+    Ok(())
 }
 
 pub(crate) fn restart_explorer_shell() -> Result<(), String> {
@@ -426,6 +573,95 @@ fn releases_url() -> String {
     } else {
         format!("{repo}/releases")
     }
+}
+
+fn encode_powershell_script(script: &str) -> String {
+    let utf16: Vec<u16> = OsStr::new(script).encode_wide().collect();
+    let bytes = unsafe {
+        std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2)
+    };
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+fn run_hidden_powershell_encoded(script: &str, args: &[&str]) -> Result<String, String> {
+    let encoded = encode_powershell_script(script);
+    let out = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW_FLAG)
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-EncodedCommand")
+        .arg(encoded)
+        .args(args)
+        .output()
+        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "PowerShell 执行失败".to_string()
+        })
+    }
+}
+
+pub(crate) fn pick_paste_sound_file(current: &str) -> Result<Option<String>, String> {
+    let script = r#"
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$dlg = New-Object System.Windows.Forms.OpenFileDialog
+$dlg.Filter = 'Wave Files|*.wav|All Files|*.*'
+$dlg.Title = '选择提示音文件'
+$dlg.Multiselect = $false
+if ($args.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
+  $current = $args[0]
+  if (Test-Path $current) {
+    $dlg.FileName = $current
+    $parent = Split-Path -Parent $current
+    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
+  } else {
+    $parent = Split-Path -Parent $current
+    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
+  }
+}
+if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+  Write-Output $dlg.FileName
+}
+"#;
+    let out = run_hidden_powershell_encoded(script, &[current])?;
+    if out.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(out))
+    }
+}
+
+pub(crate) unsafe fn play_paste_success_sound(kind: &str, custom_path: &str) {
+    if kind.trim() == "custom" {
+        let path = custom_path.trim();
+        if !path.is_empty() && Path::new(path).is_file() {
+            let wide = to_wide(path);
+            if PlaySoundW(wide.as_ptr(), 0, SND_ASYNC | SND_FILENAME | SND_NODEFAULT) != 0 {
+                return;
+            }
+        }
+    }
+    let bytes = match kind.trim() {
+        "soft" => PASTE_SOUND_SOFT,
+        "bright" => PASTE_SOUND_BRIGHT,
+        _ => PASTE_SOUND_DEFAULT,
+    };
+    let _ = PlaySoundW(bytes.as_ptr() as *const u16, 0, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
+}
+
+pub(crate) fn plugin_downloads_url() -> String {
+    releases_url()
 }
 
 fn parse_version_parts(value: &str) -> Vec<u32> {
@@ -549,7 +785,7 @@ fn build_ico_from_png_entries(entries: &[(u8, &[u8])]) -> Vec<u8> {
     out
 }
 
-/// 从 ICO 文件字节流加载指定尺寸的图标句柄。
+/// Load icon handle from ICO bytes.
 unsafe fn load_icon_from_bytes(data: &[u8], w: i32, h: i32) -> isize {
     if data.len() < 6 { return 0; }
     let count = u16::from_le_bytes([data[4], data[5]]) as usize;
@@ -602,3 +838,4 @@ unsafe fn try_create_icon(data: &[u8], base: usize, w: i32, h: i32) -> Option<is
     );
     if !handle.is_null() { Some(handle as isize) } else { None }
 }
+

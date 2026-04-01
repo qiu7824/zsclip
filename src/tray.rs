@@ -11,7 +11,8 @@ use windows_sys::Win32::{
 };
 
 use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
-use crate::app::state::AppSettings;
+use crate::app::state::{apply_shared_tab_view_state, AppSettings};
+use crate::app::AppState;
 use crate::i18n::{app_title, translate};
 use crate::ui::MainUiLayout;
 use crate::win_system_ui::{apply_theme_to_menu, monitor_dpi_for_point, nearest_monitor_rect_for_point, nearest_monitor_work_rect_for_point, to_wide};
@@ -42,6 +43,37 @@ fn main_window_size_for_point(pt: POINT) -> (i32, i32) {
     (layout.win_w, layout.list_y + layout.list_h + 7)
 }
 
+fn edge_preferred_position(state: &AppState) -> Option<(i32, i32)> {
+    if !state.settings.edge_auto_hide {
+        return None;
+    }
+    if state.edge_hidden_side >= 0
+        && state.edge_docked_right > state.edge_docked_left
+        && state.edge_docked_bottom > state.edge_docked_top
+    {
+        return Some((state.edge_restore_x, state.edge_restore_y));
+    }
+    if state.settings.last_window_x >= 0 && state.settings.last_window_y >= 0 {
+        return Some((state.settings.last_window_x, state.settings.last_window_y));
+    }
+    None
+}
+
+unsafe fn position_window_at_restore(hwnd: HWND, restore_x: i32, restore_y: i32) {
+    let anchor = POINT { x: restore_x, y: restore_y };
+    let (win_w, win_h) = main_window_size_for_point(anchor);
+    let work = nearest_monitor_work_rect_for_point(anchor);
+    let monitor = nearest_monitor_rect_for_point(anchor);
+    let clamp_rect = RECT {
+        left: std::cmp::max(work.left, monitor.left),
+        top: std::cmp::max(work.top, monitor.top),
+        right: std::cmp::min(work.right, monitor.right),
+        bottom: std::cmp::min(work.bottom, monitor.bottom),
+    };
+    let (x, y) = clamp_to_rect(restore_x, restore_y, &clamp_rect, win_w, win_h);
+    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 fn clamp_to_rect(x: i32, y: i32, rc: &RECT, win_w: i32, win_h: i32) -> (i32, i32) {
     (
         std::cmp::max(rc.left, std::cmp::min(x, std::cmp::max(rc.left, rc.right - win_w))),
@@ -61,15 +93,7 @@ fn resolve_main_window_position(
     by_hotkey: bool,
     cursor: POINT,
 ) -> (i32, i32, i32, i32) {
-    let requested = if settings.edge_auto_hide {
-        if settings.last_window_x >= 0 && settings.last_window_y >= 0 {
-            MainWindowPosMode::Last
-        } else {
-            MainWindowPosMode::Center
-        }
-    } else {
-        parse_main_window_pos_mode(settings.show_pos_mode.as_str())
-    };
+    let requested = parse_main_window_pos_mode(settings.show_pos_mode.as_str());
     let (x, y) = match requested {
         MainWindowPosMode::Fixed => (settings.show_fixed_x, settings.show_fixed_y),
         MainWindowPosMode::Last if settings.last_window_x >= 0 && settings.last_window_y >= 0 => {
@@ -194,6 +218,25 @@ pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) -> bool {
     Shell_NotifyIconW(NIM_ADD, &nid) != 0
 }
 
+unsafe fn position_main_window_for_state(hwnd: HWND, state: &AppState, by_hotkey: bool) {
+    let mut pt: POINT = zeroed();
+    GetCursorPos(&mut pt);
+    if state.settings.edge_auto_hide {
+        if let Some((restore_x, restore_y)) = edge_preferred_position(state) {
+            position_window_at_restore(hwnd, restore_x, restore_y);
+            return;
+        }
+        let work = nearest_monitor_work_rect_for_point(pt);
+        let (win_w, win_h) = main_window_size_for_point(pt);
+        let x = work.left + ((work.right - work.left - win_w) / 2);
+        let y = work.top + ((work.bottom - work.top - win_h) / 3);
+        SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+    let (x, y, win_w, win_h) = resolve_main_window_position(&state.settings, by_hotkey, pt);
+    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by_hotkey: bool) {
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
@@ -204,20 +247,29 @@ pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by
 pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
     let pst = crate::app::get_state_ptr(hwnd);
     if !pst.is_null() {
+        let state = &mut *pst;
         crate::app::refresh_window_for_show(hwnd);
-        crate::app::reset_search_ui_state(&mut *pst);
-        position_main_window(hwnd, &(*pst).settings, by_hotkey);
-        if (*pst).settings.edge_auto_hide {
-            let _ = crate::app::hosts::snap_window_to_nearest_edge(hwnd, &mut *pst);
+        if apply_shared_tab_view_state(state) {
+            state.clear_selection();
+            state.scroll_y = 0;
+            state.refilter();
         }
-        (*pst).edge_hidden = false;
-        if !(*pst).settings.edge_auto_hide {
-            (*pst).edge_hidden_side = -1;
+        crate::app::prepare_search_ui_for_show(hwnd, state);
+        position_main_window_for_state(hwnd, state, by_hotkey);
+        state.edge_hidden = false;
+        state.edge_hide_pending_until = None;
+        state.edge_restore_wait_leave = false;
+        state.edge_anim_until = None;
+        if state.settings.edge_auto_hide {
+            crate::app::hosts::note_window_moved_for_edge_hide(hwnd, state);
+        } else {
+            crate::app::hosts::clear_edge_dock_state(state);
         }
-        (*pst).hotkey_passthrough_active = false;
-        (*pst).hotkey_passthrough_target = null_mut();
-        (*pst).hotkey_passthrough_focus = null_mut();
-        (*pst).hotkey_passthrough_edit = null_mut();
+        state.hotkey_passthrough_active = false;
+        state.hotkey_passthrough_target = null_mut();
+        state.hotkey_passthrough_focus = null_mut();
+        state.hotkey_passthrough_edit = null_mut();
+        state.plain_text_paste_mode = false;
     }
     crate::app::set_main_window_noactivate_mode(hwnd, false);
     ShowWindow(hwnd, SW_SHOW);
@@ -227,7 +279,7 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
     crate::app::refresh_low_level_input_hooks();
 }
 
-pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
+pub(crate) unsafe fn show_quick_window(by_hotkey: bool, plain_text_mode: bool) {
     let hwnd = crate::app::quick_window_hwnd();
     if hwnd.is_null() {
         return;
@@ -235,34 +287,43 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool) {
     crate::app::refresh_window_for_show(hwnd);
     let pst = crate::app::get_state_ptr(hwnd);
     if !pst.is_null() {
-        crate::app::reset_search_ui_state(&mut *pst);
-        position_main_window(hwnd, &(*pst).settings, by_hotkey);
-        if (*pst).settings.edge_auto_hide {
-            let _ = crate::app::hosts::snap_window_to_nearest_edge(hwnd, &mut *pst);
+        let state = &mut *pst;
+        if apply_shared_tab_view_state(state) {
+            state.clear_selection();
+            state.scroll_y = 0;
+            state.refilter();
         }
-        (*pst).edge_hidden = false;
-        if !(*pst).settings.edge_auto_hide {
-            (*pst).edge_hidden_side = -1;
+        crate::app::prepare_search_ui_for_show(hwnd, state);
+        position_main_window_for_state(hwnd, state, by_hotkey);
+        state.edge_hidden = false;
+        state.edge_hide_pending_until = None;
+        state.edge_restore_wait_leave = false;
+        state.edge_anim_until = None;
+        if state.settings.edge_auto_hide {
+            crate::app::hosts::note_window_moved_for_edge_hide(hwnd, state);
+        } else {
+            crate::app::hosts::clear_edge_dock_state(state);
         }
         if by_hotkey {
             if let Some((target, focus)) = foreground_focus_snapshot() {
-                (*pst).hotkey_passthrough_active = true;
-                (*pst).hotkey_passthrough_target = target;
-                (*pst).hotkey_passthrough_focus = focus;
-                (*pst).hotkey_passthrough_edit =
+                state.hotkey_passthrough_active = true;
+                state.hotkey_passthrough_target = target;
+                state.hotkey_passthrough_focus = focus;
+                state.hotkey_passthrough_edit =
                     explorer_rename_target().map(|(_, edit)| edit).unwrap_or(null_mut());
             } else {
-                (*pst).hotkey_passthrough_active = false;
-                (*pst).hotkey_passthrough_target = null_mut();
-                (*pst).hotkey_passthrough_focus = null_mut();
-                (*pst).hotkey_passthrough_edit = null_mut();
+                state.hotkey_passthrough_active = false;
+                state.hotkey_passthrough_target = null_mut();
+                state.hotkey_passthrough_focus = null_mut();
+                state.hotkey_passthrough_edit = null_mut();
             }
         } else {
-            (*pst).hotkey_passthrough_active = false;
-            (*pst).hotkey_passthrough_target = null_mut();
-            (*pst).hotkey_passthrough_focus = null_mut();
-            (*pst).hotkey_passthrough_edit = null_mut();
+            state.hotkey_passthrough_active = false;
+            state.hotkey_passthrough_target = null_mut();
+            state.hotkey_passthrough_focus = null_mut();
+            state.hotkey_passthrough_edit = null_mut();
         }
+        state.plain_text_paste_mode = plain_text_mode;
     }
     crate::app::set_main_window_noactivate_mode(hwnd, true);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -318,6 +379,11 @@ pub(crate) unsafe fn remember_window_pos(hwnd: HWND) {
 }
 
 pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
+    let mut plain_text_mode = false;
+    let main_ptr = crate::app::get_state_ptr(hwnd);
+    if !main_ptr.is_null() {
+        plain_text_mode = (*main_ptr).plain_text_paste_mode;
+    }
     let quick = crate::app::quick_window_hwnd();
     if !quick.is_null() && IsWindowVisible(quick) != 0 {
         if crate::app::hosts::try_restore_edge_hidden_window(quick) {
@@ -330,6 +396,7 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
             (*pst).hotkey_passthrough_target = null_mut();
             (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
+            (*pst).plain_text_paste_mode = false;
         }
         crate::app::set_main_window_noactivate_mode(quick, false);
         ShowWindow(quick, SW_HIDE);
@@ -345,12 +412,13 @@ pub(crate) unsafe fn toggle_window_visibility_hotkey(hwnd: HWND) {
             (*pst).hotkey_passthrough_target = null_mut();
             (*pst).hotkey_passthrough_focus = null_mut();
             (*pst).hotkey_passthrough_edit = null_mut();
+            (*pst).plain_text_paste_mode = false;
         }
         crate::app::set_main_window_noactivate_mode(hwnd, false);
         ShowWindow(hwnd, SW_HIDE);
         crate::app::refresh_low_level_input_hooks();
     } else {
-        show_quick_window(true);
+        show_quick_window(true, plain_text_mode);
     }
 }
 

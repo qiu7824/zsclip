@@ -55,7 +55,18 @@ pub const IDC_SET_AUTOHIDE_BLUR: isize = 5061;
 pub const IDC_SET_OPEN_UPDATE: isize = 5062;
 pub const IDC_SET_PASTE_MOVE_TOP: isize = 5063;
 pub const IDC_SET_DEDUPE_FILTER: isize = 5064;
+pub const IDC_SET_OCR_PROVIDER: isize = 5065;
+pub const IDC_SET_OCR_CLOUD_URL: isize = 5066;
+pub const IDC_SET_OCR_CLOUD_TOKEN: isize = 5067;
+pub const IDC_SET_PLUGIN_DOWNLOADS: isize = 5068;
+pub const IDC_SET_PERSIST_SEARCH: isize = 5069;
+pub const IDC_SET_PASTE_SOUND_ENABLE: isize = 5070;
+pub const IDC_SET_PASTE_SOUND_KIND: isize = 5071;
+pub const IDC_SET_PASTE_SOUND_PICK: isize = 5072;
 pub const IDC_SET_HK_RECORD: isize = 6104;
+pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
+pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
+pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
 
 unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();

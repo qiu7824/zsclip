@@ -6,6 +6,7 @@ struct DbItem {
     kind: String,
     preview: String,
     text: Option<String>,
+    source_app: String,
     file_paths: Option<String>,
     image_bytes: Option<Vec<u8>>,
     image_path: Option<String>,
@@ -53,6 +54,7 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
         kind,
         preview,
         text: if summary_only { None } else { row.text },
+        source_app: row.source_app,
         file_paths,
         image_bytes: if summary_only { None } else { row.image_bytes },
         image_path: row.image_path,
@@ -92,6 +94,7 @@ pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
         kind: item.kind,
         preview,
         text: None,
+        source_app: item.source_app.clone(),
         file_paths,
         image_bytes: None,
         image_path: item.image_path.clone(),
@@ -117,10 +120,10 @@ pub(super) fn db_load_items_page(
     cursor: Option<ItemsCursor>,
     limit: usize,
 ) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
-    let (search_terms, time_filter) = parse_search_query(query.search_text.trim());
+    let (search_terms, time_filter, app_filter) = parse_search_query(query.search_text.trim());
     with_db(|conn| {
         let mut sql = String::from(
-            "SELECT id, kind, preview, text_data, file_paths, image_path, image_width, image_height, pinned, group_id, \
+            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE category=?",
         );
@@ -135,12 +138,19 @@ pub(super) fn db_load_items_page(
             let like = format!("%{}%", term);
             sql.push_str(
                 " AND (LOWER(preview) LIKE ? \
+                 OR LOWER(COALESCE(source_app, '')) LIKE ? \
                  OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
                  OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
             );
             bind_values.push(SqlValue::from(like.clone()));
             bind_values.push(SqlValue::from(like.clone()));
+            bind_values.push(SqlValue::from(like.clone()));
             bind_values.push(SqlValue::from(like));
+        }
+
+        if let Some(app_value) = app_filter {
+            sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
+            bind_values.push(SqlValue::from(format!("%{}%", app_value)));
         }
 
         match time_filter {
@@ -178,14 +188,15 @@ pub(super) fn db_load_items_page(
                 kind: row.get(1)?,
                 preview: row.get(2)?,
                 text: row.get(3)?,
-                file_paths: row.get(4)?,
-                image_path: row.get(5)?,
+                source_app: row.get(4)?,
+                file_paths: row.get(5)?,
+                image_path: row.get(6)?,
                 image_bytes: None,
-                image_width: row.get(6)?,
-                image_height: row.get(7)?,
-                pinned: row.get(8)?,
-                group_id: row.get(9)?,
-                created_at: row.get(10)?,
+                image_width: row.get(7)?,
+                image_height: row.get(8)?,
+                pinned: row.get(9)?,
+                group_id: row.get(10)?,
+                created_at: row.get(11)?,
             })
         })?;
 
@@ -283,7 +294,7 @@ pub(super) unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
 pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id, kind, preview, text_data, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
+            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE id=?",
             params![id],
@@ -293,14 +304,15 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
                     kind: row.get(1)?,
                     preview: row.get(2)?,
                     text: row.get(3)?,
-                    file_paths: row.get(4)?,
-                    image_bytes: row.get(5)?,
-                    image_path: row.get(10)?,
-                    image_width: row.get(6)?,
-                    image_height: row.get(7)?,
-                    pinned: row.get(8)?,
-                    group_id: row.get(9)?,
-                    created_at: row.get(11)?,
+                    source_app: row.get(4)?,
+                    file_paths: row.get(5)?,
+                    image_bytes: row.get(6)?,
+                    image_path: row.get(11)?,
+                    image_width: row.get(7)?,
+                    image_height: row.get(8)?,
+                    pinned: row.get(9)?,
+                    group_id: row.get(10)?,
+                    created_at: row.get(12)?,
                 }))
             },
         )
@@ -322,19 +334,21 @@ pub(super) fn db_insert_item(
     let preview = item.preview.clone();
     let signature = signature.unwrap_or_default().trim().to_string();
     let text_data = item.text.clone();
+    let source_app = item.source_app.clone();
     let file_paths = item.file_paths.as_ref().map(|paths| paths.join("\n"));
     let image_data = item.image_bytes.clone();
     let image_path = item.image_path.clone();
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
                 preview,
                 signature,
                 text_data,
+                source_app,
                 file_paths,
                 image_data,
                 image_path,
@@ -408,6 +422,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             preview,
             signature,
             text_data,
+            source_app,
             file_paths,
             image_data,
             image_path,
@@ -417,7 +432,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             group_id,
             created_at,
         ) = tx.query_row(
-            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
+            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, COALESCE(source_app, ''), file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
              FROM items WHERE id=?",
             params![item_id],
             |row| {
@@ -427,27 +442,29 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<Vec<u8>>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, i64>(8)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
                     row.get::<_, i64>(9)?,
                     row.get::<_, i64>(10)?,
                     row.get::<_, i64>(11)?,
-                    row.get::<_, String>(12)?,
+                    row.get::<_, i64>(12)?,
+                    row.get::<_, String>(13)?,
                 ))
             },
         )?;
 
         tx.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, created_at)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, created_at)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
                 preview,
                 signature,
                 text_data,
+                source_app,
                 file_paths,
                 image_data,
                 image_path,

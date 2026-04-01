@@ -5,7 +5,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.7.4>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.7.5>
 - 蓝奏云下载: <https://tcnzy.lanzout.com/b01887awxg>
 - 下载密码: `7dvb`
 
@@ -129,6 +129,17 @@
 - `Ctrl + P`：置顶或取消置顶当前项
 - `Delete`：删除当前项
 - `Esc`：关闭搜索、清空选择或收起界面
+
+## 搜索说明
+
+搜索框默认不显示提示文字，常用写法如下：
+
+- 普通关键词：`合同`
+- 日期搜索：`日期:2026-3-26`
+- 时间搜索：`时间:2026-3-26`
+- 应用搜索：`应用:Word`
+- 带空格的应用名：`应用:"Visual Studio Code"`
+- 组合搜索：`日期:2026-3-26 应用:Word 合同`
 
 ## VV 模式说明
 
