@@ -1,18 +1,25 @@
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::OsStr;
+use std::ffi::{c_void, CStr, CString, OsStr};
 use std::os::windows::process::CommandExt;
 use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr::{null_mut};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 use base64::Engine;
 use windows_sys::Win32::{
+    Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+    System::{
+        Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS},
+        Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
+    },
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL},
     },
+    System::LibraryLoader::{GetProcAddress, LoadLibraryW},
 };
 
 use crate::app::{ClipItem, ClipKind, Icons};
@@ -71,6 +78,11 @@ unsafe extern "system" {
     fn RegCloseKey(hkey: isize) -> i32;
 }
 
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn FreeLibrary(hlibmodule: *mut c_void) -> i32;
+}
+
 #[link(name = "winmm")]
 unsafe extern "system" {
     fn PlaySoundW(pszsound: *const u16, hmod: isize, fdwsound: u32) -> i32;
@@ -93,12 +105,15 @@ pub(crate) struct UpdateCheckState {
 
 static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
 static ICON_HANDLE_CACHE: OnceLock<Mutex<HashMap<(u8, i32), isize>>> = OnceLock::new();
+static BAIDU_OCR_TOKEN_CACHE: OnceLock<Mutex<HashMap<String, (String, u64)>>> = OnceLock::new();
+static WECHAT_OCR_CALLBACK: OnceLock<(Mutex<Option<String>>, Condvar)> = OnceLock::new();
 static ICO_SEARCH: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_SETTING: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_MIN: OnceLock<Vec<u8>> = OnceLock::new();
 static PASTE_SOUND_DEFAULT: &[u8] = include_bytes!("../assets/sounds/paste_default.wav");
 static PASTE_SOUND_SOFT: &[u8] = include_bytes!("../assets/sounds/paste_soft.wav");
 static PASTE_SOUND_BRIGHT: &[u8] = include_bytes!("../assets/sounds/paste_bright.wav");
+static EMBEDDED_WCOCR_DLL: &[u8] = include_bytes!("../assets/plugin/wcocr.dll");
 static ICO_EXIT: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_TEXT: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_IMAGE: OnceLock<Vec<u8>> = OnceLock::new();
@@ -109,6 +124,14 @@ static ICO_DEL: OnceLock<Vec<u8>> = OnceLock::new();
 
 fn update_check_state() -> &'static Mutex<UpdateCheckState> {
     UPDATE_CHECK_STATE.get_or_init(|| Mutex::new(UpdateCheckState::default()))
+}
+
+fn baidu_ocr_token_cache() -> &'static Mutex<HashMap<String, (String, u64)>> {
+    BAIDU_OCR_TOKEN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn wechat_ocr_callback_state() -> &'static (Mutex<Option<String>>, Condvar) {
+    WECHAT_OCR_CALLBACK.get_or_init(|| (Mutex::new(None), Condvar::new()))
 }
 
 fn icon_handle_cache() -> &'static Mutex<HashMap<(u8, i32), isize>> {
@@ -176,43 +199,409 @@ pub(crate) fn hidden_command(program: &str) -> Command {
     cmd
 }
 
-pub(crate) fn image_ocr_status_text(provider: &str, cloud_url: &str) -> String {
+fn app_exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|p| p.to_path_buf()))
+}
+
+fn is_wechat_runtime_dir(path: &Path) -> bool {
+    path.join("mmmojo.dll").is_file()
+        || path.join("mmmojo_64.dll").is_file()
+        || path.join("xwechatwin.dll").is_file()
+        || path.join("Weixin.dll").is_file()
+        || path.join("WeChatOcr.bin").is_file()
+        || path.join("XNet.dll").is_file()
+}
+
+fn version_score(path: &Path) -> Vec<u32> {
+    path.file_name()
+        .and_then(|s| s.to_str())
+        .map(|name| {
+            name.split('.')
+                .filter_map(|part| part.parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn embedded_wcocr_extract_path() -> Option<PathBuf> {
+    let base = std::env::temp_dir().join("zsclip").join("plugin");
+    std::fs::create_dir_all(&base).ok()?;
+    let dll_path = base.join("wcocr.dll");
+    let needs_write = match std::fs::metadata(&dll_path) {
+        Ok(meta) => meta.len() != EMBEDDED_WCOCR_DLL.len() as u64,
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(&dll_path, EMBEDDED_WCOCR_DLL).ok()?;
+    }
+    Some(dll_path)
+}
+
+fn runtime_dir_from_candidate(path: &Path) -> Option<PathBuf> {
+    if !path.exists() {
+        return None;
+    }
+    let direct = if path.is_file() {
+        path.parent().map(Path::to_path_buf)
+    } else {
+        Some(path.to_path_buf())
+    }?;
+    for candidate in [
+        direct.clone(),
+        direct.parent().map(Path::to_path_buf).unwrap_or_else(|| direct.clone()),
+    ] {
+        if is_wechat_runtime_dir(&candidate) {
+            return Some(candidate);
+        }
+        let mut version_dirs = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&candidate) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let child = entry.path();
+                if child.is_dir() && is_wechat_runtime_dir(&child) {
+                    version_dirs.push(child);
+                }
+            }
+        }
+        version_dirs.sort_by(|a, b| version_score(b).cmp(&version_score(a)));
+        if let Some(best) = version_dirs.into_iter().next() {
+            return Some(best);
+        }
+    }
+    None
+}
+
+fn find_running_wechat_runtime_dir() -> Option<PathBuf> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = None;
+        let mut ok = Process32FirstW(snapshot, &mut entry);
+        while ok != 0 {
+            let name_end = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let exe_name = String::from_utf16_lossy(&entry.szExeFile[..name_end]).to_ascii_lowercase();
+            if exe_name == "weixin.exe" || exe_name == "wechat.exe" {
+                let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                if !process.is_null() {
+                    let mut buf = vec![0u16; 1024];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len) != 0 {
+                        let exe_path = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
+                        if let Some(runtime) = runtime_dir_from_candidate(&exe_path) {
+                            found = Some(runtime);
+                            CloseHandle(process);
+                            break;
+                        }
+                    }
+                    CloseHandle(process);
+                }
+            }
+            ok = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        found
+    }
+}
+
+fn resolve_wechat_runtime_dir(path_override: &str) -> Option<PathBuf> {
+    let trimmed = path_override.trim();
+    if !trimmed.is_empty() {
+        if let Some(runtime) = runtime_dir_from_candidate(Path::new(trimmed)) {
+            return Some(runtime);
+        }
+    }
+    find_running_wechat_runtime_dir().or_else(find_wechat_runtime_dir)
+}
+
+fn resolve_wechat_runtime_dir_candidates(path_override: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let mut push_unique = |path: PathBuf| {
+        if !candidates.iter().any(|existing| existing == &path) {
+            candidates.push(path);
+        }
+    };
+    let trimmed = path_override.trim();
+    if !trimmed.is_empty() {
+        let input = PathBuf::from(trimmed);
+        if let Some(runtime) = runtime_dir_from_candidate(&input) {
+            push_unique(runtime);
+        }
+    }
+    if let Some(runtime) = find_running_wechat_runtime_dir() {
+        push_unique(runtime);
+    }
+    if let Some(runtime) = find_wechat_runtime_dir() {
+        push_unique(runtime);
+    }
+    candidates
+}
+
+pub(crate) fn detect_wechat_runtime_dir(current: &str) -> Option<String> {
+    resolve_wechat_runtime_dir(current).map(|p| p.to_string_lossy().into_owned())
+}
+
+fn find_wcocr_wrapper_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(app_dir) = app_exe_dir() {
+        candidates.push(app_dir.join("wcocr.dll"));
+        candidates.push(app_dir.join("plugins").join("wcocr.dll"));
+    }
+    for plugin_root in current_user_wechat_ocr_plugin_roots() {
+        if let Ok(entries) = std::fs::read_dir(&plugin_root) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let extracted = entry.path().join("extracted");
+                let dll = extracted.join("wcocr.dll");
+                if dll.is_file() {
+                    candidates.push(dll);
+                }
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|path| path.is_file())
+        .or_else(embedded_wcocr_extract_path)
+}
+
+fn current_user_wechat_ocr_plugin_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
+        roots.push(appdata.join("Tencent\\xwechat\\xplugin\\Plugins\\WeChatOcr"));
+        roots.push(appdata.join("Tencent\\WeChat\\XPlugin\\Plugins\\WeChatOCR"));
+    }
+    if let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) {
+        roots.push(profile.join("AppData\\Roaming\\Tencent\\xwechat\\xplugin\\Plugins\\WeChatOcr"));
+        roots.push(profile.join("AppData\\Roaming\\Tencent\\WeChat\\XPlugin\\Plugins\\WeChatOCR"));
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn parse_numeric_dir_name(path: &Path) -> u64 {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn find_wechat_ocr_binary_path() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    for plugin_root in current_user_wechat_ocr_plugin_roots() {
+        if let Ok(entries) = std::fs::read_dir(&plugin_root) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let extracted = entry.path().join("extracted");
+                let dll = extracted.join("wxocr.dll");
+                let exe = extracted.join("WeChatOCR.exe");
+                if dll.is_file() {
+                    candidates.push((parse_numeric_dir_name(&entry.path()), dll));
+                } else if exe.is_file() {
+                    candidates.push((parse_numeric_dir_name(&entry.path()), exe));
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.into_iter().map(|(_, path)| path).next()
+}
+
+fn find_wechat_runtime_dir() -> Option<PathBuf> {
+    let roots = [
+        PathBuf::from("C:\\Program Files\\Tencent"),
+        PathBuf::from("C:\\Program Files (x86)\\Tencent"),
+        PathBuf::from("C:\\Program Files"),
+        PathBuf::from("C:\\Program Files (x86)"),
+    ];
+    let mut candidates = Vec::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = std::fs::read_dir(&root) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+                if !(name.contains("weixin") || name.contains("wechat")) {
+                    continue;
+                }
+                if let Some(runtime) = runtime_dir_from_candidate(&path) {
+                    candidates.push(runtime);
+                }
+                if let Ok(subs) = std::fs::read_dir(&path) {
+                    for sub in subs.filter_map(|e| e.ok()) {
+                        let sub_path = sub.path();
+                        if !sub_path.is_dir() {
+                            continue;
+                        }
+                        if let Some(runtime) = runtime_dir_from_candidate(&sub_path) {
+                            candidates.push(runtime);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    candidates.sort_by(|a, b| version_score(b).cmp(&version_score(a)).then_with(|| a.cmp(b)));
+    candidates.dedup();
+    candidates.into_iter().next()
+}
+
+pub(crate) fn image_ocr_status_text(provider: &str, primary: &str, secondary: &str, wechat_dir: &str) -> String {
     match provider {
-        "cloud" => {
-            if cloud_url.trim().is_empty() {
-                tr("\u{4e91} API\u{ff1a}\u{672a}\u{914d}\u{7f6e}\u{5730}\u{5740}", "Cloud API: URL not configured").to_string()
+        "baidu" => {
+            if primary.trim().is_empty() || secondary.trim().is_empty() {
+                tr("百度 OCR：未配置 API Key / Secret Key", "Baidu OCR: API Key / Secret Key not configured").to_string()
             } else {
-                tr("\u{4e91} API\u{ff1a}\u{5df2}\u{914d}\u{7f6e}", "Cloud API: configured").to_string()
+                tr("百度 OCR：已配置", "Baidu OCR: configured").to_string()
+            }
+        }
+        "winocr" => {
+            let wrapper = find_wcocr_wrapper_path();
+            let ocr_bin = find_wechat_ocr_binary_path();
+            let runtime = resolve_wechat_runtime_dir(wechat_dir);
+            match (wrapper, ocr_bin, runtime) {
+                (Some(wrapper), Some(ocr_bin), Some(runtime)) => format!(
+                    "{} {} / {} / {}",
+                    tr("WinOCR：已就绪", "WinOCR: ready"),
+                    wrapper.file_name().and_then(|n| n.to_str()).unwrap_or("wcocr.dll"),
+                    ocr_bin.file_name().and_then(|n| n.to_str()).unwrap_or("wxocr.dll"),
+                    runtime.file_name().and_then(|n| n.to_str()).unwrap_or("Weixin")
+                ),
+                (None, Some(_), _) => tr("WinOCR：已找到 wxocr.dll，但缺少兼容的 wcocr.dll 桥接层", "WinOCR: wxocr.dll found, but compatible wcocr.dll bridge is missing").to_string(),
+                (None, _, _) => tr("WinOCR：未找到兼容的 wcocr.dll", "WinOCR: compatible wcocr.dll not found").to_string(),
+                (_, None, _) => tr("WinOCR：未找到微信 OCR 插件", "WinOCR: WeChat OCR plugin not found").to_string(),
+                (_, _, None) => tr("WinOCR：未找到微信运行时目录", "WinOCR: WeChat runtime directory not found").to_string(),
             }
         }
         _ => tr("\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}", "Image OCR: disabled").to_string(),
     }
 }
 
-pub(crate) fn run_cloud_ocr_api(
-    url: &str,
-    token: &str,
+fn url_encode_form_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 16);
+    for b in input.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    out
+}
+
+fn parse_baidu_access_token(body: &str) -> Result<(String, u64), String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let token = json
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| tr("百度 OCR access_token 返回无效", "Baidu OCR access_token response is invalid").to_string())?;
+    let expires_in = json
+        .get("expires_in")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2_592_000);
+    Ok((token, expires_in))
+}
+
+fn cached_baidu_access_token(api_key: &str, secret_key: &str) -> Option<String> {
+    let cache_key = format!("{}\0{}", api_key.trim(), secret_key.trim());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    baidu_ocr_token_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&cache_key).cloned())
+        .and_then(|(token, expires_at)| if expires_at > now + 60 { Some(token) } else { None })
+}
+
+fn fetch_baidu_access_token(api_key: &str, secret_key: &str) -> Result<String, String> {
+    if let Some(token) = cached_baidu_access_token(api_key, secret_key) {
+        return Ok(token);
+    }
+    let api_key = api_key.trim();
+    let secret_key = secret_key.trim();
+    if api_key.is_empty() || secret_key.is_empty() {
+        return Err(tr("请先在设置-插件中配置百度 OCR 的 API Key / Secret Key", "Please configure the Baidu OCR API Key / Secret Key in Settings > Plugins").to_string());
+    }
+    let body = format!(
+        "grant_type=client_credentials&client_id={}&client_secret={}",
+        url_encode_form_component(api_key),
+        url_encode_form_component(secret_key),
+    );
+    let mut cmd = hidden_command("curl.exe");
+    cmd.args([
+        "-sS",
+        "-L",
+        "-X",
+        "POST",
+        "https://aip.baidubce.com/oauth/2.0/token",
+        "-H",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-raw",
+        &body,
+    ]);
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            tr("百度 OCR 获取 access_token 失败", "Failed to obtain Baidu OCR access_token").to_string()
+        } else {
+            stderr
+        });
+    }
+    let (token, expires_in) = parse_baidu_access_token(&String::from_utf8_lossy(&output.stdout))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut cache) = baidu_ocr_token_cache().lock() {
+        cache.insert(
+            format!("{}\0{}", api_key, secret_key),
+            (token.clone(), now + expires_in),
+        );
+    }
+    Ok(token)
+}
+
+pub(crate) fn run_baidu_ocr_api(
+    api_key: &str,
+    secret_key: &str,
     image_bytes: &[u8],
 ) -> Result<String, String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return Err(tr("\u{8bf7}\u{5148}\u{5728}\u{8bbe}\u{7f6e} > \u{63d2}\u{4ef6}\u{4e2d}\u{914d}\u{7f6e}\u{4e91} API \u{5730}\u{5740}", "Please configure the Cloud API URL in Settings > Plugins").to_string());
-    }
-    let json_body = serde_json::json!({
-        "image_base64": base64::engine::general_purpose::STANDARD.encode(image_bytes),
-        "mime_type": "image/png"
-    });
+    let access_token = fetch_baidu_access_token(api_key, secret_key)?;
+    let form_body = format!(
+        "image={}",
+        url_encode_form_component(&base64::engine::general_purpose::STANDARD.encode(image_bytes))
+    );
     let request_path = std::env::temp_dir().join(format!(
-        "zsclip_ocr_{}_{}.json",
+        "zsclip_baidu_ocr_{}_{}.txt",
         std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
     ));
-    std::fs::write(&request_path, json_body.to_string()).map_err(|e| e.to_string())?;
+    std::fs::write(&request_path, form_body).map_err(|e| e.to_string())?;
     let mut cmd = hidden_command("curl.exe");
-    cmd.args(["-sS", "-L", "-X", "POST", url, "-H", "Content-Type: application/json"]);
-    if !token.trim().is_empty() {
-        cmd.args(["-H", &format!("Authorization: Bearer {}", token.trim())]);
-    }
+    let request_url = format!(
+        "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token={}",
+        access_token
+    );
+    cmd.args(["-sS", "-L", "-X", "POST", &request_url, "-H", "Content-Type: application/x-www-form-urlencoded"]);
     cmd.args(["--data-binary", &format!("@{}", request_path.to_string_lossy())]);
     let output = cmd.output().map_err(|e| e.to_string());
     let _ = std::fs::remove_file(&request_path);
@@ -220,34 +609,185 @@ pub(crate) fn run_cloud_ocr_api(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            tr("\u{4e91} OCR \u{8bf7}\u{6c42}\u{5931}\u{8d25}", "Cloud OCR request failed").to_string()
+            tr("百度 OCR 请求失败", "Baidu OCR request failed").to_string()
         } else {
             stderr
         });
     }
-    parse_cloud_ocr_text(&String::from_utf8_lossy(&output.stdout))
+    parse_baidu_ocr_text(&String::from_utf8_lossy(&output.stdout))
 }
 
-fn parse_cloud_ocr_text(body: &str) -> Result<String, String> {
+fn parse_baidu_ocr_text(body: &str) -> Result<String, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
-    let text = json
-        .get("text")
+    if let Some(err_msg) = json
+        .get("error_msg")
         .and_then(|v| v.as_str())
-        .or_else(|| json.get("result").and_then(|v| v.as_str()))
-        .or_else(|| json.get("output_text").and_then(|v| v.as_str()))
-        .or_else(|| json.get("data").and_then(|v| v.get("text")).and_then(|v| v.as_str()))
-        .or_else(|| {
-            json.get("choices")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.get("message"))
-                .and_then(|v| v.get("content"))
-                .and_then(|v| v.as_str())
-        })
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    text.ok_or_else(|| tr("\u{4e91} OCR \u{8fd4}\u{56de}\u{4e2d}\u{672a}\u{627e}\u{5230}\u{53ef}\u{7528}\u{6587}\u{672c}\u{5b57}\u{6bb5}", "Cloud OCR response does not contain recognized text").to_string())
+    {
+        return Err(err_msg.to_string());
+    }
+    let lines: Vec<String> = json
+        .get("words_result")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("words").and_then(|w| w.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return Err(tr("百度 OCR 返回中未找到可用文本字段", "Baidu OCR response does not contain recognized text").to_string());
+    }
+    Ok(lines.join("\r\n"))
+}
+
+type WeChatOcrFn = unsafe extern "C" fn(*const u16, *const u16, *const i8, extern "C" fn(*const i8)) -> bool;
+type WeChatStopOcrFn = unsafe extern "C" fn() -> i32;
+
+unsafe fn winocr_get_proc<T: Sized>(module: *mut c_void, names: &[&[u8]]) -> Option<T> {
+    for name in names {
+        let ptr = GetProcAddress(module, name.as_ptr());
+        if let Some(proc) = ptr {
+            return Some(std::mem::transmute_copy(&proc));
+        }
+    }
+    None
+}
+
+extern "C" fn wechat_ocr_callback(ptr: *const i8) {
+    if ptr.is_null() {
+        return;
+    }
+    let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    let (lock, cvar) = wechat_ocr_callback_state();
+    if let Ok(mut slot) = lock.lock() {
+        *slot = Some(text);
+        cvar.notify_all();
+    }
+}
+
+fn parse_wechat_ocr_json(payload: &str) -> Result<String, String> {
+    let json: serde_json::Value = serde_json::from_str(payload).map_err(|_| payload.trim().to_string())?;
+    let errcode = json.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
+    if errcode != 0 {
+        if let Some(err_msg) = json.get("msg").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+            return Err(err_msg.to_string());
+        }
+        return Err(format!("errcode={}", errcode));
+    }
+    let lines = json
+        .get("ocr_response")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|row| row.get("text").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return Err(tr("WinOCR 未识别到文字", "WinOCR did not return any recognized text").to_string());
+    }
+    Ok(lines.join("\r\n"))
+}
+
+pub(crate) fn run_winocr_dll_ocr(image_path: &Path, wechat_dir: &str) -> Result<String, String> {
+    run_wechat_wcocr_with_runtime(image_path, wechat_dir)
+}
+
+fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<String, String> {
+    let wrapper_path = find_wcocr_wrapper_path()
+        .ok_or_else(|| tr("WinOCR：未找到兼容的 wcocr.dll", "WinOCR: compatible wcocr.dll not found").to_string())?;
+    let ocr_bin = find_wechat_ocr_binary_path()
+        .ok_or_else(|| tr("WinOCR：未找到微信 OCR 插件", "WinOCR: WeChat OCR plugin not found").to_string())?;
+    let runtime_dirs = resolve_wechat_runtime_dir_candidates(wechat_dir);
+    if runtime_dirs.is_empty() {
+        return Err(tr("WinOCR：未找到微信运行时目录", "WinOCR: WeChat runtime directory not found").to_string());
+    }
+    let wrapper_wide = to_wide(&wrapper_path.to_string_lossy());
+    let ocr_bin_wide = to_wide(&ocr_bin.to_string_lossy());
+    let image_c = CString::new(image_path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    unsafe {
+        let module = LoadLibraryW(wrapper_wide.as_ptr());
+        if module.is_null() {
+            return Err(tr("WinOCR DLL 加载失败", "Failed to load WinOCR DLL").to_string());
+        }
+        let wechat_ocr: WeChatOcrFn = match winocr_get_proc(module, &[b"wechat_ocr\0"]) {
+            Some(func) => func,
+            None => {
+                FreeLibrary(module);
+                return Err(tr("WinOCR DLL 未导出可用的 OCR 接口", "WinOCR DLL does not export a supported OCR entry point").to_string());
+            }
+        };
+        let stop_ocr: Option<WeChatStopOcrFn> = winocr_get_proc(module, &[b"stop_ocr\0"]);
+        let (lock, cvar) = wechat_ocr_callback_state();
+        if let Ok(mut slot) = lock.lock() {
+            *slot = None;
+        }
+        let mut last_rc = None;
+        let mut last_timeout = false;
+        for runtime_dir in runtime_dirs {
+            if let Ok(mut slot) = lock.lock() {
+                *slot = None;
+            }
+            let runtime_wide = to_wide(&runtime_dir.to_string_lossy());
+            let ok = wechat_ocr(
+                ocr_bin_wide.as_ptr(),
+                runtime_wide.as_ptr(),
+                image_c.as_ptr(),
+                wechat_ocr_callback,
+            );
+            if !ok {
+                last_rc = Some((1, runtime_dir));
+                continue;
+            }
+            let received = {
+                let guard = lock.lock().map_err(|_| tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string())?;
+                let (mut guard, timeout) = cvar
+                    .wait_timeout_while(guard, Duration::from_secs(15), |slot| slot.is_none())
+                    .map_err(|_| tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string())?;
+                let value = guard.take();
+                (value, timeout.timed_out())
+            };
+            match received {
+                (Some(payload), _) => {
+                    if let Some(stop) = stop_ocr {
+                        let _ = stop();
+                    }
+                    FreeLibrary(module);
+                    return parse_wechat_ocr_json(&payload);
+                }
+                (None, true) => {
+                    last_timeout = true;
+                }
+                (None, false) => {
+                    last_rc = Some((0, runtime_dir));
+                }
+            }
+        }
+        if let Some(stop) = stop_ocr {
+            let _ = stop();
+        }
+        FreeLibrary(module);
+        if last_timeout {
+            Err(tr("WinOCR 识别超时", "WinOCR recognition timed out").to_string())
+        } else if let Some((rc, runtime_dir)) = last_rc {
+            Err(format!(
+                "{} ({}) [{}]",
+                tr("WinOCR 识别失败", "WinOCR recognition failed"),
+                rc,
+                runtime_dir.to_string_lossy()
+            ))
+        } else {
+            Err(tr("WinOCR 未返回结果", "WinOCR did not return a result").to_string())
+        }
+    }
 }
 
 pub(crate) fn open_source_url() -> &'static str {

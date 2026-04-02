@@ -120,10 +120,10 @@ const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
 use crate::ui::{draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, set_settings_ui_dpi, settings_content_y_scaled, settings_h_scaled, settings_nav_item_rect, settings_nav_w_scaled, settings_scale, settings_w_scaled, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_PAGES, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
 use crate::shell::{
-    icon_handle_for, image_ocr_status_text, is_directory_item, item_icon_handle, load_icons, open_parent_folder,
+    detect_wechat_runtime_dir, icon_handle_for, is_directory_item, item_icon_handle, load_icons, open_parent_folder,
     open_path_with_shell, open_source_url, open_source_url_display, pick_paste_sound_file,
     play_paste_success_sound, plugin_downloads_url,
-    restart_explorer_shell, run_cloud_ocr_api, set_system_clipboard_history_enabled, start_update_check,
+    restart_explorer_shell, run_baidu_ocr_api, run_winocr_dll_ocr, set_system_clipboard_history_enabled, start_update_check,
     update_check_available, update_check_latest_url_or_default, update_check_state_snapshot, IconAssetKind,
 };
 use crate::hover_preview::{hide_hover_preview, show_hover_preview};
@@ -134,7 +134,7 @@ use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OCR_PROVIDER, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
+use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -2092,9 +2092,12 @@ struct SettingsWndState {
     cb_engine: HWND,
     ed_tpl: HWND,
     cb_ocr_provider: HWND,
+    lb_ocr_primary: HWND,
     ed_ocr_cloud_url: HWND,
+    lb_ocr_secondary: HWND,
     ed_ocr_cloud_token: HWND,
     lb_ocr_status: HWND,
+    btn_ocr_detect: HWND,
     btn_plugin_downloads: HWND,
     cb_vv_source: HWND,
     cb_vv_group: HWND,
@@ -2812,6 +2815,12 @@ unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState)
 
     let mut crc: RECT = zeroed();
     GetClientRect(hwnd, &mut crc);
+    let content_y = settings_content_y_scaled();
+    let view_h = (crc.bottom - crc.top - content_y).max(0);
+    for page in 0..SETTINGS_PAGES.len() {
+        st.page_scroll_y[page] =
+            st.page_scroll_y[page].clamp(0, settings_page_max_scroll(page, view_h));
+    }
     let top_margin = settings_scale(24);
     let btn_h = settings_scale(32);
     let save_w = settings_scale(72);
@@ -2838,10 +2847,42 @@ unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState)
             settings_set_font(reg.hwnd, st.ui_font);
         }
     }
-    let current_page = st.cur_page;
-    st.ui.clear_page(current_page);
-    settings_ensure_page(hwnd, st, current_page);
-    settings_show_page(hwnd, st, current_page);
+    let built_pages: Vec<usize> = (0..SETTINGS_PAGES.len())
+        .filter(|&page| st.ui.is_built(page))
+        .collect();
+    for &page in built_pages.iter() {
+        st.ui.clear_page(page);
+    }
+    st.ownerdraw_ctrls
+        .retain(|&ctrl| !ctrl.is_null() && IsWindow(ctrl) != 0);
+    if !st.hot_ownerdraw.is_null() && IsWindow(st.hot_ownerdraw) == 0 {
+        st.hot_ownerdraw = null_mut();
+    }
+    let current_page = st.cur_page.min(SETTINGS_PAGES.len().saturating_sub(1));
+    for &page in built_pages.iter() {
+        settings_ensure_page(hwnd, st, page);
+        settings_sync_page_state(st, page);
+    }
+    if !st.ui.is_built(current_page) {
+        settings_ensure_page(hwnd, st, current_page);
+        settings_sync_page_state(st, current_page);
+    }
+    st.content_scroll_y = if crate::settings_model::settings_page_scrollable(current_page) {
+        st.page_scroll_y[current_page]
+    } else {
+        0
+    };
+    for page in 0..SETTINGS_PAGES.len() {
+        for reg in st.ui.page_regs(page) {
+            if reg.hwnd.is_null() {
+                continue;
+            }
+            ShowWindow(reg.hwnd, if page == current_page { SW_SHOW } else { SW_HIDE });
+        }
+    }
+    if crate::settings_model::settings_page_scrollable(current_page) {
+        settings_repos_controls(hwnd, st, true);
+    }
     InvalidateRect(hwnd, null(), 1);
 }
 
@@ -2930,9 +2971,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 cb_engine: null_mut(),
                 ed_tpl: null_mut(),
                 cb_ocr_provider: null_mut(),
+                lb_ocr_primary: null_mut(),
                 ed_ocr_cloud_url: null_mut(),
+                lb_ocr_secondary: null_mut(),
                 ed_ocr_cloud_token: null_mut(),
                 lb_ocr_status: null_mut(),
+                btn_ocr_detect: null_mut(),
                 btn_plugin_downloads: null_mut(),
                 cb_vv_source: null_mut(),
                 cb_vv_group: null_mut(),
@@ -3264,20 +3308,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 IDC_SET_OCR_PROVIDER => {
                     if let Some((key, _label)) = IMAGE_OCR_PROVIDER_OPTIONS.get(idx) {
+                        st.draft.image_ocr_provider = (*key).to_string();
                         settings_set_text(st.cb_ocr_provider, &image_ocr_provider_display(key));
-                        let cloud_enabled = *key == "cloud";
-                        if !st.ed_ocr_cloud_url.is_null() {
-                            EnableWindow(st.ed_ocr_cloud_url, if cloud_enabled { 1 } else { 0 });
-                        }
-                        if !st.ed_ocr_cloud_token.is_null() {
-                            EnableWindow(st.ed_ocr_cloud_token, if cloud_enabled { 1 } else { 0 });
-                        }
-                        settings_set_text(
-                            st.lb_ocr_status,
-                            &image_ocr_status_text(*key, &get_window_text(st.ed_ocr_cloud_url)),
-                        );
+                        settings_sync_page_state(st, SettingsPage::Plugin.index());
                         InvalidateRect(st.cb_ocr_provider, null(), 1);
-                        InvalidateRect(st.lb_ocr_status, null(), 1);
                     }
                 }
                 IDC_SET_VV_SOURCE => {
@@ -3583,6 +3617,20 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 IDC_SET_PLUGIN_DOWNLOADS => {
                     open_path_with_shell(&plugin_downloads_url());
+                }
+                IDC_SET_OCR_WECHAT_DETECT => {
+                    if let Some(path) = detect_wechat_runtime_dir(&get_window_text(st.ed_ocr_cloud_url)) {
+                        st.draft.image_ocr_wechat_dir = path;
+                        settings_sync_page_state(st, SettingsPage::Plugin.index());
+                        InvalidateRect(hwnd, null(), 1);
+                    } else {
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(tr("未能自动检测到微信目录，请先启动微信或手动填写安装目录。", "Could not auto-detect the WeChat directory. Please start WeChat or enter the install directory manually.")).as_ptr(),
+                            to_wide(tr("WinOCR（微信 OCR）", "WinOCR (WeChat OCR)")).as_ptr(),
+                            MB_OK | MB_ICONINFORMATION,
+                        );
+                    }
                 }
                 IDC_SET_PLUGIN_MAILMERGE => {
                     launch_mail_merge_window(hwnd);
@@ -5736,7 +5784,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     let current_can_ocr = state.settings.image_ocr_provider != "off"
         && current_item
             .as_ref()
-            .and_then(|item| image_path_for_ocr(item))
+            .and_then(|item| image_input_for_ocr(item))
             .is_some();
     let cmd = show_row_menu(
         hwnd,
@@ -6751,9 +6799,32 @@ fn is_supported_ocr_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn image_path_for_ocr(item: &ClipItem) -> Option<PathBuf> {
+struct OcrImageInput {
+    path: PathBuf,
+    delete_after: bool,
+}
+
+fn write_image_bytes_to_ocr_temp_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
+    let base = std::env::temp_dir().join("zsclip").join("ocr");
+    let _ = fs::create_dir_all(&base);
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let out = base.join(format!("ocr_{}.png", ts));
+    write_image_bytes_to_path(&out, bytes, width, height)
+}
+
+fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
     match item.kind {
-        ClipKind::Image => materialize_item_as_file(item),
+        ClipKind::Image => {
+            if let Some(path) = item.image_path.as_ref() {
+                let src = PathBuf::from(path);
+                if src.is_file() && is_supported_ocr_image_path(&src) {
+                    return Some(OcrImageInput { path: src, delete_after: false });
+                }
+            }
+            let (bytes, width, height) = ensure_item_image_bytes(item)?;
+            let path = write_image_bytes_to_ocr_temp_path(&bytes, width as u32, height as u32)?;
+            Some(OcrImageInput { path, delete_after: true })
+        }
         ClipKind::Files => item
             .file_paths
             .as_ref()
@@ -6761,7 +6832,7 @@ fn image_path_for_ocr(item: &ClipItem) -> Option<PathBuf> {
                 if paths.len() == 1 {
                     let path = PathBuf::from(paths[0].clone());
                     if path.is_file() && is_supported_ocr_image_path(&path) {
-                        Some(path)
+                        Some(OcrImageInput { path, delete_after: false })
                     } else {
                         None
                     }
@@ -6777,12 +6848,25 @@ unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem)
     let hwnd_value = hwnd as isize;
     std::thread::spawn(move || {
         let result = match settings.image_ocr_provider.as_str() {
-            "cloud" => image_path_for_ocr(&item)
+            "baidu" => image_input_for_ocr(&item)
                 .ok_or_else(|| tr("当前记录没有可识别的图片文件", "This item does not contain a recognizable image file").to_string())
-                .and_then(|path| {
-                    fs::read(&path)
+                .and_then(|input| {
+                    let result = fs::read(&input.path)
                         .map_err(|e| e.to_string())
-                        .and_then(|bytes| run_cloud_ocr_api(&settings.image_ocr_cloud_url, &settings.image_ocr_cloud_token, &bytes))
+                        .and_then(|bytes| run_baidu_ocr_api(&settings.image_ocr_cloud_url, &settings.image_ocr_cloud_token, &bytes));
+                    if input.delete_after {
+                        let _ = fs::remove_file(&input.path);
+                    }
+                    result
+                }),
+            "winocr" => image_input_for_ocr(&item)
+                .ok_or_else(|| tr("当前记录没有可识别的图片文件", "This item does not contain a recognizable image file").to_string())
+                .and_then(|input| {
+                    let result = run_winocr_dll_ocr(&input.path, &settings.image_ocr_wechat_dir);
+                    if input.delete_after {
+                        let _ = fs::remove_file(&input.path);
+                    }
+                    result
                 }),
             _ => Err(tr("请先在设置-插件中启用图片 OCR", "Please enable Image OCR in Settings > Plugins first").to_string()),
         };
@@ -7290,7 +7374,7 @@ unsafe fn paint(hwnd: HWND) {
                 DeleteObject(br as _);
             }
 
-            let mut text_left = row_rc.left + (layout.row_h * 10 / 44).clamp(8, 18);
+            let mut text_left = row_rc.left + (layout.row_h * 12 / 44).clamp(10, 20);
             if let Some(icon_rc) = layout.row_icon_rect(i, state.visible_count(), state.scroll_y) {
                 let icon_w = icon_rc.right - icon_rc.left;
                 let icon_h = icon_rc.bottom - icon_rc.top;
@@ -7298,7 +7382,7 @@ unsafe fn paint(hwnd: HWND) {
                 if icon != 0 {
                     draw_icon_tinted(memdc as _, icon_rc.left, icon_rc.top, icon, icon_w, icon_h, dark);
                 }
-                text_left = text_left.max(icon_rc.right + (layout.row_h * 10 / 44).clamp(8, 18));
+                text_left = text_left.max(icon_rc.right + (layout.row_h * 12 / 44).clamp(10, 18));
             }
 
             if item.pinned {
@@ -7311,7 +7395,7 @@ unsafe fn paint(hwnd: HWND) {
                             draw_icon_tinted(memdc as _, pin_rc.left, pin_rc.top, pin_icon, pin_w, pin_h, dark);
                         }
                     }
-                    text_left = text_left.max(pin_rc.right + (layout.row_h * 8 / 44).clamp(6, 14));
+                    text_left = text_left.max(pin_rc.right + (layout.row_h * 8 / 44).clamp(8, 16));
                 }
             }
 
@@ -7345,7 +7429,7 @@ unsafe fn paint(hwnd: HWND) {
                 if let Some((bytes, width, height)) = ensure_item_thumbnail_bytes(state, &item, thumb_px) {
                     draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc);
                 }
-                row_rc.left = preview_rc.right + (layout.row_h * 10 / 44).clamp(8, 14);
+                row_rc.left = preview_rc.right + (layout.row_h * 10 / 44).clamp(10, 16);
             }
             // 图片条目：显示截图时间（本地时间），让用户快速识别
             let display_preview: String;
@@ -7355,7 +7439,15 @@ unsafe fn paint(hwnd: HWND) {
             } else {
                 &item.preview
             };
-            draw_text(memdc as _, preview_str, &row_rc, th.text, 12, false, false);
+            draw_text(
+                memdc as _,
+                preview_str,
+                &row_rc,
+                th.text,
+                layout.row_text_size(),
+                false,
+                false,
+            );
         }
 
         if state.active_load_state().loading {
@@ -7365,7 +7457,15 @@ unsafe fn paint(hwnd: HWND) {
                 right: layout.list_x + layout.list_w - 18,
                 bottom: layout.list_y + layout.list_h - 12,
             };
-            draw_text(memdc as _, "继续加载中...", &loading_rc, th.text_muted, 11, false, true);
+            draw_text(
+                memdc as _,
+                "继续加载中...",
+                &loading_rc,
+                th.text_muted,
+                layout.row_muted_text_size(),
+                false,
+                true,
+            );
         }
 
         if state.scroll_fade_alpha > 0 && state.total_content_height() > state.list_view_height() {

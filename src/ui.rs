@@ -643,6 +643,14 @@ impl MainUiLayout {
         self.list_h - 2 * self.list_pad
     }
 
+    pub(crate) fn row_text_size(self) -> i32 {
+        ((self.row_h * 12) / 44).clamp(12, 16)
+    }
+
+    pub(crate) fn row_muted_text_size(self) -> i32 {
+        (self.row_text_size() - 1).max(11)
+    }
+
     pub(crate) fn total_content_height(self, filtered_len: usize) -> i32 {
         filtered_len as i32 * self.row_h
     }
@@ -712,8 +720,8 @@ impl MainUiLayout {
         scroll_y: i32,
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
-        let size = (self.row_h * 18 / 44).max(16);
-        let left_pad = (self.row_h * 12 / 44).max(10);
+        let size = (self.row_h * 20 / 44).max(18);
+        let left_pad = (self.row_h * 12 / 44).max(12);
         let left = row.left + left_pad;
         let top = row.top + (self.row_h - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
@@ -727,8 +735,12 @@ impl MainUiLayout {
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
         let size = (self.row_h * 16 / 44).max(16);
-        let left_pad = (self.row_h * 32 / 44).max(24);
-        let left = row.left + left_pad;
+        let gap = (self.row_h * 6 / 44).max(6);
+        let left = if let Some(icon) = self.row_icon_rect(visible_idx, filtered_len, scroll_y) {
+            icon.right + gap
+        } else {
+            row.left + (self.row_h * 32 / 44).max(24)
+        };
         let top = row.top + (self.row_h - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
     }
@@ -899,8 +911,9 @@ pub unsafe fn draw_main_segment_bar(
     let t0c = if selected == 0 || hover == 0 { th.text } else { th.text_muted };
     let t1c = if selected == 1 || hover == 1 { th.text } else { th.text_muted };
     let tab_font = ui_display_font_family();
-    draw_text_ex(hdc, "复制记录", tab0, t0c, 13, false, true, tab_font);
-    draw_text_ex(hdc, "常用短语", tab1, t1c, 13, false, true, tab_font);
+    let tab_size = ((outer.bottom - outer.top) * 13 / 30).clamp(12, 16);
+    draw_text_ex(hdc, "复制记录", tab0, t0c, tab_size, false, true, tab_font);
+    draw_text_ex(hdc, "常用短语", tab1, t1c, tab_size, false, true, tab_font);
 }
 
 pub unsafe fn draw_text(hdc: *mut core::ffi::c_void, text: &str, rc: &RECT, color: u32, size: i32, bold: bool, center: bool) {
