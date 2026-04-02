@@ -228,7 +228,6 @@ const CLIPBOARD_IGNORE_MS_DIRECT_EDIT: u64 = 600;
 const TRANSIENT_DUPLICATE_CAPTURE_MS: u64 = 1200;
 const TRANSIENT_TOP_DUPLICATE_MS: u64 = 2500;
 const TRANSIENT_DUPLICATE_QUEUE_MS: u64 = 2500;
-const DEDUPE_PROMOTE_MIN_HISTORY_INDEX: usize = 12;
 const EDGE_AUTO_HIDE_TIMER_MS: u32 = 120;
 const EDGE_AUTO_HIDE_DELAY_MS: u64 = 650;
 const EDGE_AUTO_HIDE_RESTORE_GRACE_MS: u64 = 450;
@@ -901,6 +900,21 @@ unsafe fn clipboard_source_app_name() -> String {
     process_image_name(pid)
 }
 
+fn is_self_clipboard_source_app(source_app: &str) -> bool {
+    let source = source_app.trim().to_ascii_lowercase();
+    if source.is_empty() {
+        return false;
+    }
+    if matches!(source.as_str(), "zsclip.exe" | "剪贴板.exe") {
+        return true;
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .map(|name| name.trim().to_ascii_lowercase() == source)
+        .unwrap_or(false)
+}
+
 unsafe fn vv_window_class_name(hwnd: HWND) -> String {
     if hwnd.is_null() {
         return String::new();
@@ -1372,7 +1386,6 @@ pub(crate) struct AppState {
     pub(crate) down_x: i32,
     pub(crate) down_y: i32,
     pub(crate) hover_tab: i32,
-    pub(crate) last_signature: String,
     pub(crate) last_capture_signature: String,
     pub(crate) last_capture_source_app: String,
     pub(crate) recent_capture_signatures: VecDeque<(String, String, Instant)>,
@@ -1466,12 +1479,6 @@ impl AppState {
             return false;
         };
         if top.kind != item.kind {
-            return false;
-        }
-        if !top.source_app.trim().is_empty()
-            && !item.source_app.trim().is_empty()
-            && top.source_app != item.source_app
-        {
             return false;
         }
         match item.kind {
@@ -1686,6 +1693,15 @@ impl AppState {
             .retain(|item| !id_set.contains(&item.id));
     }
 
+    fn remove_duplicate_history_items(&mut self, ids: &[i64]) {
+        if ids.is_empty() {
+            return;
+        }
+        let id_set: HashSet<i64> = ids.iter().copied().collect();
+        self.records.retain(|item| !id_set.contains(&item.id));
+        self.phrases.retain(|item| !id_set.contains(&item.id));
+    }
+
     fn promote_loaded_item_to_top(&mut self, old_id: i64, new_id: i64) -> bool {
         if old_id <= 0 || new_id <= 0 {
             return false;
@@ -1757,31 +1773,32 @@ impl AppState {
         if self.is_recent_top_duplicate_item(&item) {
             return;
         }
-        if self.settings.dedupe_filter_enabled && !signature.is_empty() && self.last_signature == signature {
-            return;
-        }
         if self.settings.dedupe_filter_enabled && !signature.is_empty() {
-            if let Some(existing_id) = db_find_duplicate_item_id(0, &item, &signature) {
-                if self.should_promote_duplicate_to_top(existing_id) {
-                    if let Ok(new_id) = db_promote_item_to_top(existing_id) {
-                        let anchor = self.current_scroll_anchor();
-                        self.last_signature = signature;
-                        self.remove_cached_item(existing_id);
-                        self.remove_cached_item(new_id);
-                        if !self.promote_loaded_item_to_top(existing_id, new_id) {
-                            self.reload_state_from_db_preserve_scroll(anchor);
-                        } else {
-                            self.refilter();
-                            self.restore_scroll_anchor(anchor);
-                        }
-                        unsafe { sync_peer_windows_from_db(self.hwnd); }
-                        return;
+            let duplicate_ids = db_find_duplicate_item_ids(0, &item, &signature);
+            if let Some(existing_id) = duplicate_ids.first().copied() {
+                let anchor = self.current_scroll_anchor();
+                let removed_ids: Vec<i64> = duplicate_ids.into_iter().skip(1).collect();
+                if !removed_ids.is_empty() {
+                    for id in &removed_ids {
+                        let _ = db_delete_item(*id);
+                        self.remove_cached_item(*id);
                     }
+                    self.remove_duplicate_history_items(&removed_ids);
                 }
+                if let Ok(new_id) = db_promote_item_to_top(existing_id) {
+                    self.remove_cached_item(existing_id);
+                    self.remove_cached_item(new_id);
+                    if !self.promote_loaded_item_to_top(existing_id, new_id) {
+                        self.reload_state_from_db_preserve_scroll(anchor);
+                    } else {
+                        self.refilter();
+                        self.restore_scroll_anchor(anchor);
+                    }
+                    unsafe { sync_peer_windows_from_db(self.hwnd); }
+                    return;
+                }
+                return;
             }
-        }
-        if self.settings.dedupe_filter_enabled {
-            self.last_signature = signature.clone();
         }
         item.id = db_insert_item(0, &item, Some(signature.as_str())).unwrap_or(0);
         // 回填内存中的 created_at（DB 由 CURRENT_TIMESTAMP 自动填写，内存补齐以便时间分组标头正常工作）
@@ -1812,17 +1829,6 @@ impl AppState {
         self.refilter();
         unsafe { sync_peer_windows_from_db(self.hwnd); }
     }
-
-    fn should_promote_duplicate_to_top(&self, existing_id: i64) -> bool {
-        if existing_id <= 0 {
-            return false;
-        }
-        match self.records.iter().position(|item| item.id == existing_id) {
-            Some(index) => index >= DEDUPE_PROMOTE_MIN_HISTORY_INDEX,
-            None => true,
-        }
-    }
-
 
     fn list_view_height(&self) -> i32 {
         self.layout().list_view_height()
@@ -6035,6 +6041,12 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         Err(_) => return,
     };
     let source_app = clipboard_source_app_name();
+    if is_self_clipboard_source_app(&source_app) {
+        if sequence != 0 {
+            state.last_clipboard_seq = sequence;
+        }
+        return;
+    }
 
     if let Ok(text) = clipboard.get_text() {
         let normalized = normalize_captured_text(&text);
