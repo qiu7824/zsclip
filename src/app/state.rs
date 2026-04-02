@@ -37,9 +37,10 @@ pub(super) const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
     ("custom", "自定义", "https://example.com/search?q={q}"),
 ];
 
-pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 2] = [
+pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 3] = [
     ("off", "关闭"),
-    ("cloud", "云 API"),
+    ("baidu", "百度 OCR"),
+    ("winocr", "WinOCR（微信 OCR）"),
 ];
 
 pub(super) const PASTE_SOUND_OPTIONS: [(&str, &str); 4] = [
@@ -99,6 +100,7 @@ pub(crate) struct AppSettings {
     pub(crate) image_ocr_provider: String,
     pub(crate) image_ocr_cloud_url: String,
     pub(crate) image_ocr_cloud_token: String,
+    pub(crate) image_ocr_wechat_dir: String,
     pub(crate) qr_quick_enabled: bool,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
@@ -154,6 +156,7 @@ impl Default for AppSettings {
             image_ocr_provider: "off".to_string(),
             image_ocr_cloud_url: String::new(),
             image_ocr_cloud_token: String::new(),
+            image_ocr_wechat_dir: String::new(),
             qr_quick_enabled: false,
             last_window_x: -1,
             last_window_y: -1,

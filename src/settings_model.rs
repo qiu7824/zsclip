@@ -81,7 +81,7 @@ const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
 
 const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 5 },
+    SettingsFormCardSpec { rows: 4 },
     SettingsFormCardSpec { rows: 7 },
 ];
 
@@ -101,7 +101,7 @@ pub fn settings_title_rect() -> UiRect {
 }
 
 pub fn settings_page_scrollable(page: usize) -> bool {
-    !matches!(SettingsPage::from_index(page), SettingsPage::About)
+    settings_page_content_total_h(page) > 0
 }
 
 pub fn settings_form_section_height(rows: i32) -> i32 {
@@ -183,7 +183,7 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
             ["同步设置", "WebDAV 连接", "同步操作"],
             CLOUD_FORM_SECTIONS,
         ),
-        SettingsPage::About => vec![SettingsSection { title: "关于", rect: settings_card_rect(16, 340) }],
+        SettingsPage::About => vec![SettingsSection { title: "关于", rect: settings_card_rect(16, 560) }],
     }
 }
 

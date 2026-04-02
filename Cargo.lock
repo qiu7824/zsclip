@@ -1072,7 +1072,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zsclip"
-version = "0.7.5"
+version = "0.8.0"
 dependencies = [
  "arboard",
  "base64",

@@ -12,7 +12,6 @@ use crate::win_system_ui::{
     create_settings_toggle_plain as settings_create_toggle_plain,
     draw_settings_button_component,
     draw_settings_toggle_component,
-    set_settings_font as settings_set_font,
     SettingsComponentKind,
 };
 
@@ -615,25 +614,6 @@ unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
     best.map(|(_, side, base)| (side, base))
 }
 
-unsafe fn edge_choose_nearest_side(hwnd: HWND, rc: &RECT) -> (i32, RECT) {
-    let work = nearest_monitor_work_rect_for_window(hwnd);
-    let monitor = nearest_monitor_rect_for_window(hwnd);
-    let candidates = [
-        ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT),
-        ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT),
-        ((rc.top - work.top).abs(), EDGE_AUTO_HIDE_TOP),
-        ((work.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM),
-    ];
-    let mut best = candidates[0];
-    for candidate in candidates.into_iter().skip(1) {
-        if candidate.0 < best.0 {
-            best = candidate;
-        }
-    }
-    let _ = monitor;
-    (best.1, work)
-}
-
 unsafe fn update_edge_dock_state(hwnd: HWND, state: &mut AppState, rc: &RECT) -> bool {
     if let Some((side, base)) = edge_choose_dock_side(hwnd, rc) {
         state.edge_hidden_side = side;
@@ -723,53 +703,6 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
         _ => rc.top,
     };
     Some((x, y))
-}
-
-pub(crate) unsafe fn snap_window_to_nearest_edge(hwnd: HWND, state: &mut AppState) -> bool {
-    if hwnd.is_null() || IsWindow(hwnd) == 0 {
-        return false;
-    }
-    let rc = window_rect_for_dock(hwnd);
-    let width = (rc.right - rc.left).max(1);
-    let height = (rc.bottom - rc.top).max(1);
-    let (side, base) = edge_choose_nearest_side(hwnd, &rc);
-    let x = match side {
-        EDGE_AUTO_HIDE_LEFT => base.left,
-        EDGE_AUTO_HIDE_RIGHT => (base.right - width).max(base.left),
-        EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM => {
-            rc.left.clamp(base.left, (base.right - width).max(base.left))
-        }
-        _ => rc.left,
-    };
-    let y = match side {
-        EDGE_AUTO_HIDE_TOP => base.top,
-        EDGE_AUTO_HIDE_BOTTOM => (base.bottom - height).max(base.top),
-        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
-            rc.top.clamp(base.top, (base.bottom - height).max(base.top))
-        }
-        _ => rc.top,
-    };
-    SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        x,
-        y,
-        0,
-        0,
-        SWP_NOSIZE | SWP_NOACTIVATE,
-    );
-    state.edge_hidden_side = side;
-    set_edge_docked_rect(state, &base);
-    state.edge_restore_x = x;
-    state.edge_restore_y = y;
-    state.edge_hidden = false;
-    state.edge_hide_armed = false;
-    state.edge_hide_pending_until = None;
-    state.edge_restore_wait_leave = false;
-    state.edge_anim_until = None;
-    edge_set_grace(state, edge_interaction_grace_ms());
-    ensure_mouse_leave_tracking(hwnd);
-    true
 }
 
 pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState) {
@@ -1445,18 +1378,62 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             settings_set_text(st.cb_engine, &search_engine_display(&s.search_engine));
             settings_set_text(st.ed_tpl, &s.search_template);
             settings_set_text(st.cb_ocr_provider, &image_ocr_provider_display(&s.image_ocr_provider));
-            settings_set_text(st.ed_ocr_cloud_url, &s.image_ocr_cloud_url);
+            let baidu_enabled = s.image_ocr_provider == "baidu";
+            let winocr_enabled = s.image_ocr_provider == "winocr";
+            let ocr_fields_visible = baidu_enabled || winocr_enabled;
+            settings_set_text(
+                st.lb_ocr_primary,
+                if winocr_enabled {
+                    tr("微信目录：", "WeChat directory:")
+                } else {
+                    tr("API Key：", "API Key:")
+                },
+            );
+            settings_set_text(
+                st.lb_ocr_secondary,
+                if winocr_enabled {
+                    tr("Secret Key：", "Secret Key:")
+                } else {
+                    tr("Secret Key：", "Secret Key:")
+                },
+            );
+            settings_set_text(
+                st.ed_ocr_cloud_url,
+                if winocr_enabled {
+                    &s.image_ocr_wechat_dir
+                } else {
+                    &s.image_ocr_cloud_url
+                },
+            );
             settings_set_text(st.ed_ocr_cloud_token, &s.image_ocr_cloud_token);
-            let cloud_enabled = s.image_ocr_provider == "cloud";
+            if !st.lb_ocr_primary.is_null() {
+                ShowWindow(st.lb_ocr_primary, if ocr_fields_visible { SW_SHOW } else { SW_HIDE });
+            }
             if !st.ed_ocr_cloud_url.is_null() {
-                EnableWindow(st.ed_ocr_cloud_url, if cloud_enabled { 1 } else { 0 });
+                EnableWindow(st.ed_ocr_cloud_url, if baidu_enabled || winocr_enabled { 1 } else { 0 });
+                ShowWindow(st.ed_ocr_cloud_url, if ocr_fields_visible { SW_SHOW } else { SW_HIDE });
             }
             if !st.ed_ocr_cloud_token.is_null() {
-                EnableWindow(st.ed_ocr_cloud_token, if cloud_enabled { 1 } else { 0 });
+                EnableWindow(st.ed_ocr_cloud_token, if baidu_enabled { 1 } else { 0 });
+            }
+            if !st.lb_ocr_secondary.is_null() {
+                ShowWindow(st.lb_ocr_secondary, if baidu_enabled { SW_SHOW } else { SW_HIDE });
+            }
+            if !st.ed_ocr_cloud_token.is_null() {
+                ShowWindow(st.ed_ocr_cloud_token, if baidu_enabled { SW_SHOW } else { SW_HIDE });
+            }
+            if !st.btn_ocr_detect.is_null() {
+                ShowWindow(st.btn_ocr_detect, if winocr_enabled { SW_SHOW } else { SW_HIDE });
+                EnableWindow(st.btn_ocr_detect, if winocr_enabled { 1 } else { 0 });
             }
             settings_set_text(
                 st.lb_ocr_status,
-                &image_ocr_status_text(&s.image_ocr_provider, &s.image_ocr_cloud_url),
+                &image_ocr_status_text(
+                    &s.image_ocr_provider,
+                    &s.image_ocr_cloud_url,
+                    &s.image_ocr_cloud_token,
+                    &s.image_ocr_wechat_dir,
+                ),
             );
         }
         SettingsPage::Group => settings_sync_group_page(st),
@@ -1539,17 +1516,6 @@ pub(super) unsafe fn settings_page_push_ctrl(
     h: i32,
 ) {
     settings_register_ctrl(st, page, hwnd, x, y, w, h, crate::settings_model::settings_page_scrollable(page));
-}
-
-pub(super) unsafe fn settings_page0_push_ctrl(
-    st: &mut SettingsWndState,
-    hwnd: HWND,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-) {
-    settings_page_push_ctrl(st, 0, hwnd, x, y, w, h);
 }
 
 pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, redraw_children: bool) {
@@ -1880,8 +1846,12 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         };
         st.draft.image_ocr_provider =
             image_ocr_provider_key_from_display(&get_window_text(st.cb_ocr_provider)).to_string();
-        st.draft.image_ocr_cloud_url = get_window_text(st.ed_ocr_cloud_url);
-        st.draft.image_ocr_cloud_token = get_window_text(st.ed_ocr_cloud_token);
+        if st.draft.image_ocr_provider == "winocr" {
+            st.draft.image_ocr_wechat_dir = get_window_text(st.ed_ocr_cloud_url);
+        } else {
+            st.draft.image_ocr_cloud_url = get_window_text(st.ed_ocr_cloud_url);
+            st.draft.image_ocr_cloud_token = get_window_text(st.ed_ocr_cloud_token);
+        }
     }
     st.draft.vv_source_tab = settings_vv_source_current(st);
     let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
@@ -2117,6 +2087,10 @@ impl SettingsPageBuilder {
         self.add(st, settings_create_password_edit(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(28))
     }
 
+    unsafe fn listbox(&self, st: &mut SettingsWndState, id: isize, x: i32, y: i32, w: i32, h: i32) -> HWND {
+        self.add(st, settings_create_listbox(self.hwnd, id, x, y, w, h, self.font), x, y, w, h)
+    }
+
     unsafe fn toggle_row(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> (HWND, HWND) {
         let (label, btn, ..) = settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
         let label_h = settings_scale(24);
@@ -2139,14 +2113,6 @@ pub(super) unsafe fn settings_create_label_auto(parent: HWND, text: &str, x: i32
     host_create_settings_label_auto(parent, text, x, y, w, min_h, font)
 }
 
-pub(super) unsafe fn settings_create_toggle(parent: HWND, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
-    let (label, btn, lx, ly, lw, lh, btn_x, btn_y) = settings_create_toggle_plain(parent, text, id, x, y, w, font);
-    settings_page0_push_ctrl(st, label, lx, ly, lw, lh);
-    settings_page0_push_ctrl(st, btn, btn_x, btn_y, 44, 24);
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    btn
-}
-
 pub(super) unsafe fn settings_create_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
     host_create_settings_edit(parent, text, id, x, y, w, font)
 }
@@ -2156,113 +2122,107 @@ pub(super) unsafe fn settings_create_password_edit(parent: HWND, text: &str, id:
 }
 
 pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let ui_font = st.ui_font;
-    let sec0 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 0, 0);
-    let sec1 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 1, 130);
-    let sec2 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 2, 0);
-    let sec3 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 3, 138);
-    let sec4 = SettingsFormSectionLayout::new(SettingsPage::General.index(), 4, 0);
+    let page = SettingsPage::General.index();
+    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 0);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 130);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
+    let sec3 = SettingsFormSectionLayout::new(page, 3, 138);
+    let sec4 = SettingsFormSectionLayout::new(page, 4, 0);
 
-    st.chk_autostart = settings_create_toggle(hwnd, st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    st.chk_silent_start = settings_create_toggle(hwnd, st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w(), ui_font);
-    st.chk_tray_icon = settings_create_toggle(hwnd, st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w(), ui_font);
-    st.chk_close_tray = settings_create_toggle(hwnd, st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w(), ui_font);
-    st.chk_auto_hide_on_blur = settings_create_toggle(hwnd, st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w(), ui_font);
-    st.chk_edge_hide = settings_create_toggle(hwnd, st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w(), ui_font);
-    st.chk_hover_preview = settings_create_toggle(hwnd, st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, tr("VV 模式", "VV Mode"), IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, tr("显示图片缩略图", "Show image thumbnails"), IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, tr("快速删除按钮", "Quick delete button"), IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w(), ui_font);
+    let (_, btn) = b.toggle_row(st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w());
+    st.chk_autostart = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w());
+    st.chk_silent_start = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w());
+    st.chk_tray_icon = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w());
+    st.chk_close_tray = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w());
+    st.chk_auto_hide_on_blur = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w());
+    st.chk_edge_hide = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w());
+    st.chk_hover_preview = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, tr("VV 模式", "VV Mode"), IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w());
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, tr("显示图片缩略图", "Show image thumbnails"), IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w());
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, tr("快速删除按钮", "Quick delete button"), IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w());
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
 
-    let lbl_max = settings_create_label(hwnd, "最大保存条数：", sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_max, sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24));
-    st.cb_max = settings_create_dropdown_btn(hwnd, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), settings_scale(150), ui_font);
-    settings_page0_push_ctrl(st, st.cb_max, sec1.field_x(), sec1.row_y(0), settings_scale(150), settings_scale(32));
+    b.label(st, "最大保存条数：", sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24));
+    st.cb_max = b.dropdown(st, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), settings_scale(150));
     if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
 
-    st.chk_click_hide = settings_create_toggle(hwnd, st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w(), ui_font);
-    st.chk_move_pasted_to_top = settings_create_toggle(hwnd, st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w(), ui_font);
-    let _ = settings_create_toggle(hwnd, st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w(), ui_font);
-    st.chk_persistent_search = settings_create_toggle(hwnd, st, "常驻搜索框", IDC_SET_PERSIST_SEARCH, sec2.left(), sec2.row_y(3), sec2.full_w(), ui_font);
-    st.chk_paste_sound = settings_create_toggle(hwnd, st, "粘贴成功声音", IDC_SET_PASTE_SOUND_ENABLE, sec2.left(), sec2.row_y(4), sec2.full_w(), ui_font);
-    let lbl_sound = settings_create_label(hwnd, "提示音：", sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_sound, sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24));
-    st.cb_paste_sound = settings_create_dropdown_btn(
-        hwnd,
+    let (_, btn) = b.toggle_row(st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w());
+    st.chk_click_hide = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w());
+    st.chk_move_pasted_to_top = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w());
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "常驻搜索框", IDC_SET_PERSIST_SEARCH, sec2.left(), sec2.row_y(3), sec2.full_w());
+    st.chk_persistent_search = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    let (_, btn) = b.toggle_row(st, "粘贴成功声音", IDC_SET_PASTE_SOUND_ENABLE, sec2.left(), sec2.row_y(4), sec2.full_w());
+    st.chk_paste_sound = btn;
+    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    b.label(st, "提示音：", sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    st.cb_paste_sound = b.dropdown(
+        st,
         &paste_sound_display("default"),
         IDC_SET_PASTE_SOUND_KIND,
         sec2.field_x(),
         sec2.row_y(5),
         settings_scale(170),
-        ui_font,
-    );
-    settings_page0_push_ctrl(
-        st,
-        st.cb_paste_sound,
-        sec2.field_x(),
-        sec2.row_y(5),
-        settings_scale(170),
-        settings_scale(32),
     );
     if !st.cb_paste_sound.is_null() {
         st.ownerdraw_ctrls.push(st.cb_paste_sound);
     }
-    let lbl_sound_file = settings_create_label(hwnd, "声音文件：", sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_sound_file, sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24));
-    st.btn_paste_sound_pick = settings_create_small_btn(
-        hwnd,
+    b.label(st, "声音文件：", sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    st.btn_paste_sound_pick = b.button(
+        st,
         &paste_sound_file_button_text(""),
         IDC_SET_PASTE_SOUND_PICK,
         sec2.field_x(),
         sec2.row_y(6),
         settings_scale(240),
-        ui_font,
-    );
-    settings_page0_push_ctrl(
-        st,
-        st.btn_paste_sound_pick,
-        sec2.field_x(),
-        sec2.row_y(6),
-        settings_scale(240),
-        settings_scale(32),
     );
     if !st.btn_paste_sound_pick.is_null() {
         st.ownerdraw_ctrls.push(st.btn_paste_sound_pick);
     }
 
-    let lbl_pos = settings_create_label(hwnd, "弹出位置：", sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_pos, sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24));
-    st.cb_pos = settings_create_dropdown_btn(hwnd, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), settings_scale(170), ui_font);
-    settings_page0_push_ctrl(st, st.cb_pos, sec3.field_x(), sec3.row_y(0), settings_scale(170), settings_scale(32));
+    b.label(st, "弹出位置：", sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    st.cb_pos = b.dropdown(st, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), settings_scale(170));
     if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
 
-    let lbl_mouse = settings_create_label(hwnd, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_mouse, sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    b.label(st, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24));
     let mouse_x = sec3.field_x();
-    st.ed_dx = settings_create_edit(hwnd, "", IDC_SET_DX, mouse_x, sec3.row_y(1), settings_scale(64), ui_font);
-    st.ed_dy = settings_create_edit(hwnd, "", IDC_SET_DY, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64), ui_font);
-    settings_page0_push_ctrl(st, st.ed_dx, mouse_x, sec3.row_y(1), settings_scale(64), settings_scale(28));
-    settings_page0_push_ctrl(st, st.ed_dy, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64), settings_scale(28));
+    st.ed_dx = b.edit(st, "", IDC_SET_DX, mouse_x, sec3.row_y(1), settings_scale(64));
+    st.ed_dy = b.edit(st, "", IDC_SET_DY, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64));
 
-    let lbl_fixed = settings_create_label(hwnd, "固定位置 x/y：", sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24), ui_font);
-    settings_page0_push_ctrl(st, lbl_fixed, sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    b.label(st, "固定位置 x/y：", sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24));
     let fixed_x = sec3.field_x();
-    st.ed_fx = settings_create_edit(hwnd, "", IDC_SET_FX, fixed_x, sec3.row_y(2), settings_scale(64), ui_font);
-    st.ed_fy = settings_create_edit(hwnd, "", IDC_SET_FY, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64), ui_font);
-    settings_page0_push_ctrl(st, st.ed_fx, fixed_x, sec3.row_y(2), settings_scale(64), settings_scale(28));
-    settings_page0_push_ctrl(st, st.ed_fy, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64), settings_scale(28));
+    st.ed_fx = b.edit(st, "", IDC_SET_FX, fixed_x, sec3.row_y(2), settings_scale(64));
+    st.ed_fy = b.edit(st, "", IDC_SET_FY, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64));
 
     let btn_y = sec4.row_y(0);
-    st.btn_open_cfg = settings_create_small_btn(hwnd, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130), ui_font);
-    st.btn_open_db = settings_create_small_btn(hwnd, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130), ui_font);
-    st.btn_open_data = settings_create_small_btn(hwnd, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130), ui_font);
-    settings_page0_push_ctrl(st, st.btn_open_cfg, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
-    settings_page0_push_ctrl(st, st.btn_open_db, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
-    settings_page0_push_ctrl(st, st.btn_open_data, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130), settings_scale(32));
+    st.btn_open_cfg = b.button(st, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130));
+    st.btn_open_db = b.button(st, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130));
+    st.btn_open_data = b.button(st, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130));
     for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
-    st.ui.mark_built(SettingsPage::General.index());
+    st.ui.mark_built(page);
 }
 
 pub(super) unsafe fn settings_create_listbox(parent: HWND, id: isize, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
@@ -2451,9 +2411,9 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     st.cb_ocr_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_OCR_PROVIDER, sec1.field_x(), sec1.row_y(0), settings_scale(220));
     if !st.cb_ocr_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_ocr_provider); }
     st.lb_ocr_status = b.label(st, tr("图片 OCR：已关闭", "Image OCR: disabled"), sec1.left(), sec1.label_y(1, settings_scale(24)), sec1.full_w(), settings_scale(24));
-    b.label(st, tr("云 API 地址：", "Cloud API URL:"), sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
+    st.lb_ocr_primary = b.label(st, tr("API Key：", "API Key:"), sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
     st.ed_ocr_cloud_url = b.edit(st, "", IDC_SET_OCR_CLOUD_URL, sec1.field_x(), sec1.row_y(2), sec1.field_w());
-    b.label(st, tr("云 API Token：", "Cloud API Token:"), sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
+    st.lb_ocr_secondary = b.label(st, tr("Secret Key：", "Secret Key:"), sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
     st.ed_ocr_cloud_token = b.password_edit(
         st,
         "",
@@ -2462,6 +2422,8 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
         sec1.row_y(3),
         sec1.field_w(),
     );
+    st.btn_ocr_detect = b.button(st, tr("自动检测微信目录", "Auto-detect WeChat directory"), IDC_SET_OCR_WECHAT_DETECT, sec1.left(), sec1.row_y(3), settings_scale(180));
+    if !st.btn_ocr_detect.is_null() { st.ownerdraw_ctrls.push(st.btn_ocr_detect); }
     let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec2.left(), sec2.row_y(0), sec2.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
@@ -2479,70 +2441,51 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
 }
 
 pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
-    let ui_font = st.ui_font;
     let page = SettingsPage::Group.index();
+    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 104);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
-
-    let push = |st: &mut SettingsWndState, hh: HWND, x: i32, y: i32, w: i32, h: i32| {
-        if !hh.is_null() { settings_page_push_ctrl(st, page, hh, x, y, w, h); }
-    };
-
-    let (group_lbl, group_btn, _lx, _ly, _lw, _lh, _bx, _by) = settings_create_toggle_plain(hwnd, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w(), ui_font);
-    push(st, group_lbl, sec0.left(), sec0.row_y(0), sec0.full_w() - settings_scale(60), settings_scale(24));
-    st.chk_group_enable = group_btn;
-    settings_set_font(st.chk_group_enable, ui_font);
-    push(st, st.chk_group_enable, sec0.left() + sec0.full_w() - settings_scale(44), sec0.row_y(0) + settings_scale(4), settings_scale(44), settings_scale(24));
+    let (_, btn) = b.toggle_row(st, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
+    st.chk_group_enable = btn;
     if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
 
-    let lbl_vv_source = settings_create_label(hwnd, tr("VV 来源：", "VV Source:"), sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
-    push(st, lbl_vv_source, sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24));
-    st.cb_vv_source = settings_create_dropdown_btn(hwnd, source_tab_label(0), IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180), ui_font);
+    b.label(st, tr("VV 来源：", "VV Source:"), sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24));
+    st.cb_vv_source = b.dropdown(st, source_tab_label(0), IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180));
     if !st.cb_vv_source.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_source, sec0.field_x(), sec0.row_y(1), settings_scale(180), settings_scale(32));
         st.ownerdraw_ctrls.push(st.cb_vv_source);
     }
 
-    let lbl_vv_group = settings_create_label(hwnd, tr("VV 默认分组：", "VV Default Group:"), sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24), ui_font);
-    push(st, lbl_vv_group, sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24));
-    st.cb_vv_group = settings_create_dropdown_btn(hwnd, source_tab_all_label(0), IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220), ui_font);
+    b.label(st, tr("VV 默认分组：", "VV Default Group:"), sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24));
+    st.cb_vv_group = b.dropdown(st, source_tab_all_label(0), IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220));
     if !st.cb_vv_group.is_null() {
-        settings_page_push_ctrl(st, page, st.cb_vv_group, sec0.field_x(), sec0.row_y(2), settings_scale(220), settings_scale(32));
         st.ownerdraw_ctrls.push(st.cb_vv_group);
     }
 
     let tab_w = settings_scale(118);
-    st.btn_group_view_records = settings_create_small_btn(hwnd, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w, ui_font);
-    st.btn_group_view_phrases = settings_create_small_btn(hwnd, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + 10, sec1.row_y(0), tab_w, ui_font);
+    st.btn_group_view_records = b.button(st, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w);
+    st.btn_group_view_phrases = b.button(st, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + settings_scale(10), sec1.row_y(0), tab_w);
     for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
         if !hh.is_null() {
-            settings_page_push_ctrl(st, page, hh, if hh == st.btn_group_view_records { sec1.left() } else { sec1.left() + tab_w + 10 }, sec1.row_y(0), tab_w, settings_scale(32));
             st.ownerdraw_ctrls.push(hh);
         }
     }
 
-    st.lb_group_current = settings_create_label(hwnd, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24), ui_font);
-    push(st, st.lb_group_current, sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24));
+    st.lb_group_current = b.label(st, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24));
+    b.label(st, "分组列表：", sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22));
 
-    let lbl3 = settings_create_label(hwnd, "分组列表：", sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22), ui_font);
-    push(st, lbl3, sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22));
-
-    st.lb_groups = settings_create_listbox(hwnd, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170), ui_font);
-    if !st.lb_groups.is_null() { settings_page_push_ctrl(st, page, st.lb_groups, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170)); }
+    st.lb_groups = b.listbox(st, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170));
 
     let btn_y = sec1.row_y(3) + settings_scale(186);
     let bw = settings_scale(90);
     let gap = settings_scale(10);
     let x0 = sec1.left();
-    st.btn_group_add = settings_create_small_btn(hwnd, "新建分组", IDC_SET_GROUP_ADD, x0, btn_y, bw, ui_font);
-    st.btn_group_rename = settings_create_small_btn(hwnd, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap), btn_y, bw, ui_font);
-    st.btn_group_delete = settings_create_small_btn(hwnd, "删除", IDC_SET_GROUP_DELETE, x0 + (bw + gap) * 2, btn_y, bw, ui_font);
-    st.btn_group_up = settings_create_small_btn(hwnd, "上移", IDC_SET_GROUP_UP, x0 + (bw + gap) * 3, btn_y, bw, ui_font);
-    st.btn_group_down = settings_create_small_btn(hwnd, "下移", IDC_SET_GROUP_DOWN, x0 + (bw + gap) * 4, btn_y, bw, ui_font);
+    st.btn_group_add = b.button(st, "新建分组", IDC_SET_GROUP_ADD, x0, btn_y, bw);
+    st.btn_group_rename = b.button(st, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap), btn_y, bw);
+    st.btn_group_delete = b.button(st, "删除", IDC_SET_GROUP_DELETE, x0 + (bw + gap) * 2, btn_y, bw);
+    st.btn_group_up = b.button(st, "上移", IDC_SET_GROUP_UP, x0 + (bw + gap) * 3, btn_y, bw);
+    st.btn_group_down = b.button(st, "下移", IDC_SET_GROUP_DOWN, x0 + (bw + gap) * 4, btn_y, bw);
     for &hh in &[st.btn_group_add, st.btn_group_rename, st.btn_group_delete, st.btn_group_up, st.btn_group_down] {
         if !hh.is_null() {
-            let idx = if hh == st.btn_group_add { 0 } else if hh == st.btn_group_rename { 1 } else if hh == st.btn_group_delete { 2 } else if hh == st.btn_group_up { 3 } else { 4 };
-            settings_page_push_ctrl(st, page, hh, x0 + (bw + gap) * idx, btn_y, bw, settings_scale(32));
             st.ownerdraw_ctrls.push(hh);
         }
     }
@@ -2612,23 +2555,23 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     ];
     let mut y = sec.row_y(0);
     for line in lines.iter() {
-        let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), 24);
-        y += h + 10;
+        let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), settings_scale(24));
+        y += h + settings_scale(10);
     }
 
-    let (_, label_h) = b.label_auto(st, tr("开源地址：", "Source: "), sec.left(), y, 72, 24);
+    let (_, label_h) = b.label_auto(st, tr("开源地址：", "Source: "), sec.left(), y, settings_scale(96), settings_scale(24));
     let link = b.button(
         st,
         open_source_url_display(),
         IDC_SET_OPEN_SOURCE,
-        sec.left() + 64,
-        y - 4,
-        sec.full_w() - 64,
+        sec.left() + settings_scale(88),
+        y - settings_scale(4),
+        sec.full_w() - settings_scale(88),
     );
     if !link.is_null() {
         st.ownerdraw_ctrls.push(link);
     }
-    y += label_h.max(32) + 10;
+    y += label_h.max(settings_scale(32)) + settings_scale(10);
 
     let update_text = if update_state.checking {
         tr("检查更新中…", "Checking for updates...").to_string()
@@ -2649,8 +2592,8 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     } else {
         tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
     };
-    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), 24);
-    y += update_h + 8;
+    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(24));
+    y += update_h + settings_scale(8);
     st.btn_open_update = b.button(
         st,
         if update_state.checking {
@@ -2665,19 +2608,19 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         IDC_SET_OPEN_UPDATE,
         sec.left(),
         y,
-        180,
+        settings_scale(220),
     );
     if !st.btn_open_update.is_null() {
         st.ownerdraw_ctrls.push(st.btn_open_update);
     }
-    y += 42;
+    y += settings_scale(42);
 
     for line in [
         format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
         format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
     ] {
-        let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), 24);
-        y += h + 10;
+        let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), settings_scale(24));
+        y += h + settings_scale(10);
     }
     st.ui.mark_built(page);
 }

@@ -185,7 +185,7 @@ pub fn settings_safe_paint_rect(window_rc: &RECT) -> RECT {
 }
 
 pub fn settings_child_visible(new_y: i32, h: i32, viewport: &RECT) -> bool {
-    let safe_top = viewport.top + SETTINGS_VIEWPORT_MASK_H;
+    let safe_top = viewport.top + settings_scale(SETTINGS_VIEWPORT_MASK_H);
     new_y >= safe_top && new_y + h > safe_top && new_y < viewport.bottom
 }
 

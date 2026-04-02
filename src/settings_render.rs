@@ -63,6 +63,7 @@ pub const IDC_SET_PERSIST_SEARCH: isize = 5069;
 pub const IDC_SET_PASTE_SOUND_ENABLE: isize = 5070;
 pub const IDC_SET_PASTE_SOUND_KIND: isize = 5071;
 pub const IDC_SET_PASTE_SOUND_PICK: isize = 5072;
+pub const IDC_SET_OCR_WECHAT_DETECT: isize = 5074;
 pub const IDC_SET_HK_RECORD: isize = 6104;
 pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
 pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
