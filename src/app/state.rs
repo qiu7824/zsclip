@@ -637,6 +637,7 @@ impl AppState {
             last_capture_at: None,
             last_clipboard_seq: 0,
             ignore_clipboard_until: None,
+            skip_next_clipboard_update_once: false,
             recent_programmatic_clipboard_signature: String::new(),
             recent_programmatic_clipboard_until: None,
             settings,

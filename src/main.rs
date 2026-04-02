@@ -21,6 +21,9 @@ mod win_buffered_paint;
 mod app;
 
 fn main() {
+    if let Some(code) = shell::maybe_run_wechat_ocr_helper_from_args() {
+        std::process::exit(code);
+    }
     if let Err(err) = app::run() {
         eprintln!("error: {err}");
     }
