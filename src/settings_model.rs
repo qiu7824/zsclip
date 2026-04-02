@@ -183,7 +183,7 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
             ["同步设置", "WebDAV 连接", "同步操作"],
             CLOUD_FORM_SECTIONS,
         ),
-        SettingsPage::About => vec![SettingsSection { title: "关于", rect: settings_card_rect(16, 560) }],
+        SettingsPage::About => vec![SettingsSection { title: "关于", rect: settings_card_rect(16, 760) }],
     }
 }
 

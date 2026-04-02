@@ -55,7 +55,6 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLastError() -> u32;
-    fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn OpenProcess(dwdesiredaccess: u32, binherithandle: i32, dwprocessid: u32) -> *mut core::ffi::c_void;
@@ -79,7 +78,6 @@ unsafe extern "system" {
 
 #[link(name = "psapi")]
 unsafe extern "system" {
-    fn EmptyWorkingSet(hprocess: *mut core::ffi::c_void) -> i32;
 }
 
 // Registry API for autostart
@@ -230,7 +228,8 @@ const CLIPBOARD_IGNORE_MS_DIRECT_EDIT: u64 = 600;
 const TRANSIENT_DUPLICATE_CAPTURE_MS: u64 = 1200;
 const TRANSIENT_TOP_DUPLICATE_MS: u64 = 2500;
 const TRANSIENT_DUPLICATE_QUEUE_MS: u64 = 2500;
-const EDGE_AUTO_HIDE_TIMER_MS: u32 = 80;
+const DEDUPE_PROMOTE_MIN_HISTORY_INDEX: usize = 12;
+const EDGE_AUTO_HIDE_TIMER_MS: u32 = 120;
 const EDGE_AUTO_HIDE_DELAY_MS: u64 = 650;
 const EDGE_AUTO_HIDE_RESTORE_GRACE_MS: u64 = 450;
 const EDGE_AUTO_HIDE_ANIM_MS: u64 = 180;
@@ -1380,6 +1379,7 @@ pub(crate) struct AppState {
     pub(crate) last_capture_at: Option<Instant>,
     pub(crate) last_clipboard_seq: u32,
     pub(crate) ignore_clipboard_until: Option<Instant>,
+    pub(crate) skip_next_clipboard_update_once: bool,
     pub(crate) recent_programmatic_clipboard_signature: String,
     pub(crate) recent_programmatic_clipboard_until: Option<Instant>,
     pub(crate) settings: AppSettings,
@@ -1551,14 +1551,37 @@ impl AppState {
             Some(Instant::now() + std::time::Duration::from_millis(ms.max(1)));
     }
 
-    fn is_recent_programmatic_clipboard_signature(&self, signature: &str) -> bool {
+    fn consume_skip_next_clipboard_update_once(&mut self, sequence: u32) -> bool {
+        if !self.skip_next_clipboard_update_once {
+            return false;
+        }
+        self.skip_next_clipboard_update_once = false;
+        if sequence != 0 {
+            self.last_clipboard_seq = sequence;
+        }
+        true
+    }
+
+    fn consume_recent_programmatic_clipboard_signature(&mut self, signature: &str) -> bool {
         if signature.is_empty() || self.recent_programmatic_clipboard_signature.is_empty() {
             return false;
         }
-        self.recent_programmatic_clipboard_until
-            .map(|until| Instant::now() < until)
-            .unwrap_or(false)
-            && self.recent_programmatic_clipboard_signature == signature
+        let now = Instant::now();
+        let still_active = self
+            .recent_programmatic_clipboard_until
+            .map(|until| now < until)
+            .unwrap_or(false);
+        if !still_active {
+            self.recent_programmatic_clipboard_signature.clear();
+            self.recent_programmatic_clipboard_until = None;
+            return false;
+        }
+        if self.recent_programmatic_clipboard_signature == signature {
+            self.recent_programmatic_clipboard_signature.clear();
+            self.recent_programmatic_clipboard_until = None;
+            return true;
+        }
+        false
     }
 
     fn delete_selected_rows(&mut self) {
@@ -1739,19 +1762,21 @@ impl AppState {
         }
         if self.settings.dedupe_filter_enabled && !signature.is_empty() {
             if let Some(existing_id) = db_find_duplicate_item_id(0, &item, &signature) {
-                if let Ok(new_id) = db_promote_item_to_top(existing_id) {
-                    let anchor = self.current_scroll_anchor();
-                    self.last_signature = signature;
-                    self.remove_cached_item(existing_id);
-                    self.remove_cached_item(new_id);
-                    if !self.promote_loaded_item_to_top(existing_id, new_id) {
-                        self.reload_state_from_db_preserve_scroll(anchor);
-                    } else {
-                        self.refilter();
-                        self.restore_scroll_anchor(anchor);
+                if self.should_promote_duplicate_to_top(existing_id) {
+                    if let Ok(new_id) = db_promote_item_to_top(existing_id) {
+                        let anchor = self.current_scroll_anchor();
+                        self.last_signature = signature;
+                        self.remove_cached_item(existing_id);
+                        self.remove_cached_item(new_id);
+                        if !self.promote_loaded_item_to_top(existing_id, new_id) {
+                            self.reload_state_from_db_preserve_scroll(anchor);
+                        } else {
+                            self.refilter();
+                            self.restore_scroll_anchor(anchor);
+                        }
+                        unsafe { sync_peer_windows_from_db(self.hwnd); }
+                        return;
                     }
-                    unsafe { sync_peer_windows_from_db(self.hwnd); }
-                    return;
                 }
             }
         }
@@ -1786,6 +1811,16 @@ impl AppState {
         }
         self.refilter();
         unsafe { sync_peer_windows_from_db(self.hwnd); }
+    }
+
+    fn should_promote_duplicate_to_top(&self, existing_id: i64) -> bool {
+        if existing_id <= 0 {
+            return false;
+        }
+        match self.records.iter().position(|item| item.id == existing_id) {
+            Some(index) => index >= DEDUPE_PROMOTE_MIN_HISTORY_INDEX,
+            None => true,
+        }
     }
 
 
@@ -4254,7 +4289,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     (*ptr).release_list_memory();
-                    trim_process_working_set();
                 }
             }
             refresh_low_level_input_hooks();
@@ -4584,11 +4618,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let normalized = text.replace("\r\n", "\n");
                     let preview = build_preview(&normalized);
                     let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
+                    skip_next_clipboard_update_for_all_hosts();
                     if let Ok(mut clipboard) = Clipboard::new() {
                         let _ = clipboard.set_text(normalized.clone());
                     }
-                    state.note_programmatic_clipboard_signature(sig.clone(), 1200);
-                    set_ignore_clipboard_for_all_hosts(1200);
                     state.add_clip_item(
                         ClipItem {
                             id: 0,
@@ -5985,6 +6018,9 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     }
     let state = &mut *ptr;
     let sequence = GetClipboardSequenceNumber();
+    if state.consume_skip_next_clipboard_update_once(sequence) {
+        return;
+    }
     if let Some(until) = state.ignore_clipboard_until {
         if Instant::now() < until {
             if sequence != 0 {
@@ -6005,7 +6041,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         if !normalized.is_empty() {
             let preview = build_preview(&normalized);
             let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
-            if state.is_recent_programmatic_clipboard_signature(&sig) {
+            if state.consume_recent_programmatic_clipboard_signature(&sig) {
                 return;
             }
             if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
@@ -6053,7 +6089,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             norm_h,
             hash_bytes(bytes.as_slice())
         );
-        if state.is_recent_programmatic_clipboard_signature(&sig) {
+        if state.consume_recent_programmatic_clipboard_signature(&sig) {
             return;
         }
         if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
@@ -6083,7 +6119,6 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             candidate,
             sig,
         );
-        trim_process_working_set();
         InvalidateRect(hwnd, null(), 1);
         return;
     }
@@ -6091,7 +6126,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     if let Some(paths) = clipboard_file_paths() {
         let preview = build_files_preview(&paths);
         let sig = file_paths_signature(&paths);
-        if state.is_recent_programmatic_clipboard_signature(&sig) {
+        if state.consume_recent_programmatic_clipboard_signature(&sig) {
             return;
         }
         if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {

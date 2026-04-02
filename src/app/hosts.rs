@@ -78,6 +78,18 @@ pub(super) unsafe fn set_ignore_clipboard_for_all_hosts(duration_ms: u64) {
     }
 }
 
+pub(super) unsafe fn skip_next_clipboard_update_for_all_hosts() {
+    for hwnd in window_host_hwnds() {
+        if hwnd.is_null() {
+            continue;
+        }
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() {
+            (*ptr).skip_next_clipboard_update_once = true;
+        }
+    }
+}
+
 pub(super) fn is_app_window(hwnd: HWND) -> bool {
     if hwnd.is_null() {
         return false;
@@ -196,7 +208,7 @@ unsafe fn refresh_outside_hide_timers() {
             continue;
         }
         if window_needs_outside_hide_timer(hwnd) {
-            SetTimer(hwnd, ID_TIMER_OUTSIDE_HIDE, 60, None);
+            SetTimer(hwnd, ID_TIMER_OUTSIDE_HIDE, 120, None);
         } else {
             KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
         }
@@ -1073,15 +1085,6 @@ pub(crate) unsafe fn note_window_moved_for_edge_hide(hwnd: HWND, state: &mut App
 
 pub(super) unsafe fn main_window_should_stay_noactivate(state: &AppState, x: i32, y: i32) -> bool {
     hit_test_row(state, x, y) >= 0
-}
-
-pub(super) fn trim_process_working_set() {
-    unsafe {
-        let process = GetCurrentProcess();
-        if !process.is_null() {
-            let _ = EmptyWorkingSet(process);
-        }
-    }
 }
 
 pub(super) fn taskbar_created_message() -> u32 {
@@ -2540,38 +2543,47 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec = SettingsFormSectionLayout::new(page, 0, 0);
     let update_state = update_check_state_snapshot();
-    let lines = [
-        format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION")),
+    let mut y = sec.row_y(0);
+    let version_text = format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION"));
+    let (_, version_h) = b.label_auto(st, &version_text, sec.left(), y, sec.full_w(), settings_scale(34));
+    y += version_h + settings_scale(18);
+
+    let summary_text = format!(
+        "{}\r\n{}",
         tr(
             "设置界面现在统一使用同一套 section/form 布局。",
             "The settings window now uses a unified section/form layout.",
-        )
-        .to_string(),
+        ),
         tr(
             "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。",
             "New settings can reuse the same cards, field columns, action rows, and spacing.",
         )
-        .to_string(),
-    ];
-    let mut y = sec.row_y(0);
-    for line in lines.iter() {
-        let (_, h) = b.label_auto(st, line, sec.left(), y, sec.full_w(), settings_scale(24));
-        y += h + settings_scale(10);
-    }
+    );
+    let (_, summary_h) = b.label_auto(st, &summary_text, sec.left(), y, sec.full_w(), settings_scale(76));
+    y += summary_h + settings_scale(18);
 
-    let (_, label_h) = b.label_auto(st, tr("开源地址：", "Source: "), sec.left(), y, settings_scale(96), settings_scale(24));
+    let source_label_w = settings_scale(116);
+    let source_row_h = settings_scale(36);
+    b.label(
+        st,
+        tr("开源地址：", "Source: "),
+        sec.left(),
+        y + settings_scale(4),
+        source_label_w,
+        source_row_h,
+    );
     let link = b.button(
         st,
         open_source_url_display(),
         IDC_SET_OPEN_SOURCE,
-        sec.left() + settings_scale(88),
-        y - settings_scale(4),
-        sec.full_w() - settings_scale(88),
+        sec.left() + source_label_w,
+        y,
+        sec.full_w() - source_label_w,
     );
     if !link.is_null() {
         st.ownerdraw_ctrls.push(link);
     }
-    y += label_h.max(settings_scale(32)) + settings_scale(10);
+    y += source_row_h + settings_scale(18);
 
     let update_text = if update_state.checking {
         tr("检查更新中…", "Checking for updates...").to_string()
@@ -2592,8 +2604,8 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     } else {
         tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
     };
-    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(24));
-    y += update_h + settings_scale(8);
+    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(52));
+    y += update_h + settings_scale(12);
     st.btn_open_update = b.button(
         st,
         if update_state.checking {
@@ -2613,15 +2625,16 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     if !st.btn_open_update.is_null() {
         st.ownerdraw_ctrls.push(st.btn_open_update);
     }
-    y += settings_scale(42);
+    y += settings_scale(50);
 
-    for line in [
-        format!("{}{}", tr("数据目录：", "Data directory: "), data_dir().to_string_lossy()),
-        format!("{}{}", tr("数据库：", "Database: "), db_file().to_string_lossy()),
-    ] {
-        let (_, h) = b.label_auto(st, &line, sec.left(), y, sec.full_w(), settings_scale(24));
-        y += h + settings_scale(10);
-    }
+    let info_text = format!(
+        "{}{}\r\n{}{}",
+        tr("数据目录：", "Data directory: "),
+        data_dir().to_string_lossy(),
+        tr("数据库：", "Database: "),
+        db_file().to_string_lossy(),
+    );
+    let _ = b.label_auto(st, &info_text, sec.left(), y, sec.full_w(), settings_scale(84));
     st.ui.mark_built(page);
 }
 

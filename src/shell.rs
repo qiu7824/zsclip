@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{c_void, CStr, CString, OsStr};
+use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -194,6 +195,12 @@ pub(crate) unsafe fn open_parent_folder(path: &str) {
 }
 
 pub(crate) fn hidden_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
+    cmd
+}
+
+fn hidden_command_path(program: &Path) -> Command {
     let mut cmd = Command::new(program);
     cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
     cmd
@@ -698,7 +705,29 @@ fn parse_wechat_ocr_json(payload: &str) -> Result<String, String> {
 }
 
 pub(crate) fn run_winocr_dll_ocr(image_path: &Path, wechat_dir: &str) -> Result<String, String> {
-    run_wechat_wcocr_with_runtime(image_path, wechat_dir)
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let output = hidden_command_path(&exe)
+        .arg("--wechat-ocr-helper")
+        .arg(image_path.as_os_str())
+        .arg(wechat_dir)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let trimmed = text.trim_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            Err(tr("WinOCR 未返回结果", "WinOCR did not return a result").to_string())
+        } else {
+            Ok(trimmed.to_string())
+        }
+    } else {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if err.is_empty() {
+            Err(tr("WinOCR 子进程执行失败", "WinOCR helper process failed").to_string())
+        } else {
+            Err(err)
+        }
+    }
 }
 
 fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<String, String> {
@@ -786,6 +815,37 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
             ))
         } else {
             Err(tr("WinOCR 未返回结果", "WinOCR did not return a result").to_string())
+        }
+    }
+}
+
+pub(crate) fn maybe_run_wechat_ocr_helper_from_args() -> Option<i32> {
+    let mut args = std::env::args_os();
+    let _exe = args.next();
+    let Some(mode) = args.next() else {
+        return None;
+    };
+    if mode != OsStr::new("--wechat-ocr-helper") {
+        return None;
+    }
+    let image_path = args.next().map(PathBuf::from);
+    let wechat_dir = args.next().unwrap_or_default();
+    let result = match image_path {
+        Some(path) => run_wechat_wcocr_with_runtime(&path, &wechat_dir.to_string_lossy()),
+        None => Err(tr("WinOCR 缺少图片路径参数", "WinOCR helper missing image path argument").to_string()),
+    };
+    match result {
+        Ok(text) => {
+            let mut stdout = std::io::stdout().lock();
+            let _ = stdout.write_all(text.as_bytes());
+            let _ = stdout.flush();
+            Some(0)
+        }
+        Err(err) => {
+            let mut stderr = std::io::stderr().lock();
+            let _ = stderr.write_all(err.as_bytes());
+            let _ = stderr.flush();
+            Some(1)
         }
     }
 }
