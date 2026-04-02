@@ -1,5 +1,4 @@
 use super::*;
-use rusqlite::OptionalExtension;
 
 struct DbItem {
     id: i64,
@@ -362,54 +361,58 @@ pub(super) fn db_insert_item(
     })
 }
 
-pub(super) fn db_find_duplicate_item_id(
+pub(super) fn db_find_duplicate_item_ids(
     category: i64,
     item: &ClipItem,
     signature: &str,
-) -> Option<i64> {
+) -> Vec<i64> {
     if !signature.trim().is_empty() {
         let found = with_db(|conn| {
-            conn.query_row(
-                "SELECT id FROM items WHERE category=? AND signature=? ORDER BY pinned DESC, id DESC LIMIT 1",
-                params![category, signature],
-                |row| row.get::<_, i64>(0),
-            )
+            let mut stmt = conn.prepare(
+                "SELECT id FROM items WHERE category=? AND signature=? ORDER BY pinned DESC, id DESC",
+            )?;
+            let rows = stmt.query_map(params![category, signature], |row| row.get::<_, i64>(0))?;
+            Ok(rows.filter_map(|row| row.ok()).collect::<Vec<i64>>())
         })
-        .optional()
-        .ok()
-        .flatten();
-        if found.is_some() {
+        .unwrap_or_default();
+        if !found.is_empty() {
             return found;
         }
     }
 
     match item.kind {
-        ClipKind::Text | ClipKind::Phrase => item.text.as_ref().and_then(|text| {
-            with_db(|conn| {
-                conn.query_row(
-                    "SELECT id FROM items WHERE category=? AND kind IN ('text','phrase') AND COALESCE(text_data, '')=? ORDER BY pinned DESC, id DESC LIMIT 1",
-                    params![category, text],
-                    |row| row.get::<_, i64>(0),
-                )
+        ClipKind::Text | ClipKind::Phrase => item
+            .text
+            .as_ref()
+            .map(|text| {
+                with_db(|conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM items WHERE category=? AND kind IN ('text','phrase') AND COALESCE(text_data, '')=? ORDER BY pinned DESC, id DESC",
+                    )?;
+                    let rows =
+                        stmt.query_map(params![category, text], |row| row.get::<_, i64>(0))?;
+                    Ok(rows.filter_map(|row| row.ok()).collect::<Vec<i64>>())
+                })
+                .unwrap_or_default()
             })
-            .optional()
-            .ok()
-            .flatten()
-        }),
-        ClipKind::Files => item.file_paths.as_ref().and_then(|paths| {
-            let joined = paths.join("\n");
-            with_db(|conn| {
-                conn.query_row(
-                    "SELECT id FROM items WHERE category=? AND kind='files' AND COALESCE(file_paths, '')=? ORDER BY pinned DESC, id DESC LIMIT 1",
-                    params![category, joined],
-                    |row| row.get::<_, i64>(0),
-                )
+            .unwrap_or_default(),
+        ClipKind::Files => item
+            .file_paths
+            .as_ref()
+            .map(|paths| {
+                let joined = paths.join("\n");
+                with_db(|conn| {
+                    let mut stmt = conn.prepare(
+                        "SELECT id FROM items WHERE category=? AND kind='files' AND COALESCE(file_paths, '')=? ORDER BY pinned DESC, id DESC",
+                    )?;
+                    let rows =
+                        stmt.query_map(params![category, joined], |row| row.get::<_, i64>(0))?;
+                    Ok(rows.filter_map(|row| row.ok()).collect::<Vec<i64>>())
+                })
+                .unwrap_or_default()
             })
-            .optional()
-            .ok()
-            .flatten()
-        }),
-        ClipKind::Image => None,
+            .unwrap_or_default(),
+        ClipKind::Image => Vec::new(),
     }
 }
 

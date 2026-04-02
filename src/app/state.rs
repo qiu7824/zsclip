@@ -630,7 +630,6 @@ impl AppState {
             down_x: 0,
             down_y: 0,
             hover_tab: -1,
-            last_signature: String::new(),
             last_capture_signature: String::new(),
             last_capture_source_app: String::new(),
             recent_capture_signatures: VecDeque::new(),

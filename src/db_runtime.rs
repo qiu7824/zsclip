@@ -279,7 +279,7 @@ where
     DB_CONN.with(|cell| {
         ensure_connection(cell)?;
         let slot = cell.borrow();
-        let conn = slot.as_ref().expect("db connection initialized");
+        let conn = slot.as_ref().ok_or(rusqlite::Error::InvalidQuery)?;
         f(conn)
     })
 }
@@ -291,7 +291,7 @@ where
     DB_CONN.with(|cell| {
         ensure_connection(cell)?;
         let mut slot = cell.borrow_mut();
-        let conn = slot.as_mut().expect("db connection initialized");
+        let conn = slot.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
         f(conn)
     })
 }
