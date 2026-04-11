@@ -19,6 +19,7 @@ pub(crate) use self::hosts::{
 };
 
 use arboard::{Clipboard, ImageData};
+use image::ImageFormat;
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -147,7 +148,7 @@ use windows_sys::Win32::{
         DEFAULT_GUI_FONT, NULL_PEN, SRCCOPY,
     },
     System::{
-        DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData, EmptyClipboard, SetClipboardData},
+        DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData, GetClipboardOwner, EnumClipboardFormats, GetClipboardFormatNameW, EmptyClipboard, SetClipboardData},
         LibraryLoader::GetModuleHandleW,
         Ole::{DoDragDrop, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY},
     },
@@ -241,6 +242,7 @@ const EDGE_AUTO_HIDE_ANIM_MS: u64 = 180;
 const EDGE_AUTO_HIDE_ANIM_TIMER_MS: u32 = 16;
 const CLIPBOARD_RETRY_DELAY_MS: u32 = 140;
 const CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 5;
+const PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 18;
 
 const EN_CHANGE_CODE: u16 = 0x0300;
 const MOD_ALT: u32 = 0x0001;
@@ -308,7 +310,37 @@ unsafe fn reset_clipboard_retry(hwnd: HWND, state: &mut AppState) {
     state.clipboard_retry_attempts = 0;
 }
 
-unsafe fn schedule_clipboard_retry(hwnd: HWND, state: &mut AppState, sequence: u32) -> bool {
+unsafe fn clipboard_has_named_format(target: &str) -> bool {
+    if OpenClipboard(null_mut()) == 0 {
+        return false;
+    }
+    let mut format = 0u32;
+    let mut found = false;
+    loop {
+        format = EnumClipboardFormats(format);
+        if format == 0 {
+            break;
+        }
+        let mut buf = [0u16; 128];
+        let len = GetClipboardFormatNameW(format, buf.as_mut_ptr(), buf.len() as i32);
+        if len > 0 {
+            let name = String::from_utf16_lossy(&buf[..len as usize]);
+            if name.eq_ignore_ascii_case(target) {
+                found = true;
+                break;
+            }
+        }
+    }
+    let _ = CloseClipboard();
+    found
+}
+
+unsafe fn schedule_clipboard_retry_with_limit(
+    hwnd: HWND,
+    state: &mut AppState,
+    sequence: u32,
+    max_attempts: u8,
+) -> bool {
     if sequence == 0 {
         return false;
     }
@@ -316,7 +348,8 @@ unsafe fn schedule_clipboard_retry(hwnd: HWND, state: &mut AppState, sequence: u
         reset_clipboard_retry(hwnd, state);
         state.clipboard_retry_sequence = sequence;
     }
-    if state.clipboard_retry_attempts >= CLIPBOARD_RETRY_MAX_ATTEMPTS {
+    let limit = max_attempts.max(CLIPBOARD_RETRY_MAX_ATTEMPTS);
+    if state.clipboard_retry_attempts >= limit {
         return false;
     }
     state.clipboard_retry_attempts += 1;
@@ -331,6 +364,11 @@ unsafe fn schedule_clipboard_retry(hwnd: HWND, state: &mut AppState, sequence: u
         );
     }
     true
+}
+
+fn source_app_prefers_long_clipboard_retry(source_app: &str) -> bool {
+    let source = source_app.trim().to_ascii_lowercase();
+    source.contains("pixpin")
 }
 
 unsafe fn show_main_scrollbar_feedback(hwnd: HWND, state: &mut AppState, erase: bool) {
@@ -953,6 +991,14 @@ unsafe fn process_image_name(pid: u32) -> String {
 }
 
 unsafe fn clipboard_source_app_name() -> String {
+    let owner = GetClipboardOwner();
+    let owner_root = if owner.is_null() { owner } else { GetAncestor(owner, GA_ROOT) };
+    if !owner_root.is_null() && !is_app_window(owner_root) {
+        let name = window_process_name(owner_root);
+        if !name.is_empty() {
+            return name;
+        }
+    }
     let fg = GetForegroundWindow();
     if fg.is_null() || is_app_window(fg) {
         return String::new();
@@ -984,11 +1030,6 @@ fn is_self_clipboard_source_app(source_app: &str) -> bool {
         .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
         .map(|name| name.trim().to_ascii_lowercase() == source)
         .unwrap_or(false)
-}
-
-fn source_app_prefers_image_capture(source_app: &str) -> bool {
-    let source = source_app.trim().to_ascii_lowercase();
-    source.contains("pixpin")
 }
 
 unsafe fn vv_window_class_name(hwnd: HWND) -> String {
@@ -1595,11 +1636,7 @@ impl AppState {
         match item.kind {
             ClipKind::Text | ClipKind::Phrase => top.text == item.text,
             ClipKind::Files => top.file_paths == item.file_paths,
-            ClipKind::Image => {
-                top.image_width == item.image_width
-                    && top.image_height == item.image_height
-                    && top.preview == item.preview
-            }
+            ClipKind::Image => false,
         }
     }
 
@@ -6294,6 +6331,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     }
     let state = &mut *ptr;
     let sequence = GetClipboardSequenceNumber();
+    let pixpin_format = clipboard_has_named_format("PixPinData");
     if sequence != 0 && state.clipboard_retry_sequence != 0 && state.clipboard_retry_sequence != sequence {
         reset_clipboard_retry(hwnd, state);
     }
@@ -6311,11 +6349,20 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         }
         state.ignore_clipboard_until = None;
     }
+    let source_app = clipboard_source_app_name();
+    let prefer_long_retry = source_app_prefers_long_clipboard_retry(&source_app);
     let mut clipboard = match Clipboard::new() {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            let retry_limit = if prefer_long_retry || pixpin_format {
+                PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
+            } else {
+                CLIPBOARD_RETRY_MAX_ATTEMPTS
+            };
+            let _ = schedule_clipboard_retry_with_limit(hwnd, state, sequence, retry_limit);
+            return;
+        }
     };
-    let source_app = clipboard_source_app_name();
     if is_self_clipboard_source_app(&source_app) {
         if sequence != 0 {
             state.last_clipboard_seq = sequence;
@@ -6323,8 +6370,6 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         reset_clipboard_retry(hwnd, state);
         return;
     }
-    let prefer_image = source_app_prefers_image_capture(&source_app);
-
     if let Ok(img) = clipboard.get_image() {
         let bytes = img.bytes.into_owned();
         if let Some((bytes, norm_w, norm_h)) =
@@ -6367,14 +6412,20 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                 reset_clipboard_retry(hwnd, state);
                 return;
             }
-            state.add_clip_item(
-                candidate,
-                sig,
-            );
+            state.add_clip_item(candidate, sig);
             reset_clipboard_retry(hwnd, state);
             InvalidateRect(hwnd, null(), 1);
             return;
-        } else if schedule_clipboard_retry(hwnd, state, sequence) {
+        } else if schedule_clipboard_retry_with_limit(
+            hwnd,
+            state,
+            sequence,
+            if prefer_long_retry || pixpin_format {
+                PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
+            } else {
+                CLIPBOARD_RETRY_MAX_ATTEMPTS
+            },
+        ) {
             return;
         } else {
             reset_clipboard_retry(hwnd, state);
@@ -6382,8 +6433,53 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         }
     }
 
-    if prefer_image && schedule_clipboard_retry(hwnd, state, sequence) {
-        return;
+    drop(clipboard);
+
+    if let Some((bytes, width, height)) = read_windows_clipboard_bitmap_rgba() {
+        if let Some((bytes, norm_w, norm_h)) =
+            normalize_captured_image_rgba(bytes, width, height)
+        {
+            let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
+            let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
+            let sig = format!(
+                "img:{}:{}:{}",
+                norm_w,
+                norm_h,
+                hash_bytes(bytes.as_slice())
+            );
+            if state.consume_recent_programmatic_clipboard_signature(&sig) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            let preview = format_local_time_for_image_preview();
+            let candidate = ClipItem {
+                id: 0,
+                kind: ClipKind::Image,
+                preview,
+                text: None,
+                source_app: source_app.clone(),
+                file_paths: None,
+                image_bytes,
+                image_path: image_path.map(|p| p.to_string_lossy().to_string()),
+                image_width: norm_w,
+                image_height: norm_h,
+                pinned: false,
+                group_id: 0,
+                created_at: String::new(),
+            };
+            if state.is_recent_top_duplicate_item(&candidate) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            state.add_clip_item(candidate, sig);
+            reset_clipboard_retry(hwnd, state);
+            InvalidateRect(hwnd, null(), 1);
+            return;
+        }
     }
 
     if let Some(paths) = clipboard_file_paths() {
@@ -6425,6 +6521,18 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         return;
     }
 
+    let mut clipboard = match Clipboard::new() {
+        Ok(c) => c,
+        Err(_) => {
+            let retry_limit = if prefer_long_retry || pixpin_format {
+                PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
+            } else {
+                CLIPBOARD_RETRY_MAX_ATTEMPTS
+            };
+            let _ = schedule_clipboard_retry_with_limit(hwnd, state, sequence, retry_limit);
+            return;
+        }
+    };
     if let Ok(text) = clipboard.get_text() {
         let normalized = normalize_captured_text(&text);
         if !normalized.is_empty() {
@@ -6468,7 +6576,12 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     }
 
     if sequence != 0 {
-        let _ = schedule_clipboard_retry(hwnd, state, sequence);
+        let retry_limit = if prefer_long_retry || pixpin_format {
+            PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
+        } else {
+            CLIPBOARD_RETRY_MAX_ATTEMPTS
+        };
+        let _ = schedule_clipboard_retry_with_limit(hwnd, state, sequence, retry_limit);
     }
 }
 
@@ -8545,6 +8658,14 @@ fn normalize_captured_image_rgba(
         }
     }
     Some((out, out_w, out_h))
+}
+
+fn read_windows_clipboard_bitmap_rgba() -> Option<(Vec<u8>, usize, usize)> {
+    let bmp_bytes: Vec<u8> = clipboard_win::get_clipboard(clipboard_win::formats::Bitmap).ok()?;
+    let image = image::load_from_memory_with_format(&bmp_bytes, ImageFormat::Bmp).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some((rgba.into_raw(), width as usize, height as usize))
 }
 
 fn hash_bytes(data: &[u8]) -> String {

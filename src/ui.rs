@@ -130,7 +130,6 @@ impl From<UiRect> for windows_sys::Win32::Foundation::RECT {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub struct Theme {
     pub accent: u32,
     pub accent_hover: u32,
@@ -143,7 +142,6 @@ pub struct Theme {
     pub stroke: u32,
     pub text: u32,
     pub text_muted: u32,
-    pub text_dim: u32,
     pub item_hover: u32,
     pub item_selected: u32,
     pub control_bg: u32,
@@ -186,7 +184,6 @@ impl Default for Theme {
                 stroke:         rgb(60, 60, 60),   // CardStrokeColorDefault dark
                 text:           rgb(255, 255, 255),// TextFillColorPrimary dark
                 text_muted:     rgb(162, 162, 162),
-                text_dim:       rgb(100, 100, 100),
                 item_hover:     rgb(54, 54, 54),
                 item_selected:  mix(accent, rgb(44, 44, 44), 0.75),
                 control_bg:     rgb(58, 58, 58),   // ControlFillColorDefault dark
@@ -210,7 +207,6 @@ impl Default for Theme {
                 stroke:         rgb(229, 229, 229),
                 text:           rgb(28, 28, 28),
                 text_muted:     rgb(96, 96, 96),
-                text_dim:       rgb(160, 160, 160),
                 item_hover:     rgb(249, 249, 249),
                 item_selected:  mix(accent, rgb(255, 255, 255), 0.85),
                 control_bg:     rgb(255, 255, 255),
