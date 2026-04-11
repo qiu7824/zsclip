@@ -1,6 +1,7 @@
 ﻿use super::*;
 use std::time::Duration;
-use crate::shell::image_ocr_status_text;
+use crate::shell::{image_ocr_status_text, text_translate_status_text};
+use crate::settings_render::{IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_APP_ID, IDC_SET_TRANSLATE_SECRET, IDC_SET_TRANSLATE_TARGET};
 use crate::win_system_ui::{
     create_settings_dropdown_button as settings_create_dropdown_btn,
     create_settings_edit as host_create_settings_edit,
@@ -892,7 +893,6 @@ unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
         return;
     };
     if hover_preview_blocked_at_point(state, x, y) {
-        hide_hover_preview();
         return;
     }
     let mut win_rc: RECT = zeroed();
@@ -1438,6 +1438,49 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     &s.image_ocr_wechat_dir,
                 ),
             );
+            settings_set_text(
+                st.cb_translate_provider,
+                &text_translate_provider_display(&s.text_translate_provider),
+            );
+            settings_set_text(st.ed_translate_app_id, &s.text_translate_app_id);
+            settings_set_text(st.ed_translate_secret, &s.text_translate_secret);
+            settings_set_text(
+                st.cb_translate_target,
+                &text_translate_target_display(&s.text_translate_target_lang),
+            );
+            let translate_enabled = s.text_translate_provider == "baidu";
+            if !st.lb_translate_primary.is_null() {
+                ShowWindow(st.lb_translate_primary, if translate_enabled { SW_SHOW } else { SW_HIDE });
+            }
+            if !st.ed_translate_app_id.is_null() {
+                ShowWindow(st.ed_translate_app_id, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                EnableWindow(st.ed_translate_app_id, if translate_enabled { 1 } else { 0 });
+            }
+            if !st.lb_translate_secondary.is_null() {
+                ShowWindow(st.lb_translate_secondary, if translate_enabled { SW_SHOW } else { SW_HIDE });
+            }
+            if !st.ed_translate_secret.is_null() {
+                ShowWindow(st.ed_translate_secret, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                EnableWindow(st.ed_translate_secret, if translate_enabled { 1 } else { 0 });
+            }
+            if !st.lb_translate_target.is_null() {
+                ShowWindow(st.lb_translate_target, if translate_enabled { SW_SHOW } else { SW_HIDE });
+            }
+            if !st.cb_translate_target.is_null() {
+                ShowWindow(st.cb_translate_target, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                EnableWindow(st.cb_translate_target, if translate_enabled { 1 } else { 0 });
+            }
+            if !st.lb_translate_status.is_null() {
+                settings_set_text(
+                    st.lb_translate_status,
+                    &text_translate_status_text(
+                        &s.text_translate_provider,
+                        &s.text_translate_app_id,
+                        &s.text_translate_secret,
+                        &s.text_translate_target_lang,
+                    ),
+                );
+            }
         }
         SettingsPage::Group => settings_sync_group_page(st),
         SettingsPage::Cloud => {
@@ -1854,6 +1897,14 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         } else {
             st.draft.image_ocr_cloud_url = get_window_text(st.ed_ocr_cloud_url);
             st.draft.image_ocr_cloud_token = get_window_text(st.ed_ocr_cloud_token);
+        }
+        st.draft.text_translate_provider =
+            text_translate_provider_key_from_display(&get_window_text(st.cb_translate_provider)).to_string();
+        if st.draft.text_translate_provider == "baidu" {
+            st.draft.text_translate_app_id = get_window_text(st.ed_translate_app_id);
+            st.draft.text_translate_secret = get_window_text(st.ed_translate_secret);
+            st.draft.text_translate_target_lang =
+                text_translate_target_key_from_display(&get_window_text(st.cb_translate_target)).to_string();
         }
     }
     st.draft.vv_source_tab = settings_vv_source_current(st);
@@ -2396,7 +2447,8 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
-    let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 110);
+    let sec3 = SettingsFormSectionLayout::new(page, 3, 0);
 
     let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_qs = qs_btn;
@@ -2427,18 +2479,31 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     );
     st.btn_ocr_detect = b.button(st, tr("自动检测微信目录", "Auto-detect WeChat directory"), IDC_SET_OCR_WECHAT_DETECT, sec1.left(), sec1.row_y(3), settings_scale(180));
     if !st.btn_ocr_detect.is_null() { st.ownerdraw_ctrls.push(st.btn_ocr_detect); }
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec2.left(), sec2.row_y(0), sec2.full_w());
+
+    b.label(st, tr("翻译来源：", "Provider:"), sec2.left(), sec2.label_y(0, 24), sec2.label_w(), 24);
+    st.cb_translate_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_TRANSLATE_PROVIDER, sec2.field_x(), sec2.row_y(0), settings_scale(220));
+    if !st.cb_translate_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_provider); }
+    st.lb_translate_status = b.label(st, tr("文本翻译：已关闭", "Text translation: disabled"), sec2.left(), sec2.label_y(1, settings_scale(24)), sec2.full_w(), settings_scale(24));
+    st.lb_translate_primary = b.label(st, tr("APP ID：", "APP ID:"), sec2.left(), sec2.label_y(2, 24), sec2.label_w(), 24);
+    st.ed_translate_app_id = b.edit(st, "", IDC_SET_TRANSLATE_APP_ID, sec2.field_x(), sec2.row_y(2), sec2.field_w());
+    st.lb_translate_secondary = b.label(st, tr("密钥：", "Secret:"), sec2.left(), sec2.label_y(3, 24), sec2.label_w(), 24);
+    st.ed_translate_secret = b.password_edit(st, "", IDC_SET_TRANSLATE_SECRET, sec2.field_x(), sec2.row_y(3), sec2.field_w());
+    st.lb_translate_target = b.label(st, tr("目标语言：", "Target language:"), sec2.left(), sec2.label_y(4, 24), sec2.label_w(), 24);
+    st.cb_translate_target = b.dropdown(st, tr("简体中文", "Simplified Chinese"), IDC_SET_TRANSLATE_TARGET, sec2.field_x(), sec2.row_y(4), settings_scale(180));
+    if !st.cb_translate_target.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_target); }
+
+    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec3.left(), sec3.row_y(0), sec3.full_w());
     st.chk_ai = ai_btn;
     if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
-    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec2.left(), sec2.row_y(1), sec2.full_w());
+    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec3.left(), sec3.row_y(1), sec3.full_w());
     st.chk_mm = mm_btn;
     if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
-    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec2.left(), sec2.row_y(2), settings_scale(170));
+    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec3.left(), sec3.row_y(2), settings_scale(170));
     if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
-    let (_qr_lbl, qr_btn) = b.toggle_row(st, "启用快捷转换二维码", 7104, sec2.left(), sec2.row_y(3), sec2.full_w());
+    let (_qr_lbl, qr_btn) = b.toggle_row(st, "启用快捷转换二维码", 7104, sec3.left(), sec3.row_y(3), sec3.full_w());
     st.chk_qr = qr_btn;
     if !st.chk_qr.is_null() { st.ownerdraw_ctrls.push(st.chk_qr); }
-    st.btn_plugin_downloads = b.button(st, tr("独立插件下载", "Standalone plugin downloads"), IDC_SET_PLUGIN_DOWNLOADS, sec2.left(), sec2.row_y(4), settings_scale(170));
+    st.btn_plugin_downloads = b.button(st, tr("独立插件下载", "Standalone plugin downloads"), IDC_SET_PLUGIN_DOWNLOADS, sec3.left(), sec3.row_y(4), settings_scale(170));
     if !st.btn_plugin_downloads.is_null() { st.ownerdraw_ctrls.push(st.btn_plugin_downloads); }
     st.ui.mark_built(page);
 }
@@ -2541,12 +2606,12 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
 pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::About.index();
     let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
-    let sec = SettingsFormSectionLayout::new(page, 0, 0);
+    let sec = SettingsFormSectionLayout::new(page, 0, 96);
     let update_state = update_check_state_snapshot();
     let mut y = sec.row_y(0);
     let version_text = format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION"));
-    let (_, version_h) = b.label_auto(st, &version_text, sec.left(), y, sec.full_w(), settings_scale(34));
-    y += version_h + settings_scale(18);
+    let (_, version_h) = b.label_auto(st, &version_text, sec.left(), y, sec.full_w(), settings_scale(28));
+    y += version_h + settings_scale(8);
 
     let summary_text = format!(
         "{}\r\n{}",
@@ -2559,31 +2624,31 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
             "New settings can reuse the same cards, field columns, action rows, and spacing.",
         )
     );
-    let (_, summary_h) = b.label_auto(st, &summary_text, sec.left(), y, sec.full_w(), settings_scale(76));
-    y += summary_h + settings_scale(18);
+    let (_, summary_h) = b.label_auto(st, &summary_text, sec.left(), y, sec.full_w(), settings_scale(72));
+    y += summary_h + settings_scale(10);
 
-    let source_label_w = settings_scale(116);
-    let source_row_h = settings_scale(36);
+    let source_label_w = sec.label_w();
+    let source_row_h = settings_scale(34);
     b.label(
         st,
         tr("开源地址：", "Source: "),
         sec.left(),
-        y + settings_scale(4),
+        y + settings_scale(2),
         source_label_w,
-        source_row_h,
+        settings_scale(24),
     );
     let link = b.button(
         st,
         open_source_url_display(),
         IDC_SET_OPEN_SOURCE,
-        sec.left() + source_label_w,
+        sec.field_x(),
         y,
-        sec.full_w() - source_label_w,
+        sec.field_w(),
     );
     if !link.is_null() {
         st.ownerdraw_ctrls.push(link);
     }
-    y += source_row_h + settings_scale(18);
+    y += source_row_h + settings_scale(10);
 
     let update_text = if update_state.checking {
         tr("检查更新中…", "Checking for updates...").to_string()
@@ -2604,8 +2669,8 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     } else {
         tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
     };
-    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(52));
-    y += update_h + settings_scale(12);
+    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(44));
+    y += update_h + settings_scale(8);
     st.btn_open_update = b.button(
         st,
         if update_state.checking {
@@ -2620,12 +2685,12 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         IDC_SET_OPEN_UPDATE,
         sec.left(),
         y,
-        settings_scale(220),
+        settings_scale(184),
     );
     if !st.btn_open_update.is_null() {
         st.ownerdraw_ctrls.push(st.btn_open_update);
     }
-    y += settings_scale(50);
+    y += settings_scale(42);
 
     let info_text = format!(
         "{}{}\r\n{}{}",
@@ -2634,7 +2699,7 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         tr("数据库：", "Database: "),
         db_file().to_string_lossy(),
     );
-    let _ = b.label_auto(st, &info_text, sec.left(), y, sec.full_w(), settings_scale(84));
+    let _ = b.label_auto(st, &info_text, sec.left(), y, sec.full_w(), settings_scale(72));
     st.ui.mark_built(page);
 }
 

@@ -43,6 +43,18 @@ pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 3] = [
     ("winocr", "WinOCR（微信 OCR）"),
 ];
 
+pub(super) const TEXT_TRANSLATE_PROVIDER_OPTIONS: [(&str, &str); 2] = [
+    ("off", "关闭"),
+    ("baidu", "百度翻译"),
+];
+
+pub(super) const TEXT_TRANSLATE_TARGET_OPTIONS: [(&str, &str); 4] = [
+    ("zh", "简体中文"),
+    ("en", "英语"),
+    ("jp", "日语"),
+    ("kor", "韩语"),
+];
+
 pub(super) const PASTE_SOUND_OPTIONS: [(&str, &str); 4] = [
     ("default", "默认"),
     ("soft", "柔和"),
@@ -101,6 +113,10 @@ pub(crate) struct AppSettings {
     pub(crate) image_ocr_cloud_url: String,
     pub(crate) image_ocr_cloud_token: String,
     pub(crate) image_ocr_wechat_dir: String,
+    pub(crate) text_translate_provider: String,
+    pub(crate) text_translate_app_id: String,
+    pub(crate) text_translate_secret: String,
+    pub(crate) text_translate_target_lang: String,
     pub(crate) qr_quick_enabled: bool,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
@@ -157,6 +173,10 @@ impl Default for AppSettings {
             image_ocr_cloud_url: String::new(),
             image_ocr_cloud_token: String::new(),
             image_ocr_wechat_dir: String::new(),
+            text_translate_provider: "off".to_string(),
+            text_translate_app_id: String::new(),
+            text_translate_secret: String::new(),
+            text_translate_target_lang: "zh".to_string(),
             qr_quick_enabled: false,
             last_window_x: -1,
             last_window_y: -1,
@@ -202,6 +222,38 @@ pub(super) fn image_ocr_provider_key_from_display(label: &str) -> &'static str {
         .find(|(_, name)| *name == label || translate(name).as_ref() == label)
         .map(|(k, _)| *k)
         .unwrap_or("off")
+}
+
+pub(super) fn text_translate_provider_display(key: &str) -> String {
+    TEXT_TRANSLATE_PROVIDER_OPTIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, name)| translate(name).into_owned())
+        .unwrap_or_else(|| translate(TEXT_TRANSLATE_PROVIDER_OPTIONS[0].1).into_owned())
+}
+
+pub(super) fn text_translate_provider_key_from_display(label: &str) -> &'static str {
+    TEXT_TRANSLATE_PROVIDER_OPTIONS
+        .iter()
+        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
+        .map(|(k, _)| *k)
+        .unwrap_or("off")
+}
+
+pub(super) fn text_translate_target_display(key: &str) -> String {
+    TEXT_TRANSLATE_TARGET_OPTIONS
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, name)| translate(name).into_owned())
+        .unwrap_or_else(|| translate(TEXT_TRANSLATE_TARGET_OPTIONS[0].1).into_owned())
+}
+
+pub(super) fn text_translate_target_key_from_display(label: &str) -> &'static str {
+    TEXT_TRANSLATE_TARGET_OPTIONS
+        .iter()
+        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
+        .map(|(k, _)| *k)
+        .unwrap_or("zh")
 }
 
 pub(super) fn paste_sound_display(key: &str) -> String {
@@ -654,6 +706,10 @@ impl AppState {
             scroll_fade_alpha: 0,
             scroll_fade_timer: false,
             search_debounce_timer: false,
+            hidden_reclaim_timer: false,
+            clipboard_retry_timer: false,
+            clipboard_retry_sequence: 0,
+            clipboard_retry_attempts: 0,
             scroll_dragging: false,
             scroll_drag_start_y: 0,
             scroll_drag_start_scroll: 0,

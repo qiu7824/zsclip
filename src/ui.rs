@@ -644,11 +644,11 @@ impl MainUiLayout {
     }
 
     pub(crate) fn row_text_size(self) -> i32 {
-        ((self.row_h * 12) / 44).clamp(12, 16)
+        ((self.row_h * 12) / 44).clamp(12, 24)
     }
 
     pub(crate) fn row_muted_text_size(self) -> i32 {
-        (self.row_text_size() - 1).max(11)
+        (self.row_text_size() - 2).max(11)
     }
 
     pub(crate) fn total_content_height(self, filtered_len: usize) -> i32 {
@@ -911,7 +911,7 @@ pub unsafe fn draw_main_segment_bar(
     let t0c = if selected == 0 || hover == 0 { th.text } else { th.text_muted };
     let t1c = if selected == 1 || hover == 1 { th.text } else { th.text_muted };
     let tab_font = ui_display_font_family();
-    let tab_size = ((outer.bottom - outer.top) * 13 / 30).clamp(12, 16);
+    let tab_size = ((outer.bottom - outer.top) * 13 / 30).clamp(12, 22);
     draw_text_ex(hdc, "复制记录", tab0, t0c, tab_size, false, true, tab_font);
     draw_text_ex(hdc, "常用短语", tab1, t1c, tab_size, false, true, tab_font);
 }

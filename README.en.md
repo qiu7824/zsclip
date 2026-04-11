@@ -5,7 +5,7 @@
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.8.1>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.8.3>
 - Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
 - Password: `7dvb`
 

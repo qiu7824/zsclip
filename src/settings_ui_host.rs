@@ -39,9 +39,11 @@ const DT_WORDBREAK_FLAG: u32 = 0x0010;
 const DT_CALCRECT_FLAG: u32 = 0x0400;
 const DT_NOPREFIX_FLAG: u32 = 0x0800;
 const DT_EDITCONTROL_FLAG: u32 = 0x2000;
+const DT_EXTERNALLEADING_FLAG: u32 = 0x0200;
 const EM_SETMARGINS_MSG: u32 = 0x00D3;
 const EM_SETPASSWORDCHAR_MSG: u32 = 0x00CC;
 const SS_EDITCONTROL_STYLE: u32 = 0x2000;
+const SS_NOPREFIX_STYLE: u32 = 0x0080;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsComponentKind {
@@ -412,7 +414,7 @@ pub unsafe fn create_settings_label(
         0,
         to_wide("STATIC").as_ptr(),
         to_wide(translated.as_ref()).as_ptr(),
-        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL_STYLE,
+        WS_CHILD | WS_VISIBLE | SS_EDITCONTROL_STYLE | SS_NOPREFIX_STYLE,
         x,
         y,
         w,
@@ -440,7 +442,14 @@ pub unsafe fn settings_measure_text_height(
         return min_h.max(24);
     }
     let old = if !font.is_null() { SelectObject(hdc, font) } else { null_mut() };
-    let mut rc = RECT { left: 0, top: 0, right: w.max(1), bottom: 0 };
+    let horizontal_pad = scale_for_window(parent, 4);
+    let vertical_pad = scale_for_window(parent, 8);
+    let mut rc = RECT {
+        left: 0,
+        top: 0,
+        right: (w - horizontal_pad).max(1),
+        bottom: 0,
+    };
     let translated = translate(text);
     let wt = to_wide(translated.as_ref());
     DrawTextW(
@@ -448,13 +457,18 @@ pub unsafe fn settings_measure_text_height(
         wt.as_ptr(),
         -1,
         &mut rc,
-        DT_LEFT_FLAG | DT_WORDBREAK_FLAG | DT_NOPREFIX_FLAG | DT_EDITCONTROL_FLAG | DT_CALCRECT_FLAG,
+        DT_LEFT_FLAG
+            | DT_WORDBREAK_FLAG
+            | DT_NOPREFIX_FLAG
+            | DT_EDITCONTROL_FLAG
+            | DT_EXTERNALLEADING_FLAG
+            | DT_CALCRECT_FLAG,
     );
     if !old.is_null() {
         SelectObject(hdc, old);
     }
     ReleaseDC(parent, hdc);
-    (min_h).max((rc.bottom - rc.top) + 4)
+    min_h.max((rc.bottom - rc.top) + vertical_pad)
 }
 
 pub unsafe fn create_settings_label_auto(

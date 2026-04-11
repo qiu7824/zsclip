@@ -10,12 +10,8 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
+use md5;
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
-    System::{
-        Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS},
-        Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION},
-    },
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL},
@@ -108,6 +104,7 @@ static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
 static ICON_HANDLE_CACHE: OnceLock<Mutex<HashMap<(u8, i32), isize>>> = OnceLock::new();
 static BAIDU_OCR_TOKEN_CACHE: OnceLock<Mutex<HashMap<String, (String, u64)>>> = OnceLock::new();
 static WECHAT_OCR_CALLBACK: OnceLock<(Mutex<Option<String>>, Condvar)> = OnceLock::new();
+static WECHAT_RUNTIME_DIR_CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static ICO_SEARCH: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_SETTING: OnceLock<Vec<u8>> = OnceLock::new();
 static ICO_MIN: OnceLock<Vec<u8>> = OnceLock::new();
@@ -133,6 +130,10 @@ fn baidu_ocr_token_cache() -> &'static Mutex<HashMap<String, (String, u64)>> {
 
 fn wechat_ocr_callback_state() -> &'static (Mutex<Option<String>>, Condvar) {
     WECHAT_OCR_CALLBACK.get_or_init(|| (Mutex::new(None), Condvar::new()))
+}
+
+fn wechat_runtime_dir_cache() -> &'static Mutex<Option<PathBuf>> {
+    WECHAT_RUNTIME_DIR_CACHE.get_or_init(|| Mutex::new(None))
 }
 
 fn icon_handle_cache() -> &'static Mutex<HashMap<(u8, i32), isize>> {
@@ -235,12 +236,9 @@ fn version_score(path: &Path) -> Vec<u32> {
 fn embedded_wcocr_extract_path() -> Option<PathBuf> {
     let base = std::env::temp_dir().join("zsclip").join("plugin");
     std::fs::create_dir_all(&base).ok()?;
-    let dll_path = base.join("wcocr.dll");
-    let needs_write = match std::fs::metadata(&dll_path) {
-        Ok(meta) => meta.len() != EMBEDDED_WCOCR_DLL.len() as u64,
-        Err(_) => true,
-    };
-    if needs_write {
+    let hash = format!("{:x}", md5::compute(EMBEDDED_WCOCR_DLL));
+    let dll_path = base.join(format!("wcocr-{}.dll", &hash[..8]));
+    if !dll_path.is_file() {
         std::fs::write(&dll_path, EMBEDDED_WCOCR_DLL).ok()?;
     }
     Some(dll_path)
@@ -279,43 +277,16 @@ fn runtime_dir_from_candidate(path: &Path) -> Option<PathBuf> {
     None
 }
 
-fn find_running_wechat_runtime_dir() -> Option<PathBuf> {
-    unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE {
-            return None;
+fn cached_wechat_runtime_dir() -> Option<PathBuf> {
+    let path = wechat_runtime_dir_cache().lock().ok()?.clone()?;
+    runtime_dir_from_candidate(&path)
+}
+
+fn cache_wechat_runtime_dir(path: &Path) {
+    if let Some(runtime) = runtime_dir_from_candidate(path) {
+        if let Ok(mut slot) = wechat_runtime_dir_cache().lock() {
+            *slot = Some(runtime);
         }
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut found = None;
-        let mut ok = Process32FirstW(snapshot, &mut entry);
-        while ok != 0 {
-            let name_end = entry
-                .szExeFile
-                .iter()
-                .position(|&c| c == 0)
-                .unwrap_or(entry.szExeFile.len());
-            let exe_name = String::from_utf16_lossy(&entry.szExeFile[..name_end]).to_ascii_lowercase();
-            if exe_name == "weixin.exe" || exe_name == "wechat.exe" {
-                let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
-                if !process.is_null() {
-                    let mut buf = vec![0u16; 1024];
-                    let mut len = buf.len() as u32;
-                    if QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len) != 0 {
-                        let exe_path = PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]));
-                        if let Some(runtime) = runtime_dir_from_candidate(&exe_path) {
-                            found = Some(runtime);
-                            CloseHandle(process);
-                            break;
-                        }
-                    }
-                    CloseHandle(process);
-                }
-            }
-            ok = Process32NextW(snapshot, &mut entry);
-        }
-        CloseHandle(snapshot);
-        found
     }
 }
 
@@ -323,10 +294,16 @@ fn resolve_wechat_runtime_dir(path_override: &str) -> Option<PathBuf> {
     let trimmed = path_override.trim();
     if !trimmed.is_empty() {
         if let Some(runtime) = runtime_dir_from_candidate(Path::new(trimmed)) {
+            cache_wechat_runtime_dir(&runtime);
             return Some(runtime);
         }
     }
-    find_running_wechat_runtime_dir().or_else(find_wechat_runtime_dir)
+    if let Some(runtime) = cached_wechat_runtime_dir() {
+        return Some(runtime);
+    }
+    let runtime = find_wechat_runtime_dir()?;
+    cache_wechat_runtime_dir(&runtime);
+    Some(runtime)
 }
 
 fn resolve_wechat_runtime_dir_candidates(path_override: &str) -> Vec<PathBuf> {
@@ -341,9 +318,10 @@ fn resolve_wechat_runtime_dir_candidates(path_override: &str) -> Vec<PathBuf> {
         let input = PathBuf::from(trimmed);
         if let Some(runtime) = runtime_dir_from_candidate(&input) {
             push_unique(runtime);
+            return candidates;
         }
     }
-    if let Some(runtime) = find_running_wechat_runtime_dir() {
+    if let Some(runtime) = cached_wechat_runtime_dir() {
         push_unique(runtime);
     }
     if let Some(runtime) = find_wechat_runtime_dir() {
@@ -422,43 +400,87 @@ fn find_wechat_ocr_binary_path() -> Option<PathBuf> {
 }
 
 fn find_wechat_runtime_dir() -> Option<PathBuf> {
-    let roots = [
-        PathBuf::from("C:\\Program Files\\Tencent"),
-        PathBuf::from("C:\\Program Files (x86)\\Tencent"),
-        PathBuf::from("C:\\Program Files"),
-        PathBuf::from("C:\\Program Files (x86)"),
-    ];
+    fn push_runtime(candidates: &mut Vec<PathBuf>, path: &Path) {
+        if let Some(runtime) = runtime_dir_from_candidate(path) {
+            candidates.push(runtime);
+        }
+    }
+
+    fn running_wechat_install_dirs() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        let output = hidden_command("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "(Get-Process Weixin -ErrorAction SilentlyContinue | Select-Object -First 8 -ExpandProperty Path)",
+            ])
+            .output();
+        if let Ok(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                    let path = PathBuf::from(line);
+                    if let Some(parent) = path.parent() {
+                        dirs.push(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+        dirs
+    }
+
+    let mut roots = BTreeSet::new();
+    for path in [
+        std::env::var_os("ProgramFiles").map(PathBuf::from),
+        std::env::var_os("ProgramW6432").map(PathBuf::from),
+        std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        roots.insert(path);
+    }
+    for drive in ["C", "D", "E", "F", "G", "H"] {
+        roots.insert(PathBuf::from(format!("{drive}:\\Program Files")));
+        roots.insert(PathBuf::from(format!("{drive}:\\Program Files (x86)")));
+    }
     let mut candidates = Vec::new();
-    for root in roots {
+    for root in &roots {
         if !root.is_dir() {
             continue;
         }
-        if let Ok(entries) = std::fs::read_dir(&root) {
+
+        // Common install roots first.
+        for rel in [
+            PathBuf::from("Tencent\\Weixin"),
+            PathBuf::from("Tencent\\WeChat"),
+            PathBuf::from("Weixin"),
+            PathBuf::from("WeChat"),
+        ] {
+            push_runtime(&mut candidates, &root.join(rel));
+        }
+
+        // Scan Tencent subdirs one level deep.
+        let tencent_root = root.join("Tencent");
+        if let Ok(entries) = std::fs::read_dir(&tencent_root) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if !path.is_dir() {
                     continue;
                 }
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
-                if !(name.contains("weixin") || name.contains("wechat")) {
-                    continue;
-                }
-                if let Some(runtime) = runtime_dir_from_candidate(&path) {
-                    candidates.push(runtime);
-                }
-                if let Ok(subs) = std::fs::read_dir(&path) {
-                    for sub in subs.filter_map(|e| e.ok()) {
-                        let sub_path = sub.path();
-                        if !sub_path.is_dir() {
-                            continue;
-                        }
-                        if let Some(runtime) = runtime_dir_from_candidate(&sub_path) {
-                            candidates.push(runtime);
-                        }
-                    }
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if name.contains("weixin") || name.contains("wechat") {
+                    push_runtime(&mut candidates, &path);
                 }
             }
         }
+    }
+    for dir in running_wechat_install_dirs() {
+        push_runtime(&mut candidates, &dir);
     }
     candidates.sort_by(|a, b| version_score(b).cmp(&version_score(a)).then_with(|| a.cmp(b)));
     candidates.dedup();
@@ -493,6 +515,32 @@ pub(crate) fn image_ocr_status_text(provider: &str, primary: &str, secondary: &s
             }
         }
         _ => tr("\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}", "Image OCR: disabled").to_string(),
+    }
+}
+
+fn baidu_translate_target_name(key: &str) -> &'static str {
+    match key {
+        "en" => tr("英语", "English"),
+        "jp" => tr("日语", "Japanese"),
+        "kor" => tr("韩语", "Korean"),
+        _ => tr("简体中文", "Simplified Chinese"),
+    }
+}
+
+pub(crate) fn text_translate_status_text(provider: &str, app_id: &str, secret: &str, target_lang: &str) -> String {
+    match provider {
+        "baidu" => {
+            if app_id.trim().is_empty() || secret.trim().is_empty() {
+                tr("百度翻译：请配置 APP ID / 密钥", "Baidu Translate: please configure APP ID / Secret").to_string()
+            } else {
+                format!(
+                    "{} {}",
+                    tr("百度翻译：已就绪，目标语言：", "Baidu Translate: ready, target language: "),
+                    baidu_translate_target_name(target_lang),
+                )
+            }
+        }
+        _ => tr("文本翻译：已关闭", "Text translation: disabled").to_string(),
     }
 }
 
@@ -624,6 +672,78 @@ pub(crate) fn run_baidu_ocr_api(
     parse_baidu_ocr_text(&String::from_utf8_lossy(&output.stdout))
 }
 
+// ── Structured OCR result (with bounding boxes) ─────────────────────────────
+
+#[derive(Clone, Default)]
+pub(crate) struct OcrLine {
+    pub text: String,
+    pub left: u32,
+    pub top: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+fn parse_baidu_ocr_lines(body: &str) -> Result<Vec<OcrLine>, String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    if let Some(err) = json.get("error_msg").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+        return Err(err.to_string());
+    }
+    let lines: Vec<OcrLine> = json
+        .get("words_result")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().filter_map(|item| {
+                let text = item.get("words").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())?;
+                let loc = item.get("location")?;
+                let left   = loc.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let top    = loc.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let width  = loc.get("width").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                let height = loc.get("height").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                Some(OcrLine { text: text.to_string(), left, top, width, height })
+            }).collect()
+        })
+        .unwrap_or_default();
+    if lines.is_empty() {
+        Err(tr("百度 OCR 返回中未找到可用文本字段", "Baidu OCR response does not contain recognized text").to_string())
+    } else {
+        Ok(lines)
+    }
+}
+
+/// Like `run_baidu_ocr_api` but returns per-line text with bounding boxes.
+pub(crate) fn run_baidu_ocr_api_lines(api_key: &str, secret_key: &str, image_bytes: &[u8]) -> Result<Vec<OcrLine>, String> {
+    let access_token = fetch_baidu_access_token(api_key, secret_key)?;
+    let form_body = format!(
+        "image={}",
+        url_encode_form_component(&base64::engine::general_purpose::STANDARD.encode(image_bytes))
+    );
+    let request_path = std::env::temp_dir().join(format!(
+        "zsclip_baidu_ocr_{}_{}.txt",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
+    std::fs::write(&request_path, &form_body).map_err(|e| e.to_string())?;
+    let mut cmd = hidden_command("curl.exe");
+    let request_url = format!(
+        "https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token={}",
+        access_token
+    );
+    cmd.args(["-sS", "-L", "-X", "POST", &request_url, "-H", "Content-Type: application/x-www-form-urlencoded"]);
+    cmd.args(["--data-binary", &format!("@{}", request_path.to_string_lossy())]);
+    let output = cmd.output().map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&request_path);
+    let output = output?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            tr("百度 OCR 请求失败", "Baidu OCR request failed").to_string()
+        } else {
+            stderr
+        });
+    }
+    parse_baidu_ocr_lines(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn parse_baidu_ocr_text(body: &str) -> Result<String, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
     if let Some(err_msg) = json
@@ -650,6 +770,87 @@ fn parse_baidu_ocr_text(body: &str) -> Result<String, String> {
         return Err(tr("百度 OCR 返回中未找到可用文本字段", "Baidu OCR response does not contain recognized text").to_string());
     }
     Ok(lines.join("\r\n"))
+}
+
+fn parse_baidu_translate_text(body: &str) -> Result<String, String> {
+    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    if let Some(err_msg) = json
+        .get("error_msg")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Err(err_msg.to_string());
+    }
+    let lines: Vec<String> = json
+        .get("trans_result")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("dst").and_then(|w| w.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if lines.is_empty() {
+        return Err(tr("百度翻译返回中未找到可用文本字段", "Baidu Translate response does not contain translated text").to_string());
+    }
+    Ok(lines.join("\r\n"))
+}
+
+pub(crate) fn run_baidu_translate_api(
+    app_id: &str,
+    secret: &str,
+    text: &str,
+    target_lang: &str,
+) -> Result<String, String> {
+    let app_id = app_id.trim();
+    let secret = secret.trim();
+    let text = text.trim();
+    let target_lang = target_lang.trim();
+    if app_id.is_empty() || secret.is_empty() {
+        return Err(tr("请先在设置-插件中配置百度翻译的 APP ID / 密钥", "Please configure the Baidu Translate APP ID / Secret in Settings > Plugins").to_string());
+    }
+    if text.is_empty() {
+        return Err(tr("当前记录没有可翻译的文本", "This item does not contain translatable text").to_string());
+    }
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_else(|_| format!("{}", std::process::id()));
+    let sign = format!("{:x}", md5::compute(format!("{}{}{}{}", app_id, text, salt, secret)));
+    let body = format!(
+        "q={}&from=auto&to={}&appid={}&salt={}&sign={}",
+        url_encode_form_component(text),
+        url_encode_form_component(if target_lang.is_empty() { "zh" } else { target_lang }),
+        url_encode_form_component(app_id),
+        url_encode_form_component(&salt),
+        sign
+    );
+    let mut cmd = hidden_command("curl.exe");
+    cmd.args([
+        "-sS",
+        "-L",
+        "-X",
+        "POST",
+        "https://fanyi-api.baidu.com/api/trans/vip/translate",
+        "-H",
+        "Content-Type: application/x-www-form-urlencoded",
+        "--data-raw",
+        &body,
+    ]);
+    let output = cmd.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            tr("百度翻译请求失败", "Baidu Translate request failed").to_string()
+        } else {
+            stderr
+        });
+    }
+    parse_baidu_translate_text(&String::from_utf8_lossy(&output.stdout))
 }
 
 type WeChatOcrFn = unsafe extern "C" fn(*const u16, *const u16, *const i8, extern "C" fn(*const i8)) -> bool;
