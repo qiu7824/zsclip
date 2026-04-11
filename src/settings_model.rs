@@ -60,42 +60,43 @@ impl SettingsPage {
 #[derive(Clone, Copy)]
 pub struct SettingsFormCardSpec {
     pub rows: i32,
+    pub extra_px: i32,
 }
 
 const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 6 },
-    SettingsFormCardSpec { rows: 2 },
-    SettingsFormCardSpec { rows: 2 },
+    SettingsFormCardSpec { rows: 6, extra_px: 0 },
+    SettingsFormCardSpec { rows: 2, extra_px: 24 },
+    SettingsFormCardSpec { rows: 2, extra_px: 12 },
 ];
 
 const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
-    SettingsFormCardSpec { rows: 10 },
-    SettingsFormCardSpec { rows: 1 },
-    SettingsFormCardSpec { rows: 7 },
-    SettingsFormCardSpec { rows: 3 },
-    SettingsFormCardSpec { rows: 1 },
+    SettingsFormCardSpec { rows: 10, extra_px: 0 },
+    SettingsFormCardSpec { rows: 1, extra_px: 0 },
+    SettingsFormCardSpec { rows: 7, extra_px: 0 },
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
+    SettingsFormCardSpec { rows: 1, extra_px: 0 },
 ];
 
 const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
-    SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 5 },
-    SettingsFormCardSpec { rows: 5 },
+    SettingsFormCardSpec { rows: 4, extra_px: 10 },
+    SettingsFormCardSpec { rows: 4, extra_px: 20 },
+    SettingsFormCardSpec { rows: 5, extra_px: 12 },
+    SettingsFormCardSpec { rows: 5, extra_px: 0 },
 ];
 
 const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
-    SettingsFormCardSpec { rows: 3 },
-    SettingsFormCardSpec { rows: 9 },
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
+    SettingsFormCardSpec { rows: 9, extra_px: 0 },
 ];
 
 const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 3 },
-    SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 2 },
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
+    SettingsFormCardSpec { rows: 4, extra_px: 0 },
+    SettingsFormCardSpec { rows: 2, extra_px: 0 },
 ];
 
 const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 1] = [
-    SettingsFormCardSpec { rows: 12 },
+    SettingsFormCardSpec { rows: 12, extra_px: 96 },
 ];
 
 pub fn settings_title_rect() -> UiRect {
@@ -111,12 +112,13 @@ pub fn settings_page_scrollable(page: usize) -> bool {
     settings_page_content_total_h(page) > 0
 }
 
-pub fn settings_form_section_height(rows: i32) -> i32 {
+pub fn settings_form_section_height_with_extra(rows: i32, extra_px: i32) -> i32 {
     let rows = rows.max(1);
     settings_scale(SETTINGS_FORM_HEADER_H)
         + rows * settings_scale(SETTINGS_FORM_ROW_H)
         + (rows - 1) * settings_scale(SETTINGS_FORM_ROW_GAP)
         + settings_scale(SETTINGS_FORM_SECTION_PAD)
+        + settings_scale(extra_px.max(0))
 }
 
 fn settings_make_form_cards(
@@ -126,9 +128,9 @@ fn settings_make_form_cards(
 ) -> Vec<SettingsSection> {
     let top0 = settings_scale(y0);
     let gap = settings_scale(SETTINGS_FORM_SECTION_GAP);
-    let h0 = settings_form_section_height(specs[0].rows);
-    let h1 = settings_form_section_height(specs[1].rows);
-    let h2 = settings_form_section_height(specs[2].rows);
+    let h0 = settings_form_section_height_with_extra(specs[0].rows, specs[0].extra_px);
+    let h1 = settings_form_section_height_with_extra(specs[1].rows, specs[1].extra_px);
+    let h2 = settings_form_section_height_with_extra(specs[2].rows, specs[2].extra_px);
     let top1 = top0 + h0 + gap;
     let top2 = top1 + h1 + gap;
     vec![
@@ -171,7 +173,7 @@ fn settings_make_form_cards_dyn(
     let mut top = settings_scale(y0);
     let gap = settings_scale(SETTINGS_FORM_SECTION_GAP);
     for (idx, spec) in specs.iter().enumerate() {
-        let h = settings_form_section_height(spec.rows);
+        let h = settings_form_section_height_with_extra(spec.rows, spec.extra_px);
         out.push(SettingsSection {
             title: titles.get(idx).copied().unwrap_or(""),
             rect: UiRect::new(
