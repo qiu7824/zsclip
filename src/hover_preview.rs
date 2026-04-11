@@ -174,7 +174,7 @@ unsafe extern "system" fn preview_wnd_proc(
                 if data.item_id == payload.item_id {
                     data.image = payload.image;
                     data.loading_item_id = 0;
-                    InvalidateRect(hwnd, null(), 1);
+                    InvalidateRect(hwnd, null(), 0);
                 }
             }
             0
@@ -434,6 +434,6 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     if !same_content {
-        InvalidateRect(hwnd, null(), 1);
+        InvalidateRect(hwnd, null(), 0);
     }
 }

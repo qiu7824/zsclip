@@ -8,17 +8,6 @@ pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
 pub const SCROLL_BAR_MARGIN: i32 = 3;
 pub const SETTINGS_PAGE_COUNT: usize = 6;
 
-pub const CARD_GENERAL_Y: i32 = 16;
-pub const CARD_GENERAL_H: i32 = 470;
-pub const CARD_DATA_Y: i32 = 498;
-pub const CARD_DATA_H: i32 = 96;
-pub const CARD_ACTIONS_Y: i32 = 606;
-pub const CARD_ACTIONS_H: i32 = 360;
-pub const CARD_POSITION_Y: i32 = 978;
-pub const CARD_POSITION_H: i32 = 168;
-pub const CARD_MAINTAIN_Y: i32 = 1158;
-pub const CARD_MAINTAIN_H: i32 = 96;
-
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
 pub const SETTINGS_FORM_ROW_H: i32 = 32;
 pub const SETTINGS_FORM_ROW_GAP: i32 = 8;
@@ -79,16 +68,34 @@ const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec { rows: 2 },
 ];
 
-const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 4 },
-    SettingsFormCardSpec { rows: 4 },
+const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
+    SettingsFormCardSpec { rows: 10 },
+    SettingsFormCardSpec { rows: 1 },
     SettingsFormCardSpec { rows: 7 },
+    SettingsFormCardSpec { rows: 3 },
+    SettingsFormCardSpec { rows: 1 },
+];
+
+const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
+    SettingsFormCardSpec { rows: 4 },
+    SettingsFormCardSpec { rows: 4 },
+    SettingsFormCardSpec { rows: 5 },
+    SettingsFormCardSpec { rows: 5 },
+];
+
+const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
+    SettingsFormCardSpec { rows: 3 },
+    SettingsFormCardSpec { rows: 9 },
 ];
 
 const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec { rows: 3 },
     SettingsFormCardSpec { rows: 4 },
     SettingsFormCardSpec { rows: 2 },
+];
+
+const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 1] = [
+    SettingsFormCardSpec { rows: 12 },
 ];
 
 pub fn settings_title_rect() -> UiRect {
@@ -155,35 +162,63 @@ fn settings_make_form_cards(
     ]
 }
 
+fn settings_make_form_cards_dyn(
+    y0: i32,
+    titles: &[&'static str],
+    specs: &[SettingsFormCardSpec],
+) -> Vec<SettingsSection> {
+    let mut out = Vec::with_capacity(specs.len());
+    let mut top = settings_scale(y0);
+    let gap = settings_scale(SETTINGS_FORM_SECTION_GAP);
+    for (idx, spec) in specs.iter().enumerate() {
+        let h = settings_form_section_height(spec.rows);
+        out.push(SettingsSection {
+            title: titles.get(idx).copied().unwrap_or(""),
+            rect: UiRect::new(
+                settings_content_x_scaled(),
+                settings_content_y_scaled() + top,
+                settings_content_x_scaled() + settings_content_w_scaled(),
+                settings_content_y_scaled() + top + h,
+            ),
+        });
+        top += h + gap;
+    }
+    out
+}
+
 pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
     match SettingsPage::from_index(page) {
-        SettingsPage::General => vec![
-            SettingsSection { title: "启动与显示", rect: settings_card_rect(CARD_GENERAL_Y, CARD_GENERAL_H) },
-            SettingsSection { title: "数据", rect: settings_card_rect(CARD_DATA_Y, CARD_DATA_H) },
-            SettingsSection { title: "快捷操作", rect: settings_card_rect(CARD_ACTIONS_Y, CARD_ACTIONS_H) },
-            SettingsSection { title: "显示位置", rect: settings_card_rect(CARD_POSITION_Y, CARD_POSITION_H) },
-            SettingsSection { title: "维护", rect: settings_card_rect(CARD_MAINTAIN_Y, CARD_MAINTAIN_H) },
-        ],
+        SettingsPage::General => settings_make_form_cards_dyn(
+            16,
+            &["启动与显示", "数据", "快捷操作", "显示位置", "维护"],
+            &GENERAL_FORM_SECTIONS,
+        ),
         SettingsPage::Hotkey => settings_make_form_cards(
             16,
             ["主快捷键", "系统剪贴板历史（Win+V）", "功能说明"],
             HOTKEY_FORM_SECTIONS,
         ),
-        SettingsPage::Plugin => settings_make_form_cards(
+        SettingsPage::Plugin => settings_make_form_cards_dyn(
             16,
-            ["搜索插件", "图片 OCR", "AI 文本清洗 / 超级邮件合并 / 二维码 / 独立插件"],
-            PLUGIN_FORM_SECTIONS,
+            &[
+                "搜索插件",
+                "图片 OCR",
+                "文本翻译",
+                "AI 文本清洗 / 超级邮件合并 / 二维码 / 独立插件",
+            ],
+            &PLUGIN_FORM_SECTIONS,
         ),
-        SettingsPage::Group => vec![
-            SettingsSection { title: "分组功能", rect: settings_card_rect(16, 188) },
-            SettingsSection { title: "分组管理", rect: settings_card_rect(216, 434) },
-        ],
+        SettingsPage::Group => settings_make_form_cards_dyn(
+            16,
+            &["分组功能", "分组管理"],
+            &GROUP_FORM_SECTIONS,
+        ),
         SettingsPage::Cloud => settings_make_form_cards(
             16,
             ["同步设置", "WebDAV 连接", "同步操作"],
             CLOUD_FORM_SECTIONS,
         ),
-        SettingsPage::About => vec![SettingsSection { title: "关于", rect: settings_card_rect(16, 760) }],
+        SettingsPage::About => settings_make_form_cards_dyn(16, &["关于"], &ABOUT_FORM_SECTIONS),
     }
 }
 

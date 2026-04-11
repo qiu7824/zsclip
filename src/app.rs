@@ -55,6 +55,7 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetLastError() -> u32;
+    fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn OpenProcess(dwdesiredaccess: u32, binherithandle: i32, dwprocessid: u32) -> *mut core::ffi::c_void;
@@ -78,6 +79,7 @@ unsafe extern "system" {
 
 #[link(name = "psapi")]
 unsafe extern "system" {
+    fn EmptyWorkingSet(hprocess: *mut core::ffi::c_void) -> i32;
 }
 
 // Registry API for autostart
@@ -121,7 +123,7 @@ use crate::shell::{
     detect_wechat_runtime_dir, icon_handle_for, is_directory_item, item_icon_handle, load_icons, open_parent_folder,
     open_path_with_shell, open_source_url, open_source_url_display, pick_paste_sound_file,
     play_paste_success_sound, plugin_downloads_url,
-    restart_explorer_shell, run_baidu_ocr_api, run_winocr_dll_ocr, set_system_clipboard_history_enabled, start_update_check,
+    restart_explorer_shell, run_baidu_ocr_api, run_baidu_translate_api, run_winocr_dll_ocr, set_system_clipboard_history_enabled, start_update_check,
     update_check_available, update_check_latest_url_or_default, update_check_state_snapshot, IconAssetKind,
 };
 use crate::hover_preview::{hide_hover_preview, show_hover_preview};
@@ -132,7 +134,7 @@ use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
+use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
 use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
@@ -185,6 +187,8 @@ const ID_TIMER_SETTINGS_SAVE_HINT: usize = 8;
 const ID_TIMER_OUTSIDE_HIDE: usize = 9;
 const ID_TIMER_VV_WATCH: usize = 10;
 const ID_TIMER_SEARCH_DEBOUNCE: usize = 11;
+const ID_TIMER_HIDDEN_RECLAIM: usize = 12;
+const ID_TIMER_CLIPBOARD_RETRY: usize = 13;
 const STARTUP_RECOVERY_TICKS: u8 = 24;
 const LLKHF_LOWER_IL_INJECTED_FLAG: u32 = 0x0000_0002;
 const WM_VV_SHOW: u32 = WM_APP + 20;
@@ -195,6 +199,7 @@ const WM_UPDATE_CHECK_READY: u32 = WM_APP + 31;
 const WM_CLOUD_SYNC_READY: u32 = WM_APP + 33;
 const WM_IMAGE_PASTE_READY: u32 = WM_APP + 34;
 const WM_IMAGE_OCR_READY: u32 = WM_APP + 35;
+const WM_TEXT_TRANSLATE_READY: u32 = WM_APP + 36;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -217,6 +222,7 @@ const IDM_ROW_MAIL_MERGE: usize = 41015;
 const IDM_ROW_DELETE_UNPINNED: usize = 41016;
 const IDM_ROW_IMAGE_OCR: usize = 41017;
 const IDM_ROW_QR_IMAGE: usize = 41018;
+const IDM_ROW_TEXT_TRANSLATE: usize = 41019;
 const IDM_ROW_GROUP_BASE: usize = 41100;
 const IDM_GROUP_FILTER_ALL: usize = 41200;
 const IDM_GROUP_FILTER_BASE: usize = 41210;
@@ -233,6 +239,8 @@ const EDGE_AUTO_HIDE_DELAY_MS: u64 = 650;
 const EDGE_AUTO_HIDE_RESTORE_GRACE_MS: u64 = 450;
 const EDGE_AUTO_HIDE_ANIM_MS: u64 = 180;
 const EDGE_AUTO_HIDE_ANIM_TIMER_MS: u32 = 16;
+const CLIPBOARD_RETRY_DELAY_MS: u32 = 140;
+const CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 5;
 
 const EN_CHANGE_CODE: u16 = 0x0300;
 const MOD_ALT: u32 = 0x0001;
@@ -261,6 +269,11 @@ struct ImageOcrReadyResult {
     error: Option<String>,
 }
 
+struct TextTranslateReadyResult {
+    text: Option<String>,
+    error: Option<String>,
+}
+
 unsafe fn start_flagged_timer(hwnd: HWND, timer_id: usize, period_ms: u32, flag: &mut bool) {
     *flag = true;
     SetTimer(hwnd, timer_id, period_ms, None);
@@ -269,6 +282,55 @@ unsafe fn start_flagged_timer(hwnd: HWND, timer_id: usize, period_ms: u32, flag:
 unsafe fn stop_flagged_timer(hwnd: HWND, timer_id: usize, flag: &mut bool) {
     KillTimer(hwnd, timer_id);
     *flag = false;
+}
+
+unsafe fn trim_process_working_set() {
+    let process = GetCurrentProcess();
+    if !process.is_null() {
+        let _ = EmptyWorkingSet(process);
+    }
+}
+
+unsafe fn schedule_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
+    // 回归保护：不要再改回“窗口一隐藏就立刻清缓存”，那会让快速显示/隐藏反复抖动。
+    start_flagged_timer(hwnd, ID_TIMER_HIDDEN_RECLAIM, 1800, &mut state.hidden_reclaim_timer);
+}
+
+unsafe fn cancel_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
+    stop_flagged_timer(hwnd, ID_TIMER_HIDDEN_RECLAIM, &mut state.hidden_reclaim_timer);
+}
+
+unsafe fn reset_clipboard_retry(hwnd: HWND, state: &mut AppState) {
+    if state.clipboard_retry_timer {
+        stop_flagged_timer(hwnd, ID_TIMER_CLIPBOARD_RETRY, &mut state.clipboard_retry_timer);
+    }
+    state.clipboard_retry_sequence = 0;
+    state.clipboard_retry_attempts = 0;
+}
+
+unsafe fn schedule_clipboard_retry(hwnd: HWND, state: &mut AppState, sequence: u32) -> bool {
+    if sequence == 0 {
+        return false;
+    }
+    if state.clipboard_retry_sequence != sequence {
+        reset_clipboard_retry(hwnd, state);
+        state.clipboard_retry_sequence = sequence;
+    }
+    if state.clipboard_retry_attempts >= CLIPBOARD_RETRY_MAX_ATTEMPTS {
+        return false;
+    }
+    state.clipboard_retry_attempts += 1;
+    if state.clipboard_retry_timer {
+        SetTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY, CLIPBOARD_RETRY_DELAY_MS, None);
+    } else {
+        start_flagged_timer(
+            hwnd,
+            ID_TIMER_CLIPBOARD_RETRY,
+            CLIPBOARD_RETRY_DELAY_MS,
+            &mut state.clipboard_retry_timer,
+        );
+    }
+    true
 }
 
 unsafe fn show_main_scrollbar_feedback(hwnd: HWND, state: &mut AppState, erase: bool) {
@@ -900,6 +962,15 @@ unsafe fn clipboard_source_app_name() -> String {
     process_image_name(pid)
 }
 
+unsafe fn window_process_name(hwnd: HWND) -> String {
+    if hwnd.is_null() {
+        return String::new();
+    }
+    let mut pid = 0u32;
+    let _ = GetWindowThreadProcessId(hwnd, &mut pid);
+    process_image_name(pid)
+}
+
 fn is_self_clipboard_source_app(source_app: &str) -> bool {
     let source = source_app.trim().to_ascii_lowercase();
     if source.is_empty() {
@@ -913,6 +984,11 @@ fn is_self_clipboard_source_app(source_app: &str) -> bool {
         .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
         .map(|name| name.trim().to_ascii_lowercase() == source)
         .unwrap_or(false)
+}
+
+fn source_app_prefers_image_capture(source_app: &str) -> bool {
+    let source = source_app.trim().to_ascii_lowercase();
+    source.contains("pixpin")
 }
 
 unsafe fn vv_window_class_name(hwnd: HWND) -> String {
@@ -943,10 +1019,41 @@ unsafe fn vv_target_is_text_input_ready(target: HWND) -> bool {
     }
     let focus = if !info.hwndFocus.is_null() { info.hwndFocus } else { target };
     let cls = vv_window_class_name(focus).to_ascii_lowercase();
+    let target_cls = vv_window_class_name(target).to_ascii_lowercase();
+    let process_name = window_process_name(target);
+    let dlg_code = SendMessageW(focus, WM_GETDLGCODE, 0, 0) as u32;
     if matches!(
         cls.as_str(),
-        "edit" | "richedit20w" | "richedit50w" | "scintilla" | "chrome_renderwidgethosthwnd"
+        "edit"
+            | "richedit20w"
+            | "richedit50w"
+            | "scintilla"
+            | "chrome_renderwidgethosthwnd"
+            | "chrome_widgetwin_0"
+            | "chrome_widgetwin_1"
+            | "mozillawindowclass"
+            | "windows.ui.composition.desktopwindowcontentbridge"
     ) {
+        return true;
+    }
+    if matches!(
+        target_cls.as_str(),
+        "chrome_widgetwin_0" | "chrome_widgetwin_1" | "windows.ui.composition.desktopwindowcontentbridge"
+    ) && (process_name.contains("codex") || process_name.contains("chatgpt"))
+    {
+        return true;
+    }
+    if (dlg_code & (DLGC_HASSETSEL | DLGC_WANTCHARS | DLGC_WANTTAB | DLGC_WANTARROWS)) != 0 {
+        return true;
+    }
+    let ime_hwnd = ImmGetDefaultIMEWnd(focus);
+    if !ime_hwnd.is_null()
+        && IsWindow(ime_hwnd) != 0
+        && (process_name.contains("codex")
+            || process_name.contains("chatgpt")
+            || process_name.contains("cursor")
+            || process_name.contains("code"))
+    {
         return true;
     }
     if caret_accessible_rect(focus).is_some() {
@@ -1406,6 +1513,10 @@ pub(crate) struct AppState {
     pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
     pub(crate) search_debounce_timer: bool,
+    pub(crate) hidden_reclaim_timer: bool,
+    pub(crate) clipboard_retry_timer: bool,
+    pub(crate) clipboard_retry_sequence: u32,
+    pub(crate) clipboard_retry_attempts: u8,
     pub(crate) scroll_dragging: bool,
     pub(crate) scroll_drag_start_y: i32,
     pub(crate) scroll_drag_start_scroll: i32,
@@ -2139,6 +2250,14 @@ struct SettingsWndState {
     ed_ocr_cloud_token: HWND,
     lb_ocr_status: HWND,
     btn_ocr_detect: HWND,
+    cb_translate_provider: HWND,
+    lb_translate_status: HWND,
+    lb_translate_primary: HWND,
+    ed_translate_app_id: HWND,
+    lb_translate_secondary: HWND,
+    ed_translate_secret: HWND,
+    lb_translate_target: HWND,
+    cb_translate_target: HWND,
     btn_plugin_downloads: HWND,
     cb_vv_source: HWND,
     cb_vv_group: HWND,
@@ -3018,6 +3137,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 ed_ocr_cloud_token: null_mut(),
                 lb_ocr_status: null_mut(),
                 btn_ocr_detect: null_mut(),
+                cb_translate_provider: null_mut(),
+                lb_translate_status: null_mut(),
+                lb_translate_primary: null_mut(),
+                ed_translate_app_id: null_mut(),
+                lb_translate_secondary: null_mut(),
+                ed_translate_secret: null_mut(),
+                lb_translate_target: null_mut(),
+                cb_translate_target: null_mut(),
                 btn_plugin_downloads: null_mut(),
                 cb_vv_source: null_mut(),
                 cb_vv_group: null_mut(),
@@ -3355,6 +3482,21 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         InvalidateRect(st.cb_ocr_provider, null(), 1);
                     }
                 }
+                IDC_SET_TRANSLATE_PROVIDER => {
+                    if let Some((key, _)) = TEXT_TRANSLATE_PROVIDER_OPTIONS.get(idx) {
+                        st.draft.text_translate_provider = (*key).to_string();
+                        settings_set_text(st.cb_translate_provider, &text_translate_provider_display(key));
+                        settings_sync_page_state(st, SettingsPage::Plugin.index());
+                        InvalidateRect(st.cb_translate_provider, null(), 1);
+                    }
+                }
+                IDC_SET_TRANSLATE_TARGET => {
+                    if let Some((key, _)) = TEXT_TRANSLATE_TARGET_OPTIONS.get(idx) {
+                        st.draft.text_translate_target_lang = (*key).to_string();
+                        settings_set_text(st.cb_translate_target, &text_translate_target_display(key));
+                        InvalidateRect(st.cb_translate_target, null(), 1);
+                    }
+                }
                 IDC_SET_VV_SOURCE => {
                     st.vv_source_selected = normalize_source_tab(idx);
                     settings_sync_vv_source_display(st);
@@ -3623,6 +3765,36 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
                     st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_OCR_PROVIDER, &rc, &labels, current, 240);
+                }
+                IDC_SET_TRANSLATE_PROVIDER => {
+                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_translate_provider, &mut rc);
+                    let current = TEXT_TRANSLATE_PROVIDER_OPTIONS
+                        .iter()
+                        .position(|(key, _)| text_translate_provider_display(key) == get_window_text(st.cb_translate_provider))
+                        .unwrap_or(0);
+                    let labels_owned: Vec<String> = TEXT_TRANSLATE_PROVIDER_OPTIONS
+                        .iter()
+                        .map(|(key, _)| text_translate_provider_display(key))
+                        .collect();
+                    let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
+                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_TRANSLATE_PROVIDER, &rc, &labels, current, 240);
+                }
+                IDC_SET_TRANSLATE_TARGET => {
+                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_translate_target, &mut rc);
+                    let current = TEXT_TRANSLATE_TARGET_OPTIONS
+                        .iter()
+                        .position(|(key, _)| text_translate_target_display(key) == get_window_text(st.cb_translate_target))
+                        .unwrap_or(0);
+                    let labels_owned: Vec<String> = TEXT_TRANSLATE_TARGET_OPTIONS
+                        .iter()
+                        .map(|(key, _)| text_translate_target_display(key))
+                        .collect();
+                    let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
+                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_TRANSLATE_TARGET, &rc, &labels, current, 200);
                 }
                 IDC_SET_VV_SOURCE => {
                     if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
@@ -4285,16 +4457,30 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_ERASEBKGND => 1,
         WM_SIZE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if wparam == SIZE_MINIMIZED as usize {
+                    hide_hover_preview();
+                    schedule_hidden_memory_reclaim(hwnd, state);
+                } else {
+                    cancel_hidden_memory_reclaim(hwnd, state);
+                }
+            }
             apply_main_window_region(hwnd);
             layout_children(hwnd);
             InvalidateRect(hwnd, null(), 1);
             0
         }
         WM_SHOWWINDOW => {
-            if wparam == 0 {
-                let ptr = get_state_ptr(hwnd);
-                if !ptr.is_null() {
-                    (*ptr).release_list_memory();
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if wparam == 0 {
+                    hide_hover_preview();
+                    schedule_hidden_memory_reclaim(hwnd, state);
+                } else {
+                    cancel_hidden_memory_reclaim(hwnd, state);
                 }
             }
             refresh_low_level_input_hooks();
@@ -4345,10 +4531,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 KillTimer(hwnd, ID_TIMER_PASTE);
                 let mut should_send_paste = true;
                 let mut should_play_sound = false;
+                let mut paste_target = null_mut();
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     let target = state.paste_target_override;
+                    paste_target = target;
                     if !target.is_null() {
                         should_send_paste = force_foreground_window(target);
                         if should_send_paste {
@@ -4375,6 +4563,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                             );
                         }
                     }
+                } else if !ptr.is_null() {
+                    show_paste_failure_message(hwnd, &*ptr, paste_target);
                 }
                 return 0;
             }
@@ -4385,6 +4575,23 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     stop_search_debounce_timer(hwnd, state);
                     apply_search_filter(hwnd, state);
                 }
+                return 0;
+            }
+            if wparam == ID_TIMER_HIDDEN_RECLAIM {
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    let state = &mut *ptr;
+                    cancel_hidden_memory_reclaim(hwnd, state);
+                    if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 {
+                        hide_hover_preview();
+                        state.release_list_memory();
+                        trim_process_working_set();
+                    }
+                }
+                return 0;
+            }
+            if wparam == ID_TIMER_CLIPBOARD_RETRY {
+                capture_clipboard(hwnd);
                 return 0;
             }
             if wparam == ID_TIMER_SCROLL_FADE {
@@ -4658,6 +4865,52 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_TEXT_TRANSLATE_READY => {
+            if lparam == 0 {
+                return 0;
+            }
+            let payload = Box::from_raw(lparam as *mut TextTranslateReadyResult);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                if let Some(text) = payload.text {
+                    let normalized = text.replace("\r\n", "\n");
+                    let preview = build_preview(&normalized);
+                    let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
+                    skip_next_clipboard_update_for_all_hosts();
+                    if let Ok(mut clipboard) = Clipboard::new() {
+                        let _ = clipboard.set_text(normalized.clone());
+                    }
+                    state.add_clip_item(
+                        ClipItem {
+                            id: 0,
+                            kind: ClipKind::Text,
+                            preview,
+                            text: Some(normalized),
+                            source_app: String::new(),
+                            file_paths: None,
+                            image_bytes: None,
+                            image_path: None,
+                            image_width: 0,
+                            image_height: 0,
+                            pinned: false,
+                            group_id: 0,
+                            created_at: String::new(),
+                        },
+                        sig,
+                    );
+                    InvalidateRect(hwnd, null(), 1);
+                } else if let Some(err) = payload.error {
+                    MessageBoxW(
+                        hwnd,
+                        to_wide(&format!("{}: {}", tr("文本翻译失败", "Text translation failed"), err)).as_ptr(),
+                        to_wide(tr("文本翻译", "Text Translate")).as_ptr(),
+                        MB_OK | MB_ICONERROR,
+                    );
+                }
+            }
+            0
+        }
         WM_UPDATE_CHECK_READY => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0 {
@@ -4753,6 +5006,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         KillTimer(hwnd, ID_TIMER_VV_SHOW);
                         KillTimer(hwnd, ID_TIMER_PASTE);
                         KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
+                        KillTimer(hwnd, ID_TIMER_HIDDEN_RECLAIM);
+                        KillTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
                         KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
@@ -4776,6 +5031,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     WindowRole::Quick => {
                         KillTimer(hwnd, ID_TIMER_PASTE);
                         KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
+                        KillTimer(hwnd, ID_TIMER_HIDDEN_RECLAIM);
+                        KillTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
                         KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
@@ -5103,7 +5360,7 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if item.kind == ClipKind::Image {
-                        show_image_sticker(&item);
+                        show_image_sticker(&item, &state.settings);
                     }
                 }
             }
@@ -5182,6 +5439,13 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     spawn_image_ocr_job(hwnd, state.settings.clone(), item);
+                }
+            }
+        }
+        IDM_ROW_TEXT_TRANSLATE => {
+            if select_context_row(state) {
+                if let Some(item) = state.current_item_for_use() {
+                    spawn_text_translate_job(hwnd, state.settings.clone(), item);
                 }
             }
         }
@@ -5316,7 +5580,7 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
         IDM_TRAY_EXIT => {
             DestroyWindow(hwnd);
         }
-                    IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_DELETE_UNPINNED | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_IMAGE_OCR | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
+                    IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_DELETE_UNPINNED | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_IMAGE_OCR | IDM_ROW_TEXT_TRANSLATE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
                 execute_row_command(hwnd, state, id);
             }
         _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&id) || (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&id) => {
@@ -5454,7 +5718,7 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
         || old_tab != state.hover_tab
         || old_scroll != state.hover_scroll
         || old_to_top != state.hover_to_top;
-    if old_hover != state.hover_idx || hover_preview_blocked_at_point(state, x, y) {
+    if old_hover != state.hover_idx {
         hide_hover_preview();
     }
 
@@ -5825,6 +6089,11 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
             .as_ref()
             .and_then(|item| image_input_for_ocr(item))
             .is_some();
+    let current_can_translate = state.settings.text_translate_provider != "off"
+        && current_item
+            .as_ref()
+            .and_then(text_input_for_translate)
+            .is_some();
     let cmd = show_row_menu(
         hwnd,
         x,
@@ -5837,6 +6106,7 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
         current_is_dir,
         current_is_excel,
         current_can_ocr,
+        current_can_translate,
     );
     if cmd != 0 {
         execute_row_command(hwnd, state, cmd);
@@ -6024,7 +6294,11 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     }
     let state = &mut *ptr;
     let sequence = GetClipboardSequenceNumber();
+    if sequence != 0 && state.clipboard_retry_sequence != 0 && state.clipboard_retry_sequence != sequence {
+        reset_clipboard_retry(hwnd, state);
+    }
     if state.consume_skip_next_clipboard_update_once(sequence) {
+        reset_clipboard_retry(hwnd, state);
         return;
     }
     if let Some(until) = state.ignore_clipboard_until {
@@ -6032,6 +6306,7 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             if sequence != 0 {
                 state.last_clipboard_seq = sequence;
             }
+            reset_clipboard_retry(hwnd, state);
             return;
         }
         state.ignore_clipboard_until = None;
@@ -6045,93 +6320,69 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         if sequence != 0 {
             state.last_clipboard_seq = sequence;
         }
+        reset_clipboard_retry(hwnd, state);
         return;
     }
+    let prefer_image = source_app_prefers_image_capture(&source_app);
 
-    if let Ok(text) = clipboard.get_text() {
-        let normalized = normalize_captured_text(&text);
-        if !normalized.is_empty() {
-            let preview = build_preview(&normalized);
-            let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
+    if let Ok(img) = clipboard.get_image() {
+        let bytes = img.bytes.into_owned();
+        if let Some((bytes, norm_w, norm_h)) =
+            normalize_captured_image_rgba(bytes, img.width, img.height)
+        {
+            let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
+            let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
+            let sig = format!(
+                "img:{}:{}:{}",
+                norm_w,
+                norm_h,
+                hash_bytes(bytes.as_slice())
+            );
             if state.consume_recent_programmatic_clipboard_signature(&sig) {
+                reset_clipboard_retry(hwnd, state);
                 return;
             }
             if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+                reset_clipboard_retry(hwnd, state);
                 return;
             }
+            // 图片预览：用当前本地时间作为标识（HH:MM:SS），便于用户识别截图时间
+            let preview = format_local_time_for_image_preview();
             let candidate = ClipItem {
                 id: 0,
-                kind: ClipKind::Text,
+                kind: ClipKind::Image,
                 preview,
-                text: Some(normalized),
+                text: None,
                 source_app: source_app.clone(),
                 file_paths: None,
-                image_bytes: None,
-                image_path: None,
-                image_width: 0,
-                image_height: 0,
+                image_bytes,
+                image_path: image_path.map(|p| p.to_string_lossy().to_string()),
+                image_width: norm_w,
+                image_height: norm_h,
                 pinned: false,
                 group_id: 0,
                 created_at: String::new(),
             };
             if state.is_recent_top_duplicate_item(&candidate) {
+                reset_clipboard_retry(hwnd, state);
                 return;
             }
             state.add_clip_item(
                 candidate,
                 sig,
             );
+            reset_clipboard_retry(hwnd, state);
             InvalidateRect(hwnd, null(), 1);
             return;
+        } else if schedule_clipboard_retry(hwnd, state, sequence) {
+            return;
+        } else {
+            reset_clipboard_retry(hwnd, state);
+            // 图片尚未就绪时允许继续回退到文件/文本分支，避免 PixPin 等来源丢记录。
         }
     }
 
-    if let Ok(img) = clipboard.get_image() {
-        let bytes = img.bytes.into_owned();
-        let Some((bytes, norm_w, norm_h)) =
-            normalize_captured_image_rgba(bytes, img.width, img.height)
-        else {
-            return;
-        };
-        let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
-        let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
-        let sig = format!(
-            "img:{}:{}:{}",
-            norm_w,
-            norm_h,
-            hash_bytes(bytes.as_slice())
-        );
-        if state.consume_recent_programmatic_clipboard_signature(&sig) {
-            return;
-        }
-        if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
-            return;
-        }
-        // 图片预览：用当前本地时间作为标识（HH:MM:SS），便于用户识别截图时间
-        let preview = format_local_time_for_image_preview();
-        let candidate = ClipItem {
-            id: 0,
-            kind: ClipKind::Image,
-            preview,
-            text: None,
-            source_app: source_app.clone(),
-            file_paths: None,
-            image_bytes,
-            image_path: image_path.map(|p| p.to_string_lossy().to_string()),
-            image_width: norm_w,
-            image_height: norm_h,
-            pinned: false,
-            group_id: 0,
-            created_at: String::new(),
-        };
-        if state.is_recent_top_duplicate_item(&candidate) {
-            return;
-        }
-        state.add_clip_item(
-            candidate,
-            sig,
-        );
-        InvalidateRect(hwnd, null(), 1);
+    if prefer_image && schedule_clipboard_retry(hwnd, state, sequence) {
         return;
     }
 
@@ -6139,9 +6390,11 @@ unsafe fn capture_clipboard(hwnd: HWND) {
         let preview = build_files_preview(&paths);
         let sig = file_paths_signature(&paths);
         if state.consume_recent_programmatic_clipboard_signature(&sig) {
+            reset_clipboard_retry(hwnd, state);
             return;
         }
         if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+            reset_clipboard_retry(hwnd, state);
             return;
         }
         let candidate = ClipItem {
@@ -6160,13 +6413,62 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             created_at: String::new(),
         };
         if state.is_recent_top_duplicate_item(&candidate) {
+            reset_clipboard_retry(hwnd, state);
             return;
         }
         state.add_clip_item(
             candidate,
             sig,
         );
+        reset_clipboard_retry(hwnd, state);
         InvalidateRect(hwnd, null(), 1);
+        return;
+    }
+
+    if let Ok(text) = clipboard.get_text() {
+        let normalized = normalize_captured_text(&text);
+        if !normalized.is_empty() {
+            let preview = build_preview(&normalized);
+            let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
+            if state.consume_recent_programmatic_clipboard_signature(&sig) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            let candidate = ClipItem {
+                id: 0,
+                kind: ClipKind::Text,
+                preview,
+                text: Some(normalized),
+                source_app: source_app.clone(),
+                file_paths: None,
+                image_bytes: None,
+                image_path: None,
+                image_width: 0,
+                image_height: 0,
+                pinned: false,
+                group_id: 0,
+                created_at: String::new(),
+            };
+            if state.is_recent_top_duplicate_item(&candidate) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            state.add_clip_item(
+                candidate,
+                sig,
+            );
+            reset_clipboard_retry(hwnd, state);
+            InvalidateRect(hwnd, null(), 1);
+            return;
+        }
+    }
+
+    if sequence != 0 {
+        let _ = schedule_clipboard_retry(hwnd, state, sequence);
     }
 }
 
@@ -6621,6 +6923,7 @@ unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
         apply_item_to_clipboard(state, &item_ref)
     };
     if !applied {
+        show_clipboard_write_failure_message(hwnd);
         return;
     }
     maybe_promote_pasted_item(hwnd, state, item_ref.id);
@@ -6653,6 +6956,7 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
         return;
     }
     if !apply_item_to_clipboard(state, &item) {
+        show_clipboard_write_failure_message(hwnd);
         return;
     }
     maybe_promote_pasted_item(hwnd, state, item.id);
@@ -6665,23 +6969,164 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
     );
 }
 
-fn ai_clean_text(input: &str) -> String {
-    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+fn strip_invisible_text_chars(input: &str) -> String {
+    input
+        .chars()
+        .filter(|ch| !matches!(ch, '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'))
+        .collect()
+}
+
+fn strip_markdown_links_and_images(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let is_image = bytes[i] == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'[';
+        let is_link = bytes[i] == b'[';
+        if is_image || is_link {
+            let label_start = if is_image { i + 2 } else { i + 1 };
+            if let Some(label_end_rel) = input[label_start..].find(']') {
+                let label_end = label_start + label_end_rel;
+                let after_label = label_end + 1;
+                if after_label < bytes.len() && bytes[after_label] == b'(' {
+                    if let Some(url_end_rel) = input[after_label + 1..].find(')') {
+                        out.push_str(input[label_start..label_end].trim());
+                        i = after_label + 2 + url_end_rel;
+                        continue;
+                    }
+                }
+            }
+        }
+        let ch = input[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+fn strip_markdown_prefix(line: &str) -> String {
+    let trimmed = line.trim_start();
+    let bytes = trimmed.as_bytes();
+    let mut drop_bytes = 0usize;
+
+    while drop_bytes < bytes.len() && bytes[drop_bytes] == b'>' {
+        drop_bytes += 1;
+        while drop_bytes < bytes.len() && bytes[drop_bytes] == b' ' {
+            drop_bytes += 1;
+        }
+    }
+
+    let trimmed = &trimmed[drop_bytes..];
+    let bytes = trimmed.as_bytes();
+    let mut idx = 0usize;
+    while idx < bytes.len() && bytes[idx] == b'#' {
+        idx += 1;
+    }
+    if idx > 0 && idx < bytes.len() && bytes[idx] == b' ' {
+        return trimmed[idx + 1..].to_string();
+    }
+
+    for prefix in ["- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "* [X] ", "- ", "* ", "+ "] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+
+    let mut digits = 0usize;
+    for ch in trimmed.chars() {
+        if ch.is_ascii_digit() {
+            digits += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if digits > 0 {
+        let rest = &trimmed[digits..];
+        if let Some(stripped) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            return stripped.to_string();
+        }
+    }
+
+    trimmed.to_string()
+}
+
+fn looks_like_markdown_document(input: &str) -> bool {
+    input.contains("```")
+        || input.contains("](")
+        || input.lines().any(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with('#')
+                || trimmed.starts_with('>')
+                || trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("+ ")
+                || trimmed.starts_with("![")
+                || trimmed.starts_with("- [")
+                || trimmed.starts_with("* [")
+                || trimmed
+                    .chars()
+                    .take_while(|ch| ch.is_ascii_digit())
+                    .count()
+                    > 0
+                    && (trimmed.contains(". ") || trimmed.contains(") "))
+        })
+}
+
+fn collapse_blank_lines(lines: impl IntoIterator<Item = String>, max_blank_lines: usize) -> String {
     let mut output = Vec::new();
     let mut blank = 0usize;
-    for line in normalized.lines() {
-        let trimmed = line.trim_end().to_string();
-        if trimmed.trim().is_empty() {
+    for line in lines {
+        if line.trim().is_empty() {
             blank += 1;
-            if blank <= 2 {
+            if blank <= max_blank_lines {
                 output.push(String::new());
             }
         } else {
             blank = 0;
-            output.push(trimmed);
+            output.push(line);
         }
     }
     output.join("\n").trim().to_string()
+}
+
+fn clean_markdown_document(input: &str) -> String {
+    let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
+    let mut in_code_fence = false;
+    let mut cleaned = Vec::new();
+    for raw_line in normalized.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_fence = !in_code_fence;
+            continue;
+        }
+        let mut line = if in_code_fence {
+            raw_line.trim_end().to_string()
+        } else {
+            strip_markdown_prefix(raw_line)
+        };
+        line = strip_markdown_links_and_images(&line);
+        for marker in ["**", "__", "~~", "`"] {
+            line = line.replace(marker, "");
+        }
+        cleaned.push(line.trim_end().to_string());
+    }
+    collapse_blank_lines(cleaned, 1)
+}
+
+fn ai_clean_text(input: &str) -> String {
+    let normalized = strip_invisible_text_chars(input)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    let cleaned = if looks_like_markdown_document(&normalized) {
+        clean_markdown_document(&normalized)
+    } else {
+        let lines = normalized
+            .lines()
+            .map(|line| line.trim_end().to_string())
+            .collect::<Vec<_>>();
+        collapse_blank_lines(lines, 1)
+    };
+    cleaned.trim().to_string()
 }
 
 unsafe fn maybe_ai_clean_text(state: &AppState, input: &str) -> String {
@@ -6692,7 +7137,11 @@ unsafe fn maybe_ai_clean_text(state: &AppState, input: &str) -> String {
     if shift_down {
         return input.to_string();
     }
-    if input.matches('\n').count() >= 8 || input.contains("```") || input.chars().count() >= 600 {
+    if input.matches('\n').count() >= 4
+        || input.contains("```")
+        || input.chars().count() >= 280
+        || looks_like_markdown_document(input)
+    {
         ai_clean_text(input)
     } else {
         input.to_string()
@@ -6834,7 +7283,7 @@ fn drag_export_paths_for_item(item: &ClipItem) -> Vec<PathBuf> {
     }
 }
 
-fn is_supported_ocr_image_path(path: &Path) -> bool {
+pub(crate) fn is_supported_ocr_image_path(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| {
@@ -6846,12 +7295,12 @@ fn is_supported_ocr_image_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-struct OcrImageInput {
-    path: PathBuf,
-    delete_after: bool,
+pub(crate) struct OcrImageInput {
+    pub(crate) path: PathBuf,
+    pub(crate) delete_after: bool,
 }
 
-fn write_image_bytes_to_ocr_temp_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
+pub(crate) fn write_image_bytes_to_ocr_temp_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
     let base = std::env::temp_dir().join("zsclip").join("ocr");
     let _ = fs::create_dir_all(&base);
     let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
@@ -6859,7 +7308,7 @@ fn write_image_bytes_to_ocr_temp_path(bytes: &[u8], width: u32, height: u32) -> 
     write_image_bytes_to_path(&out, bytes, width, height)
 }
 
-fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
+pub(crate) fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
     match item.kind {
         ClipKind::Image => {
             if let Some(path) = item.image_path.as_ref() {
@@ -6886,6 +7335,21 @@ fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
                 } else {
                     None
                 }
+            }),
+        _ => None,
+    }
+}
+
+fn text_input_for_translate(item: &ClipItem) -> Option<String> {
+    match item.kind {
+        ClipKind::Text | ClipKind::Phrase => item
+            .text
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let s = item.preview.trim();
+                if s.is_empty() { None } else { Some(s.to_string()) }
             }),
         _ => None,
     }
@@ -6939,6 +7403,44 @@ unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem)
     });
 }
 
+unsafe fn spawn_text_translate_job(hwnd: HWND, settings: AppSettings, item: ClipItem) {
+    let hwnd_value = hwnd as isize;
+    std::thread::spawn(move || {
+        let result = match settings.text_translate_provider.as_str() {
+            "baidu" => text_input_for_translate(&item)
+                .ok_or_else(|| tr("当前记录没有可翻译的文本", "This item does not contain translatable text").to_string())
+                .and_then(|text| {
+                    run_baidu_translate_api(
+                        &settings.text_translate_app_id,
+                        &settings.text_translate_secret,
+                        &text,
+                        &settings.text_translate_target_lang,
+                    )
+                }),
+            _ => Err(tr("请先在设置-插件中启用文本翻译", "Please enable Text Translate in Settings > Plugins first").to_string()),
+        };
+
+        let payload = match result {
+            Ok(text) => TextTranslateReadyResult {
+                text: Some(text),
+                error: None,
+            },
+            Err(err) => TextTranslateReadyResult {
+                text: None,
+                error: Some(err),
+            },
+        };
+        let _ = unsafe {
+            PostMessageW(
+                hwnd_value as HWND,
+                WM_TEXT_TRANSLATE_READY,
+                0,
+                Box::into_raw(Box::new(payload)) as LPARAM,
+            )
+        };
+    });
+}
+
 unsafe fn begin_row_drag_export(hwnd: HWND, state: &mut AppState, visible_idx: i32) -> bool {
     if visible_idx < 0 {
         return false;
@@ -6972,6 +7474,7 @@ unsafe fn show_row_menu(
     current_is_dir: bool,
     current_is_excel: bool,
     current_can_ocr: bool,
+    current_can_translate: bool,
 ) -> usize {
     let menu = CreatePopupMenu();
     if menu.is_null() {
@@ -7065,6 +7568,9 @@ unsafe fn show_row_menu(
                 AppendMenuW(menu, MF_STRING, IDM_ROW_EDIT, to_wide(translate("编辑").as_ref()).as_ptr());
                 if state.settings.quick_search_enabled {
                     AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide(translate("快速搜索").as_ref()).as_ptr());
+                }
+                if current_can_translate {
+                    AppendMenuW(menu, MF_STRING, IDM_ROW_TEXT_TRANSLATE, to_wide(tr("文本翻译", "Text Translate")).as_ptr());
                 }
                 if state.settings.qr_quick_enabled {
                     AppendMenuW(menu, MF_STRING, IDM_ROW_QR_IMAGE, to_wide(tr("快捷转换二维码", "Quick QR Convert")).as_ptr());
@@ -7225,6 +7731,72 @@ unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -> bool {
     GetAncestor(focus, GA_ROOT) == target || focus == target || focus == state.hotkey_passthrough_focus
 }
 
+unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> String {
+    let detail = if target.is_null() || IsWindow(target) == 0 {
+        tr("目标窗口已经关闭。", "The target window is no longer available.")
+    } else if GetForegroundWindow() != target {
+        tr(
+            "未能把目标窗口切到前台。",
+            "The target window could not be brought to the foreground.",
+        )
+    } else {
+        let target_thread = GetWindowThreadProcessId(target, null_mut());
+        let mut info: GUITHREADINFO = zeroed();
+        info.cbSize = size_of::<GUITHREADINFO>() as u32;
+        if target_thread == 0 || GetGUIThreadInfo(target_thread, &mut info) == 0 {
+            tr(
+                "目标窗口当前没有可用输入焦点。",
+                "The target window does not currently expose a usable input focus.",
+            )
+        } else if info.hwndFocus.is_null() {
+            tr(
+                "目标窗口没有活动输入框。",
+                "The target window does not have an active input control.",
+            )
+        } else if GetAncestor(info.hwndFocus, GA_ROOT) != target
+            && info.hwndFocus != target
+            && info.hwndFocus != state.hotkey_passthrough_focus
+        {
+            tr(
+                "当前焦点不在目标输入区域里。",
+                "The current focus is no longer inside the target input area.",
+            )
+        } else {
+            tr("目标窗口拒绝了粘贴。", "The target window rejected the paste action.")
+        }
+    };
+    format!(
+        "{}\r\n\r\n{}",
+        detail,
+        tr(
+            "内容已经写入剪贴板，你可以回到目标窗口后手动粘贴。",
+            "The content is already in the clipboard. You can switch back and paste it manually.",
+        )
+    )
+}
+
+unsafe fn show_paste_failure_message(hwnd: HWND, state: &AppState, target: HWND) {
+    let text = paste_failure_message_for_target(state, target);
+    MessageBoxW(
+        hwnd,
+        to_wide(&text).as_ptr(),
+        to_wide(translate("粘贴失败").as_ref()).as_ptr(),
+        MB_OK | MB_ICONWARNING,
+    );
+}
+
+unsafe fn show_clipboard_write_failure_message(hwnd: HWND) {
+    MessageBoxW(
+        hwnd,
+        to_wide(
+            translate("内容未能写入系统剪贴板，请重试一次。").as_ref(),
+        )
+        .as_ptr(),
+        to_wide(translate("复制失败").as_ref()).as_ptr(),
+        MB_OK | MB_ICONWARNING,
+    );
+}
+
 unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
     if !state.paste_target_override.is_null() {
         return state.paste_target_override;
@@ -7263,6 +7835,15 @@ unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState
         if state.search_on {
             SetFocus(state.search_hwnd);
         }
+        MessageBoxW(
+            hwnd,
+            to_wide(
+                translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").as_ref(),
+            )
+            .as_ptr(),
+            to_wide(translate("粘贴失败").as_ref()).as_ptr(),
+            MB_OK | MB_ICONWARNING,
+        );
     }
 }
 
@@ -7301,8 +7882,8 @@ unsafe fn paint(hwnd: HWND) {
 
     let layout = state.layout();
     let min_pad = scale_for_window(state.hwnd, 6);
-    let app_size = (((layout.title_h * 22) / 35).max(scale_for_window(state.hwnd, 18)))
-        .min((layout.title_h - min_pad * 2).max(scale_for_window(state.hwnd, 18)));
+    let app_size = (((layout.title_h * 24) / 35).max(scale_for_window(state.hwnd, 20)))
+        .min((layout.title_h - min_pad * 2).max(scale_for_window(state.hwnd, 20)));
     let app_icon = icon_handle_for(IconAssetKind::App, app_size);
     if app_icon != 0 {
         let app_pad_x = ((layout.title_h - app_size) / 2).max(min_pad);
@@ -7327,8 +7908,8 @@ unsafe fn paint(hwnd: HWND) {
             }
         }
         let slot = rc.right - rc.left;
-        let iw = ((slot * 18 / 36).max(scale_for_window(state.hwnd, 16)))
-            .min((slot - scale_for_window(state.hwnd, 6)).max(scale_for_window(state.hwnd, 16)));
+        let iw = ((slot * 18 / 36).max(scale_for_window(state.hwnd, 18)))
+            .min((slot - scale_for_window(state.hwnd, 4)).max(scale_for_window(state.hwnd, 18)));
         let icon = match key {
             "search" => icon_handle_for(IconAssetKind::Search, iw),
             "setting" => icon_handle_for(IconAssetKind::Setting, iw),
@@ -7392,7 +7973,15 @@ unsafe fn paint(hwnd: HWND) {
         } else {
             tr("暂无短语", "No phrases yet")
         };
-        draw_text(memdc as _, msg, &text_rect, th.text_muted, 12, false, true);
+        draw_text(
+            memdc as _,
+            msg,
+            &text_rect,
+            th.text_muted,
+            layout.row_muted_text_size().max(scale_for_window(state.hwnd, 13)),
+            false,
+            true,
+        );
     } else {
         let view_top = layout.list_y + layout.list_pad;
         let view_bottom = layout.list_y + layout.list_h - layout.list_pad;
