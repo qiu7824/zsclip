@@ -22,7 +22,7 @@ use crate::ui::{
     DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_ui::{create_font_px, scale_for_window, window_dpi};
+use crate::win_system_ui::{create_font_px, monitor_dpi_for_window, scale_for_window};
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -409,6 +409,38 @@ pub unsafe fn create_settings_label(
     h: i32,
     font: *mut c_void,
 ) -> HWND {
+    const SS_CENTERIMAGE: u32 = 0x0200;
+    const SS_ENDELLIPSIS: u32 = 0x4000;
+    let translated = translate(text);
+    let hwnd = CreateWindowExW(
+        0,
+        to_wide("STATIC").as_ptr(),
+        to_wide(translated.as_ref()).as_ptr(),
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | SS_NOPREFIX_STYLE | SS_ENDELLIPSIS,
+        x,
+        y,
+        w,
+        h,
+        parent,
+        null_mut(),
+        GetModuleHandleW(null()),
+        null(),
+    );
+    if !hwnd.is_null() {
+        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+    }
+    hwnd
+}
+
+unsafe fn create_settings_label_wrap(
+    parent: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    font: *mut c_void,
+) -> HWND {
     let translated = translate(text);
     let hwnd = CreateWindowExW(
         0,
@@ -481,7 +513,7 @@ pub unsafe fn create_settings_label_auto(
     font: *mut c_void,
 ) -> (HWND, i32) {
     let h = settings_measure_text_height(parent, text, w, font, min_h);
-    let hwnd = create_settings_label(parent, text, x, y, w, h, font);
+    let hwnd = create_settings_label_wrap(parent, text, x, y, w, h, font);
     (hwnd, h)
 }
 
@@ -647,8 +679,7 @@ pub unsafe fn draw_settings_button_component(
     th: Theme,
 ) {
     let rr = RECT { left: rc.left + 1, top: rc.top + 1, right: rc.right - 1, bottom: rc.bottom - 1 };
-    let control_h = (rr.bottom - rr.top).max(24);
-    let text_px = ((control_h * 14) / 32).max(12);
+    let text_px = 14;
     match kind {
         SettingsComponentKind::Dropdown => {
             draw_settings_dropdown_button(hdc, &rr, text, hover, pressed, th);
@@ -683,8 +714,8 @@ pub unsafe fn draw_settings_dropdown_button(
         bottom: rc.bottom - 1,
     };
     let control_h = (rr.bottom - rr.top).max(24);
-    let text_px = ((control_h * 14) / 32).max(12);
-    let arrow_px = ((control_h * 10) / 32).max(9);
+    let text_px = 14;
+    let arrow_px = 10;
     let text_pad = (control_h * 12 / 32).max(10);
     let arrow_w = (control_h * 20 / 32).max(18);
     let fill = if pressed { th.button_pressed } else { th.surface };
@@ -812,12 +843,13 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
         WM_ACTIVATE => 0,
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            let dpi = window_dpi(hwnd);
+            let dpi = monitor_dpi_for_window(hwnd);
             crate::ui::set_settings_ui_dpi(dpi);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             if !hdc.is_null() {
+                crate::win_system_ui::set_paint_dpi_override(dpi);
                 let mut rc: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rc);
                 let paint_target = begin_buffered_paint(hdc, &rc);
@@ -855,7 +887,7 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                             right: item_rc.right - settings_scale(12),
                             bottom: item_rc.bottom,
                         };
-                        draw_text_ex(memdc as _, item, &text_rc, th.text, settings_scale(14), false, false, ui_text_font_family());
+                        draw_text_ex(memdc as _, item, &text_rc, th.text, 14, false, false, ui_text_font_family());
                     }
                     if dropdown_max_scroll(st) > 0 {
                         if st.scroll_top > 0 {
@@ -865,7 +897,7 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                                 right: w - settings_scale(8),
                                 bottom: settings_scale(20),
                             };
-                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, settings_scale(8), false, true, ui_icon_font_family());
+                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, 8, false, true, ui_icon_font_family());
                         }
                         if st.scroll_top < dropdown_max_scroll(st) {
                             let bottom_hint = RECT {
@@ -874,13 +906,14 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                                 right: w - settings_scale(8),
                                 bottom: h - settings_scale(6),
                             };
-                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, settings_scale(8), false, true, ui_icon_font_family());
+                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, 8, false, true, ui_icon_font_family());
                         }
                     }
                 }
                 if let Some((paint_buf, _)) = paint_target {
                     end_buffered_paint(paint_buf, true);
                 }
+                crate::win_system_ui::clear_paint_dpi_override();
                 EndPaint(hwnd, &ps);
             }
             0

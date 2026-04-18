@@ -120,6 +120,8 @@ pub(crate) struct AppSettings {
     pub(crate) qr_quick_enabled: bool,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
+    pub(crate) edit_dialog_w: i32,
+    pub(crate) edit_dialog_h: i32,
 }
 
 impl Default for AppSettings {
@@ -180,6 +182,8 @@ impl Default for AppSettings {
             qr_quick_enabled: false,
             last_window_x: -1,
             last_window_y: -1,
+            edit_dialog_w: 0,
+            edit_dialog_h: 0,
         }
     }
 }
@@ -668,6 +672,7 @@ impl AppState {
             role,
             hwnd,
             search_hwnd,
+            ui_dpi: unsafe { crate::win_system_ui::monitor_dpi_for_window(hwnd) },
             search_font: null_mut(),
             theme: Theme::default(),
             icons,

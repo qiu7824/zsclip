@@ -136,7 +136,7 @@ use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
 use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
 use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_dpi, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, monitor_dpi_for_window, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -377,8 +377,12 @@ unsafe fn show_main_scrollbar_feedback(hwnd: HWND, state: &mut AppState, erase: 
     InvalidateRect(hwnd, null(), erase as i32);
 }
 
+fn main_layout_for_dpi(dpi: u32) -> MainUiLayout {
+    MAIN_UI_LAYOUT.scaled(dpi.max(96))
+}
+
 unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
-    MAIN_UI_LAYOUT.scaled(window_dpi(hwnd))
+    main_layout_for_dpi(monitor_dpi_for_window(hwnd))
 }
 
 const EDGE_AUTO_HIDE_PEEK: i32 = 2;
@@ -1520,6 +1524,7 @@ pub(crate) struct AppState {
     pub(crate) role: WindowRole,
     pub(crate) hwnd: HWND,
     pub(crate) search_hwnd: HWND,
+    pub(crate) ui_dpi: u32,
     pub(crate) search_font: *mut core::ffi::c_void,
     pub(crate) theme: Theme,
     pub(crate) icons: Icons,
@@ -1997,7 +2002,7 @@ impl AppState {
     }
 
     fn layout(&self) -> MainUiLayout {
-        unsafe { main_layout_for_window(self.hwnd) }
+        main_layout_for_dpi(self.ui_dpi)
     }
 
     fn row_rect(&self, visible_idx: i32) -> Option<RECT> {
@@ -2651,6 +2656,11 @@ const EDIT_DLG_CLASS: &str = "ZsClipEditDlg";
 struct EditDlgData {
     item_id: i64,
     saved: bool,
+    dirty: bool,
+    loading_text: bool,
+    original_text: String,
+    last_w: i32,
+    last_h: i32,
     ui_font: *mut core::ffi::c_void,
     btn_font: *mut core::ffi::c_void,
     surface_brush: *mut core::ffi::c_void,
@@ -2684,6 +2694,81 @@ unsafe fn sync_line_numbers(lineno_hwnd: HWND, textarea_hwnd: HWND) {
     }
     // pad remaining
     SetWindowTextW(lineno_hwnd, to_wide(&lines).as_ptr());
+}
+
+unsafe fn edit_dialog_text(hwnd: HWND) -> String {
+    let ed = GetDlgItem(hwnd, IDC_EDIT_TEXTAREA as i32);
+    if ed.is_null() {
+        return String::new();
+    }
+    let len = GetWindowTextLengthW(ed);
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; (len as usize) + 2];
+    GetWindowTextW(ed, buf.as_mut_ptr(), buf.len() as i32);
+    String::from_utf16_lossy(&buf[..len as usize])
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+}
+
+unsafe fn edit_dialog_save(hwnd: HWND, data: &mut EditDlgData) -> bool {
+    let normalized = edit_dialog_text(hwnd);
+    if db_update_item_text(data.item_id, &normalized).is_ok() {
+        data.saved = true;
+        data.dirty = false;
+        data.original_text = normalized;
+        true
+    } else {
+        MessageBoxW(
+            hwnd,
+            to_wide(tr("保存失败，请稍后重试。", "Save failed. Please try again.")).as_ptr(),
+            to_wide(tr("编辑记录", "Edit Record")).as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+        false
+    }
+}
+
+unsafe fn edit_dialog_save_size(hwnd: HWND, data: &EditDlgData) {
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 {
+        return;
+    }
+    let width = rc.right - rc.left;
+    let height = rc.bottom - rc.top;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let mut settings = load_settings();
+    settings.edit_dialog_w = if data.last_w > 0 { data.last_w } else { width };
+    settings.edit_dialog_h = if data.last_h > 0 { data.last_h } else { height };
+    save_settings(&settings);
+}
+
+unsafe fn edit_dialog_confirm_close(hwnd: HWND, data: &mut EditDlgData) -> bool {
+    if !data.dirty {
+        return true;
+    }
+    let result = MessageBoxW(
+        hwnd,
+        to_wide(tr("当前修改尚未保存，是否先保存？", "You have unsaved changes. Save before closing?")).as_ptr(),
+        to_wide(tr("编辑记录", "Edit Record")).as_ptr(),
+        MB_YESNOCANCEL | MB_ICONWARNING,
+    );
+    match result {
+        IDYES => edit_dialog_save(hwnd, data),
+        IDNO => true,
+        _ => false,
+    }
+}
+
+unsafe fn edit_dialog_mark_dirty(hwnd: HWND, data: &mut EditDlgData) {
+    if data.loading_text {
+        return;
+    }
+    let current = edit_dialog_text(hwnd);
+    data.dirty = current != data.original_text;
 }
 
 unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -2729,8 +2814,17 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                 conn.query_row(
                     "SELECT COALESCE(text_data,'') FROM items WHERE id=?", params![d.item_id], |r| r.get::<_, String>(0))
             }) {
+                d.original_text = t.replace("\r\n", "\n").replace('\r', "\n");
                 let crlf = t.replace('\n', "\r\n");
+                d.loading_text = true;
                 SetWindowTextW(ed, to_wide(&crlf).as_ptr());
+                d.loading_text = false;
+            }
+            d.dirty = false;
+            let mut wr: RECT = zeroed();
+            if GetWindowRect(hwnd, &mut wr) != 0 {
+                d.last_w = wr.right - wr.left;
+                d.last_h = wr.bottom - wr.top;
             }
             SendMessageW(ed, EM_SETSEL, 0, 0);
             SetFocus(ed);
@@ -2856,20 +2950,17 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                 let ln = GetDlgItem(hwnd, IDC_EDIT_LINENO as i32);
                 sync_line_numbers(ln, ed);
             }
+            if cid == IDC_EDIT_TEXTAREA && notify == EN_CHANGE_CODE as u32 {
+                let ed = GetDlgItem(hwnd, IDC_EDIT_TEXTAREA as i32);
+                let ln = GetDlgItem(hwnd, IDC_EDIT_LINENO as i32);
+                sync_line_numbers(ln, ed);
+                edit_dialog_mark_dirty(hwnd, d);
+            }
 
             if cid == IDC_EDIT_SAVE {
-                let ed = GetDlgItem(hwnd, IDC_EDIT_TEXTAREA as i32);
-                if !ed.is_null() {
-                    let len = GetWindowTextLengthW(ed);
-                    let mut buf = vec![0u16; (len as usize) + 2];
-                    GetWindowTextW(ed, buf.as_mut_ptr(), buf.len() as i32);
-                    let raw = String::from_utf16_lossy(&buf[..len as usize]);
-                    // 将\r\n转回\n
-                    let normalized = raw.replace("\r\n", "\n").replace('\r', "\n");
-                    let _ = db_update_item_text(d.item_id, &normalized);
-                    d.saved = true;
+                if edit_dialog_save(hwnd, d) {
+                    PostMessageW(hwnd, WM_CLOSE, 0, 0);
                 }
-                PostMessageW(hwnd, WM_CLOSE, 0, 0);
             } else if cid == IDC_EDIT_CANCEL {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
             }
@@ -2905,15 +2996,35 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             if !btn_save.is_null() {
                 SetWindowPos(btn_save, null_mut(), w - 110, h - 44, 90, 30, SWP_NOZORDER);
             }
+            let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
+            if !data_ptr.is_null() {
+                let mut wr: RECT = zeroed();
+                if GetWindowRect(hwnd, &mut wr) != 0 {
+                    (*data_ptr).last_w = wr.right - wr.left;
+                    (*data_ptr).last_h = wr.bottom - wr.top;
+                }
+            }
             0
         }
         WM_KEYDOWN => {
             if wparam == VK_ESCAPE as usize {
                 PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            } else if wparam == ('S' as usize)
+                && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
+            {
+                SendMessageW(hwnd, WM_COMMAND, IDC_EDIT_SAVE, 0);
             }
             0
         }
         WM_CLOSE => {
+            let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
+            if !data_ptr.is_null() {
+                let data = &mut *data_ptr;
+                if !edit_dialog_confirm_close(hwnd, data) {
+                    return 0;
+                }
+                edit_dialog_save_size(hwnd, data);
+            }
             DestroyWindow(hwnd);
             0
         }
@@ -2949,12 +3060,37 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     GetWindowRect(parent, &mut parent_rc);
     let pw = parent_rc.right - parent_rc.left;
     let ph = parent_rc.bottom - parent_rc.top;
-    let dw = (pw * 3).max(640);
-    let dh = (ph * 4 / 3).max(500);
-    let cx = parent_rc.left + (pw - dw) / 2;
-    let cy = parent_rc.top + (ph - dh) / 2;
+    let settings = load_settings();
+    let work = nearest_monitor_work_rect_for_window(parent);
+    let max_w = (work.right - work.left - settings_scale(32)).max(640);
+    let max_h = (work.bottom - work.top - settings_scale(32)).max(500);
+    let dw = if settings.edit_dialog_w > 0 {
+        settings.edit_dialog_w.min(max_w)
+    } else {
+        (pw * 3).max(640).min(max_w)
+    };
+    let dh = if settings.edit_dialog_h > 0 {
+        settings.edit_dialog_h.min(max_h)
+    } else {
+        (ph * 4 / 3).max(500).min(max_h)
+    };
+    let cx = max(work.left, work.left + ((work.right - work.left - dw) / 2));
+    let cy = max(work.top, work.top + ((work.bottom - work.top - dh) / 2));
 
-    let data = Box::new(EditDlgData { item_id, saved: false, ui_font: null_mut(), btn_font: null_mut(), surface_brush: null_mut(), control_brush: null_mut(), gutter_brush: null_mut() });
+    let data = Box::new(EditDlgData {
+        item_id,
+        saved: false,
+        dirty: false,
+        loading_text: false,
+        original_text: String::new(),
+        last_w: dw,
+        last_h: dh,
+        ui_font: null_mut(),
+        btn_font: null_mut(),
+        surface_brush: null_mut(),
+        control_brush: null_mut(),
+        gutter_brush: null_mut(),
+    });
     let data_ptr = Box::into_raw(data);
     let title_w = to_wide(title);
     let hwnd = CreateWindowExW(
@@ -2976,6 +3112,23 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     loop {
         let r = GetMessageW(&mut msg, null_mut(), 0, 0);
         if r == 0 || r == -1 { break; }
+        let root = if !msg.hwnd.is_null() {
+            GetAncestor(msg.hwnd, GA_ROOT)
+        } else {
+            null_mut()
+        };
+        if root == hwnd
+            && msg.message == WM_KEYDOWN
+            && msg.wParam == ('S' as usize)
+            && (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0
+        {
+            SendMessageW(hwnd, WM_COMMAND, IDC_EDIT_SAVE, 0);
+            continue;
+        }
+        if root == hwnd && msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE as usize {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+            continue;
+        }
         if IsDialogMessageW(hwnd, &msg) == 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
@@ -2991,7 +3144,7 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
 }
 
 unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState) {
-    set_settings_ui_dpi(window_dpi(hwnd));
+    set_settings_ui_dpi(monitor_dpi_for_window(hwnd));
     if !st.dropdown_popup.is_null() && IsWindow(st.dropdown_popup) != 0 {
         DestroyWindow(st.dropdown_popup);
         st.dropdown_popup = null_mut();
@@ -3109,6 +3262,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let parent_hwnd = cs.lpCreateParams as HWND;
+            set_settings_ui_dpi(monitor_dpi_for_window(hwnd));
             let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
             let mut st = Box::new(SettingsWndState {
                 parent_hwnd,
@@ -4060,7 +4214,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let mut ps: PAINTSTRUCT = zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             if !hdc.is_null() {
-                set_settings_ui_dpi(window_dpi(hwnd));
+                let paint_dpi = monitor_dpi_for_window(hwnd);
+                set_settings_ui_dpi(paint_dpi);
+                crate::win_system_ui::set_paint_dpi_override(paint_dpi);
                 let th = Theme::default();
                 let mut rc: RECT = zeroed();
                 GetClientRect(hwnd, &mut rc);
@@ -4091,7 +4247,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     "",
                     &menu_rc,
                     th.text_muted,
-                    settings_scale(16),
+                    16,
                     false,
                     false,
                     "Segoe Fluent Icons",
@@ -4107,7 +4263,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     "设置",
                     &title_rc,
                     th.text,
-                    settings_scale(15),
+                    15,
                     true,
                     false,
                     "Segoe UI Variable Text",
@@ -4120,7 +4276,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     SETTINGS_PAGES[cur_page],
                     &sub_rc,
                     th.text,
-                    settings_scale(24),
+                    24,
                     true,
                     false,
                     "Segoe UI Variable Display",
@@ -4149,7 +4305,6 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 SaveDC(memdc);
                 IntersectClipRect(memdc, content_clip.left, content_clip.top, content_clip.right, content_clip.bottom);
                 draw_settings_page_cards(memdc as _, cur_page, scroll_y, th);
-                draw_settings_page_content(memdc as _, cur_page, th);
                 RestoreDC(memdc, -1);
 
                 let mask_rc = settings_viewport_mask_rect(&rc);
@@ -4202,6 +4357,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 if let Some((paint_buf, _)) = paint_target {
                     end_buffered_paint(paint_buf, true);
                 }
+                crate::win_system_ui::clear_paint_dpi_override();
                 EndPaint(hwnd, &ps);
             }
             0
@@ -4994,6 +5150,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     remember_window_pos(hwnd);
                 }
                 note_window_moved_for_edge_hide(hwnd, &mut *ptr);
+                let dpi = monitor_dpi_for_window(hwnd);
+                if (*ptr).ui_dpi != dpi.max(96) {
+                    refresh_main_window_layout_for_monitor(hwnd, &mut *ptr, Some(dpi));
+                }
             }
             0
         }
@@ -5012,7 +5172,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
-                refresh_main_window_layout_only(hwnd, &mut *ptr);
+                let dpi = (wparam & 0xffff) as u32;
+                refresh_main_window_layout_for_monitor(hwnd, &mut *ptr, Some(dpi));
             }
             0
         }
@@ -5243,10 +5404,29 @@ unsafe fn refresh_main_window_metrics(hwnd: HWND) {
     refresh_main_window_layout_only(hwnd, state);
 }
 
-unsafe fn refresh_main_window_layout_only(hwnd: HWND, state: &mut AppState) {
+unsafe fn sync_main_window_dpi(state: &mut AppState, dpi: u32) -> bool {
+    let next = dpi.max(96);
+    if state.ui_dpi == next {
+        return false;
+    }
+    state.ui_dpi = next;
+    true
+}
+
+pub(crate) unsafe fn refresh_main_window_layout_for_monitor(
+    hwnd: HWND,
+    state: &mut AppState,
+    forced_dpi: Option<u32>,
+) {
+    let dpi = forced_dpi.unwrap_or_else(|| monitor_dpi_for_window(hwnd));
+    let _ = sync_main_window_dpi(state, dpi);
     refresh_search_font(state);
     layout_children(hwnd);
     InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn refresh_main_window_layout_only(hwnd: HWND, state: &mut AppState) {
+    refresh_main_window_layout_for_monitor(hwnd, state, None);
 }
 
 pub(crate) unsafe fn reset_search_ui_state(state: &mut AppState) {

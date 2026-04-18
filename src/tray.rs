@@ -256,6 +256,7 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
         }
         crate::app::prepare_search_ui_for_show(hwnd, state);
         position_main_window_for_state(hwnd, state, by_hotkey);
+        crate::app::refresh_main_window_layout_for_monitor(hwnd, state, None);
         state.edge_hidden = false;
         state.edge_hide_pending_until = None;
         state.edge_restore_wait_leave = false;
@@ -295,6 +296,7 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool, plain_text_mode: bool) {
         }
         crate::app::prepare_search_ui_for_show(hwnd, state);
         position_main_window_for_state(hwnd, state, by_hotkey);
+        crate::app::refresh_main_window_layout_for_monitor(hwnd, state, None);
         state.edge_hidden = false;
         state.edge_hide_pending_until = None;
         state.edge_restore_wait_leave = false;

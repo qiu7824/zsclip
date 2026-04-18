@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::mem::zeroed;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 pub use crate::settings_model::SettingsPage;
 pub use crate::settings_render::{
-    draw_settings_nav_item, draw_settings_page_cards, draw_settings_page_content, nav_divider_x,
+    draw_settings_nav_item, draw_settings_page_cards, nav_divider_x,
     settings_title_rect_win,
 };
 use crate::i18n::translate;
@@ -168,6 +169,22 @@ pub(crate) fn resolve_ui_font_family(family: &str) -> &str {
     }
 }
 
+thread_local! {
+    static PAINT_DPI_OVERRIDE: std::cell::Cell<u32> = std::cell::Cell::new(0);
+}
+
+pub(crate) fn set_paint_dpi_override(dpi: u32) {
+    PAINT_DPI_OVERRIDE.with(|cell| cell.set(dpi));
+}
+
+pub(crate) fn clear_paint_dpi_override() {
+    PAINT_DPI_OVERRIDE.with(|cell| cell.set(0));
+}
+
+fn paint_dpi_override() -> u32 {
+    PAINT_DPI_OVERRIDE.with(|cell| cell.get())
+}
+
 pub(crate) unsafe fn create_scaled_font_for_hdc(
     hdc: *mut c_void,
     family: &str,
@@ -175,7 +192,9 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
     weight: i32,
 ) -> *mut c_void {
     let font_name = resolve_ui_font_family(family);
-    let dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96);
+    let hdc_dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96) as u32;
+    let override_dpi = paint_dpi_override();
+    let dpi = if override_dpi > hdc_dpi { override_dpi as i32 } else { hdc_dpi as i32 };
     let scaled_size = ((size.max(1) * dpi) + 48) / 96;
     let key = (font_name.to_string(), dpi, scaled_size, weight);
     let cache = SCALED_FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -521,8 +540,25 @@ pub(crate) unsafe fn monitor_dpi_for_point(pt: POINT) -> u32 {
     window_dpi(null_mut())
 }
 
+pub(crate) unsafe fn monitor_dpi_for_window(hwnd: HWND) -> u32 {
+    if !hwnd.is_null() {
+        let mut rc: RECT = zeroed();
+        if GetWindowRect(hwnd, &mut rc) != 0 && rc.right > rc.left && rc.bottom > rc.top {
+            let center = POINT {
+                x: rc.left + ((rc.right - rc.left) / 2),
+                y: rc.top + ((rc.bottom - rc.top) / 2),
+            };
+            let dpi = monitor_dpi_for_point(center);
+            if dpi != 0 {
+                return dpi;
+            }
+        }
+    }
+    window_dpi(hwnd)
+}
+
 pub(crate) unsafe fn scale_for_window(hwnd: HWND, value: i32) -> i32 {
-    let dpi = window_dpi(hwnd).max(96) as i32;
+    let dpi = monitor_dpi_for_window(hwnd).max(96) as i32;
     ((value * dpi) + 48) / 96
 }
 

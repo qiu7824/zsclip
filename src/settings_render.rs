@@ -87,7 +87,7 @@ unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSect
         section.title,
         &trc,
         th.text_muted,
-        settings_scale(12),
+        12,
         true,
         false,
         "Segoe UI Variable Text",
@@ -135,7 +135,7 @@ pub unsafe fn draw_settings_nav_item(
         SETTINGS_NAV_GLYPHS[index],
         &icon_rc,
         icon_color,
-        settings_scale(16),
+        16,
         false,
         false,
         "Segoe Fluent Icons",
@@ -146,7 +146,7 @@ pub unsafe fn draw_settings_nav_item(
         SETTINGS_PAGES[index],
         &txt_rc,
         label_color,
-        settings_scale(14),
+        14,
         false,
         false,
         "Segoe UI Variable Text",
@@ -167,5 +167,3 @@ pub fn settings_title_rect_win() -> RECT {
 pub fn nav_divider_x() -> i32 {
     settings_nav_w_scaled()
 }
-
-pub unsafe fn draw_settings_page_content(_hdc: *mut core::ffi::c_void, _page: usize, _th: Theme) {}
