@@ -2352,19 +2352,22 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     let sec0 = SettingsFormSectionLayout::new(page, 0, 86);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
+    let line_h = settings_scale(24);
+    let note_h = settings_scale(40);
+    let small_gap = settings_scale(6);
 
     let (_hk_lbl, hk_btn) = b.toggle_row(st, "启用快捷键", 6101, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_hk_enable = hk_btn;
     if !st.chk_hk_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_hk_enable); }
 
-    b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, 24), 70, 24);
+    b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, line_h), settings_scale(70), line_h);
     st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), settings_scale(170));
     if !st.cb_hk_mod.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_mod); }
-    let key_label_x = sec0.field_x() + 186;
-    b.label(st, "按键：", key_label_x, sec0.label_y(1, 24), 50, 24);
+    let key_label_x = sec0.field_x() + settings_scale(186);
+    b.label(st, "按键：", key_label_x, sec0.label_y(1, line_h), settings_scale(50), line_h);
     st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + settings_scale(50), sec0.row_y(1), settings_scale(120));
     if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.full_w() - settings_scale(124), settings_scale(24));
+    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, line_h), sec0.full_w() - settings_scale(124), line_h);
     st.btn_hk_record = b.button(st, tr("录制热键", "Record Hotkey"), IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
     if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
 
@@ -2384,9 +2387,9 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
         st,
         tr("纯文本修饰键：", "Plain modifiers:"),
         sec0.left(),
-        sec0.label_y(4, 24),
+        sec0.label_y(4, line_h),
         settings_scale(110),
-        24,
+        line_h,
     );
     st.cb_plain_hk_mod = b.dropdown(
         st,
@@ -2404,9 +2407,9 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
         st,
         tr("纯文本按键：", "Plain key:"),
         plain_key_label_x,
-        sec0.label_y(4, 24),
+        sec0.label_y(4, line_h),
         settings_scale(90),
-        24,
+        line_h,
     );
     st.cb_plain_hk_key = b.dropdown(
         st,
@@ -2423,12 +2426,12 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
         st,
         &hotkey_preview_text("Ctrl+Shift", "V"),
         sec0.left(),
-        sec0.label_y(5, settings_scale(24)),
+        sec0.label_y(5, line_h),
         sec0.full_w(),
-        settings_scale(24),
+        line_h,
     );
 
-    let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), 40);
+    let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), note_h);
     st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, settings_scale(110)), sec1.row_y(1), settings_scale(110));
     st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, settings_scale(110)), sec1.row_y(1), settings_scale(110));
     st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, settings_scale(130)), sec1.row_y(1), settings_scale(130));
@@ -2436,8 +2439,8 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
         if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
     }
 
-    let (_desc1, d1h) = b.label_auto(st, "说明：保存后会立即重新注册主快捷键。", sec2.left(), sec2.row_y(0), sec2.full_w(), 24);
-    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", sec2.left(), sec2.row_y(0) + d1h + 6, sec2.full_w(), 24);
+    let (_desc1, d1h) = b.label_auto(st, "说明：保存后会立即重新注册主快捷键。", sec2.left(), sec2.row_y(0), sec2.full_w(), line_h);
+    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", sec2.left(), sec2.row_y(0) + d1h + small_gap, sec2.full_w(), line_h);
 
     st.ui.mark_built(page);
 }
@@ -2449,26 +2452,27 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 110);
     let sec3 = SettingsFormSectionLayout::new(page, 3, 0);
+    let line_h = settings_scale(24);
 
     let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_qs = qs_btn;
     if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
-    b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24);
+    b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, line_h), sec0.label_w(), line_h);
     st.cb_engine = b.dropdown(st, "筑森搜索（zxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), settings_scale(240));
     if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
-    b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, 24), sec0.label_w(), 24);
+    b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, line_h), sec0.label_w(), line_h);
     st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
     let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), settings_scale(130));
     if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + settings_scale(146), sec0.row_y(3) + settings_scale(4), sec0.field_w_from(sec0.left() + settings_scale(146)), settings_scale(24));
+    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + settings_scale(146), sec0.row_y(3) + settings_scale(4), sec0.field_w_from(sec0.left() + settings_scale(146)), line_h);
 
-    b.label(st, tr("识别来源：", "Provider:"), sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24);
+    b.label(st, tr("识别来源：", "Provider:"), sec1.left(), sec1.label_y(0, line_h), sec1.label_w(), line_h);
     st.cb_ocr_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_OCR_PROVIDER, sec1.field_x(), sec1.row_y(0), settings_scale(220));
     if !st.cb_ocr_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_ocr_provider); }
-    st.lb_ocr_status = b.label(st, tr("图片 OCR：已关闭", "Image OCR: disabled"), sec1.left(), sec1.label_y(1, settings_scale(24)), sec1.full_w(), settings_scale(24));
-    st.lb_ocr_primary = b.label(st, tr("API Key：", "API Key:"), sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
+    st.lb_ocr_status = b.label(st, tr("图片 OCR：已关闭", "Image OCR: disabled"), sec1.left(), sec1.label_y(1, line_h), sec1.full_w(), line_h);
+    st.lb_ocr_primary = b.label(st, tr("API Key：", "API Key:"), sec1.left(), sec1.label_y(2, line_h), sec1.label_w(), line_h);
     st.ed_ocr_cloud_url = b.edit(st, "", IDC_SET_OCR_CLOUD_URL, sec1.field_x(), sec1.row_y(2), sec1.field_w());
-    st.lb_ocr_secondary = b.label(st, tr("Secret Key：", "Secret Key:"), sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
+    st.lb_ocr_secondary = b.label(st, tr("Secret Key：", "Secret Key:"), sec1.left(), sec1.label_y(3, line_h), sec1.label_w(), line_h);
     st.ed_ocr_cloud_token = b.password_edit(
         st,
         "",
@@ -2480,15 +2484,15 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
     st.btn_ocr_detect = b.button(st, tr("自动检测微信目录", "Auto-detect WeChat directory"), IDC_SET_OCR_WECHAT_DETECT, sec1.left(), sec1.row_y(3), settings_scale(180));
     if !st.btn_ocr_detect.is_null() { st.ownerdraw_ctrls.push(st.btn_ocr_detect); }
 
-    b.label(st, tr("翻译来源：", "Provider:"), sec2.left(), sec2.label_y(0, 24), sec2.label_w(), 24);
+    b.label(st, tr("翻译来源：", "Provider:"), sec2.left(), sec2.label_y(0, line_h), sec2.label_w(), line_h);
     st.cb_translate_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_TRANSLATE_PROVIDER, sec2.field_x(), sec2.row_y(0), settings_scale(220));
     if !st.cb_translate_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_provider); }
-    st.lb_translate_status = b.label(st, tr("文本翻译：已关闭", "Text translation: disabled"), sec2.left(), sec2.label_y(1, settings_scale(24)), sec2.full_w(), settings_scale(24));
-    st.lb_translate_primary = b.label(st, tr("APP ID：", "APP ID:"), sec2.left(), sec2.label_y(2, 24), sec2.label_w(), 24);
+    st.lb_translate_status = b.label(st, tr("文本翻译：已关闭", "Text translation: disabled"), sec2.left(), sec2.label_y(1, line_h), sec2.full_w(), line_h);
+    st.lb_translate_primary = b.label(st, tr("APP ID：", "APP ID:"), sec2.left(), sec2.label_y(2, line_h), sec2.label_w(), line_h);
     st.ed_translate_app_id = b.edit(st, "", IDC_SET_TRANSLATE_APP_ID, sec2.field_x(), sec2.row_y(2), sec2.field_w());
-    st.lb_translate_secondary = b.label(st, tr("密钥：", "Secret:"), sec2.left(), sec2.label_y(3, 24), sec2.label_w(), 24);
+    st.lb_translate_secondary = b.label(st, tr("密钥：", "Secret:"), sec2.left(), sec2.label_y(3, line_h), sec2.label_w(), line_h);
     st.ed_translate_secret = b.password_edit(st, "", IDC_SET_TRANSLATE_SECRET, sec2.field_x(), sec2.row_y(3), sec2.field_w());
-    st.lb_translate_target = b.label(st, tr("目标语言：", "Target language:"), sec2.left(), sec2.label_y(4, 24), sec2.label_w(), 24);
+    st.lb_translate_target = b.label(st, tr("目标语言：", "Target language:"), sec2.left(), sec2.label_y(4, line_h), sec2.label_w(), line_h);
     st.cb_translate_target = b.dropdown(st, tr("简体中文", "Simplified Chinese"), IDC_SET_TRANSLATE_TARGET, sec2.field_x(), sec2.row_y(4), settings_scale(180));
     if !st.cb_translate_target.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_target); }
 
@@ -2567,23 +2571,24 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
     let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
+    let line_h = settings_scale(24);
 
     let (_, toggle) = b.toggle_row(st, "启用自动同步", IDC_SET_CLOUD_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
     st.chk_cloud_enable = toggle;
     if !st.chk_cloud_enable.is_null() {
         st.ownerdraw_ctrls.push(st.chk_cloud_enable);
     }
-    b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, 24), sec0.label_w(), 24);
+    b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, line_h), sec0.label_w(), line_h);
     st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), settings_scale(150));
-    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.full_w(), settings_scale(24));
+    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, line_h), sec0.full_w(), line_h);
 
-    b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, 24), sec1.label_w(), 24);
+    b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, line_h), sec1.label_w(), line_h);
     st.ed_cloud_url = b.edit(st, "", IDC_SET_CLOUD_URL, sec1.field_x(), sec1.row_y(0), sec1.field_w());
-    b.label(st, "用户名：", sec1.left(), sec1.label_y(1, 24), sec1.label_w(), 24);
+    b.label(st, "用户名：", sec1.left(), sec1.label_y(1, line_h), sec1.label_w(), line_h);
     st.ed_cloud_user = b.edit(st, "", IDC_SET_CLOUD_USER, sec1.field_x(), sec1.row_y(1), sec1.field_w());
-    b.label(st, "密码：", sec1.left(), sec1.label_y(2, 24), sec1.label_w(), 24);
+    b.label(st, "密码：", sec1.left(), sec1.label_y(2, line_h), sec1.label_w(), line_h);
     st.ed_cloud_pass = b.password_edit(st, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w());
-    b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, 24), sec1.label_w(), 24);
+    b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, line_h), sec1.label_w(), line_h);
     st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
 
     let btn_w = settings_scale(130);

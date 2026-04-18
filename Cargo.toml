@@ -1,6 +1,6 @@
 [package]
 name = "zsclip"
-version = "0.8.4"
+version = "0.9.0"
 edition = "2021"
 repository = "https://github.com/qiu7824/zsclip/"
 

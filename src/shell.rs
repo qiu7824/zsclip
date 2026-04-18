@@ -10,7 +10,6 @@ use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
-use md5;
 use windows_sys::Win32::{
     UI::{
         Shell::ShellExecuteW,
