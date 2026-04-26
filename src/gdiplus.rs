@@ -1,4 +1,3 @@
-
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
@@ -16,7 +15,11 @@ const FILL_MODE_ALTERNATE: i32 = 0;
 
 #[link(name = "gdiplus")]
 unsafe extern "system" {
-    fn GdiplusStartup(token: *mut usize, input: *const GdiplusStartupInput, output: *mut c_void) -> i32;
+    fn GdiplusStartup(
+        token: *mut usize,
+        input: *const GdiplusStartupInput,
+        output: *mut c_void,
+    ) -> i32;
     fn GdipCreateFromHDC(hdc: *mut c_void, graphics: *mut *mut c_void) -> i32;
     fn GdipDeleteGraphics(graphics: *mut c_void) -> i32;
     fn GdipSetSmoothingMode(graphics: *mut c_void, smoothing_mode: i32) -> i32;
@@ -26,7 +29,15 @@ unsafe extern "system" {
     fn GdipDeletePen(pen: *mut c_void) -> i32;
     fn GdipCreatePath(fill_mode: i32, path: *mut *mut c_void) -> i32;
     fn GdipDeletePath(path: *mut c_void) -> i32;
-    fn GdipAddPathArcI(path: *mut c_void, x: i32, y: i32, width: i32, height: i32, start_angle: f32, sweep_angle: f32) -> i32;
+    fn GdipAddPathArcI(
+        path: *mut c_void,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        start_angle: f32,
+        sweep_angle: f32,
+    ) -> i32;
     fn GdipClosePathFigure(path: *mut c_void) -> i32;
     fn GdipFillPath(graphics: *mut c_void, brush: *mut c_void, path: *mut c_void) -> i32;
     fn GdipDrawPath(graphics: *mut c_void, pen: *mut c_void, path: *mut c_void) -> i32;
@@ -44,7 +55,11 @@ fn ensure_startup() -> Option<usize> {
             suppress_external_codecs: 0,
         };
         let ok = GdiplusStartup(&mut token, &input, std::ptr::null_mut()) == 0;
-        if ok { Some(token) } else { None }
+        if ok {
+            Some(token)
+        } else {
+            None
+        }
     })
 }
 
@@ -56,7 +71,13 @@ fn colorref_to_argb(color: u32) -> u32 {
     0xFF00_0000 | (r << 16) | (g << 8) | b
 }
 
-unsafe fn build_round_path(left: i32, top: i32, right: i32, bottom: i32, radius: i32) -> *mut c_void {
+unsafe fn build_round_path(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    radius: i32,
+) -> *mut c_void {
     let mut path = std::ptr::null_mut();
     if GdipCreatePath(FILL_MODE_ALTERNATE, &mut path) != 0 || path.is_null() {
         return std::ptr::null_mut();
@@ -65,12 +86,11 @@ unsafe fn build_round_path(left: i32, top: i32, right: i32, bottom: i32, radius:
     let h = bottom - top;
     let r = radius.min(w / 2).min(h / 2).max(1);
     let d = r * 2;
-    let ok =
-        GdipAddPathArcI(path, left, top, d, d, 180.0, 90.0) == 0 &&
-        GdipAddPathArcI(path, right - d, top, d, d, 270.0, 90.0) == 0 &&
-        GdipAddPathArcI(path, right - d, bottom - d, d, d, 0.0, 90.0) == 0 &&
-        GdipAddPathArcI(path, left, bottom - d, d, d, 90.0, 90.0) == 0 &&
-        GdipClosePathFigure(path) == 0;
+    let ok = GdipAddPathArcI(path, left, top, d, d, 180.0, 90.0) == 0
+        && GdipAddPathArcI(path, right - d, top, d, d, 270.0, 90.0) == 0
+        && GdipAddPathArcI(path, right - d, bottom - d, d, d, 0.0, 90.0) == 0
+        && GdipAddPathArcI(path, left, bottom - d, d, d, 90.0, 90.0) == 0
+        && GdipClosePathFigure(path) == 0;
     if !ok {
         let _ = GdipDeletePath(path);
         return std::ptr::null_mut();
@@ -78,11 +98,26 @@ unsafe fn build_round_path(left: i32, top: i32, right: i32, bottom: i32, radius:
     path
 }
 
-pub unsafe fn draw_round_rect(hdc: *mut c_void, left: i32, top: i32, right: i32, bottom: i32, fill: u32, border: u32, radius: i32) -> bool {
-    if ensure_startup().is_none() { return false; }
-    if right <= left || bottom <= top { return true; }
+pub unsafe fn draw_round_rect(
+    hdc: *mut c_void,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    fill: u32,
+    border: u32,
+    radius: i32,
+) -> bool {
+    if ensure_startup().is_none() {
+        return false;
+    }
+    if right <= left || bottom <= top {
+        return true;
+    }
     let mut graphics = std::ptr::null_mut();
-    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() { return false; }
+    if GdipCreateFromHDC(hdc, &mut graphics) != 0 || graphics.is_null() {
+        return false;
+    }
     let _ = GdipSetSmoothingMode(graphics, SMOOTHING_MODE_ANTI_ALIAS);
     let path = build_round_path(left, top, right, bottom, radius.max(1));
     if path.is_null() {
@@ -99,7 +134,9 @@ pub unsafe fn draw_round_rect(hdc: *mut c_void, left: i32, top: i32, right: i32,
     }
     if border != 0 && border != fill {
         let mut pen = std::ptr::null_mut();
-        if GdipCreatePen1(colorref_to_argb(border), 1.0, UNIT_PIXEL, &mut pen) == 0 && !pen.is_null() {
+        if GdipCreatePen1(colorref_to_argb(border), 1.0, UNIT_PIXEL, &mut pen) == 0
+            && !pen.is_null()
+        {
             ok &= GdipDrawPath(graphics, pen, path) == 0;
             let _ = GdipDeletePen(pen);
         }

@@ -1,9 +1,11 @@
 use windows_sys::Win32::Foundation::RECT;
 
-use crate::settings_model::{settings_cards_for_page_vec, settings_page_scrollable, settings_title_rect, SettingsSection};
+use crate::settings_model::{
+    settings_cards_for_page_vec, settings_page_scrollable, settings_title_rect, SettingsSection,
+};
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect, settings_nav_w_scaled,
-    settings_scale, Theme, SETTINGS_NAV_GLYPHS, SETTINGS_PAGES,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect,
+    settings_nav_w_scaled, settings_scale, Theme, SETTINGS_NAV_GLYPHS, SETTINGS_PAGES,
 };
 
 pub const SETTINGS_CLASS: &str = "ZsClipSettings";
@@ -73,7 +75,12 @@ pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
 pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
 pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
 
-unsafe fn draw_settings_card(hdc: *mut core::ffi::c_void, section: &SettingsSection, scroll_y: i32, th: Theme) {
+unsafe fn draw_settings_card(
+    hdc: *mut core::ffi::c_void,
+    section: &SettingsSection,
+    scroll_y: i32,
+    th: Theme,
+) {
     let rc: RECT = section.rect.offset_y(scroll_y).into();
     draw_round_rect(hdc, &rc, th.surface, th.stroke, settings_scale(8));
     let trc = RECT {
@@ -114,7 +121,11 @@ pub unsafe fn draw_settings_nav_item(
         };
         draw_round_fill(hdc, &bar, th.accent, settings_scale(2));
     } else if hover {
-        let hover_color = if th.bg == rgb(32, 32, 32) { rgb(60, 60, 60) } else { rgb(237, 237, 237) };
+        let hover_color = if th.bg == rgb(32, 32, 32) {
+            rgb(60, 60, 60)
+        } else {
+            rgb(237, 237, 237)
+        };
         draw_round_fill(hdc, &item_rc, hover_color, settings_scale(6));
     }
     let icon_rc = RECT {
@@ -129,7 +140,13 @@ pub unsafe fn draw_settings_nav_item(
         right: item_rc.right - settings_scale(8),
         bottom: item_rc.bottom,
     };
-    let icon_color = if selected { th.accent } else if hover { th.text } else { th.text_muted };
+    let icon_color = if selected {
+        th.accent
+    } else if hover {
+        th.text
+    } else {
+        th.text_muted
+    };
     draw_text_ex(
         hdc,
         SETTINGS_NAV_GLYPHS[index],
@@ -140,7 +157,11 @@ pub unsafe fn draw_settings_nav_item(
         false,
         "Segoe Fluent Icons",
     );
-    let label_color = if selected || hover { th.text } else { th.text_muted };
+    let label_color = if selected || hover {
+        th.text
+    } else {
+        th.text_muted
+    };
     draw_text_ex(
         hdc,
         SETTINGS_PAGES[index],
@@ -153,8 +174,17 @@ pub unsafe fn draw_settings_nav_item(
     );
 }
 
-pub unsafe fn draw_settings_page_cards(hdc: *mut core::ffi::c_void, page: usize, scroll_y: i32, th: Theme) {
-    let effective_scroll = if settings_page_scrollable(page) { scroll_y } else { 0 };
+pub unsafe fn draw_settings_page_cards(
+    hdc: *mut core::ffi::c_void,
+    page: usize,
+    scroll_y: i32,
+    th: Theme,
+) {
+    let effective_scroll = if settings_page_scrollable(page) {
+        scroll_y
+    } else {
+        0
+    };
     for section in settings_cards_for_page_vec(page) {
         draw_settings_card(hdc, &section, effective_scroll, th);
     }

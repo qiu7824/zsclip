@@ -1,25 +1,26 @@
-﻿// BUILD_MARKER: v26b_hotkey_status_group_layout_registry_cleanup
-// BUILD_MARKER: v24_hotkey_registry_autolayout
-// BUILD_MARKER: v25_settings_ui_framework_registry_lazy_pages
-// BUILD_MARKER: v21_tab_style_title_align_warning_cleanup
-// BUILD_MARKER: v20_schemeA_bufferedpaint_deferwindowpos
-// BUILD_MARKER: v19_hotkey_scroll_datadir
-// BUILD_MARKER: v18c_compile_type_fixes
-// BUILD_MARKER: v18b_compile_fixes
-// BUILD_MARKER: v18_db_theme_sendinput_refactor
-pub(crate) mod state;
-pub(crate) mod runtime;
 pub(crate) mod data;
 pub(crate) mod hosts;
+pub(crate) mod runtime;
+pub(crate) mod state;
 
-pub(crate) use self::runtime::{db_file, save_settings};
 pub(crate) use self::hosts::{
     get_state_ptr, main_window_hwnd, quick_window_hwnd, refresh_low_level_input_hooks,
     refresh_window_for_show, set_main_window_noactivate_mode, shutdown_low_level_input_hooks,
 };
+pub(crate) use self::runtime::{db_file, save_settings};
 
+use self::data::*;
+use self::hosts::*;
+use self::runtime::*;
+use self::state::*;
+use crate::i18n::{app_title, tr, translate};
+use crate::settings_model::settings_page_content_total_h;
+use crate::settings_model::SETTINGS_PAGE_COUNT;
 use arboard::{Clipboard, ImageData};
 use image::ImageFormat;
+use rusqlite::types::Value as SqlValue;
+use rusqlite::{params, params_from_iter};
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -28,19 +29,9 @@ use std::io;
 use std::mem::{size_of, zeroed};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::ptr::{null, null_mut};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use rusqlite::{params, params_from_iter};
-use rusqlite::types::Value as SqlValue;
-use serde::{Deserialize, Serialize};
-use self::data::*;
-use self::hosts::*;
-use std::ptr::{null, null_mut};
-use self::runtime::*;
-use self::state::*;
-use crate::i18n::{app_title, tr, translate};
-use crate::settings_model::SETTINGS_PAGE_COUNT;
-use crate::settings_model::{settings_page_content_total_h, settings_page_max_scroll};
 #[link(name = "user32")]
 unsafe extern "system" {
     fn RegisterHotKey(hwnd: HWND, id: i32, fsmodifiers: u32, vk: u32) -> i32;
@@ -59,7 +50,11 @@ unsafe extern "system" {
     fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
-    fn OpenProcess(dwdesiredaccess: u32, binherithandle: i32, dwprocessid: u32) -> *mut core::ffi::c_void;
+    fn OpenProcess(
+        dwdesiredaccess: u32,
+        binherithandle: i32,
+        dwprocessid: u32,
+    ) -> *mut core::ffi::c_void;
     fn QueryFullProcessImageNameW(
         hprocess: *mut core::ffi::c_void,
         dwflags: u32,
@@ -91,16 +86,41 @@ const HKEY_CURRENT_USER_VAL: isize = -2147483647i32 as isize;
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
-    fn RegOpenKeyExW(hkey: isize, lpsubkey: *const u16, uloptions: u32, samdesired: u32, phkresult: *mut isize) -> i32;
-    fn RegQueryValueExW(hkey: isize, lpvaluename: *const u16, lpreserved: *mut u32, lptype: *mut u32, lpdata: *mut u8, lpcbdata: *mut u32) -> i32;
-    fn RegSetValueExW(hkey: isize, lpvaluename: *const u16, reserved: u32, dwtype: u32, lpdata: *const u8, cbdata: u32) -> i32;
+    fn RegOpenKeyExW(
+        hkey: isize,
+        lpsubkey: *const u16,
+        uloptions: u32,
+        samdesired: u32,
+        phkresult: *mut isize,
+    ) -> i32;
+    fn RegQueryValueExW(
+        hkey: isize,
+        lpvaluename: *const u16,
+        lpreserved: *mut u32,
+        lptype: *mut u32,
+        lpdata: *mut u8,
+        lpcbdata: *mut u32,
+    ) -> i32;
+    fn RegSetValueExW(
+        hkey: isize,
+        lpvaluename: *const u16,
+        reserved: u32,
+        dwtype: u32,
+        lpdata: *const u8,
+        cbdata: u32,
+    ) -> i32;
     fn RegDeleteValueW(hkey: isize, lpvaluename: *const u16) -> i32;
     fn RegCloseKey(hkey: isize) -> i32;
 }
 
 #[link(name = "dwmapi")]
 unsafe extern "system" {
-    fn DwmSetWindowAttribute(hwnd: HWND, dwattribute: u32, pvattribute: *const core::ffi::c_void, cbattribute: u32) -> i32;
+    fn DwmSetWindowAttribute(
+        hwnd: HWND,
+        dwattribute: u32,
+        pvattribute: *const core::ffi::c_void,
+        cbattribute: u32,
+    ) -> i32;
 }
 
 #[link(name = "uxtheme")]
@@ -118,48 +138,110 @@ struct TRACKMOUSEEVENT {
 
 const ERROR_HOTKEY_ALREADY_REGISTERED: u32 = 1409;
 
-pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
-use crate::ui::{draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill, draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, set_settings_ui_dpi, settings_content_y_scaled, settings_h_scaled, settings_nav_item_rect, settings_nav_w_scaled, settings_scale, settings_w_scaled, ui_display_font_family, ui_text_font_family, ClipListState, MainUiLayout, SearchTimeFilter, Theme, SETTINGS_PAGES, DT_LEFT, DT_VCENTER, DT_SINGLELINE};
-use crate::shell::{
-    detect_wechat_runtime_dir, icon_handle_for, is_directory_item, item_icon_handle, load_icons, open_parent_folder,
-    open_path_with_shell, open_source_url, open_source_url_display, pick_paste_sound_file,
-    play_paste_success_sound, plugin_downloads_url,
-    restart_explorer_shell, run_baidu_ocr_api, run_baidu_translate_api, run_winocr_dll_ocr, set_system_clipboard_history_enabled, start_update_check,
-    update_check_available, update_check_latest_url_or_default, update_check_state_snapshot, IconAssetKind,
+use crate::cloud_sync::{
+    cloud_sync_interval, perform_cloud_sync, CloudSyncAction, CloudSyncConfig, CloudSyncOutcome,
+    CloudSyncPaths,
 };
-use crate::hover_preview::{hide_hover_preview, show_hover_preview};
-use crate::sticker::show_image_sticker;
-use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
-use crate::tray::{add_tray_icon_localized, handle_tray, position_main_window, remember_window_pos, remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey};
-use crate::cloud_sync::{cloud_sync_interval, perform_cloud_sync, CloudSyncAction, CloudSyncConfig, CloudSyncOutcome, CloudSyncPaths};
 use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
-use crate::time_utils::{days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview, gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts};
+use crate::hover_preview::{hide_hover_preview, show_hover_preview};
+use crate::mail_merge_native::{launch_mail_merge_window, launch_mail_merge_window_with_excel};
+use crate::shell::{
+    detect_wechat_runtime_dir, icon_handle_for, is_directory_item, item_icon_handle, load_icons,
+    open_parent_folder, open_path_with_shell, open_source_url, open_source_url_display,
+    pick_paste_sound_file, play_paste_success_sound, plugin_downloads_url, restart_explorer_shell,
+    run_baidu_ocr_api, run_baidu_translate_api, run_winocr_dll_ocr,
+    set_system_clipboard_history_enabled, start_update_check, update_check_available,
+    update_check_latest_url_or_default, update_check_state_snapshot, IconAssetKind,
+};
+use crate::sticker::show_image_sticker;
+use crate::time_utils::{
+    days_to_sqlite_date, format_created_at_local, format_local_time_for_image_preview,
+    gregorian_to_days, now_utc_sqlite, utc_secs_to_local_parts,
+};
+use crate::tray::{
+    add_tray_icon_localized, handle_tray, position_main_window, remember_window_pos,
+    remove_tray_icon, toggle_window_visibility, toggle_window_visibility_hotkey,
+};
+use crate::ui::{
+    draw_icon_tinted, draw_icon_tinted_soft, draw_main_segment_bar, draw_round_fill,
+    draw_round_rect, draw_text, draw_text_ex, parse_search_query, rgb, set_settings_ui_dpi,
+    settings_content_y_scaled, settings_h_scaled, settings_nav_item_rect, settings_nav_w_scaled,
+    settings_scale, settings_w_scaled, ui_display_font_family, ui_text_font_family, ClipListState,
+    MainUiLayout, SearchTimeFilter, Theme, DT_LEFT, DT_SINGLELINE, DT_VCENTER, SETTINGS_PAGES,
+};
+pub(crate) use crate::ui::{ClipGroup, ClipItem, ClipKind};
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_params::{CF_HDROP, DropFiles, GMEM_MOVEABLE, GMEM_ZEROINIT, IDC_SET_AUTOSTART, IDC_SET_AUTOHIDE_BLUR, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDB, IDC_SET_BTN_OPENDATA, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY, IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL, IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW, IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER, IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRAYICON, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW, RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SettingsFormSectionLayout, SETTINGS_CLASS};
-use crate::win_system_ui::{apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference, caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn, create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item, draw_settings_page_cards, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide, get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process, init_dpi_awareness_for_process, is_dark_mode, monitor_dpi_for_point, monitor_dpi_for_window, nav_divider_x, nearest_monitor_rect_for_window, nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window, point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v, set_settings_font as settings_set_font, settings_child_visible, settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_title_rect_win as settings_title_rect, settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup, system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage, SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED};
+use crate::win_system_params::{
+    DropFiles, SettingsFormSectionLayout, CF_HDROP, GMEM_MOVEABLE, GMEM_ZEROINIT,
+    IDC_SET_AUTOHIDE_BLUR, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDATA,
+    IDC_SET_BTN_OPENDB, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY,
+    IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL,
+    IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW,
+    IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER,
+    IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD,
+    IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST,
+    IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS,
+    IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_MAX,
+    IDC_SET_OCR_CLOUD_TOKEN, IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER,
+    IDC_SET_OCR_WECHAT_DETECT, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP,
+    IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK,
+    IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD,
+    IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE,
+    IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET,
+    IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW,
+    RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS,
+};
+use crate::win_system_ui::{
+    apply_dark_mode_to_window, apply_theme_to_menu, apply_window_corner_preference,
+    caret_accessible_rect, create_drop_source, create_settings_button as settings_create_btn,
+    create_settings_fonts, cursor_over_window_tree, draw_settings_nav_item,
+    draw_settings_page_cards, draw_text_wide_centered, force_foreground_window, get_ctrl_text_wide,
+    get_window_text, get_x_lparam, get_y_lparam, init_dark_mode_for_process,
+    init_dpi_awareness_for_process, is_dark_mode, is_per_monitor_dpi_aware, layout_dpi_for_point,
+    layout_dpi_for_window, monitor_dpi_for_window, nav_divider_x, nearest_monitor_rect_for_window,
+    nearest_monitor_work_rect_for_point, nearest_monitor_work_rect_for_window,
+    point_in_rect_screen, release_raw_com, scale_for_window, send_backspace_times, send_ctrl_v,
+    set_settings_font as settings_set_font, settings_child_visible,
+    settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode,
+    settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode,
+    settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label,
+    settings_safe_paint_rect, settings_title_rect_win as settings_title_rect,
+    settings_viewport_mask_rect, settings_viewport_rect, show_settings_dropdown_popup,
+    system_mouse_hover_time_ms, to_wide, window_rect_for_dock, SettingsCtrlReg, SettingsPage,
+    SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED,
+};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW,
-        CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
-        FillRect, GetStockObject, InvalidateRect, IntersectClipRect, LineTo, MoveToEx, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, RestoreDC, RoundRect, SaveDC, ScreenToClient,
-        SelectObject, SetBkColor, SetBkMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        DEFAULT_GUI_FONT, NULL_PEN, SRCCOPY,
+        BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC,
+        CreateFontW, CreatePen, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+        FillRect, GetStockObject, IntersectClipRect, InvalidateRect, LineTo, MoveToEx,
+        RedrawWindow, RestoreDC, RoundRect, SaveDC, ScreenToClient, SelectObject, SetBkColor,
+        SetBkMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DEFAULT_GUI_FONT, DIB_RGB_COLORS, NULL_PEN, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_ERASE,
+        RDW_INVALIDATE, RDW_UPDATENOW, SRCCOPY,
     },
     System::{
-        DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener, OpenClipboard, CloseClipboard, GetClipboardData, GetClipboardOwner, EnumClipboardFormats, GetClipboardFormatNameW, EmptyClipboard, SetClipboardData},
+        DataExchange::{
+            AddClipboardFormatListener, CloseClipboard, EmptyClipboard, EnumClipboardFormats,
+            GetClipboardData, GetClipboardFormatNameW, GetClipboardOwner, OpenClipboard,
+            RemoveClipboardFormatListener, SetClipboardData,
+        },
         LibraryLoader::GetModuleHandleW,
         Ole::{DoDragDrop, OleInitialize, OleUninitialize, DROPEFFECT, DROPEFFECT_COPY},
     },
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
         Input::KeyboardAndMouse::{
-            GetAsyncKeyState, SetFocus, SetCapture, ReleaseCapture, keybd_event,
-            KEYEVENTF_KEYUP, VK_CONTROL, VK_DELETE, VK_BACK, VK_INSERT, VK_HOME, VK_END, VK_LBUTTON, VK_MENU, VK_PRIOR, VK_NEXT, VK_SPACE,
-            VK_DOWN, VK_ESCAPE, VK_RETURN, VK_UP, VK_SHIFT, VK_TAB, VK_LEFT, VK_RIGHT, VK_LWIN, VK_RWIN, VK_MBUTTON, VK_NUMPAD1, VK_NUMPAD9, VK_RBUTTON,
+            keybd_event, GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus, KEYEVENTF_KEYUP,
+            VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_INSERT,
+            VK_LBUTTON, VK_LEFT, VK_LWIN, VK_MBUTTON, VK_MENU, VK_NEXT, VK_NUMPAD1, VK_NUMPAD9,
+            VK_PRIOR, VK_RBUTTON, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
         },
-        Shell::{DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject},
+        Shell::{
+            DragQueryFileW, ILClone, ILCreateFromPathW, ILFindLastID, ILFree, SHCreateDataObject,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -190,6 +272,8 @@ const ID_TIMER_VV_WATCH: usize = 10;
 const ID_TIMER_SEARCH_DEBOUNCE: usize = 11;
 const ID_TIMER_HIDDEN_RECLAIM: usize = 12;
 const ID_TIMER_CLIPBOARD_RETRY: usize = 13;
+const ID_TIMER_DPI_FIT: usize = 14;
+const ID_TIMER_SETTINGS_DPI_FIT: usize = 15;
 const STARTUP_RECOVERY_TICKS: u8 = 24;
 const LLKHF_LOWER_IL_INJECTED_FLAG: u32 = 0x0000_0002;
 const WM_VV_SHOW: u32 = WM_APP + 20;
@@ -201,6 +285,7 @@ const WM_CLOUD_SYNC_READY: u32 = WM_APP + 33;
 const WM_IMAGE_PASTE_READY: u32 = WM_APP + 34;
 const WM_IMAGE_OCR_READY: u32 = WM_APP + 35;
 const WM_TEXT_TRANSLATE_READY: u32 = WM_APP + 36;
+const WM_IMAGE_THUMB_READY: u32 = WM_APP + 37;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(crate) const IDM_TRAY_TOGGLE: usize = 40001;
@@ -243,6 +328,9 @@ const EDGE_AUTO_HIDE_ANIM_TIMER_MS: u32 = 16;
 const CLIPBOARD_RETRY_DELAY_MS: u32 = 140;
 const CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 5;
 const PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 18;
+const MAX_CAPTURE_PIXELS: usize = 16_000_000;
+const MAX_CAPTURE_SIDE: usize = 8192;
+const MAX_CLIPBOARD_BITMAP_DECODE_PIXELS: usize = MAX_CAPTURE_PIXELS * 2;
 
 const EN_CHANGE_CODE: u16 = 0x0300;
 const MOD_ALT: u32 = 0x0001;
@@ -271,6 +359,11 @@ struct ImageOcrReadyResult {
     error: Option<String>,
 }
 
+struct ImageThumbReadyResult {
+    item_id: i64,
+    image: Option<ImageThumbnail>,
+}
+
 struct TextTranslateReadyResult {
     text: Option<String>,
     error: Option<String>,
@@ -286,6 +379,21 @@ unsafe fn stop_flagged_timer(hwnd: HWND, timer_id: usize, flag: &mut bool) {
     *flag = false;
 }
 
+pub(crate) unsafe fn post_boxed_message<T>(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    payload: Box<T>,
+) -> bool {
+    let raw = Box::into_raw(payload);
+    if hwnd.is_null() || IsWindow(hwnd) == 0 || PostMessageW(hwnd, msg, wparam, raw as LPARAM) == 0
+    {
+        drop(Box::from_raw(raw));
+        return false;
+    }
+    true
+}
+
 unsafe fn trim_process_working_set() {
     let process = GetCurrentProcess();
     if !process.is_null() {
@@ -295,16 +403,29 @@ unsafe fn trim_process_working_set() {
 
 unsafe fn schedule_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
     // 回归保护：不要再改回“窗口一隐藏就立刻清缓存”，那会让快速显示/隐藏反复抖动。
-    start_flagged_timer(hwnd, ID_TIMER_HIDDEN_RECLAIM, 1800, &mut state.hidden_reclaim_timer);
+    start_flagged_timer(
+        hwnd,
+        ID_TIMER_HIDDEN_RECLAIM,
+        1800,
+        &mut state.hidden_reclaim_timer,
+    );
 }
 
 unsafe fn cancel_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
-    stop_flagged_timer(hwnd, ID_TIMER_HIDDEN_RECLAIM, &mut state.hidden_reclaim_timer);
+    stop_flagged_timer(
+        hwnd,
+        ID_TIMER_HIDDEN_RECLAIM,
+        &mut state.hidden_reclaim_timer,
+    );
 }
 
 unsafe fn reset_clipboard_retry(hwnd: HWND, state: &mut AppState) {
     if state.clipboard_retry_timer {
-        stop_flagged_timer(hwnd, ID_TIMER_CLIPBOARD_RETRY, &mut state.clipboard_retry_timer);
+        stop_flagged_timer(
+            hwnd,
+            ID_TIMER_CLIPBOARD_RETRY,
+            &mut state.clipboard_retry_timer,
+        );
     }
     state.clipboard_retry_sequence = 0;
     state.clipboard_retry_attempts = 0;
@@ -354,7 +475,12 @@ unsafe fn schedule_clipboard_retry_with_limit(
     }
     state.clipboard_retry_attempts += 1;
     if state.clipboard_retry_timer {
-        SetTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY, CLIPBOARD_RETRY_DELAY_MS, None);
+        SetTimer(
+            hwnd,
+            ID_TIMER_CLIPBOARD_RETRY,
+            CLIPBOARD_RETRY_DELAY_MS,
+            None,
+        );
     } else {
         start_flagged_timer(
             hwnd,
@@ -381,8 +507,32 @@ fn main_layout_for_dpi(dpi: u32) -> MainUiLayout {
     MAIN_UI_LAYOUT.scaled(dpi.max(96))
 }
 
+fn main_window_size_for_dpi(dpi: u32) -> (i32, i32) {
+    let layout = main_layout_for_dpi(dpi);
+    (layout.win_w, layout.list_y + layout.list_h + 7)
+}
+
 unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
-    main_layout_for_dpi(monitor_dpi_for_window(hwnd))
+    main_layout_for_dpi(layout_dpi_for_window(hwnd))
+}
+
+fn clamp_window_pos_to_rect(x: i32, y: i32, rc: &RECT, win_w: i32, win_h: i32) -> (i32, i32) {
+    let max_x = max(rc.left, rc.right - win_w);
+    let max_y = max(rc.top, rc.bottom - win_h);
+    (max(rc.left, min(x, max_x)), max(rc.top, min(y, max_y)))
+}
+
+fn dpi_compensated_size(
+    base_w: i32,
+    base_h: i32,
+    base_monitor_dpi: u32,
+    monitor_dpi: u32,
+) -> (i32, i32) {
+    let base_monitor_dpi = base_monitor_dpi.max(96) as i64;
+    let monitor_dpi = monitor_dpi.max(96) as i64;
+    let w = (((base_w.max(1) as i64) * base_monitor_dpi) + (monitor_dpi / 2)) / monitor_dpi;
+    let h = (((base_h.max(1) as i64) * base_monitor_dpi) + (monitor_dpi / 2)) / monitor_dpi;
+    (w.max(1) as i32, h.max(1) as i32)
 }
 
 const EDGE_AUTO_HIDE_PEEK: i32 = 2;
@@ -461,7 +611,12 @@ struct VvOverlayAnchor {
     exact_rect: bool,
 }
 
-fn vv_choose_overlay_edge(top: i32, bottom: i32, popup_height: i32, work_area: &RECT) -> (i32, bool) {
+fn vv_choose_overlay_edge(
+    top: i32,
+    bottom: i32,
+    popup_height: i32,
+    work_area: &RECT,
+) -> (i32, bool) {
     let below_space = work_area.bottom - bottom;
     let above_space = top - work_area.top;
     let align_bottom = below_space < popup_height && above_space > below_space;
@@ -469,8 +624,14 @@ fn vv_choose_overlay_edge(top: i32, bottom: i32, popup_height: i32, work_area: &
     (edge_y, align_bottom)
 }
 
-fn vv_anchor_within(anchor: &VvOverlayAnchor, reference: &VvOverlayAnchor, max_dx: i32, max_dy: i32) -> bool {
-    (anchor.left - reference.left).abs() <= max_dx && (anchor.edge_y - reference.edge_y).abs() <= max_dy
+fn vv_anchor_within(
+    anchor: &VvOverlayAnchor,
+    reference: &VvOverlayAnchor,
+    max_dx: i32,
+    max_dy: i32,
+) -> bool {
+    (anchor.left - reference.left).abs() <= max_dx
+        && (anchor.edge_y - reference.edge_y).abs() <= max_dy
 }
 
 fn vv_imm_point_anchor_is_plausible(
@@ -482,23 +643,43 @@ fn vv_imm_point_anchor_is_plausible(
         return true;
     }
     if let Some(caret) = caret_anchor {
-        if vv_anchor_within(anchor, caret, VV_IMM_POINT_MAX_X_DRIFT, VV_IMM_POINT_MAX_Y_DRIFT) {
+        if vv_anchor_within(
+            anchor,
+            caret,
+            VV_IMM_POINT_MAX_X_DRIFT,
+            VV_IMM_POINT_MAX_Y_DRIFT,
+        ) {
             return true;
         }
         if let Some(focus) = focus_anchor {
-            return vv_anchor_within(anchor, focus, VV_IMM_POINT_MAX_X_DRIFT + 60, VV_IMM_POINT_MAX_Y_DRIFT + 40);
+            return vv_anchor_within(
+                anchor,
+                focus,
+                VV_IMM_POINT_MAX_X_DRIFT + 60,
+                VV_IMM_POINT_MAX_Y_DRIFT + 40,
+            );
         }
         return false;
     }
     if let Some(focus) = focus_anchor {
-        return vv_anchor_within(anchor, focus, VV_IMM_POINT_MAX_X_DRIFT + 60, VV_IMM_POINT_MAX_Y_DRIFT + 40);
+        return vv_anchor_within(
+            anchor,
+            focus,
+            VV_IMM_POINT_MAX_X_DRIFT + 60,
+            VV_IMM_POINT_MAX_Y_DRIFT + 40,
+        );
     }
     true
 }
 
 unsafe fn vv_popup_row_rect(row: usize) -> RECT {
     let top = VV_POPUP_HEADER_H + 10 + row as i32 * VV_POPUP_ROW_H;
-    RECT { left: 12, top, right: VV_POPUP_W - 12, bottom: top + VV_POPUP_ROW_H - 2 }
+    RECT {
+        left: 12,
+        top,
+        right: VV_POPUP_W - 12,
+        bottom: top + VV_POPUP_ROW_H - 2,
+    }
 }
 
 unsafe fn vv_popup_group_rect() -> RECT {
@@ -512,7 +693,12 @@ unsafe fn vv_popup_group_rect() -> RECT {
 
 fn vv_popup_resolved_group_id(state: &AppState, group_id: i64) -> i64 {
     let source_tab = normalize_source_tab(state.settings.vv_source_tab);
-    if group_id > 0 && state.groups_for_tab(source_tab).iter().any(|g| g.id == group_id) {
+    if group_id > 0
+        && state
+            .groups_for_tab(source_tab)
+            .iter()
+            .any(|g| g.id == group_id)
+    {
         group_id
     } else {
         0
@@ -521,8 +707,16 @@ fn vv_popup_resolved_group_id(state: &AppState, group_id: i64) -> i64 {
 
 fn vv_popup_group_name(state: &AppState) -> String {
     let source_tab = normalize_source_tab(state.settings.vv_source_tab);
-    let all_label = if source_tab == 0 { "全部记录" } else { "全部短语" };
-    group_name_for_display(state.groups_for_tab(source_tab), state.vv_popup_group_id, all_label)
+    let all_label = if source_tab == 0 {
+        "全部记录"
+    } else {
+        "全部短语"
+    };
+    group_name_for_display(
+        state.groups_for_tab(source_tab),
+        state.vv_popup_group_id,
+        all_label,
+    )
 }
 
 fn vv_popup_rebuild_items(state: &mut AppState) {
@@ -532,10 +726,7 @@ fn vv_popup_rebuild_items(state: &mut AppState) {
     state.vv_popup_items = db_load_vv_popup_items(source_tab as i64, group_id, VV_POPUP_MAX_ITEMS)
         .into_iter()
         .enumerate()
-        .map(|(i, item)| VvPopupEntry {
-            index: i + 1,
-            item,
-        })
+        .map(|(i, item)| VvPopupEntry { index: i + 1, item })
         .collect();
 }
 
@@ -548,18 +739,39 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     }
     apply_theme_to_menu(menu as _);
     let current_group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
-    let all_flags = if current_group_id == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let all_flags = if current_group_id == 0 {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
     AppendMenuW(
         menu,
         all_flags,
         IDM_GROUP_FILTER_ALL,
-        to_wide(translate(if source_tab == 0 { "全部记录" } else { "全部短语" }).as_ref()).as_ptr(),
+        to_wide(
+            translate(if source_tab == 0 {
+                "全部记录"
+            } else {
+                "全部短语"
+            })
+            .as_ref(),
+        )
+        .as_ptr(),
     );
     if !groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         for (idx, g) in groups.iter().enumerate() {
-            let flags = if current_group_id == g.id { MF_STRING | MF_CHECKED } else { MF_STRING };
-            AppendMenuW(menu, flags, IDM_GROUP_FILTER_BASE + idx, to_wide(&g.name).as_ptr());
+            let flags = if current_group_id == g.id {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            AppendMenuW(
+                menu,
+                flags,
+                IDM_GROUP_FILTER_BASE + idx,
+                to_wide(&g.name).as_ptr(),
+            );
         }
     }
     let rect = vv_popup_group_rect();
@@ -647,15 +859,30 @@ unsafe fn vv_point_to_screen(hwnd: HWND, pt: &mut POINT) -> bool {
 }
 
 unsafe fn vv_client_rect_to_screen(hwnd: HWND, rc: &RECT) -> Option<RECT> {
-    let mut tl = POINT { x: rc.left, y: rc.top };
-    let mut br = POINT { x: rc.right, y: rc.bottom };
+    let mut tl = POINT {
+        x: rc.left,
+        y: rc.top,
+    };
+    let mut br = POINT {
+        x: rc.right,
+        y: rc.bottom,
+    };
     if vv_point_to_screen(hwnd, &mut tl) && vv_point_to_screen(hwnd, &mut br) {
-        return Some(RECT { left: tl.x, top: tl.y, right: br.x, bottom: br.y });
+        return Some(RECT {
+            left: tl.x,
+            top: tl.y,
+            right: br.x,
+            bottom: br.y,
+        });
     }
     None
 }
 
-unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
+unsafe fn vv_thread_caret_anchor(
+    target: HWND,
+    popup_height: i32,
+    work_area: &RECT,
+) -> Option<VvOverlayAnchor> {
     if target.is_null() || IsWindow(target) == 0 {
         return None;
     }
@@ -680,7 +907,10 @@ unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RE
         return None;
     }
 
-    let mut top_left = POINT { x: info.rcCaret.left, y: info.rcCaret.top };
+    let mut top_left = POINT {
+        x: info.rcCaret.left,
+        y: info.rcCaret.top,
+    };
     let mut bottom_left = POINT {
         x: info.rcCaret.left,
         y: if info.rcCaret.bottom > info.rcCaret.top {
@@ -689,14 +919,20 @@ unsafe fn vv_thread_caret_anchor(target: HWND, popup_height: i32, work_area: &RE
             info.rcCaret.top + 24
         },
     };
-    if !vv_point_to_screen(anchor_hwnd, &mut top_left) || !vv_point_to_screen(anchor_hwnd, &mut bottom_left) {
+    if !vv_point_to_screen(anchor_hwnd, &mut top_left)
+        || !vv_point_to_screen(anchor_hwnd, &mut bottom_left)
+    {
         return None;
     }
 
     let below_space = work_area.bottom - bottom_left.y;
     let above_space = top_left.y - work_area.top;
     let align_bottom = below_space < popup_height && above_space > below_space;
-    let edge_y = if align_bottom { top_left.y } else { bottom_left.y };
+    let edge_y = if align_bottom {
+        top_left.y
+    } else {
+        bottom_left.y
+    };
     Some(VvOverlayAnchor {
         left: top_left.x,
         edge_y,
@@ -714,8 +950,7 @@ unsafe fn vv_accessible_caret_anchor(
     if !vv_rect_has_area(&rc) {
         return None;
     }
-    let (edge_y, align_bottom) =
-        vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
+    let (edge_y, align_bottom) = vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
     Some(VvOverlayAnchor {
         left: rc.left,
         edge_y,
@@ -724,7 +959,11 @@ unsafe fn vv_accessible_caret_anchor(
     })
 }
 
-unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: &RECT) -> Option<VvOverlayAnchor> {
+unsafe fn vv_imm_overlay_anchor(
+    focus_hwnd: HWND,
+    popup_height: i32,
+    work_area: &RECT,
+) -> Option<VvOverlayAnchor> {
     if focus_hwnd.is_null() || IsWindow(focus_hwnd) == 0 {
         return None;
     }
@@ -738,22 +977,48 @@ unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: 
             dw_index: index,
             dw_style: 0,
             pt_current_pos: POINT { x: 0, y: 0 },
-            rc_area: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+            rc_area: RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            },
         };
-        if SendMessageW(ime_hwnd, WM_IME_CONTROL, IMC_GETCANDIDATEPOS, &mut cand as *mut _ as LPARAM) != 0 {
+        if SendMessageW(
+            ime_hwnd,
+            WM_IME_CONTROL,
+            IMC_GETCANDIDATEPOS,
+            &mut cand as *mut _ as LPARAM,
+        ) != 0
+        {
             continue;
         }
         let mut pt = cand.pt_current_pos;
         let pt_ok = vv_point_to_screen(focus_hwnd, &mut pt);
         if cand.dw_style == CFS_CANDIDATEPOS_V && pt_ok {
-            let (edge_y, align_bottom) = vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
-            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom, exact_rect: false });
+            let (edge_y, align_bottom) =
+                vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
+            return Some(VvOverlayAnchor {
+                left: pt.x,
+                edge_y,
+                align_bottom,
+                exact_rect: false,
+            });
         }
         if cand.dw_style == CFS_EXCLUDE_V && vv_rect_has_area(&cand.rc_area) {
             if let Some(exclude_rc) = vv_client_rect_to_screen(focus_hwnd, &cand.rc_area) {
-                let (edge_y, align_bottom) =
-                    vv_choose_overlay_edge(exclude_rc.top, exclude_rc.bottom, popup_height, work_area);
-                return Some(VvOverlayAnchor { left: exclude_rc.left, edge_y, align_bottom, exact_rect: true });
+                let (edge_y, align_bottom) = vv_choose_overlay_edge(
+                    exclude_rc.top,
+                    exclude_rc.bottom,
+                    popup_height,
+                    work_area,
+                );
+                return Some(VvOverlayAnchor {
+                    left: exclude_rc.left,
+                    edge_y,
+                    align_bottom,
+                    exact_rect: true,
+                });
             }
         }
     }
@@ -761,21 +1026,42 @@ unsafe fn vv_imm_overlay_anchor(focus_hwnd: HWND, popup_height: i32, work_area: 
     let mut comp = CompositionForm {
         dw_style: 0,
         pt_current_pos: POINT { x: 0, y: 0 },
-        rc_area: RECT { left: 0, top: 0, right: 0, bottom: 0 },
+        rc_area: RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        },
     };
-    if SendMessageW(ime_hwnd, WM_IME_CONTROL, IMC_GETCOMPOSITIONWINDOW, &mut comp as *mut _ as LPARAM) == 0 {
+    if SendMessageW(
+        ime_hwnd,
+        WM_IME_CONTROL,
+        IMC_GETCOMPOSITIONWINDOW,
+        &mut comp as *mut _ as LPARAM,
+    ) == 0
+    {
         let mut pt = comp.pt_current_pos;
         let pt_ok = vv_point_to_screen(focus_hwnd, &mut pt);
         if (comp.dw_style == CFS_POINT_V || comp.dw_style == CFS_FORCE_POSITION_V) && pt_ok {
             let (edge_y, align_bottom) =
                 vv_choose_overlay_edge(pt.y, pt.y, popup_height, work_area);
-            return Some(VvOverlayAnchor { left: pt.x, edge_y, align_bottom, exact_rect: false });
+            return Some(VvOverlayAnchor {
+                left: pt.x,
+                edge_y,
+                align_bottom,
+                exact_rect: false,
+            });
         }
         if comp.dw_style == CFS_RECT_V && vv_rect_has_area(&comp.rc_area) {
             if let Some(rc) = vv_client_rect_to_screen(focus_hwnd, &comp.rc_area) {
                 let (edge_y, align_bottom) =
                     vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
-                return Some(VvOverlayAnchor { left: rc.left, edge_y, align_bottom, exact_rect: true });
+                return Some(VvOverlayAnchor {
+                    left: rc.left,
+                    edge_y,
+                    align_bottom,
+                    exact_rect: true,
+                });
             }
         }
     }
@@ -797,7 +1083,8 @@ unsafe fn vv_focus_rect_anchor(
     }
     let width = rc.right - rc.left;
     let height = rc.bottom - rc.top;
-    if width <= 0 || height <= 0 || height > 180 || width > (work_area.right - work_area.left) - 40 {
+    if width <= 0 || height <= 0 || height > 180 || width > (work_area.right - work_area.left) - 40
+    {
         return None;
     }
     let (edge_y, align_bottom) = vv_choose_overlay_edge(rc.top, rc.bottom, popup_height, work_area);
@@ -850,8 +1137,9 @@ unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
     let caret_anchor = vv_accessible_caret_anchor(focus_hwnd, height, &wa)
         .or_else(|| vv_thread_caret_anchor(focus_hwnd, height, &wa));
     let focus_anchor = vv_focus_rect_anchor(focus_hwnd, height, &wa);
-    let imm_anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa)
-        .filter(|anchor| vv_imm_point_anchor_is_plausible(anchor, caret_anchor.as_ref(), focus_anchor.as_ref()));
+    let imm_anchor = vv_imm_overlay_anchor(focus_hwnd, height, &wa).filter(|anchor| {
+        vv_imm_point_anchor_is_plausible(anchor, caret_anchor.as_ref(), focus_anchor.as_ref())
+    });
     let anchor = imm_anchor
         .or(caret_anchor)
         .or(focus_anchor)
@@ -940,8 +1228,20 @@ unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool 
         vv_popup_hide(hwnd, state);
         return false;
     }
+    let focus_hwnd = vv_focus_hwnd_for_target(target);
+    let ime_replaced_trigger = if focus_hwnd.is_null() {
+        false
+    } else {
+        let work_area = nearest_monitor_work_rect_for_window(focus_hwnd);
+        vv_imm_overlay_anchor(
+            focus_hwnd,
+            vv_popup_height(state.vv_popup_items.len()),
+            &work_area,
+        )
+        .is_some()
+    };
     send_escape_key();
-    state.vv_popup_replaces_ime = true;
+    state.vv_popup_replaces_ime = ime_replaced_trigger;
     InvalidateRect(popup, null(), 1);
     ShowWindow(popup, SW_SHOWNOACTIVATE);
     true
@@ -950,7 +1250,9 @@ unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool 
 unsafe fn vv_digit_index_from_vk(vk: u32) -> Option<usize> {
     match vk {
         0x31..=0x39 => Some((vk - 0x31) as usize),
-        x if x >= VK_NUMPAD1 as u32 && x <= VK_NUMPAD9 as u32 => Some((x - VK_NUMPAD1 as u32) as usize),
+        x if x >= VK_NUMPAD1 as u32 && x <= VK_NUMPAD9 as u32 => {
+            Some((x - VK_NUMPAD1 as u32) as usize)
+        }
         _ => None,
     }
 }
@@ -996,7 +1298,11 @@ unsafe fn process_image_name(pid: u32) -> String {
 
 unsafe fn clipboard_source_app_name() -> String {
     let owner = GetClipboardOwner();
-    let owner_root = if owner.is_null() { owner } else { GetAncestor(owner, GA_ROOT) };
+    let owner_root = if owner.is_null() {
+        owner
+    } else {
+        GetAncestor(owner, GA_ROOT)
+    };
     if !owner_root.is_null() && !is_app_window(owner_root) {
         let name = window_process_name(owner_root);
         if !name.is_empty() {
@@ -1031,7 +1337,10 @@ fn is_self_clipboard_source_app(source_app: &str) -> bool {
     }
     std::env::current_exe()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
         .map(|name| name.trim().to_ascii_lowercase() == source)
         .unwrap_or(false)
 }
@@ -1049,23 +1358,52 @@ unsafe fn vv_window_class_name(hwnd: HWND) -> String {
     }
 }
 
+fn vv_is_word_process(process_name: &str) -> bool {
+    let process = process_name.trim().to_ascii_lowercase();
+    process == "winword.exe" || process == "winword" || process.contains("winword")
+}
+
+fn vv_is_word_document_class(class_name: &str) -> bool {
+    let class_name = class_name.trim().to_ascii_lowercase();
+    class_name.starts_with("_ww")
+}
+
+fn vv_word_target_is_text_input_ready(
+    process_name: &str,
+    target_cls: &str,
+    focus_cls: &str,
+) -> bool {
+    if !vv_is_word_process(process_name) {
+        return false;
+    }
+    if vv_is_word_document_class(target_cls) || vv_is_word_document_class(focus_cls) {
+        return true;
+    }
+    target_cls.eq_ignore_ascii_case("opusapp")
+        && (focus_cls.is_empty() || focus_cls.eq_ignore_ascii_case("opusapp"))
+}
+
 unsafe fn vv_target_is_text_input_ready(target: HWND) -> bool {
     if target.is_null() || IsWindow(target) == 0 {
         return false;
     }
+    let target_cls = vv_window_class_name(target).to_ascii_lowercase();
+    let process_name = window_process_name(target);
     let thread_id = GetWindowThreadProcessId(target, null_mut());
     if thread_id == 0 {
-        return false;
+        return vv_word_target_is_text_input_ready(&process_name, &target_cls, "");
     }
     let mut info: GUITHREADINFO = zeroed();
     info.cbSize = size_of::<GUITHREADINFO>() as u32;
     if GetGUIThreadInfo(thread_id, &mut info) == 0 {
-        return false;
+        return vv_word_target_is_text_input_ready(&process_name, &target_cls, "");
     }
-    let focus = if !info.hwndFocus.is_null() { info.hwndFocus } else { target };
+    let focus = if !info.hwndFocus.is_null() {
+        info.hwndFocus
+    } else {
+        target
+    };
     let cls = vv_window_class_name(focus).to_ascii_lowercase();
-    let target_cls = vv_window_class_name(target).to_ascii_lowercase();
-    let process_name = window_process_name(target);
     let dlg_code = SendMessageW(focus, WM_GETDLGCODE, 0, 0) as u32;
     if matches!(
         cls.as_str(),
@@ -1083,9 +1421,14 @@ unsafe fn vv_target_is_text_input_ready(target: HWND) -> bool {
     }
     if matches!(
         target_cls.as_str(),
-        "chrome_widgetwin_0" | "chrome_widgetwin_1" | "windows.ui.composition.desktopwindowcontentbridge"
+        "chrome_widgetwin_0"
+            | "chrome_widgetwin_1"
+            | "windows.ui.composition.desktopwindowcontentbridge"
     ) && (process_name.contains("codex") || process_name.contains("chatgpt"))
     {
+        return true;
+    }
+    if vv_word_target_is_text_input_ready(&process_name, &target_cls, &cls) {
         return true;
     }
     if (dlg_code & (DLGC_HASSETSEL | DLGC_WANTCHARS | DLGC_WANTTAB | DLGC_WANTARROWS)) != 0 {
@@ -1107,7 +1450,11 @@ unsafe fn vv_target_is_text_input_ready(target: HWND) -> bool {
     !info.hwndCaret.is_null()
 }
 
-unsafe extern "system" fn vv_keyboard_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn vv_keyboard_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if code < 0 || (wparam as u32 != WM_KEYDOWN && wparam as u32 != WM_SYSKEYDOWN) {
         return CallNextHookEx(null_mut(), code, wparam, lparam);
     }
@@ -1248,7 +1595,7 @@ unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
     if let Ok(mut hook_state) = vv_hook_state().lock() {
         hook_state.main_hwnd = main_hwnd as isize;
         hook_state.enabled = enabled;
-    hook_state.trigger_vk = b'V' as u32;
+        hook_state.trigger_vk = b'V' as u32;
         if !enabled {
             hook_state.last_was_v = false;
             hook_state.last_v_target = 0;
@@ -1264,7 +1611,12 @@ unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
     };
     if enabled {
         if *handle == 0 {
-            *handle = SetWindowsHookExW(WH_KEYBOARD_LL, Some(vv_keyboard_hook_proc), GetModuleHandleW(null()), 0) as isize;
+            *handle = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(vv_keyboard_hook_proc),
+                GetModuleHandleW(null()),
+                0,
+            ) as isize;
         }
     } else if *handle != 0 {
         UnhookWindowsHookEx(*handle as _);
@@ -1272,7 +1624,12 @@ unsafe fn update_vv_mode_hook(main_hwnd: HWND, enabled: bool) {
     }
 }
 
-unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn vv_popup_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -1295,7 +1652,12 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 DeleteObject(bg as _);
                 draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 12);
 
-                let title_rc = RECT { left: 14, top: 10, right: 150, bottom: 30 };
+                let title_rc = RECT {
+                    left: 14,
+                    top: 10,
+                    right: 150,
+                    bottom: 30,
+                };
                 draw_text_ex(
                     hdc as _,
                     tr("VV 模式", "VV Mode"),
@@ -1328,12 +1690,29 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     right: group_rc.right - 4,
                     bottom: group_rc.bottom,
                 };
-                draw_text_ex(hdc as _, "v", &arrow_rc, th.text_muted, 11, true, true, "Segoe UI Variable Text");
-
-                let sub_rc = RECT { left: 14, top: 34, right: rc.right - 14, bottom: 52 };
                 draw_text_ex(
                     hdc as _,
-                    tr("输入 1-9 直接粘贴，Esc 取消", "Press 1-9 to paste, Esc to cancel"),
+                    "v",
+                    &arrow_rc,
+                    th.text_muted,
+                    11,
+                    true,
+                    true,
+                    "Segoe UI Variable Text",
+                );
+
+                let sub_rc = RECT {
+                    left: 14,
+                    top: 34,
+                    right: rc.right - 14,
+                    bottom: 52,
+                };
+                draw_text_ex(
+                    hdc as _,
+                    tr(
+                        "输入 1-9 直接粘贴，Esc 取消",
+                        "Press 1-9 to paste, Esc to cancel",
+                    ),
                     &sub_rc,
                     th.text_muted,
                     11,
@@ -1362,9 +1741,23 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 } else {
                     for (row, entry) in state.vv_popup_items.iter().enumerate() {
                         let row_rc = vv_popup_row_rect(row);
-                        let bubble = RECT { left: row_rc.left, top: row_rc.top + 4, right: row_rc.left + 24, bottom: row_rc.top + 24 };
+                        let bubble = RECT {
+                            left: row_rc.left,
+                            top: row_rc.top + 4,
+                            right: row_rc.left + 24,
+                            bottom: row_rc.top + 24,
+                        };
                         draw_round_fill(hdc as _, &bubble, th.accent, 8);
-                        draw_text_ex(hdc as _, &entry.index.to_string(), &bubble, rgb(255, 255, 255), 11, true, true, "Segoe UI Variable Text");
+                        draw_text_ex(
+                            hdc as _,
+                            &entry.index.to_string(),
+                            &bubble,
+                            rgb(255, 255, 255),
+                            11,
+                            true,
+                            true,
+                            "Segoe UI Variable Text",
+                        );
 
                         let mut text_rc = row_rc;
                         text_rc.left += 34;
@@ -1373,7 +1766,16 @@ unsafe extern "system" fn vv_popup_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         } else {
                             entry.item.preview.clone()
                         };
-                        draw_text_ex(hdc as _, &label, &text_rc, th.text, 12, false, false, "Segoe UI Variable Text");
+                        draw_text_ex(
+                            hdc as _,
+                            &label,
+                            &text_rc,
+                            th.text,
+                            12,
+                            false,
+                            false,
+                            "Segoe UI Variable Text",
+                        );
                     }
                 }
             }
@@ -1431,8 +1833,12 @@ fn hotkey_vk_from_label(label: &str) -> u32 {
     let k = normalize_hotkey_key(label);
     if k.len() == 1 {
         let ch = k.as_bytes()[0] as char;
-        if ch.is_ascii_alphabetic() { return ch.to_ascii_uppercase() as u32; }
-        if ch.is_ascii_digit() { return ch as u32; }
+        if ch.is_ascii_alphabetic() {
+            return ch.to_ascii_uppercase() as u32;
+        }
+        if ch.is_ascii_digit() {
+            return ch as u32;
+        }
     }
     match k.as_str() {
         "Space" => VK_SPACE as u32,
@@ -1455,15 +1861,28 @@ fn hotkey_vk_from_label(label: &str) -> u32 {
 }
 
 unsafe fn quick_search_open(settings: &AppSettings, text: &str) {
-    if !settings.quick_search_enabled { return; }
+    if !settings.quick_search_enabled {
+        return;
+    }
     let mut raw = text.trim().to_string();
-    if raw.is_empty() { return; }
-    if raw.chars().count() > 200 { raw = raw.chars().take(200).collect(); }
+    if raw.is_empty() {
+        return;
+    }
+    if raw.chars().count() > 200 {
+        raw = raw.chars().take(200).collect();
+    }
     let q = raw.replace(['\r', '\n'], " ");
     let enc = url_encode_component(&q);
     let raw_enc = url_encode_component(&raw);
-    let tpl = if settings.search_template.trim().is_empty() { search_engine_template(&settings.search_engine).to_string() } else { settings.search_template.clone() };
-    let url = tpl.replace("{key}", &enc).replace("{q}", &enc).replace("{raw}", &raw_enc);
+    let tpl = if settings.search_template.trim().is_empty() {
+        search_engine_template(&settings.search_engine).to_string()
+    } else {
+        settings.search_template.clone()
+    };
+    let url = tpl
+        .replace("{key}", &enc)
+        .replace("{q}", &enc)
+        .replace("{raw}", &raw_enc);
     open_path_with_shell(&url);
 }
 
@@ -1471,7 +1890,9 @@ fn url_encode_component(s: &str) -> String {
     let mut out = String::with_capacity(s.len() * 3 / 2);
     for b in s.as_bytes() {
         match *b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{:02X}", *b)),
         }
@@ -1479,8 +1900,7 @@ fn url_encode_component(s: &str) -> String {
     out
 }
 
-#[derive(Clone, Copy)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct Icons {
     pub(crate) app: isize,
     pub(crate) search: isize,
@@ -1525,6 +1945,11 @@ pub(crate) struct AppState {
     pub(crate) hwnd: HWND,
     pub(crate) search_hwnd: HWND,
     pub(crate) ui_dpi: u32,
+    pub(crate) dpi_comp_base_w: i32,
+    pub(crate) dpi_comp_base_h: i32,
+    pub(crate) dpi_comp_base_monitor_dpi: u32,
+    pub(crate) dpi_comp_last_monitor_dpi: u32,
+    pub(crate) dpi_comp_applying: bool,
     pub(crate) search_font: *mut core::ffi::c_void,
     pub(crate) theme: Theme,
     pub(crate) icons: Icons,
@@ -1555,8 +1980,8 @@ pub(crate) struct AppState {
     pub(crate) hotkey_conflict_notified: bool,
     pub(crate) startup_recovery_ticks: u8,
     pub(crate) settings_hwnd: HWND,
-    pub(crate) hover_scroll: bool,   // 鼠标是否在滚动条区域
-    pub(crate) scroll_fade_alpha: u8, // 滚动条透明度 0-255
+    pub(crate) hover_scroll: bool,      // 鼠标是否在滚动条区域
+    pub(crate) scroll_fade_alpha: u8,   // 滚动条透明度 0-255
     pub(crate) scroll_fade_timer: bool, // 渐隐 timer 是否运行中
     pub(crate) search_debounce_timer: bool,
     pub(crate) hidden_reclaim_timer: bool,
@@ -1571,6 +1996,7 @@ pub(crate) struct AppState {
     tab_loads: [TabLoadState; 2],
     payload_cache: ItemPayloadCache,
     image_thumb_cache: ImageThumbnailCache,
+    image_thumb_loading: HashSet<i64>,
     pub(crate) vv_popup_visible: bool,
     pub(crate) vv_popup_pending_target: HWND,
     pub(crate) vv_popup_pending_retries: u8,
@@ -1620,7 +2046,6 @@ impl DerefMut for AppState {
         &mut self.list
     }
 }
-
 
 impl AppState {
     fn is_recent_top_duplicate_item(&self, item: &ClipItem) -> bool {
@@ -1697,8 +2122,11 @@ impl AppState {
         self.last_capture_source_app.clear();
         self.last_capture_source_app.push_str(source_app);
         self.last_capture_at = Some(now);
-        self.recent_capture_signatures
-            .push_back((signature.to_string(), source_app.to_string(), now));
+        self.recent_capture_signatures.push_back((
+            signature.to_string(),
+            source_app.to_string(),
+            now,
+        ));
         while self.recent_capture_signatures.len() > 8 {
             self.recent_capture_signatures.pop_front();
         }
@@ -1759,7 +2187,9 @@ impl AppState {
         self.clear_selection();
         self.refilter();
         self.restore_scroll_anchor(anchor);
-        unsafe { sync_peer_windows_from_db(self.hwnd); }
+        unsafe {
+            sync_peer_windows_from_db(self.hwnd);
+        }
     }
 
     fn toggle_pin_rows(&mut self) {
@@ -1768,7 +2198,10 @@ impl AppState {
             self.toggle_pin_selected();
             return;
         }
-        let make_pinned = src.iter().filter_map(|&i| self.active_items().get(i)).any(|it| !it.pinned);
+        let make_pinned = src
+            .iter()
+            .filter_map(|&i| self.active_items().get(i))
+            .any(|it| !it.pinned);
         let mut invalidate_ids = Vec::new();
         for src_idx in src {
             if let Some(it) = self.active_items().get(src_idx) {
@@ -1784,16 +2217,22 @@ impl AppState {
         self.clear_selection();
         self.invalidate_tab_query(self.tab_index, true);
         self.refilter();
-        unsafe { sync_peer_windows_from_db(self.hwnd); }
+        unsafe {
+            sync_peer_windows_from_db(self.hwnd);
+        }
     }
 
     fn selected_items_owned(&self) -> Vec<ClipItem> {
-        self.selected_source_indices().into_iter().filter_map(|i| self.active_items().get(i).cloned()).collect()
+        self.selected_source_indices()
+            .into_iter()
+            .filter_map(|i| self.active_items().get(i).cloned())
+            .collect()
     }
 
     fn clear_payload_cache(&mut self) {
         self.payload_cache.clear();
         self.image_thumb_cache.clear();
+        self.image_thumb_loading.clear();
     }
 
     fn cache_full_item(&mut self, item: ClipItem) {
@@ -1803,6 +2242,7 @@ impl AppState {
     fn remove_cached_item(&mut self, id: i64) {
         self.payload_cache.remove(id);
         self.image_thumb_cache.remove(id);
+        self.image_thumb_loading.remove(&id);
     }
 
     fn current_scroll_anchor(&self) -> Option<(i64, i32)> {
@@ -1820,11 +2260,7 @@ impl AppState {
     fn restore_scroll_anchor(&mut self, anchor: Option<(i64, i32)>) {
         if let Some((id, offset)) = anchor {
             let row_h = self.layout().row_h.max(1);
-            if let Some(visible_idx) = self
-                .active_items()
-                .iter()
-                .position(|item| item.id == id)
-            {
+            if let Some(visible_idx) = self.active_items().iter().position(|item| item.id == id) {
                 self.scroll_y = visible_idx as i32 * row_h + offset;
             }
         }
@@ -1904,7 +2340,8 @@ impl AppState {
 
     fn selected_items_for_use(&mut self) -> Vec<ClipItem> {
         let items = self.selected_items_owned();
-        items.into_iter()
+        items
+            .into_iter()
             .filter_map(|item| self.resolve_item_for_use(&item))
             .collect()
     }
@@ -1947,7 +2384,9 @@ impl AppState {
                         self.refilter();
                         self.restore_scroll_anchor(anchor);
                     }
-                    unsafe { sync_peer_windows_from_db(self.hwnd); }
+                    unsafe {
+                        sync_peer_windows_from_db(self.hwnd);
+                    }
                     return;
                 }
                 return;
@@ -1963,7 +2402,8 @@ impl AppState {
         }
         let summary = clip_item_to_summary(&item);
         let visible_query = self.load_state_for_tab(0).query.clone();
-        if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty()) {
+        if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
+        {
             self.records.insert(0, summary);
             if self.tab_index == 0 {
                 self.list.apply_visible_len(self.records.len());
@@ -1980,7 +2420,9 @@ impl AppState {
             self.sel_idx = 0;
         }
         self.refilter();
-        unsafe { sync_peer_windows_from_db(self.hwnd); }
+        unsafe {
+            sync_peer_windows_from_db(self.hwnd);
+        }
     }
 
     fn list_view_height(&self) -> i32 {
@@ -1992,7 +2434,9 @@ impl AppState {
     }
 
     fn clamp_scroll(&mut self) {
-        self.scroll_y = self.layout().clamp_scroll(self.scroll_y, self.visible_count());
+        self.scroll_y = self
+            .layout()
+            .clamp_scroll(self.scroll_y, self.visible_count());
     }
 
     fn ensure_visible(&mut self, idx: i32) {
@@ -2060,7 +2504,9 @@ impl AppState {
             self.clear_selection();
             self.refilter();
             self.restore_scroll_anchor(anchor);
-            unsafe { sync_peer_windows_from_db(self.hwnd); }
+            unsafe {
+                sync_peer_windows_from_db(self.hwnd);
+            }
         }
     }
 
@@ -2072,7 +2518,9 @@ impl AppState {
             }
             self.invalidate_tab_query(self.tab_index, true);
             self.refilter();
-            unsafe { sync_peer_windows_from_db(self.hwnd); }
+            unsafe {
+                sync_peer_windows_from_db(self.hwnd);
+            }
         }
     }
 
@@ -2085,7 +2533,12 @@ impl AppState {
     }
 }
 
-unsafe fn queue_cloud_sync(hwnd: HWND, state: &mut AppState, action: CloudSyncAction, auto_triggered: bool) {
+unsafe fn queue_cloud_sync(
+    hwnd: HWND,
+    state: &mut AppState,
+    action: CloudSyncAction,
+    auto_triggered: bool,
+) {
     if state.cloud_sync_in_progress {
         return;
     }
@@ -2104,7 +2557,10 @@ unsafe fn queue_cloud_sync(hwnd: HWND, state: &mut AppState, action: CloudSyncAc
         return;
     }
 
-    if matches!(action, CloudSyncAction::SyncNow | CloudSyncAction::RestoreBackup) {
+    if matches!(
+        action,
+        CloudSyncAction::SyncNow | CloudSyncAction::RestoreBackup
+    ) {
         close_db();
     }
 
@@ -2184,8 +2640,8 @@ fn register_hotkey_for(hwnd: HWND, state: &mut AppState) {
     let err = unsafe { GetLastError() };
     if err == ERROR_HOTKEY_ALREADY_REGISTERED && !state.hotkey_conflict_notified {
         state.hotkey_conflict_notified = true;
-            let hk = hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key)
-                .replace(tr("当前设置：", "Current setting: "), "");
+        let hk = hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key)
+            .replace(tr("当前设置：", "Current setting: "), "");
         unsafe {
             MessageBoxW(
                 hwnd,
@@ -2204,7 +2660,9 @@ fn register_hotkey_for(hwnd: HWND, state: &mut AppState) {
 
 fn unregister_hotkey_for(hwnd: HWND, state: &mut AppState) {
     if state.hotkey_registered {
-        unsafe { UnregisterHotKey(hwnd, HOTKEY_ID); }
+        unsafe {
+            UnregisterHotKey(hwnd, HOTKEY_ID);
+        }
         state.hotkey_registered = false;
     }
 }
@@ -2222,23 +2680,30 @@ fn register_plain_paste_hotkey_for(hwnd: HWND, state: &mut AppState) {
 
 fn unregister_plain_paste_hotkey_for(hwnd: HWND, state: &mut AppState) {
     if state.plain_paste_hotkey_registered {
-        unsafe { UnregisterHotKey(hwnd, HOTKEY_ID_PLAIN); }
+        unsafe {
+            UnregisterHotKey(hwnd, HOTKEY_ID_PLAIN);
+        }
         state.plain_paste_hotkey_registered = false;
     }
 }
 
-
 struct SettingsWndState {
     parent_hwnd: HWND,
     cur_page: usize,
+    ui_dpi: u32,
+    dpi_comp_base_w: i32,
+    dpi_comp_base_h: i32,
+    dpi_comp_base_monitor_dpi: u32,
+    dpi_comp_last_monitor_dpi: u32,
+    dpi_comp_applying: bool,
     nav_hot: i32,
-    content_scroll_y: i32,           // 内容区当前滚动偏移（像素）
+    content_scroll_y: i32, // 内容区当前滚动偏移（像素）
     page_scroll_y: [i32; SETTINGS_PAGE_COUNT],
-    scroll_dragging: bool,            // 正在拖拽滚动条拇指
-    scroll_drag_start_y: i32,         // 拖拽起始鼠标Y
-    scroll_drag_start_scroll: i32,    // 拖拽起始scroll_y
-    scroll_bar_visible: bool,         // 滚动条当前是否可见（auto-hide）
-    scroll_hide_timer: bool,          // 渐隐 timer 是否运行中
+    scroll_dragging: bool,         // 正在拖拽滚动条拇指
+    scroll_drag_start_y: i32,      // 拖拽起始鼠标Y
+    scroll_drag_start_scroll: i32, // 拖拽起始scroll_y
+    scroll_bar_visible: bool,      // 滚动条当前是否可见（auto-hide）
+    scroll_hide_timer: bool,       // 渐隐 timer 是否运行中
     save_hint_timer: bool,
     ui: SettingsUiRegistry,
     btn_save: HWND,
@@ -2338,28 +2803,43 @@ struct SettingsWndState {
     dropdown_popup: HWND,
 }
 
+fn settings_page_content_total_h_for_state(st: &SettingsWndState, page: usize) -> i32 {
+    settings_page_content_total_h(page).max(st.ui.measured_content_total_h(page))
+}
+
+fn settings_page_max_scroll_for_state(st: &SettingsWndState, page: usize, view_h: i32) -> i32 {
+    (settings_page_content_total_h_for_state(st, page) - view_h).max(0)
+}
+
 /// 计算自绘滚动条拇指矩形（宽度可变：正常=SCROLL_BAR_W，拖拽=SCROLL_BAR_W_ACTIVE）
-fn settings_scrollbar_thumb_w(page: usize, crc: &RECT, scroll_y: i32, bar_w: i32) -> Option<RECT> {
+fn settings_scrollbar_thumb_w(
+    st: &SettingsWndState,
+    crc: &RECT,
+    scroll_y: i32,
+    bar_w: i32,
+) -> Option<RECT> {
     let content_y = settings_content_y_scaled();
     let view_h = (crc.bottom - crc.top) - content_y;
-    let max_s = settings_page_max_scroll(page, view_h);
-    if max_s <= 0 { return None; }
+    let max_s = settings_page_max_scroll_for_state(st, st.cur_page, view_h);
+    if max_s <= 0 {
+        return None;
+    }
     let track_top = content_y + settings_scale(8);
     let track_bottom = crc.bottom - settings_scale(8);
     let track_h = (track_bottom - track_top).max(1);
-    let content_h = settings_page_content_total_h(page).max(view_h + 1);
+    let content_h = settings_page_content_total_h_for_state(st, st.cur_page).max(view_h + 1);
     let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
     let thumb_h = thumb_h.max(settings_scale(24));
-    let thumb_top = track_top + ((scroll_y as f32 / max_s as f32) * (track_h - thumb_h) as f32) as i32;
+    let thumb_top =
+        track_top + ((scroll_y as f32 / max_s as f32) * (track_h - thumb_h) as f32) as i32;
     let right = crc.right - SCROLL_BAR_MARGIN;
     Some(RECT {
-        left:   right - bar_w,
-        top:    thumb_top,
+        left: right - bar_w,
+        top: thumb_top,
         right,
         bottom: thumb_top + thumb_h,
     })
 }
-
 
 // ─── WinUI3风格输入对话框 ──────────────────────────────────────────────────────
 // 用于"新建分组"和"分组重命名"，返回用户输入的字符串，None表示取消
@@ -2374,8 +2854,12 @@ struct InputDlgData {
 }
 
 unsafe fn input_dialog_refresh_theme(data: &mut InputDlgData) {
-    if !data.surface_brush.is_null() { DeleteObject(data.surface_brush as _); }
-    if !data.control_brush.is_null() { DeleteObject(data.control_brush as _); }
+    if !data.surface_brush.is_null() {
+        DeleteObject(data.surface_brush as _);
+    }
+    if !data.control_brush.is_null() {
+        DeleteObject(data.control_brush as _);
+    }
     let th = Theme::default();
     data.surface_brush = CreateSolidBrush(th.surface) as _;
     data.control_brush = CreateSolidBrush(th.control_bg) as _;
@@ -2386,7 +2870,12 @@ const IDC_INPUT_OK: usize = 9002;
 const IDC_INPUT_CANCEL: usize = 9003;
 const INPUT_DLG_CLASS: &str = "ZsClipInputDlg";
 
-unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn input_dlg_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -2395,19 +2884,56 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
 
             let d = &mut *data;
             let hmod = GetModuleHandleW(null());
-            d.ui_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide(ui_text_font_family()).as_ptr()) as _;
+            d.ui_font = CreateFontW(
+                -scale_for_window(hwnd, 14),
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                to_wide(ui_text_font_family()).as_ptr(),
+            ) as _;
             input_dialog_refresh_theme(d);
 
             // 标签
-            let lbl = CreateWindowExW(0, to_wide("STATIC").as_ptr(), d.label_w.as_ptr(),
-                WS_CHILD | WS_VISIBLE, 20, 58, 320, 22, hwnd, null_mut(), hmod, null());
+            let lbl = CreateWindowExW(
+                0,
+                to_wide("STATIC").as_ptr(),
+                d.label_w.as_ptr(),
+                WS_CHILD | WS_VISIBLE,
+                20,
+                58,
+                320,
+                22,
+                hwnd,
+                null_mut(),
+                hmod,
+                null(),
+            );
             SendMessageW(lbl, WM_SETFONT, d.ui_font as usize, 1);
 
             // 输入框
-            let ed = CreateWindowExW(WS_EX_CLIENTEDGE, to_wide("EDIT").as_ptr(), d.initial.as_ptr(),
+            let ed = CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                to_wide("EDIT").as_ptr(),
+                d.initial.as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (ES_AUTOHSCROLL as u32),
-                20, 84, 320, 32, hwnd, IDC_INPUT_EDIT as _, hmod, null());
+                20,
+                84,
+                320,
+                32,
+                hwnd,
+                IDC_INPUT_EDIT as _,
+                hmod,
+                null(),
+            );
             SendMessageW(ed, WM_SETFONT, d.ui_font as usize, 1);
             SetWindowTheme(ed, to_wide("Explorer").as_ptr(), null());
             // 全选
@@ -2415,15 +2941,37 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             SetFocus(ed);
 
             // 取消按钮（左）
-            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("取消").as_ref()).as_ptr(),
+            let btn_cancel = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide(translate("取消").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
-                148, 132, 88, 30, hwnd, IDC_INPUT_CANCEL as _, hmod, null());
+                148,
+                132,
+                88,
+                30,
+                hwnd,
+                IDC_INPUT_CANCEL as _,
+                hmod,
+                null(),
+            );
             SendMessageW(btn_cancel, WM_SETFONT, d.ui_font as usize, 1);
 
             // 保存按钮（右）
-            let btn_ok = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("保存").as_ref()).as_ptr(),
+            let btn_ok = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide(translate("保存").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
-                248, 132, 88, 30, hwnd, IDC_INPUT_OK as _, hmod, null());
+                248,
+                132,
+                88,
+                30,
+                hwnd,
+                IDC_INPUT_OK as _,
+                hmod,
+                null(),
+            );
             SendMessageW(btn_ok, WM_SETFONT, d.ui_font as usize, 1);
 
             // DWM圆角
@@ -2467,7 +3015,12 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             FillRect(hdc, &rc, bg);
             DeleteObject(bg as _);
             // 顶部accent条
-            let top_rc = RECT { left: 0, top: 0, right: rc.right, bottom: 48 };
+            let top_rc = RECT {
+                left: 0,
+                top: 0,
+                right: rc.right,
+                bottom: 48,
+            };
             let top_br = CreateSolidBrush(th.surface);
             FillRect(hdc, &top_rc, top_br);
             DeleteObject(top_br as _);
@@ -2475,20 +3028,49 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut InputDlgData;
             if !data_ptr.is_null() {
                 let d = &*data_ptr;
-                let title_rc = RECT { left: 20, top: 12, right: rc.right - 20, bottom: 46 };
-                let title_font: *mut core::ffi::c_void = CreateFontW(-scale_for_window(hwnd, 16), 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0,
-                    to_wide(ui_display_font_family()).as_ptr()) as _;
+                let title_rc = RECT {
+                    left: 20,
+                    top: 12,
+                    right: rc.right - 20,
+                    bottom: 46,
+                };
+                let title_font: *mut core::ffi::c_void = CreateFontW(
+                    -scale_for_window(hwnd, 16),
+                    0,
+                    0,
+                    0,
+                    600,
+                    0,
+                    0,
+                    0,
+                    1,
+                    0,
+                    0,
+                    5,
+                    0,
+                    to_wide(ui_display_font_family()).as_ptr(),
+                ) as _;
                 let old = SelectObject(hdc, title_font as _);
                 SetBkMode(hdc, 1);
                 SetTextColor(hdc, th.text);
-                DrawTextW(hdc, d.title_w.as_ptr(), -1, &title_rc as *const _ as *mut _,
-                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                DrawTextW(
+                    hdc,
+                    d.title_w.as_ptr(),
+                    -1,
+                    &title_rc as *const _ as *mut _,
+                    DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                );
                 SelectObject(hdc, old);
                 DeleteObject(title_font as _);
             }
             // 分隔线
             let sep_br = CreateSolidBrush(th.stroke);
-            let sep_rc = RECT { left: 0, top: 47, right: rc.right, bottom: 48 };
+            let sep_rc = RECT {
+                left: 0,
+                top: 47,
+                right: rc.right,
+                bottom: 48,
+            };
             FillRect(hdc, &sep_rc, sep_br);
             DeleteObject(sep_br as _);
             EndPaint(hwnd, &ps);
@@ -2502,28 +3084,63 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             let pressed = (dis.itemState & ODS_SELECTED) != 0;
             let cid = dis.CtlID as usize;
             let text_w = get_ctrl_text_wide(dis.hwndItem);
-            let rr = RECT { left: rc.left+1, top: rc.top+1, right: rc.right-1, bottom: rc.bottom-1 };
+            let rr = RECT {
+                left: rc.left + 1,
+                top: rc.top + 1,
+                right: rc.right - 1,
+                bottom: rc.bottom - 1,
+            };
             if cid == IDC_INPUT_OK {
                 let fill = if pressed {
                     let r = (th.accent & 0xFF) as i32;
                     let g = ((th.accent >> 8) & 0xFF) as i32;
                     let b = ((th.accent >> 16) & 0xFF) as i32;
-                    rgb((r-18).max(0) as u8, (g-18).max(0) as u8, (b-18).max(0) as u8)
-                } else { th.accent };
+                    rgb(
+                        (r - 18).max(0) as u8,
+                        (g - 18).max(0) as u8,
+                        (b - 18).max(0) as u8,
+                    )
+                } else {
+                    th.accent
+                };
                 draw_round_rect(hdc as _, &rr, fill, fill, 4);
-                draw_text_wide_centered(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(
+                    hdc as _,
+                    &text_w,
+                    &rr,
+                    rgb(255, 255, 255),
+                    14,
+                    "Segoe UI Variable Text",
+                );
             } else {
-                let fill = if pressed { th.button_pressed } else { th.button_bg };
-                let border = if pressed { rgb(180,180,180) } else { rgb(196,196,196) };
+                let fill = if pressed {
+                    th.button_pressed
+                } else {
+                    th.button_bg
+                };
+                let border = if pressed {
+                    rgb(180, 180, 180)
+                } else {
+                    rgb(196, 196, 196)
+                };
                 draw_round_rect(hdc as _, &rr, fill, border, 4);
-                draw_text_wide_centered(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(
+                    hdc as _,
+                    &text_w,
+                    &rr,
+                    th.text,
+                    14,
+                    "Segoe UI Variable Text",
+                );
             }
             1
         }
         WM_COMMAND => {
             let cid = wparam & 0xffff;
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut InputDlgData;
-            if data_ptr.is_null() { return 0; }
+            if data_ptr.is_null() {
+                return 0;
+            }
             let d = &mut *data_ptr;
             if cid == IDC_INPUT_OK {
                 let ed = GetDlgItem(hwnd, IDC_INPUT_EDIT as i32);
@@ -2531,7 +3148,9 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
                     let len = GetWindowTextLengthW(ed);
                     let mut buf = vec![0u16; (len as usize) + 2];
                     GetWindowTextW(ed, buf.as_mut_ptr(), buf.len() as i32);
-                    let s = String::from_utf16_lossy(&buf[..len as usize]).trim().to_string();
+                    let s = String::from_utf16_lossy(&buf[..len as usize])
+                        .trim()
+                        .to_string();
                     if !s.is_empty() {
                         d.result = Some(s);
                         DestroyWindow(hwnd);
@@ -2558,13 +3177,24 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
             }
             0
         }
-        WM_CLOSE => { DestroyWindow(hwnd); 0 }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
         WM_NCDESTROY => {
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut InputDlgData;
             if !data_ptr.is_null() {
-                if !(*data_ptr).ui_font.is_null() && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).ui_font as _); }
-                if !(*data_ptr).surface_brush.is_null() { DeleteObject((*data_ptr).surface_brush as _); }
-                if !(*data_ptr).control_brush.is_null() { DeleteObject((*data_ptr).control_brush as _); }
+                if !(*data_ptr).ui_font.is_null()
+                    && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT)
+                {
+                    DeleteObject((*data_ptr).ui_font as _);
+                }
+                if !(*data_ptr).surface_brush.is_null() {
+                    DeleteObject((*data_ptr).surface_brush as _);
+                }
+                if !(*data_ptr).control_brush.is_null() {
+                    DeleteObject((*data_ptr).control_brush as _);
+                }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             0
@@ -2574,7 +3204,12 @@ unsafe extern "system" fn input_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, l
 }
 
 // 注册并显示输入对话框，返回用户输入文本
-unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &str) -> Option<String> {
+unsafe fn input_name_dialog(
+    parent: HWND,
+    title: &str,
+    label: &str,
+    initial: &str,
+) -> Option<String> {
     let hmod = GetModuleHandleW(null());
     // 注册窗口类
     let cls_w = to_wide(INPUT_DLG_CLASS);
@@ -2594,8 +3229,14 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
     let data = Box::new(InputDlgData {
         result: None,
         initial: init_arr,
-        title_w: translate(title).encode_utf16().chain(std::iter::once(0)).collect(),
-        label_w: translate(label).encode_utf16().chain(std::iter::once(0)).collect(),
+        title_w: translate(title)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect(),
+        label_w: translate(label)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect(),
         ui_font: null_mut(),
         surface_brush: null_mut(),
         control_brush: null_mut(),
@@ -2615,8 +3256,13 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
         cls_w.as_ptr(),
         title_w.as_ptr(),
         WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
-        cx, cy, dw, dh,
-        parent, null_mut(), hmod,
+        cx,
+        cy,
+        dw,
+        dh,
+        parent,
+        null_mut(),
+        hmod,
         data_ptr as _,
     );
     if hwnd.is_null() {
@@ -2627,8 +3273,12 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
 
     let mut msg: MSG = zeroed();
     loop {
-        if GetMessageW(&mut msg, null_mut(), 0, 0) == 0 { break; }
-        if msg.message == WM_KEYDOWN && (msg.wParam == VK_RETURN as usize || msg.wParam == VK_ESCAPE as usize) {
+        if GetMessageW(&mut msg, null_mut(), 0, 0) == 0 {
+            break;
+        }
+        if msg.message == WM_KEYDOWN
+            && (msg.wParam == VK_RETURN as usize || msg.wParam == VK_ESCAPE as usize)
+        {
             SendMessageW(hwnd, WM_KEYDOWN, msg.wParam, msg.lParam);
             continue;
         }
@@ -2636,7 +3286,9 @@ unsafe fn input_name_dialog(parent: HWND, title: &str, label: &str, initial: &st
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        if IsWindow(hwnd) == 0 { break; }
+        if IsWindow(hwnd) == 0 {
+            break;
+        }
     }
     if IsWindow(hwnd) != 0 {
         DestroyWindow(hwnd);
@@ -2669,13 +3321,23 @@ struct EditDlgData {
 }
 
 unsafe fn edit_dialog_refresh_theme(data: &mut EditDlgData) {
-    if !data.surface_brush.is_null() { DeleteObject(data.surface_brush as _); }
-    if !data.control_brush.is_null() { DeleteObject(data.control_brush as _); }
-    if !data.gutter_brush.is_null() { DeleteObject(data.gutter_brush as _); }
+    if !data.surface_brush.is_null() {
+        DeleteObject(data.surface_brush as _);
+    }
+    if !data.control_brush.is_null() {
+        DeleteObject(data.control_brush as _);
+    }
+    if !data.gutter_brush.is_null() {
+        DeleteObject(data.gutter_brush as _);
+    }
     let th = Theme::default();
     data.surface_brush = CreateSolidBrush(th.surface) as _;
     data.control_brush = CreateSolidBrush(th.control_bg) as _;
-    data.gutter_brush = CreateSolidBrush(if is_dark_mode() { rgb(38, 42, 48) } else { rgb(246, 248, 250) }) as _;
+    data.gutter_brush = CreateSolidBrush(if is_dark_mode() {
+        rgb(38, 42, 48)
+    } else {
+        rgb(246, 248, 250)
+    }) as _;
 }
 
 unsafe fn sync_line_numbers(lineno_hwnd: HWND, textarea_hwnd: HWND) {
@@ -2722,7 +3384,11 @@ unsafe fn edit_dialog_save(hwnd: HWND, data: &mut EditDlgData) -> bool {
     } else {
         MessageBoxW(
             hwnd,
-            to_wide(tr("保存失败，请稍后重试。", "Save failed. Please try again.")).as_ptr(),
+            to_wide(tr(
+                "保存失败，请稍后重试。",
+                "Save failed. Please try again.",
+            ))
+            .as_ptr(),
             to_wide(tr("编辑记录", "Edit Record")).as_ptr(),
             MB_OK | MB_ICONERROR,
         );
@@ -2752,7 +3418,11 @@ unsafe fn edit_dialog_confirm_close(hwnd: HWND, data: &mut EditDlgData) -> bool 
     }
     let result = MessageBoxW(
         hwnd,
-        to_wide(tr("当前修改尚未保存，是否先保存？", "You have unsaved changes. Save before closing?")).as_ptr(),
+        to_wide(tr(
+            "当前修改尚未保存，是否先保存？",
+            "You have unsaved changes. Save before closing?",
+        ))
+        .as_ptr(),
         to_wide(tr("编辑记录", "Edit Record")).as_ptr(),
         MB_YESNOCANCEL | MB_ICONWARNING,
     );
@@ -2771,7 +3441,12 @@ unsafe fn edit_dialog_mark_dirty(hwnd: HWND, data: &mut EditDlgData) {
     data.dirty = current != data.original_text;
 }
 
-unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn edit_dlg_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -2780,11 +3455,39 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let d = &mut *data;
             let hmod = GetModuleHandleW(null());
 
-            d.ui_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide(ui_text_font_family()).as_ptr()) as _;
+            d.ui_font = CreateFontW(
+                -scale_for_window(hwnd, 14),
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                to_wide(ui_text_font_family()).as_ptr(),
+            ) as _;
             edit_dialog_refresh_theme(d);
-            d.btn_font = CreateFontW(-scale_for_window(hwnd, 14), 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0,
-                to_wide(ui_text_font_family()).as_ptr()) as _;
+            d.btn_font = CreateFontW(
+                -scale_for_window(hwnd, 14),
+                0,
+                0,
+                0,
+                400,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                5,
+                0,
+                to_wide(ui_text_font_family()).as_ptr(),
+            ) as _;
 
             let mut rc: RECT = zeroed();
             GetClientRect(hwnd, &mut rc);
@@ -2796,23 +3499,58 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let edit_h = h - 56;
 
             // 行号面板（只读编辑框，右对齐）
-            let lineno = CreateWindowExW(0, to_wide("EDIT").as_ptr(), to_wide("").as_ptr(),
-                WS_CHILD | WS_VISIBLE | (ES_MULTILINE as u32) | (ES_READONLY as u32) | (ES_RIGHT as u32),
-                0, 0, lineno_w, edit_h, hwnd, IDC_EDIT_LINENO as _, hmod, null());
+            let lineno = CreateWindowExW(
+                0,
+                to_wide("EDIT").as_ptr(),
+                to_wide("").as_ptr(),
+                WS_CHILD
+                    | WS_VISIBLE
+                    | (ES_MULTILINE as u32)
+                    | (ES_READONLY as u32)
+                    | (ES_RIGHT as u32),
+                0,
+                0,
+                lineno_w,
+                edit_h,
+                hwnd,
+                IDC_EDIT_LINENO as _,
+                hmod,
+                null(),
+            );
             SendMessageW(lineno, WM_SETFONT, d.ui_font as usize, 1);
 
             // 主编辑区
-            let ed = CreateWindowExW(0, to_wide("EDIT").as_ptr(), to_wide("").as_ptr(),
-                WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP
-                | (ES_MULTILINE as u32) | (ES_AUTOVSCROLL as u32) | (ES_WANTRETURN as u32) | (ES_NOHIDESEL as u32),
-                edit_x, 0, edit_w, edit_h, hwnd, IDC_EDIT_TEXTAREA as _, hmod, null());
+            let ed = CreateWindowExW(
+                0,
+                to_wide("EDIT").as_ptr(),
+                to_wide("").as_ptr(),
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WS_VSCROLL
+                    | WS_TABSTOP
+                    | (ES_MULTILINE as u32)
+                    | (ES_AUTOVSCROLL as u32)
+                    | (ES_WANTRETURN as u32)
+                    | (ES_NOHIDESEL as u32),
+                edit_x,
+                0,
+                edit_w,
+                edit_h,
+                hwnd,
+                IDC_EDIT_TEXTAREA as _,
+                hmod,
+                null(),
+            );
             SendMessageW(ed, WM_SETFONT, d.ui_font as usize, 1);
             SetWindowTheme(ed, to_wide("Explorer").as_ptr(), null());
 
             // 加载文本
             if let Ok(t) = with_db(|conn| {
                 conn.query_row(
-                    "SELECT COALESCE(text_data,'') FROM items WHERE id=?", params![d.item_id], |r| r.get::<_, String>(0))
+                    "SELECT COALESCE(text_data,'') FROM items WHERE id=?",
+                    params![d.item_id],
+                    |r| r.get::<_, String>(0),
+                )
             }) {
                 d.original_text = t.replace("\r\n", "\n").replace('\r', "\n");
                 let crlf = t.replace('\n', "\r\n");
@@ -2830,15 +3568,37 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             SetFocus(ed);
 
             // 取消按钮
-            let btn_cancel = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("取消").as_ref()).as_ptr(),
+            let btn_cancel = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide(translate("取消").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
-                w - 210, h - 44, 90, 30, hwnd, IDC_EDIT_CANCEL as _, hmod, null());
+                w - 210,
+                h - 44,
+                90,
+                30,
+                hwnd,
+                IDC_EDIT_CANCEL as _,
+                hmod,
+                null(),
+            );
             SendMessageW(btn_cancel, WM_SETFONT, d.btn_font as usize, 1);
 
             // 保存按钮
-            let btn_save = CreateWindowExW(0, to_wide("BUTTON").as_ptr(), to_wide(translate("保存").as_ref()).as_ptr(),
+            let btn_save = CreateWindowExW(
+                0,
+                to_wide("BUTTON").as_ptr(),
+                to_wide(translate("保存").as_ref()).as_ptr(),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | (BS_OWNERDRAW as u32),
-                w - 110, h - 44, 90, 30, hwnd, IDC_EDIT_SAVE as _, hmod, null());
+                w - 110,
+                h - 44,
+                90,
+                30,
+                hwnd,
+                IDC_EDIT_SAVE as _,
+                hmod,
+                null(),
+            );
             SendMessageW(btn_save, WM_SETFONT, d.btn_font as usize, 1);
 
             let _ = (btn_cancel, btn_save);
@@ -2861,13 +3621,23 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             FillRect(hdc, &rc, bg);
             DeleteObject(bg as _);
             // 底部工具栏背景
-            let bar_rc = RECT { left: 0, top: rc.bottom - 56, right: rc.right, bottom: rc.bottom };
+            let bar_rc = RECT {
+                left: 0,
+                top: rc.bottom - 56,
+                right: rc.right,
+                bottom: rc.bottom,
+            };
             let bar_br = CreateSolidBrush(th.surface);
             FillRect(hdc, &bar_rc, bar_br);
             DeleteObject(bar_br as _);
             // 分隔线
             let sep_br = CreateSolidBrush(th.stroke);
-            let sep_rc = RECT { left: 0, top: rc.bottom - 56, right: rc.right, bottom: rc.bottom - 55 };
+            let sep_rc = RECT {
+                left: 0,
+                top: rc.bottom - 56,
+                right: rc.right,
+                bottom: rc.bottom - 55,
+            };
             FillRect(hdc, &sep_rc, sep_br);
             DeleteObject(sep_br as _);
             EndPaint(hwnd, &ps);
@@ -2901,7 +3671,14 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let th = Theme::default();
             if !data_ptr.is_null() {
                 if cid == IDC_EDIT_LINENO {
-                    SetBkColor(hdc, if is_dark_mode() { rgb(38, 42, 48) } else { rgb(246, 248, 250) });
+                    SetBkColor(
+                        hdc,
+                        if is_dark_mode() {
+                            rgb(38, 42, 48)
+                        } else {
+                            rgb(246, 248, 250)
+                        },
+                    );
                     SetTextColor(hdc, rgb(140, 148, 160));
                     return (*data_ptr).gutter_brush as isize;
                 }
@@ -2919,21 +3696,54 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let pressed = (dis.itemState & ODS_SELECTED) != 0;
             let cid = dis.CtlID as usize;
             let text_w = get_ctrl_text_wide(dis.hwndItem);
-            let rr = RECT { left: rc.left+1, top: rc.top+1, right: rc.right-1, bottom: rc.bottom-1 };
+            let rr = RECT {
+                left: rc.left + 1,
+                top: rc.top + 1,
+                right: rc.right - 1,
+                bottom: rc.bottom - 1,
+            };
             if cid == IDC_EDIT_SAVE {
                 let fill = if pressed {
                     let r = (th.accent & 0xFF) as i32;
                     let g = ((th.accent >> 8) & 0xFF) as i32;
                     let b = ((th.accent >> 16) & 0xFF) as i32;
-                    rgb((r-18).max(0) as u8, (g-18).max(0) as u8, (b-18).max(0) as u8)
-                } else { th.accent };
+                    rgb(
+                        (r - 18).max(0) as u8,
+                        (g - 18).max(0) as u8,
+                        (b - 18).max(0) as u8,
+                    )
+                } else {
+                    th.accent
+                };
                 draw_round_rect(hdc as _, &rr, fill, fill, 4);
-                draw_text_wide_centered(hdc as _, &text_w, &rr, rgb(255,255,255), 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(
+                    hdc as _,
+                    &text_w,
+                    &rr,
+                    rgb(255, 255, 255),
+                    14,
+                    "Segoe UI Variable Text",
+                );
             } else {
-                let fill = if pressed { th.button_pressed } else { th.button_bg };
-                let border = if pressed { rgb(180,180,180) } else { rgb(196,196,196) };
+                let fill = if pressed {
+                    th.button_pressed
+                } else {
+                    th.button_bg
+                };
+                let border = if pressed {
+                    rgb(180, 180, 180)
+                } else {
+                    rgb(196, 196, 196)
+                };
                 draw_round_rect(hdc as _, &rr, fill, border, 4);
-                draw_text_wide_centered(hdc as _, &text_w, &rr, th.text, 14, "Segoe UI Variable Text");
+                draw_text_wide_centered(
+                    hdc as _,
+                    &text_w,
+                    &rr,
+                    th.text,
+                    14,
+                    "Segoe UI Variable Text",
+                );
             }
             1
         }
@@ -2941,7 +3751,9 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let cid = wparam & 0xffff;
             let notify = ((wparam >> 16) & 0xffff) as u32;
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
-            if data_ptr.is_null() { return 0; }
+            if data_ptr.is_null() {
+                return 0;
+            }
             let d = &mut *data_ptr;
 
             // 文本区滚动时同步行号
@@ -2985,13 +3797,37 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             let btn_cancel = GetDlgItem(hwnd, IDC_EDIT_CANCEL as i32);
             let btn_save = GetDlgItem(hwnd, IDC_EDIT_SAVE as i32);
             if !lineno.is_null() {
-                SetWindowPos(lineno, null_mut(), 0, 0, lineno_w, edit_h, SWP_NOMOVE | SWP_NOZORDER);
+                SetWindowPos(
+                    lineno,
+                    null_mut(),
+                    0,
+                    0,
+                    lineno_w,
+                    edit_h,
+                    SWP_NOMOVE | SWP_NOZORDER,
+                );
             }
             if !ed.is_null() {
-                SetWindowPos(ed, null_mut(), lineno_w, 0, w - lineno_w, edit_h, SWP_NOZORDER);
+                SetWindowPos(
+                    ed,
+                    null_mut(),
+                    lineno_w,
+                    0,
+                    w - lineno_w,
+                    edit_h,
+                    SWP_NOZORDER,
+                );
             }
             if !btn_cancel.is_null() {
-                SetWindowPos(btn_cancel, null_mut(), w - 210, h - 44, 90, 30, SWP_NOZORDER);
+                SetWindowPos(
+                    btn_cancel,
+                    null_mut(),
+                    w - 210,
+                    h - 44,
+                    90,
+                    30,
+                    SWP_NOZORDER,
+                );
             }
             if !btn_save.is_null() {
                 SetWindowPos(btn_save, null_mut(), w - 110, h - 44, 90, 30, SWP_NOZORDER);
@@ -3031,11 +3867,25 @@ unsafe extern "system" fn edit_dlg_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
         WM_NCDESTROY => {
             let data_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut EditDlgData;
             if !data_ptr.is_null() {
-                if !(*data_ptr).ui_font.is_null() && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).ui_font as _); }
-                if !(*data_ptr).btn_font.is_null() && (*data_ptr).btn_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*data_ptr).btn_font as _); }
-                if !(*data_ptr).surface_brush.is_null() { DeleteObject((*data_ptr).surface_brush as _); }
-                if !(*data_ptr).control_brush.is_null() { DeleteObject((*data_ptr).control_brush as _); }
-                if !(*data_ptr).gutter_brush.is_null() { DeleteObject((*data_ptr).gutter_brush as _); }
+                if !(*data_ptr).ui_font.is_null()
+                    && (*data_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT)
+                {
+                    DeleteObject((*data_ptr).ui_font as _);
+                }
+                if !(*data_ptr).btn_font.is_null()
+                    && (*data_ptr).btn_font != GetStockObject(DEFAULT_GUI_FONT)
+                {
+                    DeleteObject((*data_ptr).btn_font as _);
+                }
+                if !(*data_ptr).surface_brush.is_null() {
+                    DeleteObject((*data_ptr).surface_brush as _);
+                }
+                if !(*data_ptr).control_brush.is_null() {
+                    DeleteObject((*data_ptr).control_brush as _);
+                }
+                if !(*data_ptr).gutter_brush.is_null() {
+                    DeleteObject((*data_ptr).gutter_brush as _);
+                }
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             }
             0
@@ -3098,8 +3948,13 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
         cls_w.as_ptr(),
         title_w.as_ptr(),
         WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
-        cx, cy, dw, dh,
-        parent, null_mut(), hmod,
+        cx,
+        cy,
+        dw,
+        dh,
+        parent,
+        null_mut(),
+        hmod,
         data_ptr as _,
     );
     if hwnd.is_null() {
@@ -3111,7 +3966,9 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
     let mut msg: MSG = zeroed();
     loop {
         let r = GetMessageW(&mut msg, null_mut(), 0, 0);
-        if r == 0 || r == -1 { break; }
+        if r == 0 || r == -1 {
+            break;
+        }
         let root = if !msg.hwnd.is_null() {
             GetAncestor(msg.hwnd, GA_ROOT)
         } else {
@@ -3133,7 +3990,9 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        if IsWindow(hwnd) == 0 { break; }
+        if IsWindow(hwnd) == 0 {
+            break;
+        }
     }
     if IsWindow(hwnd) != 0 {
         DestroyWindow(hwnd);
@@ -3144,7 +4003,9 @@ unsafe fn show_edit_item_dialog(parent: HWND, item_id: i64, title: &str) -> bool
 }
 
 unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState) {
-    set_settings_ui_dpi(monitor_dpi_for_window(hwnd));
+    let dpi = layout_dpi_for_window(hwnd).max(96);
+    st.ui_dpi = dpi;
+    set_settings_ui_dpi(dpi);
     if !st.dropdown_popup.is_null() && IsWindow(st.dropdown_popup) != 0 {
         DestroyWindow(st.dropdown_popup);
         st.dropdown_popup = null_mut();
@@ -3169,7 +4030,7 @@ unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState)
     let view_h = (crc.bottom - crc.top - content_y).max(0);
     for page in 0..SETTINGS_PAGES.len() {
         st.page_scroll_y[page] =
-            st.page_scroll_y[page].clamp(0, settings_page_max_scroll(page, view_h));
+            st.page_scroll_y[page].clamp(0, settings_page_max_scroll_for_state(st, page, view_h));
     }
     let top_margin = settings_scale(24);
     let btn_h = settings_scale(32);
@@ -3227,13 +4088,202 @@ unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState)
             if reg.hwnd.is_null() {
                 continue;
             }
-            ShowWindow(reg.hwnd, if page == current_page { SW_SHOW } else { SW_HIDE });
+            ShowWindow(
+                reg.hwnd,
+                if page == current_page {
+                    SW_SHOW
+                } else {
+                    SW_HIDE
+                },
+            );
         }
     }
     if crate::settings_model::settings_page_scrollable(current_page) {
         settings_repos_controls(hwnd, st, true);
     }
     InvalidateRect(hwnd, null(), 1);
+}
+
+unsafe fn resize_settings_window_for_dpi_transition(hwnd: HWND, old_dpi: u32, new_dpi: u32) {
+    let old_dpi = old_dpi.max(96);
+    let new_dpi = new_dpi.max(96);
+    if old_dpi == new_dpi {
+        return;
+    }
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return;
+    }
+
+    set_settings_ui_dpi(new_dpi);
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    let pad = settings_scale(12);
+    let work_w = (work.right - work.left).max(1);
+    let work_h = (work.bottom - work.top).max(1);
+    let max_w = (work_w - pad * 2).max(1);
+    let max_h = (work_h - pad * 2).max(1);
+    let min_w = min(settings_scale(720), max_w);
+    let min_h = min(settings_scale(480), max_h);
+    let cur_w = rc.right - rc.left;
+    let cur_h = rc.bottom - rc.top;
+    let target_w = (((cur_w as i64 * new_dpi as i64) + (old_dpi as i64 / 2)) / old_dpi as i64)
+        .clamp(min_w as i64, max_w as i64) as i32;
+    let target_h = (((cur_h as i64 * new_dpi as i64) + (old_dpi as i64 / 2)) / old_dpi as i64)
+        .clamp(min_h as i64, max_h as i64) as i32;
+    let center_x = rc.left + (cur_w / 2);
+    let center_y = rc.top + (cur_h / 2);
+    let (x, y) = clamp_window_pos_to_rect(
+        center_x - (target_w / 2),
+        center_y - (target_h / 2),
+        &RECT {
+            left: work.left + pad,
+            top: work.top + pad,
+            right: work.right - pad,
+            bottom: work.bottom - pad,
+        },
+        target_w,
+        target_h,
+    );
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        target_w,
+        target_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+}
+
+unsafe fn ensure_settings_window_in_work_area(hwnd: HWND) {
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return;
+    }
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    let pad = settings_scale(12);
+    let work_w = (work.right - work.left).max(1);
+    let work_h = (work.bottom - work.top).max(1);
+    let max_w = (work_w - pad * 2).max(1);
+    let max_h = (work_h - pad * 2).max(1);
+    let min_w = min(settings_scale(720), max_w);
+    let min_h = min(settings_scale(480), max_h);
+    let target_w = (rc.right - rc.left).clamp(min_w, max_w);
+    let target_h = (rc.bottom - rc.top).clamp(min_h, max_h);
+    let (x, y) = clamp_window_pos_to_rect(
+        rc.left,
+        rc.top,
+        &RECT {
+            left: work.left + pad,
+            top: work.top + pad,
+            right: work.right - pad,
+            bottom: work.bottom - pad,
+        },
+        target_w,
+        target_h,
+    );
+    if x != rc.left
+        || y != rc.top
+        || target_w != rc.right - rc.left
+        || target_h != rc.bottom - rc.top
+    {
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            x,
+            y,
+            target_w,
+            target_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+unsafe fn reset_settings_dpi_compensation(st: &mut SettingsWndState) {
+    st.dpi_comp_base_w = 0;
+    st.dpi_comp_base_h = 0;
+    st.dpi_comp_base_monitor_dpi = 0;
+    st.dpi_comp_last_monitor_dpi = 0;
+    st.dpi_comp_applying = false;
+}
+
+unsafe fn update_settings_dpi_compensation_base(hwnd: HWND, st: &mut SettingsWndState) {
+    if is_per_monitor_dpi_aware() || st.dpi_comp_applying {
+        return;
+    }
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return;
+    }
+    st.dpi_comp_base_w = rc.right - rc.left;
+    st.dpi_comp_base_h = rc.bottom - rc.top;
+    st.dpi_comp_base_monitor_dpi = monitor_dpi_for_window(hwnd).max(96);
+    st.dpi_comp_last_monitor_dpi = st.dpi_comp_base_monitor_dpi;
+}
+
+unsafe fn apply_settings_system_dpi_compensation(hwnd: HWND, st: &mut SettingsWndState) -> bool {
+    if is_per_monitor_dpi_aware() {
+        reset_settings_dpi_compensation(st);
+        return false;
+    }
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return false;
+    }
+    let monitor_dpi = monitor_dpi_for_window(hwnd).max(96);
+    if st.dpi_comp_base_monitor_dpi == 0 || st.dpi_comp_base_w <= 0 || st.dpi_comp_base_h <= 0 {
+        st.dpi_comp_base_w = rc.right - rc.left;
+        st.dpi_comp_base_h = rc.bottom - rc.top;
+        st.dpi_comp_base_monitor_dpi = monitor_dpi;
+        st.dpi_comp_last_monitor_dpi = monitor_dpi;
+        return false;
+    }
+    let (mut target_w, mut target_h) = dpi_compensated_size(
+        st.dpi_comp_base_w,
+        st.dpi_comp_base_h,
+        st.dpi_comp_base_monitor_dpi,
+        monitor_dpi,
+    );
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    let pad = settings_scale(12);
+    let bounds = RECT {
+        left: work.left + pad,
+        top: work.top + pad,
+        right: work.right - pad,
+        bottom: work.bottom - pad,
+    };
+    target_w = target_w.min((bounds.right - bounds.left).max(1)).max(1);
+    target_h = target_h.min((bounds.bottom - bounds.top).max(1)).max(1);
+    let cur_w = rc.right - rc.left;
+    let cur_h = rc.bottom - rc.top;
+    if st.dpi_comp_last_monitor_dpi == monitor_dpi
+        && (cur_w - target_w).abs() <= 2
+        && (cur_h - target_h).abs() <= 2
+    {
+        return false;
+    }
+    let center_x = rc.left + cur_w / 2;
+    let center_y = rc.top + cur_h / 2;
+    let (x, y) = clamp_window_pos_to_rect(
+        center_x - target_w / 2,
+        center_y - target_h / 2,
+        &bounds,
+        target_w,
+        target_h,
+    );
+    st.dpi_comp_applying = true;
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        target_w,
+        target_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    st.dpi_comp_applying = false;
+    st.dpi_comp_last_monitor_dpi = monitor_dpi;
+    true
 }
 
 fn reload_state_from_db_persisting(state: &mut AppState) {
@@ -3245,7 +4295,12 @@ fn reload_state_from_db_persisting(state: &mut AppState) {
 unsafe fn show_settings_saved_feedback(hwnd: HWND, st: &mut SettingsWndState) {
     settings_set_text(st.btn_save, tr("已保存", "Saved"));
     InvalidateRect(st.btn_save, null(), 1);
-    start_flagged_timer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT, 1200, &mut st.save_hint_timer);
+    start_flagged_timer(
+        hwnd,
+        ID_TIMER_SETTINGS_SAVE_HINT,
+        1200,
+        &mut st.save_hint_timer,
+    );
 }
 
 unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWndState) {
@@ -3257,16 +4312,27 @@ unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWndState) {
 }
 
 // 辅助函数：绘制宽字节文字居中
-unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn settings_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let parent_hwnd = cs.lpCreateParams as HWND;
-            set_settings_ui_dpi(monitor_dpi_for_window(hwnd));
+            set_settings_ui_dpi(layout_dpi_for_window(hwnd));
             let (nav_font, ui_font, title_font) = create_settings_fonts(hwnd);
             let mut st = Box::new(SettingsWndState {
                 parent_hwnd,
                 cur_page: 0,
+                ui_dpi: layout_dpi_for_window(hwnd).max(96),
+                dpi_comp_base_w: 0,
+                dpi_comp_base_h: 0,
+                dpi_comp_base_monitor_dpi: 0,
+                dpi_comp_last_monitor_dpi: 0,
+                dpi_comp_applying: false,
                 content_scroll_y: 0,
                 page_scroll_y: [0; SETTINGS_PAGE_COUNT],
                 scroll_dragging: false,
@@ -3378,9 +4444,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
 
             // 顶部按钮（Fluent 自绘）
             st.btn_save = settings_create_btn(hwnd, "保存", IDC_SET_SAVE, 984, 24, 72, st.ui_font);
-            st.btn_close = settings_create_btn(hwnd, "关闭", IDC_SET_CLOSE, 900, 24, 64, st.ui_font);
+            st.btn_close =
+                settings_create_btn(hwnd, "关闭", IDC_SET_CLOSE, 900, 24, 64, st.ui_font);
             for &hh in &[st.btn_save, st.btn_close] {
-                if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
+                if !hh.is_null() {
+                    st.ownerdraw_ctrls.push(hh);
+                }
             }
             refresh_settings_window_metrics(hwnd, &mut st);
             settings_ensure_page(hwnd, &mut st, SettingsPage::General.index());
@@ -3391,9 +4460,22 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             apply_dark_mode_to_window(hwnd);
             0
         }
+        WM_SIZE => {
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if !st_ptr.is_null() && wparam != SIZE_MINIMIZED as usize {
+                let st = &mut *st_ptr;
+                if !is_per_monitor_dpi_aware() && !st.dpi_comp_applying {
+                    update_settings_dpi_compensation_base(hwnd, st);
+                }
+                refresh_settings_window_metrics(hwnd, st);
+            }
+            0
+        }
         WM_MOUSEMOVE => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return DefWindowProcW(hwnd, msg, wparam, lparam); }
+            if st_ptr.is_null() {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
             ensure_mouse_leave_tracking(hwnd);
             let st = &mut *st_ptr;
             let x = get_x_lparam(lparam);
@@ -3405,17 +4487,19 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 GetClientRect(hwnd, &mut crc);
                 let content_y = settings_content_y_scaled();
                 let view_h = (crc.bottom - crc.top) - content_y;
-                let max_s = settings_page_max_scroll(st.cur_page, view_h);
+                let max_s = settings_page_max_scroll_for_state(st, st.cur_page, view_h);
                 // 与 settings_scrollbar_thumb_w 保持一致的轨道范围
                 let track_top = content_y + settings_scale(8);
                 let track_bottom = crc.bottom - settings_scale(8);
                 let track_h = (track_bottom - track_top).max(1);
-                let content_h = settings_page_content_total_h(st.cur_page).max(view_h + 1);
+                let content_h =
+                    settings_page_content_total_h_for_state(st, st.cur_page).max(view_h + 1);
                 let thumb_h = ((view_h as f32 / content_h as f32) * track_h as f32) as i32;
                 let thumb_h = thumb_h.max(settings_scale(24));
                 let drag_range = (track_h - thumb_h).max(1);
                 let dy = my - st.scroll_drag_start_y;
-                let new_y = st.scroll_drag_start_scroll + (dy as f32 / drag_range as f32 * max_s as f32) as i32;
+                let new_y = st.scroll_drag_start_scroll
+                    + (dy as f32 / drag_range as f32 * max_s as f32) as i32;
                 settings_scroll_to(hwnd, st, new_y);
                 return 0;
             }
@@ -3441,14 +4525,19 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
             }
             let pt = POINT { x, y };
-            let mut hot_ctrl = ChildWindowFromPointEx(hwnd, pt, CWP_SKIPDISABLED | CWP_SKIPINVISIBLE);
+            let mut hot_ctrl =
+                ChildWindowFromPointEx(hwnd, pt, CWP_SKIPDISABLED | CWP_SKIPINVISIBLE);
             if !st.ownerdraw_ctrls.contains(&hot_ctrl) {
                 hot_ctrl = null_mut();
             }
             if hot_ctrl != st.hot_ownerdraw {
-                if !st.hot_ownerdraw.is_null() { InvalidateRect(st.hot_ownerdraw, null(), 1); }
+                if !st.hot_ownerdraw.is_null() {
+                    InvalidateRect(st.hot_ownerdraw, null(), 1);
+                }
                 st.hot_ownerdraw = hot_ctrl;
-                if !st.hot_ownerdraw.is_null() { InvalidateRect(st.hot_ownerdraw, null(), 1); }
+                if !st.hot_ownerdraw.is_null() {
+                    InvalidateRect(st.hot_ownerdraw, null(), 1);
+                }
             }
             0
         }
@@ -3471,7 +4560,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         }
         WM_LBUTTONDOWN => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return 0; }
+            if st_ptr.is_null() {
+                return 0;
+            }
             let st = &mut *st_ptr;
             let mx = get_x_lparam(lparam);
             let my = get_y_lparam(lparam);
@@ -3480,7 +4571,8 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 GetWindowRect(st.dropdown_popup, &mut prc);
                 let mut pt = POINT { x: mx, y: my };
                 ClientToScreen(hwnd, &mut pt);
-                if !(pt.x >= prc.left && pt.x <= prc.right && pt.y >= prc.top && pt.y <= prc.bottom) {
+                if !(pt.x >= prc.left && pt.x <= prc.right && pt.y >= prc.top && pt.y <= prc.bottom)
+                {
                     DestroyWindow(st.dropdown_popup);
                     st.dropdown_popup = null_mut();
                 }
@@ -3501,8 +4593,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             // 滚动条点击（用 ACTIVE 宽度扩大命中区域，便于点击）
             let mut crc: RECT = core::mem::zeroed();
             GetClientRect(hwnd, &mut crc);
-            if let Some(thumb) = settings_scrollbar_thumb_w(st.cur_page, &crc, st.content_scroll_y, SCROLL_BAR_W_ACTIVE) {
-                if mx >= thumb.left - 4 && mx <= thumb.right + 4 && my >= thumb.top && my <= thumb.bottom {
+            if let Some(thumb) =
+                settings_scrollbar_thumb_w(st, &crc, st.content_scroll_y, SCROLL_BAR_W_ACTIVE)
+            {
+                if mx >= thumb.left - 4
+                    && mx <= thumb.right + 4
+                    && my >= thumb.top
+                    && my <= thumb.bottom
+                {
                     st.scroll_dragging = true;
                     st.scroll_drag_start_y = my;
                     st.scroll_drag_start_scroll = st.content_scroll_y;
@@ -3514,13 +4612,19 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             }
             // 点击轨道区域（右侧8px内）跳转
             let right_edge = crc.right - SCROLL_BAR_MARGIN;
-            let left_edge  = right_edge - SCROLL_BAR_W_ACTIVE - 4;
+            let left_edge = right_edge - SCROLL_BAR_W_ACTIVE - 4;
             let content_y = settings_content_y_scaled();
-            if mx >= left_edge && mx <= right_edge + 2 && my >= content_y + settings_scale(4) && my < crc.bottom - settings_scale(4) {
+            if mx >= left_edge
+                && mx <= right_edge + 2
+                && my >= content_y + settings_scale(4)
+                && my < crc.bottom - settings_scale(4)
+            {
                 let view_h = (crc.bottom - crc.top) - content_y;
-                let max_s = settings_page_max_scroll(st.cur_page, view_h);
-                let track_h = (crc.bottom - settings_scale(8) - (content_y + settings_scale(8))).max(1);
-                let new_y = ((my - content_y - settings_scale(8)) as f32 / track_h as f32 * max_s as f32) as i32;
+                let max_s = settings_page_max_scroll_for_state(st, st.cur_page, view_h);
+                let track_h =
+                    (crc.bottom - settings_scale(8) - (content_y + settings_scale(8))).max(1);
+                let new_y = ((my - content_y - settings_scale(8)) as f32 / track_h as f32
+                    * max_s as f32) as i32;
                 settings_scroll_to(hwnd, st, new_y);
                 return 0;
             }
@@ -3528,7 +4632,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         }
         WM_MOUSEWHEEL => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return 0; }
+            if st_ptr.is_null() {
+                return 0;
+            }
             let st = &mut *st_ptr;
             let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
             settings_scroll(hwnd, st, if delta > 0 { -60 } else { 60 });
@@ -3583,7 +4689,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         }
         WM_SETTINGS_DROPDOWN_SELECTED => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return 0; }
+            if st_ptr.is_null() {
+                return 0;
+            }
             let st = &mut *st_ptr;
             st.dropdown_popup = null_mut();
             let idx = lparam as usize;
@@ -3613,14 +4721,20 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 6102 => {
                     if let Some(label) = HOTKEY_MOD_OPTIONS.get(idx) {
                         settings_set_text(st.cb_hk_mod, label);
-                        settings_set_text(st.lb_hk_preview, &hotkey_preview_text(label, &get_window_text(st.cb_hk_key)));
+                        settings_set_text(
+                            st.lb_hk_preview,
+                            &hotkey_preview_text(label, &get_window_text(st.cb_hk_key)),
+                        );
                         InvalidateRect(st.cb_hk_mod, null(), 1);
                     }
                 }
                 6103 => {
                     if let Some(label) = HOTKEY_KEY_OPTIONS.get(idx) {
                         settings_set_text(st.cb_hk_key, label);
-                        settings_set_text(st.lb_hk_preview, &hotkey_preview_text(&get_window_text(st.cb_hk_mod), label));
+                        settings_set_text(
+                            st.lb_hk_preview,
+                            &hotkey_preview_text(&get_window_text(st.cb_hk_mod), label),
+                        );
                         InvalidateRect(st.cb_hk_key, null(), 1);
                     }
                 }
@@ -3676,7 +4790,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 IDC_SET_TRANSLATE_PROVIDER => {
                     if let Some((key, _)) = TEXT_TRANSLATE_PROVIDER_OPTIONS.get(idx) {
                         st.draft.text_translate_provider = (*key).to_string();
-                        settings_set_text(st.cb_translate_provider, &text_translate_provider_display(key));
+                        settings_set_text(
+                            st.cb_translate_provider,
+                            &text_translate_provider_display(key),
+                        );
                         settings_sync_page_state(st, SettingsPage::Plugin.index());
                         InvalidateRect(st.cb_translate_provider, null(), 1);
                     }
@@ -3684,7 +4801,10 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 IDC_SET_TRANSLATE_TARGET => {
                     if let Some((key, _)) = TEXT_TRANSLATE_TARGET_OPTIONS.get(idx) {
                         st.draft.text_translate_target_lang = (*key).to_string();
-                        settings_set_text(st.cb_translate_target, &text_translate_target_display(key));
+                        settings_set_text(
+                            st.cb_translate_target,
+                            &text_translate_target_display(key),
+                        );
                         InvalidateRect(st.cb_translate_target, null(), 1);
                     }
                 }
@@ -3712,7 +4832,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         }
         WM_DRAWITEM => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return 0; }
+            if st_ptr.is_null() {
+                return 0;
+            }
             let st = &mut *st_ptr;
             let dis = &*(lparam as *const DRAWITEMSTRUCT);
             let rc0 = dis.rcItem;
@@ -3722,9 +4844,56 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let bmp = CreateCompatibleBitmap(dis.hDC, w, h);
             let oldbmp = SelectObject(memdc, bmp as _);
             let th = Theme::default();
-            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART || dis.CtlID as isize == IDC_SET_SILENTSTART || dis.CtlID as isize == IDC_SET_TRAYICON || dis.CtlID as isize == IDC_SET_CLOSETRAY || dis.CtlID as isize == IDC_SET_CLICK_HIDE || dis.CtlID as isize == IDC_SET_PASTE_MOVE_TOP || dis.CtlID as isize == IDC_SET_DEDUPE_FILTER || dis.CtlID as isize == IDC_SET_PERSIST_SEARCH || dis.CtlID as isize == IDC_SET_PASTE_SOUND_ENABLE || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR || dis.CtlID as isize == IDC_SET_EDGEHIDE || dis.CtlID as isize == IDC_SET_HOVERPREVIEW || dis.CtlID as isize == IDC_SET_VV_MODE || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW || dis.CtlID as isize == IDC_SET_QUICK_DELETE || dis.CtlID as isize == IDC_SET_GROUP_ENABLE || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE || dis.CtlID as isize == IDC_SET_OPEN_SOURCE || dis.CtlID as isize == IDC_SET_OPEN_UPDATE || dis.CtlID as isize == IDC_SET_MAX || dis.CtlID as isize == IDC_SET_POSMODE || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL || dis.CtlID as isize == IDC_SET_PASTE_SOUND_KIND || dis.CtlID as isize == IDC_SET_PASTE_SOUND_PICK || dis.CtlID as isize == IDC_SET_VV_SOURCE || dis.CtlID as isize == IDC_SET_VV_GROUP || dis.CtlID as isize == 6101 || dis.CtlID as isize == 6102 || dis.CtlID as isize == 6103 || dis.CtlID as isize == IDC_SET_HK_RECORD || dis.CtlID as isize == IDC_SET_PLAIN_HK_ENABLE || dis.CtlID as isize == IDC_SET_PLAIN_HK_MOD || dis.CtlID as isize == IDC_SET_PLAIN_HK_KEY || dis.CtlID as isize == 7102 || dis.CtlID as isize == 7101 || dis.CtlID as isize == 7103 || dis.CtlID as isize == 7104 || dis.CtlID as isize == 7201 { th.surface } else { th.bg };
+            let bg_fill = if dis.CtlID as isize == IDC_SET_AUTOSTART
+                || dis.CtlID as isize == IDC_SET_SILENTSTART
+                || dis.CtlID as isize == IDC_SET_TRAYICON
+                || dis.CtlID as isize == IDC_SET_CLOSETRAY
+                || dis.CtlID as isize == IDC_SET_CLICK_HIDE
+                || dis.CtlID as isize == IDC_SET_PASTE_MOVE_TOP
+                || dis.CtlID as isize == IDC_SET_DEDUPE_FILTER
+                || dis.CtlID as isize == IDC_SET_PERSIST_SEARCH
+                || dis.CtlID as isize == IDC_SET_PASTE_SOUND_ENABLE
+                || dis.CtlID as isize == IDC_SET_AUTOHIDE_BLUR
+                || dis.CtlID as isize == IDC_SET_EDGEHIDE
+                || dis.CtlID as isize == IDC_SET_HOVERPREVIEW
+                || dis.CtlID as isize == IDC_SET_VV_MODE
+                || dis.CtlID as isize == IDC_SET_IMAGE_PREVIEW
+                || dis.CtlID as isize == IDC_SET_QUICK_DELETE
+                || dis.CtlID as isize == IDC_SET_GROUP_ENABLE
+                || dis.CtlID as isize == IDC_SET_CLOUD_ENABLE
+                || dis.CtlID as isize == IDC_SET_OPEN_SOURCE
+                || dis.CtlID as isize == IDC_SET_OPEN_UPDATE
+                || dis.CtlID as isize == IDC_SET_MAX
+                || dis.CtlID as isize == IDC_SET_POSMODE
+                || dis.CtlID as isize == IDC_SET_CLOUD_INTERVAL
+                || dis.CtlID as isize == IDC_SET_PASTE_SOUND_KIND
+                || dis.CtlID as isize == IDC_SET_PASTE_SOUND_PICK
+                || dis.CtlID as isize == IDC_SET_VV_SOURCE
+                || dis.CtlID as isize == IDC_SET_VV_GROUP
+                || dis.CtlID as isize == 6101
+                || dis.CtlID as isize == 6102
+                || dis.CtlID as isize == 6103
+                || dis.CtlID as isize == IDC_SET_HK_RECORD
+                || dis.CtlID as isize == IDC_SET_PLAIN_HK_ENABLE
+                || dis.CtlID as isize == IDC_SET_PLAIN_HK_MOD
+                || dis.CtlID as isize == IDC_SET_PLAIN_HK_KEY
+                || dis.CtlID as isize == 7102
+                || dis.CtlID as isize == 7101
+                || dis.CtlID as isize == 7103
+                || dis.CtlID as isize == 7104
+                || dis.CtlID as isize == 7201
+            {
+                th.surface
+            } else {
+                th.bg
+            };
             let bg = CreateSolidBrush(bg_fill);
-            let local = RECT { left: 0, top: 0, right: w, bottom: h };
+            let local = RECT {
+                left: 0,
+                top: 0,
+                right: w,
+                bottom: h,
+            };
             FillRect(memdc, &local, bg);
             DeleteObject(bg as _);
             let mut dis2 = *dis;
@@ -3740,10 +4909,33 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_COMMAND => {
             let cmd = loword(wparam as u32) as isize;
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-            if st_ptr.is_null() { return 0; }
+            if st_ptr.is_null() {
+                return 0;
+            }
             let st = &mut *st_ptr;
-                match cmd {
-                    IDC_SET_AUTOSTART | IDC_SET_SILENTSTART | IDC_SET_TRAYICON | IDC_SET_CLOSETRAY | IDC_SET_CLICK_HIDE | IDC_SET_PASTE_MOVE_TOP | IDC_SET_DEDUPE_FILTER | IDC_SET_PERSIST_SEARCH | IDC_SET_PASTE_SOUND_ENABLE | IDC_SET_AUTOHIDE_BLUR | IDC_SET_EDGEHIDE | IDC_SET_HOVERPREVIEW | IDC_SET_VV_MODE | IDC_SET_IMAGE_PREVIEW | IDC_SET_QUICK_DELETE | IDC_SET_GROUP_ENABLE | IDC_SET_CLOUD_ENABLE | 6101 | 7102 | 7101 | 7103 | 7104 => {
+            match cmd {
+                IDC_SET_AUTOSTART
+                | IDC_SET_SILENTSTART
+                | IDC_SET_TRAYICON
+                | IDC_SET_CLOSETRAY
+                | IDC_SET_CLICK_HIDE
+                | IDC_SET_PASTE_MOVE_TOP
+                | IDC_SET_DEDUPE_FILTER
+                | IDC_SET_PERSIST_SEARCH
+                | IDC_SET_PASTE_SOUND_ENABLE
+                | IDC_SET_AUTOHIDE_BLUR
+                | IDC_SET_EDGEHIDE
+                | IDC_SET_HOVERPREVIEW
+                | IDC_SET_VV_MODE
+                | IDC_SET_IMAGE_PREVIEW
+                | IDC_SET_QUICK_DELETE
+                | IDC_SET_GROUP_ENABLE
+                | IDC_SET_CLOUD_ENABLE
+                | 6101
+                | 7102
+                | 7101
+                | 7103
+                | 7104 => {
                     settings_toggle_flip(st, cmd);
                     if cmd == IDC_SET_EDGEHIDE {
                         settings_sync_pos_fields_enabled(st);
@@ -3751,7 +4943,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                         settings_sync_page_state(st, SettingsPage::General.index());
                     }
                     let sender = lparam as HWND;
-                    if !sender.is_null() { InvalidateRect(sender, null(), 1); }
+                    if !sender.is_null() {
+                        InvalidateRect(sender, null(), 1);
+                    }
                 }
                 IDC_SET_HK_RECORD => {
                     let next = !st.hotkey_recording;
@@ -3761,76 +4955,114 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     }
                 }
                 IDC_SET_GROUP_ADD => {
-                    if let Some(name) = input_name_dialog(hwnd, "新建分组", "请输入分组名称：", "新分组") {
+                    if let Some(name) =
+                        input_name_dialog(hwnd, "新建分组", "请输入分组名称：", "新分组")
+                    {
                         let category = source_tab_category(settings_group_view_current(st));
                         match db_create_named_group(category, &name) {
                             Ok(group) => {
                                 settings_groups_refresh_list(st, group.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() {
+                                    reload_state_from_db_persisting(&mut *pst);
+                                    InvalidateRect(st.parent_hwnd, null(), 1);
+                                }
                             }
                             Err(e) => {
-            MessageBoxW(
-                hwnd,
-                to_wide(&format!("{}: {}", tr("新建分组失败", "Failed to create group"), e)).as_ptr(),
-                to_wide(translate("分组").as_ref()).as_ptr(),
-                MB_OK | MB_ICONERROR,
-            );
+                                MessageBoxW(
+                                    hwnd,
+                                    to_wide(&format!(
+                                        "{}: {}",
+                                        tr("新建分组失败", "Failed to create group"),
+                                        e
+                                    ))
+                                    .as_ptr(),
+                                    to_wide(translate("分组").as_ref()).as_ptr(),
+                                    MB_OK | MB_ICONERROR,
+                                );
                             }
                         }
                     }
                 }
                 IDC_SET_GROUP_RENAME => {
                     if let Some((_, g)) = settings_groups_selected(st) {
-                        if let Some(new_name) = input_name_dialog(hwnd, "重命名分组", "请输入新名称：", &g.name) {
+                        if let Some(new_name) =
+                            input_name_dialog(hwnd, "重命名分组", "请输入新名称：", &g.name)
+                        {
                             if let Err(e) = db_rename_group(g.category, g.id, &new_name) {
-                MessageBoxW(
-                    hwnd,
-                    to_wide(&format!("{}: {}", tr("重命名失败", "Rename failed"), e)).as_ptr(),
-                    to_wide(translate("分组").as_ref()).as_ptr(),
-                    MB_OK | MB_ICONERROR,
-                );
+                                MessageBoxW(
+                                    hwnd,
+                                    to_wide(&format!(
+                                        "{}: {}",
+                                        tr("重命名失败", "Rename failed"),
+                                        e
+                                    ))
+                                    .as_ptr(),
+                                    to_wide(translate("分组").as_ref()).as_ptr(),
+                                    MB_OK | MB_ICONERROR,
+                                );
                             } else {
                                 settings_groups_refresh_list(st, g.id);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() {
+                                    reload_state_from_db_persisting(&mut *pst);
+                                    InvalidateRect(st.parent_hwnd, null(), 1);
+                                }
                             }
                         }
                     } else {
-            MessageBoxW(
-                hwnd,
-                to_wide(translate("请先选择一个分组。").as_ref()).as_ptr(),
-                to_wide(translate("分组").as_ref()).as_ptr(),
-                MB_OK | MB_ICONINFORMATION,
-            );
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(translate("请先选择一个分组。").as_ref()).as_ptr(),
+                            to_wide(translate("分组").as_ref()).as_ptr(),
+                            MB_OK | MB_ICONINFORMATION,
+                        );
                     }
                 }
                 IDC_SET_GROUP_DELETE => {
                     if let Some((_, g)) = settings_groups_selected(st) {
-            let ask = format!(
+                        let ask = format!(
                 "{} \"{}\"?\n{}",
                 tr("确认删除分组", "Delete group"),
                 g.name,
                 tr("不会删除记录，只会清空这些记录的分组。", "Records will be kept. Only their group assignment will be cleared.")
             );
-            if MessageBoxW(hwnd, to_wide(&ask).as_ptr(), to_wide(translate("分组").as_ref()).as_ptr(), MB_YESNO | MB_ICONQUESTION) == IDYES {
+                        if MessageBoxW(
+                            hwnd,
+                            to_wide(&ask).as_ptr(),
+                            to_wide(translate("分组").as_ref()).as_ptr(),
+                            MB_YESNO | MB_ICONQUESTION,
+                        ) == IDYES
+                        {
                             if let Err(e) = db_delete_group(g.id) {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide(&format!("{}: {}", tr("删除分组失败", "Delete group failed"), e)).as_ptr(),
-                        to_wide(translate("分组").as_ref()).as_ptr(),
-                        MB_OK | MB_ICONERROR,
-                    );
+                                MessageBoxW(
+                                    hwnd,
+                                    to_wide(&format!(
+                                        "{}: {}",
+                                        tr("删除分组失败", "Delete group failed"),
+                                        e
+                                    ))
+                                    .as_ptr(),
+                                    to_wide(translate("分组").as_ref()).as_ptr(),
+                                    MB_OK | MB_ICONERROR,
+                                );
                             } else {
                                 settings_groups_refresh_list(st, 0);
                                 let pst = get_state_ptr(st.parent_hwnd);
-                                if !pst.is_null() { reload_state_from_db_persisting(&mut *pst); InvalidateRect(st.parent_hwnd, null(), 1); }
+                                if !pst.is_null() {
+                                    reload_state_from_db_persisting(&mut *pst);
+                                    InvalidateRect(st.parent_hwnd, null(), 1);
+                                }
                             }
                         }
                     }
                 }
-                IDC_SET_GROUP_UP => { settings_groups_move(st, -1); }
-                IDC_SET_GROUP_DOWN => { settings_groups_move(st, 1); }
+                IDC_SET_GROUP_UP => {
+                    settings_groups_move(st, -1);
+                }
+                IDC_SET_GROUP_DOWN => {
+                    settings_groups_move(st, 1);
+                }
                 IDC_SET_GROUP_LIST => {
                     if hiword(wparam as u32) as u32 == LBN_SELCHANGE {
                         settings_groups_sync_name(st);
@@ -3845,164 +5077,358 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     settings_sync_group_overview(st);
                 }
                 IDC_SET_MAX => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_max, &mut rc);
-                    let current = settings_dropdown_index_for_max_items(settings_dropdown_max_items_from_label(&get_window_text(st.cb_max)));
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_MAX, &rc, &["100", "200", "500", "1000", "3000", "无限制"], current, 180);
+                    let current = settings_dropdown_index_for_max_items(
+                        settings_dropdown_max_items_from_label(&get_window_text(st.cb_max)),
+                    );
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_MAX,
+                        &rc,
+                        &["100", "200", "500", "1000", "3000", "无限制"],
+                        current,
+                        180,
+                    );
                 }
                 IDC_SET_POSMODE => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_pos, &mut rc);
-                    let current = settings_dropdown_index_for_pos_mode(&settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos)));
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_POSMODE, &rc, &["跟随鼠标", "固定位置", "上次位置"], current, 180);
+                    let current = settings_dropdown_index_for_pos_mode(
+                        &settings_dropdown_pos_mode_from_label(&get_window_text(st.cb_pos)),
+                    );
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_POSMODE,
+                        &rc,
+                        &["跟随鼠标", "固定位置", "上次位置"],
+                        current,
+                        180,
+                    );
                 }
                 IDC_SET_CLOUD_INTERVAL => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_cloud_interval, &mut rc);
                     let items = ["15分钟", "30分钟", "1小时", "6小时", "12小时", "24小时"];
-                    let current = items.iter().position(|x| *x == get_window_text(st.cb_cloud_interval)).unwrap_or(2);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_CLOUD_INTERVAL, &rc, &items, current, 180);
+                    let current = items
+                        .iter()
+                        .position(|x| *x == get_window_text(st.cb_cloud_interval))
+                        .unwrap_or(2);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_CLOUD_INTERVAL,
+                        &rc,
+                        &items,
+                        current,
+                        180,
+                    );
                 }
                 6102 => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_hk_mod, &mut rc);
-                    let current = HOTKEY_MOD_OPTIONS.iter().position(|x| *x == get_window_text(st.cb_hk_mod)).unwrap_or(0);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, 6102, &rc, &HOTKEY_MOD_OPTIONS, current, 200);
+                    let current = HOTKEY_MOD_OPTIONS
+                        .iter()
+                        .position(|x| *x == get_window_text(st.cb_hk_mod))
+                        .unwrap_or(0);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        6102,
+                        &rc,
+                        &HOTKEY_MOD_OPTIONS,
+                        current,
+                        200,
+                    );
                 }
                 6103 => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_hk_key, &mut rc);
-                    let current = HOTKEY_KEY_OPTIONS.iter().position(|x| *x == get_window_text(st.cb_hk_key)).unwrap_or(21);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, 6103, &rc, &HOTKEY_KEY_OPTIONS, current, 220);
+                    let current = HOTKEY_KEY_OPTIONS
+                        .iter()
+                        .position(|x| *x == get_window_text(st.cb_hk_key))
+                        .unwrap_or(21);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        6103,
+                        &rc,
+                        &HOTKEY_KEY_OPTIONS,
+                        current,
+                        220,
+                    );
                 }
-                 IDC_SET_PASTE_SOUND_KIND => {
-                      if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
-                      let mut rc: RECT = zeroed();
-                      GetWindowRect(st.cb_paste_sound, &mut rc);
+                IDC_SET_PASTE_SOUND_KIND => {
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
+                    let mut rc: RECT = zeroed();
+                    GetWindowRect(st.cb_paste_sound, &mut rc);
                     let current = PASTE_SOUND_OPTIONS
                         .iter()
-                        .position(|(key, _)| paste_sound_display(key) == get_window_text(st.cb_paste_sound))
+                        .position(|(key, _)| {
+                            paste_sound_display(key) == get_window_text(st.cb_paste_sound)
+                        })
                         .unwrap_or(0);
-                    let labels_owned: Vec<String> = PASTE_SOUND_OPTIONS.iter().map(|(key, _)| paste_sound_display(key)).collect();
-                      let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
-                     st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_PASTE_SOUND_KIND, &rc, &labels, current, 220);
-                 }
-                 IDC_SET_PASTE_SOUND_PICK => {
-                     match pick_paste_sound_file(&st.draft.paste_success_sound_path) {
-                         Ok(Some(path)) => {
-                             st.draft.paste_success_sound_kind = "custom".to_string();
-                             st.draft.paste_success_sound_path = path;
-                             settings_set_text(
-                                 st.cb_paste_sound,
-                                 &paste_sound_display(&st.draft.paste_success_sound_kind),
-                             );
-                             settings_sync_page_state(st, SettingsPage::General.index());
-                             InvalidateRect(hwnd, null(), 1);
-                         }
-                         Ok(None) => {}
-                         Err(err) => {
-                             let message = format!(
-                                 "{}: {}",
-                                 tr("选择提示音文件失败", "Failed to choose sound file"),
-                                 err
-                             );
-                             MessageBoxW(
-                                 hwnd,
-                                 to_wide(&message).as_ptr(),
-                                 to_wide(tr("粘贴成功声音", "Paste success sound")).as_ptr(),
-                                 MB_OK | MB_ICONERROR,
-                             );
-                         }
-                     }
-                 }
+                    let labels_owned: Vec<String> = PASTE_SOUND_OPTIONS
+                        .iter()
+                        .map(|(key, _)| paste_sound_display(key))
+                        .collect();
+                    let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_PASTE_SOUND_KIND,
+                        &rc,
+                        &labels,
+                        current,
+                        220,
+                    );
+                }
+                IDC_SET_PASTE_SOUND_PICK => {
+                    match pick_paste_sound_file(&st.draft.paste_success_sound_path) {
+                        Ok(Some(path)) => {
+                            st.draft.paste_success_sound_kind = "custom".to_string();
+                            st.draft.paste_success_sound_path = path;
+                            settings_set_text(
+                                st.cb_paste_sound,
+                                &paste_sound_display(&st.draft.paste_success_sound_kind),
+                            );
+                            settings_sync_page_state(st, SettingsPage::General.index());
+                            InvalidateRect(hwnd, null(), 1);
+                        }
+                        Ok(None) => {}
+                        Err(err) => {
+                            let message = format!(
+                                "{}: {}",
+                                tr("选择提示音文件失败", "Failed to choose sound file"),
+                                err
+                            );
+                            MessageBoxW(
+                                hwnd,
+                                to_wide(&message).as_ptr(),
+                                to_wide(tr("粘贴成功声音", "Paste success sound")).as_ptr(),
+                                MB_OK | MB_ICONERROR,
+                            );
+                        }
+                    }
+                }
                 IDC_SET_PLAIN_HK_MOD => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_plain_hk_mod, &mut rc);
-                    let current = HOTKEY_MOD_OPTIONS.iter().position(|x| *x == get_window_text(st.cb_plain_hk_mod)).unwrap_or(5);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_PLAIN_HK_MOD, &rc, &HOTKEY_MOD_OPTIONS, current, 220);
+                    let current = HOTKEY_MOD_OPTIONS
+                        .iter()
+                        .position(|x| *x == get_window_text(st.cb_plain_hk_mod))
+                        .unwrap_or(5);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_PLAIN_HK_MOD,
+                        &rc,
+                        &HOTKEY_MOD_OPTIONS,
+                        current,
+                        220,
+                    );
                 }
                 IDC_SET_PLAIN_HK_KEY => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_plain_hk_key, &mut rc);
-                    let current = HOTKEY_KEY_OPTIONS.iter().position(|x| *x == get_window_text(st.cb_plain_hk_key)).unwrap_or(21);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_PLAIN_HK_KEY, &rc, &HOTKEY_KEY_OPTIONS, current, 220);
+                    let current = HOTKEY_KEY_OPTIONS
+                        .iter()
+                        .position(|x| *x == get_window_text(st.cb_plain_hk_key))
+                        .unwrap_or(21);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_PLAIN_HK_KEY,
+                        &rc,
+                        &HOTKEY_KEY_OPTIONS,
+                        current,
+                        220,
+                    );
                 }
                 7201 => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_engine, &mut rc);
-                    let current = SEARCH_ENGINE_PRESETS.iter().position(|(_,name,_)| *name == get_window_text(st.cb_engine)).unwrap_or(0);
-                    let labels: Vec<&str> = SEARCH_ENGINE_PRESETS.iter().map(|(_,name,_)| *name).collect();
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, 7201, &rc, &labels, current, 260);
+                    let current = SEARCH_ENGINE_PRESETS
+                        .iter()
+                        .position(|(_, name, _)| *name == get_window_text(st.cb_engine))
+                        .unwrap_or(0);
+                    let labels: Vec<&str> = SEARCH_ENGINE_PRESETS
+                        .iter()
+                        .map(|(_, name, _)| *name)
+                        .collect();
+                    st.dropdown_popup =
+                        show_settings_dropdown_popup(hwnd, 7201, &rc, &labels, current, 260);
                 }
                 IDC_SET_OCR_PROVIDER => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_ocr_provider, &mut rc);
                     let current = IMAGE_OCR_PROVIDER_OPTIONS
                         .iter()
-                        .position(|(key, _)| image_ocr_provider_display(key) == get_window_text(st.cb_ocr_provider))
+                        .position(|(key, _)| {
+                            image_ocr_provider_display(key) == get_window_text(st.cb_ocr_provider)
+                        })
                         .unwrap_or(0);
                     let labels_owned: Vec<String> = IMAGE_OCR_PROVIDER_OPTIONS
                         .iter()
                         .map(|(key, _)| image_ocr_provider_display(key))
                         .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_OCR_PROVIDER, &rc, &labels, current, 240);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_OCR_PROVIDER,
+                        &rc,
+                        &labels,
+                        current,
+                        240,
+                    );
                 }
                 IDC_SET_TRANSLATE_PROVIDER => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_translate_provider, &mut rc);
                     let current = TEXT_TRANSLATE_PROVIDER_OPTIONS
                         .iter()
-                        .position(|(key, _)| text_translate_provider_display(key) == get_window_text(st.cb_translate_provider))
+                        .position(|(key, _)| {
+                            text_translate_provider_display(key)
+                                == get_window_text(st.cb_translate_provider)
+                        })
                         .unwrap_or(0);
                     let labels_owned: Vec<String> = TEXT_TRANSLATE_PROVIDER_OPTIONS
                         .iter()
                         .map(|(key, _)| text_translate_provider_display(key))
                         .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_TRANSLATE_PROVIDER, &rc, &labels, current, 240);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_TRANSLATE_PROVIDER,
+                        &rc,
+                        &labels,
+                        current,
+                        240,
+                    );
                 }
                 IDC_SET_TRANSLATE_TARGET => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_translate_target, &mut rc);
                     let current = TEXT_TRANSLATE_TARGET_OPTIONS
                         .iter()
-                        .position(|(key, _)| text_translate_target_display(key) == get_window_text(st.cb_translate_target))
+                        .position(|(key, _)| {
+                            text_translate_target_display(key)
+                                == get_window_text(st.cb_translate_target)
+                        })
                         .unwrap_or(0);
                     let labels_owned: Vec<String> = TEXT_TRANSLATE_TARGET_OPTIONS
                         .iter()
                         .map(|(key, _)| text_translate_target_display(key))
                         .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_TRANSLATE_TARGET, &rc, &labels, current, 200);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_TRANSLATE_TARGET,
+                        &rc,
+                        &labels,
+                        current,
+                        200,
+                    );
                 }
                 IDC_SET_VV_SOURCE => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_vv_source, &mut rc);
                     let current = settings_vv_source_current(st);
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_VV_SOURCE, &rc, &["复制记录", "常用短语"], current, 200);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_VV_SOURCE,
+                        &rc,
+                        &["复制记录", "常用短语"],
+                        current,
+                        200,
+                    );
                 }
                 IDC_SET_VV_GROUP => {
-                    if !st.dropdown_popup.is_null() { if IsWindow(st.dropdown_popup) != 0 { DestroyWindow(st.dropdown_popup); } st.dropdown_popup = null_mut(); }
+                    if !st.dropdown_popup.is_null() {
+                        if IsWindow(st.dropdown_popup) != 0 {
+                            DestroyWindow(st.dropdown_popup);
+                        }
+                        st.dropdown_popup = null_mut();
+                    }
                     let mut rc: RECT = zeroed();
                     GetWindowRect(st.cb_vv_group, &mut rc);
                     let vv_source = settings_vv_source_current(st);
                     let groups = settings_groups_cache_for_tab(st, vv_source);
-                    let labels_owned: Vec<String> = std::iter::once(source_tab_all_label(vv_source).to_string())
-                        .chain(groups.iter().map(|g| g.name.clone()))
-                        .collect();
+                    let labels_owned: Vec<String> =
+                        std::iter::once(source_tab_all_label(vv_source).to_string())
+                            .chain(groups.iter().map(|g| g.name.clone()))
+                            .collect();
                     let labels: Vec<&str> = labels_owned.iter().map(|s| s.as_str()).collect();
                     let current = if st.vv_group_selected == 0 {
                         0
@@ -4013,7 +5439,14 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                             .map(|idx| idx + 1)
                             .unwrap_or(0)
                     };
-                    st.dropdown_popup = show_settings_dropdown_popup(hwnd, IDC_SET_VV_GROUP, &rc, &labels, current, 260);
+                    st.dropdown_popup = show_settings_dropdown_popup(
+                        hwnd,
+                        IDC_SET_VV_GROUP,
+                        &rc,
+                        &labels,
+                        current,
+                        260,
+                    );
                 }
                 7203 => {
                     let key = search_engine_key_from_display(&get_window_text(st.cb_engine));
@@ -4023,7 +5456,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     open_path_with_shell(&plugin_downloads_url());
                 }
                 IDC_SET_OCR_WECHAT_DETECT => {
-                    if let Some(path) = detect_wechat_runtime_dir(&get_window_text(st.ed_ocr_cloud_url)) {
+                    if let Some(path) =
+                        detect_wechat_runtime_dir(&get_window_text(st.ed_ocr_cloud_url))
+                    {
                         st.draft.image_ocr_wechat_dir = path;
                         settings_sync_page_state(st, SettingsPage::Plugin.index());
                         InvalidateRect(hwnd, null(), 1);
@@ -4068,35 +5503,53 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 6111 => {
                     if let Err(e) = set_system_clipboard_history_enabled(false) {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide(&format!("{}: {}", tr("屏蔽 Win+V 失败", "Disable Win+V failed"), e)).as_ptr(),
-                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
-                        MB_OK | MB_ICONERROR,
-                    );
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(&format!(
+                                "{}: {}",
+                                tr("屏蔽 Win+V 失败", "Disable Win+V failed"),
+                                e
+                            ))
+                            .as_ptr(),
+                            to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                            MB_OK | MB_ICONERROR,
+                        );
                     }
                 }
                 6112 => {
                     if let Err(e) = set_system_clipboard_history_enabled(true) {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide(&format!("{}: {}", tr("恢复 Win+V 失败", "Restore Win+V failed"), e)).as_ptr(),
-                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
-                        MB_OK | MB_ICONERROR,
-                    );
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(&format!(
+                                "{}: {}",
+                                tr("恢复 Win+V 失败", "Restore Win+V failed"),
+                                e
+                            ))
+                            .as_ptr(),
+                            to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                            MB_OK | MB_ICONERROR,
+                        );
                     }
                 }
                 6113 => {
                     if let Err(e) = restart_explorer_shell() {
-                    MessageBoxW(
-                        hwnd,
-                        to_wide(&format!("{}: {}", tr("重启资源管理器失败", "Restart Explorer failed"), e)).as_ptr(),
-                        to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
-                        MB_OK | MB_ICONERROR,
-                    );
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(&format!(
+                                "{}: {}",
+                                tr("重启资源管理器失败", "Restart Explorer failed"),
+                                e
+                            ))
+                            .as_ptr(),
+                            to_wide(translate("系统剪贴板历史").as_ref()).as_ptr(),
+                            MB_OK | MB_ICONERROR,
+                        );
                     }
                 }
-                IDC_SET_CLOUD_SYNC_NOW | IDC_SET_CLOUD_UPLOAD_CFG | IDC_SET_CLOUD_APPLY_CFG | IDC_SET_CLOUD_RESTORE_BACKUP => {
+                IDC_SET_CLOUD_SYNC_NOW
+                | IDC_SET_CLOUD_UPLOAD_CFG
+                | IDC_SET_CLOUD_APPLY_CFG
+                | IDC_SET_CLOUD_RESTORE_BACKUP => {
                     settings_collect_to_app(st);
                     let action = match cmd {
                         IDC_SET_CLOUD_SYNC_NOW => CloudSyncAction::SyncNow,
@@ -4117,7 +5570,9 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     show_settings_saved_feedback(hwnd, st);
                     InvalidateRect(hwnd, null(), 1);
                 }
-                IDC_SET_CLOSE => { DestroyWindow(hwnd); }
+                IDC_SET_CLOSE => {
+                    DestroyWindow(hwnd);
+                }
                 IDC_SET_BTN_OPENCFG => {
                     let pst = get_state_ptr(st.parent_hwnd);
                     if !pst.is_null() {
@@ -4154,11 +5609,39 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
         WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
+                set_settings_ui_dpi(layout_dpi_for_window(hwnd).max(96));
+                let _ = apply_settings_system_dpi_compensation(hwnd, &mut *st_ptr);
+                ensure_settings_window_in_work_area(hwnd);
+                refresh_settings_window_metrics(hwnd, &mut *st_ptr);
+            }
+            0
+        }
+        WM_MOVE => {
+            if !is_per_monitor_dpi_aware() {
+                SetTimer(hwnd, ID_TIMER_SETTINGS_DPI_FIT, 60, None);
+            }
+            0
+        }
+        WM_EXITSIZEMOVE => {
+            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+            if !st_ptr.is_null() {
+                let next_dpi = layout_dpi_for_window(hwnd).max(96);
+                let old_dpi = (*st_ptr).ui_dpi.max(96);
+                if !is_per_monitor_dpi_aware() {
+                    let _ = apply_settings_system_dpi_compensation(hwnd, &mut *st_ptr);
+                } else if old_dpi != next_dpi {
+                    (*st_ptr).ui_dpi = next_dpi;
+                    resize_settings_window_for_dpi_transition(hwnd, old_dpi, next_dpi);
+                } else {
+                    set_settings_ui_dpi(next_dpi);
+                    ensure_settings_window_in_work_area(hwnd);
+                }
                 refresh_settings_window_metrics(hwnd, &mut *st_ptr);
             }
             0
         }
         WM_DPICHANGED => {
+            let dpi = ((wparam & 0xffff) as u32).max(96);
             if lparam != 0 {
                 let suggested = &*(lparam as *const RECT);
                 SetWindowPos(
@@ -4171,8 +5654,12 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     SWP_NOZORDER | SWP_NOACTIVATE,
                 );
             }
+            set_settings_ui_dpi(dpi);
+            ensure_settings_window_in_work_area(hwnd);
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
+                reset_settings_dpi_compensation(&mut *st_ptr);
+                (*st_ptr).ui_dpi = dpi;
                 refresh_settings_window_metrics(hwnd, &mut *st_ptr);
             }
             0
@@ -4214,20 +5701,29 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
             let mut ps: PAINTSTRUCT = zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
             if !hdc.is_null() {
-                let paint_dpi = monitor_dpi_for_window(hwnd);
+                let paint_dpi = layout_dpi_for_window(hwnd);
                 set_settings_ui_dpi(paint_dpi);
                 crate::win_system_ui::set_paint_dpi_override(paint_dpi);
                 let th = Theme::default();
                 let mut rc: RECT = zeroed();
                 GetClientRect(hwnd, &mut rc);
                 let paint_target = begin_buffered_paint(hdc, &rc);
-                let memdc = if let Some((_, pdc)) = paint_target { pdc } else { hdc };
+                let memdc = if let Some((_, pdc)) = paint_target {
+                    pdc
+                } else {
+                    hdc
+                };
 
                 let bg = CreateSolidBrush(th.bg);
                 FillRect(memdc, &rc, bg);
                 DeleteObject(bg as _);
 
-                let nav_rc = RECT { left: 0, top: 0, right: settings_nav_w_scaled(), bottom: rc.bottom };
+                let nav_rc = RECT {
+                    left: 0,
+                    top: 0,
+                    right: settings_nav_w_scaled(),
+                    bottom: rc.bottom,
+                };
                 draw_round_rect(memdc as _, &nav_rc, th.nav_bg, 0, 0);
                 let line_pen = CreatePen(0, 1, th.stroke);
                 let old_pen = SelectObject(memdc, line_pen as _);
@@ -4268,8 +5764,16 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     false,
                     "Segoe UI Variable Text",
                 );
-                let cur_page = if st_ptr.is_null() { 0 } else { (*st_ptr).cur_page.min(SETTINGS_PAGES.len()-1) };
-                let scroll_y = if st_ptr.is_null() { 0 } else { (*st_ptr).content_scroll_y };
+                let cur_page = if st_ptr.is_null() {
+                    0
+                } else {
+                    (*st_ptr).cur_page.min(SETTINGS_PAGES.len() - 1)
+                };
+                let scroll_y = if st_ptr.is_null() {
+                    0
+                } else {
+                    (*st_ptr).content_scroll_y
+                };
                 let sub_rc = settings_title_rect();
                 draw_text_ex(
                     memdc as _,
@@ -4286,9 +5790,7 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                     let selected = !st_ptr.is_null() && (*st_ptr).cur_page == i;
                     let hover = !st_ptr.is_null() && (*st_ptr).nav_hot == i as i32;
                     draw_settings_nav_item(memdc as _, i, selected, hover, th);
-                    if i == SettingsPage::About.index()
-                        && update_check_available()
-                    {
+                    if i == SettingsPage::About.index() && update_check_available() {
                         let item_rc = settings_nav_item_rect(i);
                         let dot = RECT {
                             left: item_rc.right - 22,
@@ -4303,7 +5805,13 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 // 内容区裁剪（防止滚动时卡片溢出到标题栏区域）
                 let content_clip = settings_safe_paint_rect(&rc);
                 SaveDC(memdc);
-                IntersectClipRect(memdc, content_clip.left, content_clip.top, content_clip.right, content_clip.bottom);
+                IntersectClipRect(
+                    memdc,
+                    content_clip.left,
+                    content_clip.top,
+                    content_clip.right,
+                    content_clip.bottom,
+                );
                 draw_settings_page_cards(memdc as _, cur_page, scroll_y, th);
                 RestoreDC(memdc, -1);
 
@@ -4312,42 +5820,77 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 FillRect(memdc, &mask_rc, mask_br);
                 DeleteObject(mask_br as _);
                 let mask_line = CreateSolidBrush(th.stroke);
-                let mask_sep = RECT { left: mask_rc.left + 12, top: mask_rc.bottom - 1, right: mask_rc.right - 12, bottom: mask_rc.bottom };
+                let mask_sep = RECT {
+                    left: mask_rc.left + 12,
+                    top: mask_rc.bottom - 1,
+                    right: mask_rc.right - 12,
+                    bottom: mask_rc.bottom,
+                };
                 FillRect(memdc, &mask_sep, mask_line);
                 DeleteObject(mask_line as _);
 
                 // 自绘 WinUI 细条滚动条（仅在滚动时短暂显示，1.5秒后自动隐藏）
                 let content_y = settings_content_y_scaled();
                 let view_h = (rc.bottom - rc.top) - content_y;
-                let show_bar = !st_ptr.is_null() && (*st_ptr).scroll_bar_visible
-                    && settings_page_max_scroll(cur_page, view_h) > 0;
+                let show_bar = !st_ptr.is_null()
+                    && (*st_ptr).scroll_bar_visible
+                    && settings_page_max_scroll_for_state(&*st_ptr, cur_page, view_h) > 0;
                 if show_bar {
                     let dragging = !st_ptr.is_null() && (*st_ptr).scroll_dragging;
-                    let bar_w = if dragging { SCROLL_BAR_W_ACTIVE } else { SCROLL_BAR_W };
+                    let bar_w = if dragging {
+                        SCROLL_BAR_W_ACTIVE
+                    } else {
+                        SCROLL_BAR_W
+                    };
                     let track_rc = RECT {
-                        left:   rc.right - bar_w - SCROLL_BAR_MARGIN,
-                        top:    content_y + settings_scale(8),
-                        right:  rc.right - SCROLL_BAR_MARGIN,
+                        left: rc.right - bar_w - SCROLL_BAR_MARGIN,
+                        top: content_y + settings_scale(8),
+                        right: rc.right - SCROLL_BAR_MARGIN,
                         bottom: rc.bottom - settings_scale(8),
                     };
                     if dragging {
-                        let track_color = if th.bg == rgb(32,32,32) { rgb(70,70,70) } else { rgb(200,200,200) };
+                        let track_color = if th.bg == rgb(32, 32, 32) {
+                            rgb(70, 70, 70)
+                        } else {
+                            rgb(200, 200, 200)
+                        };
                         let track_br = CreateSolidBrush(track_color);
                         let old_br = SelectObject(memdc, track_br as _);
                         let old_pn = SelectObject(memdc, GetStockObject(NULL_PEN));
-                        RoundRect(memdc, track_rc.left, track_rc.top, track_rc.right+1, track_rc.bottom+1, bar_w, bar_w);
+                        RoundRect(
+                            memdc,
+                            track_rc.left,
+                            track_rc.top,
+                            track_rc.right + 1,
+                            track_rc.bottom + 1,
+                            bar_w,
+                            bar_w,
+                        );
                         SelectObject(memdc, old_pn);
                         SelectObject(memdc, old_br);
                         DeleteObject(track_br as _);
                     }
-                    if let Some(thumb) = settings_scrollbar_thumb_w(cur_page, &rc, scroll_y, bar_w) {
-                        let thumb_color = if dragging { th.accent }
-                            else if th.bg == rgb(32,32,32) { rgb(120,120,120) }
-                            else { rgb(160,160,160) };
+                    if let Some(thumb) = settings_scrollbar_thumb_w(&*st_ptr, &rc, scroll_y, bar_w)
+                    {
+                        let thumb_color = if dragging {
+                            th.accent
+                        } else if th.bg == rgb(32, 32, 32) {
+                            rgb(120, 120, 120)
+                        } else {
+                            rgb(160, 160, 160)
+                        };
                         let thumb_br = CreateSolidBrush(thumb_color);
                         let old_b2 = SelectObject(memdc, thumb_br as _);
                         let old_p2 = SelectObject(memdc, GetStockObject(NULL_PEN));
-                        RoundRect(memdc, thumb.left, thumb.top, thumb.right+1, thumb.bottom+1, bar_w, bar_w);
+                        RoundRect(
+                            memdc,
+                            thumb.left,
+                            thumb.top,
+                            thumb.right + 1,
+                            thumb.bottom + 1,
+                            bar_w,
+                            bar_w,
+                        );
                         SelectObject(memdc, old_p2);
                         SelectObject(memdc, old_b2);
                         DeleteObject(thumb_br as _);
@@ -4367,7 +5910,11 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
                 if !st_ptr.is_null() {
                     let st = &mut *st_ptr;
-                    stop_flagged_timer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR, &mut st.scroll_hide_timer);
+                    stop_flagged_timer(
+                        hwnd,
+                        ID_TIMER_SETTINGS_SCROLLBAR,
+                        &mut st.scroll_hide_timer,
+                    );
                     st.scroll_bar_visible = false;
                     InvalidateRect(hwnd, null(), 0);
                 }
@@ -4383,24 +5930,61 @@ unsafe extern "system" fn settings_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM
                 }
                 return 0;
             }
+            if wparam == ID_TIMER_SETTINGS_DPI_FIT {
+                KillTimer(hwnd, ID_TIMER_SETTINGS_DPI_FIT);
+                let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
+                if !st_ptr.is_null() {
+                    let st = &mut *st_ptr;
+                    let _ = apply_settings_system_dpi_compensation(hwnd, st);
+                    refresh_settings_window_metrics(hwnd, st);
+                }
+                return 0;
+            }
             0
         }
-        WM_CLOSE => { DestroyWindow(hwnd); 0 }
+        WM_CLOSE => {
+            DestroyWindow(hwnd);
+            0
+        }
         WM_DESTROY => {
             let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut SettingsWndState;
             if !st_ptr.is_null() {
                 cancel_settings_scroll_drag(hwnd, &mut *st_ptr);
                 KillTimer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
                 KillTimer(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
+                KillTimer(hwnd, ID_TIMER_SETTINGS_DPI_FIT);
                 let parent = (*st_ptr).parent_hwnd;
-                if !(*st_ptr).dropdown_popup.is_null() { if IsWindow((*st_ptr).dropdown_popup) != 0 { DestroyWindow((*st_ptr).dropdown_popup); } (*st_ptr).dropdown_popup = null_mut(); }
-                if !(*st_ptr).nav_font.is_null() { DeleteObject((*st_ptr).nav_font as _); }
-                if !(*st_ptr).ui_font.is_null() && (*st_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*st_ptr).ui_font as _); }
-                if !(*st_ptr).title_font.is_null() && (*st_ptr).title_font != GetStockObject(DEFAULT_GUI_FONT) { DeleteObject((*st_ptr).title_font as _); }
-                if !(*st_ptr).bg_brush.is_null() { DeleteObject((*st_ptr).bg_brush as _); }
-                if !(*st_ptr).surface_brush.is_null() { DeleteObject((*st_ptr).surface_brush as _); }
-                if !(*st_ptr).control_brush.is_null() { DeleteObject((*st_ptr).control_brush as _); }
-                if !(*st_ptr).nav_brush.is_null() { DeleteObject((*st_ptr).nav_brush as _); }
+                if !(*st_ptr).dropdown_popup.is_null() {
+                    if IsWindow((*st_ptr).dropdown_popup) != 0 {
+                        DestroyWindow((*st_ptr).dropdown_popup);
+                    }
+                    (*st_ptr).dropdown_popup = null_mut();
+                }
+                if !(*st_ptr).nav_font.is_null() {
+                    DeleteObject((*st_ptr).nav_font as _);
+                }
+                if !(*st_ptr).ui_font.is_null()
+                    && (*st_ptr).ui_font != GetStockObject(DEFAULT_GUI_FONT)
+                {
+                    DeleteObject((*st_ptr).ui_font as _);
+                }
+                if !(*st_ptr).title_font.is_null()
+                    && (*st_ptr).title_font != GetStockObject(DEFAULT_GUI_FONT)
+                {
+                    DeleteObject((*st_ptr).title_font as _);
+                }
+                if !(*st_ptr).bg_brush.is_null() {
+                    DeleteObject((*st_ptr).bg_brush as _);
+                }
+                if !(*st_ptr).surface_brush.is_null() {
+                    DeleteObject((*st_ptr).surface_brush as _);
+                }
+                if !(*st_ptr).control_brush.is_null() {
+                    DeleteObject((*st_ptr).control_brush as _);
+                }
+                if !(*st_ptr).nav_brush.is_null() {
+                    DeleteObject((*st_ptr).nav_brush as _);
+                }
                 drop(Box::from_raw(st_ptr));
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 let pst = get_state_ptr(parent);
@@ -4433,16 +6017,23 @@ unsafe fn ensure_settings_class() {
 unsafe fn open_settings_window(hwnd: HWND) {
     let owner_hwnd = {
         let main = main_window_hwnd();
-        if !main.is_null() { main } else { hwnd }
+        if !main.is_null() {
+            main
+        } else {
+            hwnd
+        }
     };
     let pst = get_state_ptr(owner_hwnd);
-    if pst.is_null() { return; }
+    if pst.is_null() {
+        return;
+    }
     let app = &mut *pst;
     if !app.settings_hwnd.is_null() {
         app.edge_hide_pending_until = None;
         app.edge_hide_grace_until = None;
         let st_ptr = GetWindowLongPtrW(app.settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
         if !st_ptr.is_null() {
+            let _ = apply_settings_system_dpi_compensation(app.settings_hwnd, &mut *st_ptr);
             refresh_settings_window_metrics(app.settings_hwnd, &mut *st_ptr);
         }
         ShowWindow(app.settings_hwnd, SW_SHOW);
@@ -4463,11 +6054,17 @@ unsafe fn open_settings_window(hwnd: HWND) {
         anchor.y = owner_rc.top + ((owner_rc.bottom - owner_rc.top) / 2);
     }
     let work = nearest_monitor_work_rect_for_point(anchor);
-    set_settings_ui_dpi(monitor_dpi_for_point(anchor));
+    set_settings_ui_dpi(layout_dpi_for_point(anchor));
     let settings_w = settings_w_scaled();
     let settings_h = settings_h_scaled();
-    let x = max(work.left, work.left + ((work.right - work.left - settings_w) / 2));
-    let y = max(work.top, work.top + ((work.bottom - work.top - settings_h) / 2));
+    let x = max(
+        work.left,
+        work.left + ((work.right - work.left - settings_w) / 2),
+    );
+    let y = max(
+        work.top,
+        work.top + ((work.bottom - work.top - settings_h) / 2),
+    );
     let whd = CreateWindowExW(
         WS_EX_APPWINDOW | WS_EX_DLGMODALFRAME,
         to_wide(SETTINGS_CLASS).as_ptr(),
@@ -4505,15 +6102,24 @@ pub fn run() -> AppResult<()> {
     unsafe {
         #[link(name = "kernel32")]
         unsafe extern "system" {
-            fn CreateMutexW(lp_attributes: *const core::ffi::c_void, b_initial_owner: i32, lp_name: *const u16) -> *mut core::ffi::c_void;
+            fn CreateMutexW(
+                lp_attributes: *const core::ffi::c_void,
+                b_initial_owner: i32,
+                lp_name: *const u16,
+            ) -> *mut core::ffi::c_void;
             fn GetLastError() -> u32;
         }
         const ERROR_ALREADY_EXISTS: u32 = 183;
-        let name: Vec<u16> = "Global\\ZsClipSingleInstance".encode_utf16().chain(std::iter::once(0u16)).collect();
+        let name: Vec<u16> = "Global\\ZsClipSingleInstance"
+            .encode_utf16()
+            .chain(std::iter::once(0u16))
+            .collect();
         let _mutex = CreateMutexW(core::ptr::null(), 0, name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
             // 已有实例：找到主窗口并激活
-            use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW, ShowWindow, SetForegroundWindow, SW_RESTORE};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{
+                FindWindowW, PostMessageW, SetForegroundWindow, ShowWindow, SW_RESTORE,
+            };
             let cls = to_wide(WindowRole::Main.class_name());
             let hwnd = FindWindowW(cls.as_ptr(), core::ptr::null());
             if !hwnd.is_null() {
@@ -4561,7 +6167,7 @@ pub fn run() -> AppResult<()> {
             }
         }
 
-    let title = to_wide(app_title());
+        let title = to_wide(app_title());
         let startup_layout = main_layout_for_window(null_mut());
         let startup_h = startup_layout.list_y + startup_layout.list_h + 7;
         let main_hwnd = CreateWindowExW(
@@ -4601,7 +6207,14 @@ pub fn run() -> AppResult<()> {
             return Err(io::Error::last_os_error());
         }
 
-        ShowWindow(main_hwnd, if startup_can_hide(&boot_settings) { SW_HIDE } else { SW_SHOW });
+        ShowWindow(
+            main_hwnd,
+            if startup_can_hide(&boot_settings) {
+                SW_HIDE
+            } else {
+                SW_SHOW
+            },
+        );
         ShowWindow(quick_hwnd, SW_HIDE);
 
         let mut msg: MSG = zeroed();
@@ -4621,12 +6234,16 @@ pub fn run() -> AppResult<()> {
     Ok(())
 }
 
-
 unsafe fn apply_main_window_region(hwnd: HWND) {
     apply_window_corner_preference(hwnd);
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if msg == taskbar_created_message() {
         let ptr = get_state_ptr(hwnd);
         if !ptr.is_null() && (*ptr).role == WindowRole::Main {
@@ -4674,6 +6291,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     schedule_hidden_memory_reclaim(hwnd, state);
                 } else {
                     cancel_hidden_memory_reclaim(hwnd, state);
+                    SetTimer(hwnd, ID_TIMER_DPI_FIT, 60, None);
                 }
             }
             refresh_low_level_input_hooks();
@@ -4693,7 +6311,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     let state = &mut *ptr;
                     if state.vv_popup_visible
                         && !vv_popup_menu_active()
-                        && (GetForegroundWindow() != state.vv_popup_target || IsWindow(state.vv_popup_target) == 0)
+                        && (GetForegroundWindow() != state.vv_popup_target
+                            || IsWindow(state.vv_popup_target) == 0)
                     {
                         vv_popup_hide(hwnd, state);
                     }
@@ -4706,9 +6325,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 if !ptr.is_null() {
                     let state = &mut *ptr;
                     let target = state.vv_popup_pending_target;
-                    if !target.is_null() && GetForegroundWindow() == target && IsWindow(target) != 0 {
+                    if !target.is_null() && GetForegroundWindow() == target && IsWindow(target) != 0
+                    {
                         state.vv_popup_pending_target = null_mut();
-                        if !vv_popup_show(hwnd, state, target) && state.vv_popup_pending_retries > 0 {
+                        if !vv_popup_show(hwnd, state, target) && state.vv_popup_pending_retries > 0
+                        {
                             state.vv_popup_pending_target = target;
                             state.vv_popup_pending_retries -= 1;
                             SetTimer(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS, None);
@@ -4787,6 +6408,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 capture_clipboard(hwnd);
                 return 0;
             }
+            if wparam == ID_TIMER_DPI_FIT {
+                KillTimer(hwnd, ID_TIMER_DPI_FIT);
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    ensure_main_window_size_for_monitor(hwnd, &mut *ptr);
+                }
+                return 0;
+            }
             if wparam == ID_TIMER_SCROLL_FADE {
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
@@ -4798,7 +6427,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         // 每帧减少 25（约10帧渐隐）
                         state.scroll_fade_alpha = state.scroll_fade_alpha.saturating_sub(30);
                         if state.scroll_fade_alpha == 0 {
-                            stop_flagged_timer(hwnd, ID_TIMER_SCROLL_FADE, &mut state.scroll_fade_timer);
+                            stop_flagged_timer(
+                                hwnd,
+                                ID_TIMER_SCROLL_FADE,
+                                &mut state.scroll_fade_timer,
+                            );
                         }
                     }
                     InvalidateRect(hwnd, null(), 0);
@@ -4995,7 +6628,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                             .is_ok()
                         {
                             state.note_programmatic_clipboard_signature(
-                                format!("img:{}:{}:{}", width, height, hash_bytes(bytes.as_slice())),
+                                format!(
+                                    "img:{}:{}:{}",
+                                    width,
+                                    height,
+                                    hash_bytes(bytes.as_slice())
+                                ),
                                 1200,
                             );
                             set_ignore_clipboard_for_all_hosts(1200);
@@ -5050,7 +6688,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 } else if let Some(err) = payload.error {
                     MessageBoxW(
                         hwnd,
-                        to_wide(&format!("{}: {}", tr("图片转文字失败", "Image OCR failed"), err)).as_ptr(),
+                        to_wide(&format!(
+                            "{}: {}",
+                            tr("图片转文字失败", "Image OCR failed"),
+                            err
+                        ))
+                        .as_ptr(),
                         to_wide(tr("图片转文字", "Image OCR")).as_ptr(),
                         MB_OK | MB_ICONERROR,
                     );
@@ -5096,7 +6739,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                 } else if let Some(err) = payload.error {
                     MessageBoxW(
                         hwnd,
-                        to_wide(&format!("{}: {}", tr("文本翻译失败", "Text translation failed"), err)).as_ptr(),
+                        to_wide(&format!(
+                            "{}: {}",
+                            tr("文本翻译失败", "Text translation failed"),
+                            err
+                        ))
+                        .as_ptr(),
                         to_wide(tr("文本翻译", "Text Translate")).as_ptr(),
                         MB_OK | MB_ICONERROR,
                     );
@@ -5104,9 +6752,28 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             0
         }
+        WM_IMAGE_THUMB_READY => {
+            if lparam == 0 {
+                return 0;
+            }
+            let payload = Box::from_raw(lparam as *mut ImageThumbReadyResult);
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                let state = &mut *ptr;
+                state.image_thumb_loading.remove(&payload.item_id);
+                if let Some(image) = payload.image {
+                    state.image_thumb_cache.put(payload.item_id, image);
+                    InvalidateRect(hwnd, null(), 0);
+                }
+            }
+            0
+        }
         WM_UPDATE_CHECK_READY => {
             let ptr = get_state_ptr(hwnd);
-            if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0 {
+            if !ptr.is_null()
+                && !(*ptr).settings_hwnd.is_null()
+                && IsWindow((*ptr).settings_hwnd) != 0
+            {
                 InvalidateRect((*ptr).settings_hwnd, null(), 1);
             }
             0
@@ -5137,6 +6804,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
         WM_SETTINGCHANGE | WM_DISPLAYCHANGE => {
             refresh_main_window_metrics(hwnd);
+            SetTimer(hwnd, ID_TIMER_DPI_FIT, 60, None);
             0
         }
         WM_TRAYICON => {
@@ -5150,9 +6818,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                     remember_window_pos(hwnd);
                 }
                 note_window_moved_for_edge_hide(hwnd, &mut *ptr);
-                let dpi = monitor_dpi_for_window(hwnd);
+                let dpi = layout_dpi_for_window(hwnd);
                 if (*ptr).ui_dpi != dpi.max(96) {
                     refresh_main_window_layout_for_monitor(hwnd, &mut *ptr, Some(dpi));
+                }
+                if !is_per_monitor_dpi_aware() {
+                    SetTimer(hwnd, ID_TIMER_DPI_FIT, 60, None);
+                }
+            }
+            0
+        }
+        WM_EXITSIZEMOVE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                ensure_main_window_size_for_monitor(hwnd, &mut *ptr);
+                if (*ptr).role == WindowRole::Main && !hosts::edge_animation_active(&*ptr) {
+                    remember_window_pos(hwnd);
                 }
             }
             0
@@ -5173,6 +6854,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let dpi = (wparam & 0xffff) as u32;
+                reset_main_dpi_compensation(&mut *ptr);
                 refresh_main_window_layout_for_monitor(hwnd, &mut *ptr, Some(dpi));
             }
             0
@@ -5206,6 +6888,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
                         KillTimer(hwnd, ID_TIMER_HIDDEN_RECLAIM);
                         KillTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY);
+                        KillTimer(hwnd, ID_TIMER_DPI_FIT);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
                         KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
@@ -5231,6 +6914,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         KillTimer(hwnd, ID_TIMER_SEARCH_DEBOUNCE);
                         KillTimer(hwnd, ID_TIMER_HIDDEN_RECLAIM);
                         KillTimer(hwnd, ID_TIMER_CLIPBOARD_RETRY);
+                        KillTimer(hwnd, ID_TIMER_DPI_FIT);
                         KillTimer(hwnd, ID_TIMER_SCROLL_FADE);
                         KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
                         KillTimer(hwnd, ID_TIMER_OUTSIDE_HIDE);
@@ -5282,7 +6966,12 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
     if search_hwnd.is_null() {
         return Err(io::Error::last_os_error());
     }
-    SendMessageW(search_hwnd, EM_SETMARGINS, (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM, 0);
+    SendMessageW(
+        search_hwnd,
+        EM_SETMARGINS,
+        (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
+        0,
+    );
 
     let icons = load_icons();
     let tray_icon = icons.app;
@@ -5301,7 +6990,7 @@ unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
             reload_state_from_db_persisting(state);
             register_hotkey_for(hwnd, state);
             register_plain_paste_hotkey_for(hwnd, state);
-    update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+            update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
             refresh_low_level_input_hooks();
         }
@@ -5348,7 +7037,10 @@ unsafe fn layout_children(hwnd: HWND) {
         rc.bottom - rc.top - 10,
         1,
     );
-    ShowWindow(state.search_hwnd, if state.search_on { SW_SHOW } else { SW_HIDE });
+    ShowWindow(
+        state.search_hwnd,
+        if state.search_on { SW_SHOW } else { SW_HIDE },
+    );
 }
 
 unsafe fn refresh_search_font(state: &mut AppState) {
@@ -5404,6 +7096,112 @@ unsafe fn refresh_main_window_metrics(hwnd: HWND) {
     refresh_main_window_layout_only(hwnd, state);
 }
 
+unsafe fn ensure_main_window_size_for_monitor(hwnd: HWND, state: &mut AppState) {
+    if hosts::edge_animation_active(state) || state.edge_hidden {
+        return;
+    }
+    if !is_per_monitor_dpi_aware() {
+        if apply_main_system_dpi_compensation(hwnd, state) {
+            return;
+        }
+        refresh_main_window_layout_for_monitor(hwnd, state, Some(layout_dpi_for_window(hwnd)));
+        return;
+    }
+    let dpi = layout_dpi_for_window(hwnd).max(96);
+    let (win_w, win_h) = main_window_size_for_dpi(dpi);
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        refresh_main_window_layout_for_monitor(hwnd, state, Some(dpi));
+        return;
+    }
+    let cur_w = rc.right - rc.left;
+    let cur_h = rc.bottom - rc.top;
+    if state.ui_dpi != dpi || (cur_w - win_w).abs() > 2 || (cur_h - win_h).abs() > 2 {
+        let work = nearest_monitor_work_rect_for_window(hwnd);
+        let (x, y) = clamp_window_pos_to_rect(rc.left, rc.top, &work, win_w, win_h);
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            x,
+            y,
+            win_w,
+            win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        refresh_main_window_layout_for_monitor(hwnd, state, Some(dpi));
+    }
+}
+
+unsafe fn reset_main_dpi_compensation(state: &mut AppState) {
+    state.dpi_comp_base_w = 0;
+    state.dpi_comp_base_h = 0;
+    state.dpi_comp_base_monitor_dpi = 0;
+    state.dpi_comp_last_monitor_dpi = 0;
+    state.dpi_comp_applying = false;
+}
+
+unsafe fn apply_main_system_dpi_compensation(hwnd: HWND, state: &mut AppState) -> bool {
+    if is_per_monitor_dpi_aware() {
+        reset_main_dpi_compensation(state);
+        return false;
+    }
+    let mut rc: RECT = zeroed();
+    if GetWindowRect(hwnd, &mut rc) == 0 || rc.right <= rc.left || rc.bottom <= rc.top {
+        return false;
+    }
+    let monitor_dpi = monitor_dpi_for_window(hwnd).max(96);
+    if state.dpi_comp_base_monitor_dpi == 0
+        || state.dpi_comp_base_w <= 0
+        || state.dpi_comp_base_h <= 0
+    {
+        state.dpi_comp_base_w = rc.right - rc.left;
+        state.dpi_comp_base_h = rc.bottom - rc.top;
+        state.dpi_comp_base_monitor_dpi = monitor_dpi;
+        state.dpi_comp_last_monitor_dpi = monitor_dpi;
+        return false;
+    }
+    let (mut target_w, mut target_h) = dpi_compensated_size(
+        state.dpi_comp_base_w,
+        state.dpi_comp_base_h,
+        state.dpi_comp_base_monitor_dpi,
+        monitor_dpi,
+    );
+    let cur_w = rc.right - rc.left;
+    let cur_h = rc.bottom - rc.top;
+    if state.dpi_comp_last_monitor_dpi == monitor_dpi
+        && (cur_w - target_w).abs() <= 2
+        && (cur_h - target_h).abs() <= 2
+    {
+        return false;
+    }
+    let work = nearest_monitor_work_rect_for_window(hwnd);
+    target_w = target_w.min((work.right - work.left).max(1)).max(1);
+    target_h = target_h.min((work.bottom - work.top).max(1)).max(1);
+    let center_x = rc.left + cur_w / 2;
+    let center_y = rc.top + cur_h / 2;
+    let (x, y) = clamp_window_pos_to_rect(
+        center_x - target_w / 2,
+        center_y - target_h / 2,
+        &work,
+        target_w,
+        target_h,
+    );
+    state.dpi_comp_applying = true;
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        target_w,
+        target_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
+    state.dpi_comp_applying = false;
+    state.dpi_comp_last_monitor_dpi = monitor_dpi;
+    refresh_main_window_layout_for_monitor(hwnd, state, Some(layout_dpi_for_window(hwnd)));
+    true
+}
+
 unsafe fn sync_main_window_dpi(state: &mut AppState, dpi: u32) -> bool {
     let next = dpi.max(96);
     if state.ui_dpi == next {
@@ -5418,7 +7216,7 @@ pub(crate) unsafe fn refresh_main_window_layout_for_monitor(
     state: &mut AppState,
     forced_dpi: Option<u32>,
 ) {
-    let dpi = forced_dpi.unwrap_or_else(|| monitor_dpi_for_window(hwnd));
+    let dpi = forced_dpi.unwrap_or_else(|| layout_dpi_for_window(hwnd));
     let _ = sync_main_window_dpi(state, dpi);
     refresh_search_font(state);
     layout_children(hwnd);
@@ -5545,7 +7343,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             let anchor = state.current_scroll_anchor();
             if db_delete_unpinned_items(source_tab_category(state.tab_index)).is_ok() {
                 let active_tab = state.tab_index;
-                state.items_for_tab_mut(active_tab).retain(|item| item.pinned);
+                state
+                    .items_for_tab_mut(active_tab)
+                    .retain(|item| item.pinned);
                 state.clear_selection();
                 state.refilter();
                 state.restore_scroll_anchor(anchor);
@@ -5599,7 +7399,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
-                        for p in paths { open_path_with_shell(p); }
+                        for p in paths {
+                            open_path_with_shell(p);
+                        }
                     }
                 }
             }
@@ -5608,7 +7410,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(paths) = &item.file_paths {
-                        for p in paths { open_parent_folder(p); }
+                        for p in paths {
+                            open_parent_folder(p);
+                        }
                     }
                 }
             }
@@ -5619,15 +7423,21 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
                 let mut lines = Vec::new();
                 if items.is_empty() {
                     if let Some(item) = state.current_item_for_use() {
-                        if let Some(paths) = &item.file_paths { lines.extend(paths.clone()); }
+                        if let Some(paths) = &item.file_paths {
+                            lines.extend(paths.clone());
+                        }
                     }
                 } else {
                     for item in &items {
-                        if let Some(paths) = &item.file_paths { lines.extend(paths.clone()); }
+                        if let Some(paths) = &item.file_paths {
+                            lines.extend(paths.clone());
+                        }
                     }
                 }
                 if !lines.is_empty() {
-                    if let Ok(mut cb) = Clipboard::new() { let _ = cb.set_text(lines.join("\n")); }
+                    if let Ok(mut cb) = Clipboard::new() {
+                        let _ = cb.set_text(lines.join("\n"));
+                    }
                 }
             }
         }
@@ -5635,8 +7445,14 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     let text = match item.kind {
-                        ClipKind::Text | ClipKind::Phrase => item.text.clone().unwrap_or_else(|| item.preview.clone()),
-                        ClipKind::Files => item.file_paths.as_ref().map(|v| v.join(" ")).unwrap_or_else(|| item.preview.clone()),
+                        ClipKind::Text | ClipKind::Phrase => {
+                            item.text.clone().unwrap_or_else(|| item.preview.clone())
+                        }
+                        ClipKind::Files => item
+                            .file_paths
+                            .as_ref()
+                            .map(|v| v.join(" "))
+                            .unwrap_or_else(|| item.preview.clone()),
                         ClipKind::Image => item.preview.clone(),
                     };
                     quick_search_open(&state.settings, &text);
@@ -5647,7 +7463,9 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_for_use() {
                     if let Some(path) = materialize_item_as_file(&item) {
-                        if let Some(parent) = path.parent().and_then(|p| p.to_str()) { open_path_with_shell(parent); }
+                        if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
+                            open_path_with_shell(parent);
+                        }
                     }
                 }
             }
@@ -5704,7 +7522,10 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
             if select_context_row(state) {
                 if let Some(item) = state.current_item_owned() {
                     let item_id = item.id;
-                    let title = format!("编辑 — {}", item.preview.chars().take(40).collect::<String>());
+                    let title = format!(
+                        "编辑 — {}",
+                        item.preview.chars().take(40).collect::<String>()
+                    );
                     let saved = show_edit_item_dialog(hwnd, item_id, &title);
                     if saved {
                         reload_state_from_db_persisting(state);
@@ -5740,7 +7561,8 @@ unsafe fn execute_row_command(hwnd: HWND, state: &mut AppState, cmd: usize) {
         _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&cmd) => {
             if select_context_row(state) {
                 let idx = cmd - IDM_ROW_GROUP_BASE;
-                if let Some(group_id) = state.groups_for_tab(state.tab_index).get(idx).map(|g| g.id) {
+                if let Some(group_id) = state.groups_for_tab(state.tab_index).get(idx).map(|g| g.id)
+                {
                     let ids = state.selected_db_ids();
                     if !ids.is_empty() {
                         let _ = db_assign_group(&ids, group_id);
@@ -5797,10 +7619,30 @@ unsafe fn handle_command(hwnd: HWND, wparam: WPARAM, _lparam: LPARAM) {
         IDM_TRAY_EXIT => {
             DestroyWindow(hwnd);
         }
-                    IDM_ROW_PASTE | IDM_ROW_COPY | IDM_ROW_PIN | IDM_ROW_DELETE | IDM_ROW_DELETE_UNPINNED | IDM_ROW_TO_PHRASE | IDM_ROW_STICKER | IDM_ROW_SAVE_IMAGE | IDM_ROW_IMAGE_OCR | IDM_ROW_TEXT_TRANSLATE | IDM_ROW_OPEN_PATH | IDM_ROW_OPEN_FOLDER | IDM_ROW_COPY_PATH | IDM_ROW_GROUP_REMOVE | IDM_ROW_EDIT | IDM_ROW_QUICK_SEARCH | IDM_ROW_EXPORT_FILE | IDM_ROW_MAIL_MERGE | IDM_GROUP_FILTER_ALL => {
-                execute_row_command(hwnd, state, id);
-            }
-        _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&id) || (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&id) => {
+        IDM_ROW_PASTE
+        | IDM_ROW_COPY
+        | IDM_ROW_PIN
+        | IDM_ROW_DELETE
+        | IDM_ROW_DELETE_UNPINNED
+        | IDM_ROW_TO_PHRASE
+        | IDM_ROW_STICKER
+        | IDM_ROW_SAVE_IMAGE
+        | IDM_ROW_IMAGE_OCR
+        | IDM_ROW_TEXT_TRANSLATE
+        | IDM_ROW_OPEN_PATH
+        | IDM_ROW_OPEN_FOLDER
+        | IDM_ROW_COPY_PATH
+        | IDM_ROW_GROUP_REMOVE
+        | IDM_ROW_EDIT
+        | IDM_ROW_QUICK_SEARCH
+        | IDM_ROW_EXPORT_FILE
+        | IDM_ROW_MAIL_MERGE
+        | IDM_GROUP_FILTER_ALL => {
+            execute_row_command(hwnd, state, id);
+        }
+        _ if (IDM_ROW_GROUP_BASE..IDM_ROW_GROUP_BASE + 2000).contains(&id)
+            || (IDM_GROUP_FILTER_BASE..IDM_GROUP_FILTER_BASE + 2000).contains(&id) =>
+        {
             execute_row_command(hwnd, state, id);
         }
         _ => {}
@@ -5822,7 +7664,6 @@ fn main_scrollbar_drag_target(state: &AppState, y: i32) -> Option<i32> {
     let pos = (y - track.top - (thumb_h / 2)).clamp(0, track_h - thumb_h);
     Some(((pos as f32 / drag_range as f32) * max_scroll as f32) as i32)
 }
-
 
 unsafe fn handle_mouse_wheel(hwnd: HWND, wparam: WPARAM) {
     let ptr = get_state_ptr(hwnd);
@@ -5864,8 +7705,8 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
                 state.scroll_y = 0;
             } else {
                 let dy = y - state.scroll_drag_start_y;
-                let new_y =
-                    state.scroll_drag_start_scroll + ((dy as f32 / drag_range as f32) * max_scroll as f32) as i32;
+                let new_y = state.scroll_drag_start_scroll
+                    + ((dy as f32 / drag_range as f32) * max_scroll as f32) as i32;
                 state.scroll_y = new_y.clamp(0, max_scroll);
             }
             state.maybe_request_more_for_active_tab();
@@ -5915,9 +7756,15 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
 
     // 滚动条 hover 检测
     let was_hover_scroll = state.hover_scroll;
-    state.hover_scroll = state.scrollbar_track_rect()
+    state.hover_scroll = state
+        .scrollbar_track_rect()
         .map(|tr| {
-            let hot = RECT { left: tr.left - 8, top: tr.top, right: tr.right + 2, bottom: tr.bottom };
+            let hot = RECT {
+                left: tr.left - 8,
+                top: tr.top,
+                right: tr.right + 2,
+                bottom: tr.bottom,
+            };
             pt_in_rect(x, y, &hot)
         })
         .unwrap_or(false);
@@ -5926,10 +7773,15 @@ unsafe fn handle_mouse_move(hwnd: HWND, lparam: LPARAM) {
         show_main_scrollbar_feedback(hwnd, state, false);
     }
 
-    state.hover_to_top = scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
+    state.hover_to_top =
+        scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
 
     let old_hover = state.hover_idx;
-    state.hover_idx = if state.hover_to_top { -1 } else { hit_test_row(state, x, y) };
+    state.hover_idx = if state.hover_to_top {
+        -1
+    } else {
+        hit_test_row(state, x, y)
+    };
     let preview_target_changed = old_btn != state.hover_btn
         || old_hover != state.hover_idx
         || old_tab != state.hover_tab
@@ -5970,7 +7822,12 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
                 let _ = force_foreground_window(hwnd);
             }
             ReleaseCapture();
-            SendMessageW(hwnd, WM_SYSCOMMAND, (SC_MOVE as usize | HTCAPTION as usize) as WPARAM, 0);
+            SendMessageW(
+                hwnd,
+                WM_SYSCOMMAND,
+                (SC_MOVE as usize | HTCAPTION as usize) as WPARAM,
+                0,
+            );
             return;
         }
     }
@@ -5987,7 +7844,8 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
         }
     }
 
-    state.down_to_top = scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
+    state.down_to_top =
+        scroll_to_top_visible(state) && pt_in_rect(x, y, &state.scroll_to_top_rect());
     if state.down_to_top {
         InvalidateRect(hwnd, null(), 0);
         return;
@@ -6056,7 +7914,11 @@ unsafe fn handle_lbutton_down(hwnd: HWND, lparam: LPARAM) {
         state.ensure_visible(idx);
         let ctrl = (GetAsyncKeyState(VK_CONTROL as i32) as u16 & 0x8000) != 0;
         let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
-        if !ctrl && !shift && state.hotkey_passthrough_active && !state.hotkey_passthrough_edit.is_null() {
+        if !ctrl
+            && !shift
+            && state.hotkey_passthrough_active
+            && !state.hotkey_passthrough_edit.is_null()
+        {
             let mut handled = false;
             if let Some(src_idx) = state.visible_src_idx(idx as usize) {
                 if let Some(item) = state.active_items().get(src_idx).cloned() {
@@ -6212,7 +8074,6 @@ unsafe fn handle_lbutton_dblclk(hwnd: HWND, lparam: LPARAM) {
     }
 }
 
-
 unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
@@ -6224,7 +8085,11 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     let y = get_y_lparam(lparam);
     let (tab0, tab1) = state.segment_rects();
     if state.settings.grouping_enabled && (pt_in_rect(x, y, &tab0) || pt_in_rect(x, y, &tab1)) {
-        let target_tab = if pt_in_rect(x, y, &tab1) { 1usize } else { 0usize };
+        let target_tab = if pt_in_rect(x, y, &tab1) {
+            1usize
+        } else {
+            0usize
+        };
         let mut pt: POINT = zeroed();
         GetCursorPos(&mut pt);
         let cmd = show_group_filter_menu(hwnd, pt.x, pt.y, target_tab, state);
@@ -6277,7 +8142,8 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
             state.selection_anchor = idx;
         }
     } else {
-        let already_multi_selected = state.selected_rows.len() > 1 && state.selected_rows.contains(&idx);
+        let already_multi_selected =
+            state.selected_rows.len() > 1 && state.selected_rows.contains(&idx);
         if !already_multi_selected {
             state.selected_rows.clear();
             state.sel_idx = idx;
@@ -6290,21 +8156,30 @@ unsafe fn handle_rbutton_up(hwnd: HWND, lparam: LPARAM) {
     state.context_row = idx;
     state.ensure_visible(idx);
     let current_item = state.current_item_for_use();
-    let current_kind = current_item.as_ref().map(|it| it.kind).unwrap_or(ClipKind::Text);
-    let current_is_dir = current_item.as_ref().map(is_directory_item).unwrap_or(false);
+    let current_kind = current_item
+        .as_ref()
+        .map(|it| it.kind)
+        .unwrap_or(ClipKind::Text);
+    let current_is_dir = current_item
+        .as_ref()
+        .map(is_directory_item)
+        .unwrap_or(false);
     let current_is_excel = current_item
         .as_ref()
         .and_then(|it| it.file_paths.as_ref())
         .and_then(|paths| paths.first())
         .map(|path| {
             let lower = path.to_ascii_lowercase();
-            lower.ends_with(".xls") || lower.ends_with(".xlsx") || lower.ends_with(".xlsm") || lower.ends_with(".csv")
+            lower.ends_with(".xls")
+                || lower.ends_with(".xlsx")
+                || lower.ends_with(".xlsm")
+                || lower.ends_with(".csv")
         })
         .unwrap_or(false);
     let current_can_ocr = state.settings.image_ocr_provider != "off"
         && current_item
             .as_ref()
-            .and_then(|item| image_input_for_ocr(item))
+            .and_then(image_input_for_ocr)
             .is_some();
     let current_can_translate = state.settings.text_translate_provider != "off"
         && current_item
@@ -6341,16 +8216,26 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
     let shift = (GetAsyncKeyState(VK_SHIFT as i32) as u16 & 0x8000) != 0;
     match vk {
         x if x == VK_UP as u32 => {
-            if state.visible_count() == 0 { return; }
-            let new_idx = if state.sel_idx <= 0 { 0 } else { state.sel_idx - 1 };
+            if state.visible_count() == 0 {
+                return;
+            }
+            let new_idx = if state.sel_idx <= 0 {
+                0
+            } else {
+                state.sel_idx - 1
+            };
             if shift {
                 // Shift+Up: 扩展选择
-                if state.selection_anchor < 0 { state.selection_anchor = state.sel_idx; }
+                if state.selection_anchor < 0 {
+                    state.selection_anchor = state.sel_idx;
+                }
                 state.sel_idx = new_idx;
                 state.selected_rows.clear();
                 let a = min(state.selection_anchor, state.sel_idx);
                 let b = max(state.selection_anchor, state.sel_idx);
-                for i in a..=b { state.selected_rows.insert(i); }
+                for i in a..=b {
+                    state.selected_rows.insert(i);
+                }
             } else {
                 state.sel_idx = new_idx;
                 state.selected_rows.clear();
@@ -6360,16 +8245,25 @@ unsafe fn handle_keydown(hwnd: HWND, vk: u32) {
             InvalidateRect(hwnd, null(), 0);
         }
         x if x == VK_DOWN as u32 => {
-            if state.visible_count() == 0 { return; }
-            let new_idx = if state.sel_idx < 0 { 0 }
-                else { min(state.visible_count() as i32 - 1, state.sel_idx + 1) };
+            if state.visible_count() == 0 {
+                return;
+            }
+            let new_idx = if state.sel_idx < 0 {
+                0
+            } else {
+                min(state.visible_count() as i32 - 1, state.sel_idx + 1)
+            };
             if shift {
-                if state.selection_anchor < 0 { state.selection_anchor = state.sel_idx; }
+                if state.selection_anchor < 0 {
+                    state.selection_anchor = state.sel_idx;
+                }
                 state.sel_idx = new_idx;
                 state.selected_rows.clear();
                 let a = min(state.selection_anchor, state.sel_idx);
                 let b = max(state.selection_anchor, state.sel_idx);
-                for i in a..=b { state.selected_rows.insert(i); }
+                for i in a..=b {
+                    state.selected_rows.insert(i);
+                }
             } else {
                 state.sel_idx = new_idx;
                 state.selected_rows.clear();
@@ -6495,7 +8389,11 @@ fn normalize_captured_text(raw: &str) -> String {
         || normalized.starts_with("https://")
         || normalized.starts_with("www.")
     {
-        return normalized.split_whitespace().next().unwrap_or(&normalized).to_string();
+        return normalized
+            .split_whitespace()
+            .next()
+            .unwrap_or(&normalized)
+            .to_string();
     }
     normalized
 }
@@ -6512,7 +8410,10 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     let state = &mut *ptr;
     let sequence = GetClipboardSequenceNumber();
     let pixpin_format = clipboard_has_named_format("PixPinData");
-    if sequence != 0 && state.clipboard_retry_sequence != 0 && state.clipboard_retry_sequence != sequence {
+    if sequence != 0
+        && state.clipboard_retry_sequence != 0
+        && state.clipboard_retry_sequence != sequence
+    {
         reset_clipboard_retry(hwnd, state);
     }
     if state.consume_skip_next_clipboard_update_once(sequence) {
@@ -6531,6 +8432,53 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     }
     let source_app = clipboard_source_app_name();
     let prefer_long_retry = source_app_prefers_long_clipboard_retry(&source_app);
+    if is_self_clipboard_source_app(&source_app) {
+        if sequence != 0 {
+            state.last_clipboard_seq = sequence;
+        }
+        reset_clipboard_retry(hwnd, state);
+        return;
+    }
+
+    // Some apps (PixPin, Office, browsers) publish multiple clipboard formats at
+    // once. Prefer explicit files/text before bitmap formats so a preview image
+    // cannot swallow the actual user payload.
+    if let Some(paths) = clipboard_file_paths() {
+        let preview = build_files_preview(&paths);
+        let sig = file_paths_signature(&paths);
+        if state.consume_recent_programmatic_clipboard_signature(&sig) {
+            reset_clipboard_retry(hwnd, state);
+            return;
+        }
+        if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+            reset_clipboard_retry(hwnd, state);
+            return;
+        }
+        let candidate = ClipItem {
+            id: 0,
+            kind: ClipKind::Files,
+            preview,
+            text: Some(paths.join("\n")),
+            source_app: source_app.clone(),
+            file_paths: Some(paths),
+            image_bytes: None,
+            image_path: None,
+            image_width: 0,
+            image_height: 0,
+            pinned: false,
+            group_id: 0,
+            created_at: String::new(),
+        };
+        if state.is_recent_top_duplicate_item(&candidate) {
+            reset_clipboard_retry(hwnd, state);
+            return;
+        }
+        state.add_clip_item(candidate, sig);
+        reset_clipboard_retry(hwnd, state);
+        InvalidateRect(hwnd, null(), 1);
+        return;
+    }
+
     let mut clipboard = match Clipboard::new() {
         Ok(c) => c,
         Err(_) => {
@@ -6543,26 +8491,57 @@ unsafe fn capture_clipboard(hwnd: HWND) {
             return;
         }
     };
-    if is_self_clipboard_source_app(&source_app) {
-        if sequence != 0 {
-            state.last_clipboard_seq = sequence;
+    if let Ok(text) = clipboard.get_text() {
+        let normalized = normalize_captured_text(&text);
+        if !normalized.is_empty() {
+            let preview = build_preview(&normalized);
+            let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
+            if state.consume_recent_programmatic_clipboard_signature(&sig) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            let candidate = ClipItem {
+                id: 0,
+                kind: ClipKind::Text,
+                preview,
+                text: Some(normalized),
+                source_app: source_app.clone(),
+                file_paths: None,
+                image_bytes: None,
+                image_path: None,
+                image_width: 0,
+                image_height: 0,
+                pinned: false,
+                group_id: 0,
+                created_at: String::new(),
+            };
+            if state.is_recent_top_duplicate_item(&candidate) {
+                reset_clipboard_retry(hwnd, state);
+                return;
+            }
+            state.add_clip_item(candidate, sig);
+            reset_clipboard_retry(hwnd, state);
+            InvalidateRect(hwnd, null(), 1);
+            return;
         }
-        reset_clipboard_retry(hwnd, state);
-        return;
     }
+
     if let Ok(img) = clipboard.get_image() {
         let bytes = img.bytes.into_owned();
         if let Some((bytes, norm_w, norm_h)) =
             normalize_captured_image_rgba(bytes, img.width, img.height)
         {
             let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
-            let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
-            let sig = format!(
-                "img:{}:{}:{}",
-                norm_w,
-                norm_h,
-                hash_bytes(bytes.as_slice())
-            );
+            let image_bytes = if image_path.is_none() {
+                Some(bytes.clone())
+            } else {
+                None
+            };
+            let sig = format!("img:{}:{}:{}", norm_w, norm_h, hash_bytes(bytes.as_slice()));
             if state.consume_recent_programmatic_clipboard_signature(&sig) {
                 reset_clipboard_retry(hwnd, state);
                 return;
@@ -6616,17 +8595,14 @@ unsafe fn capture_clipboard(hwnd: HWND) {
     drop(clipboard);
 
     if let Some((bytes, width, height)) = read_windows_clipboard_bitmap_rgba() {
-        if let Some((bytes, norm_w, norm_h)) =
-            normalize_captured_image_rgba(bytes, width, height)
-        {
+        if let Some((bytes, norm_w, norm_h)) = normalize_captured_image_rgba(bytes, width, height) {
             let image_path = write_image_bytes_to_output_path(&bytes, norm_w as u32, norm_h as u32);
-            let image_bytes = if image_path.is_none() { Some(bytes.clone()) } else { None };
-            let sig = format!(
-                "img:{}:{}:{}",
-                norm_w,
-                norm_h,
-                hash_bytes(bytes.as_slice())
-            );
+            let image_bytes = if image_path.is_none() {
+                Some(bytes.clone())
+            } else {
+                None
+            };
+            let sig = format!("img:{}:{}:{}", norm_w, norm_h, hash_bytes(bytes.as_slice()));
             if state.consume_recent_programmatic_clipboard_signature(&sig) {
                 reset_clipboard_retry(hwnd, state);
                 return;
@@ -6656,99 +8632,6 @@ unsafe fn capture_clipboard(hwnd: HWND) {
                 return;
             }
             state.add_clip_item(candidate, sig);
-            reset_clipboard_retry(hwnd, state);
-            InvalidateRect(hwnd, null(), 1);
-            return;
-        }
-    }
-
-    if let Some(paths) = clipboard_file_paths() {
-        let preview = build_files_preview(&paths);
-        let sig = file_paths_signature(&paths);
-        if state.consume_recent_programmatic_clipboard_signature(&sig) {
-            reset_clipboard_retry(hwnd, state);
-            return;
-        }
-        if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
-            reset_clipboard_retry(hwnd, state);
-            return;
-        }
-        let candidate = ClipItem {
-            id: 0,
-            kind: ClipKind::Files,
-            preview,
-            text: Some(paths.join("\n")),
-            source_app,
-            file_paths: Some(paths),
-            image_bytes: None,
-            image_path: None,
-            image_width: 0,
-            image_height: 0,
-            pinned: false,
-            group_id: 0,
-            created_at: String::new(),
-        };
-        if state.is_recent_top_duplicate_item(&candidate) {
-            reset_clipboard_retry(hwnd, state);
-            return;
-        }
-        state.add_clip_item(
-            candidate,
-            sig,
-        );
-        reset_clipboard_retry(hwnd, state);
-        InvalidateRect(hwnd, null(), 1);
-        return;
-    }
-
-    let mut clipboard = match Clipboard::new() {
-        Ok(c) => c,
-        Err(_) => {
-            let retry_limit = if prefer_long_retry || pixpin_format {
-                PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
-            } else {
-                CLIPBOARD_RETRY_MAX_ATTEMPTS
-            };
-            let _ = schedule_clipboard_retry_with_limit(hwnd, state, sequence, retry_limit);
-            return;
-        }
-    };
-    if let Ok(text) = clipboard.get_text() {
-        let normalized = normalize_captured_text(&text);
-        if !normalized.is_empty() {
-            let preview = build_preview(&normalized);
-            let sig = format!("txt:{}", hash_bytes(normalized.as_bytes()));
-            if state.consume_recent_programmatic_clipboard_signature(&sig) {
-                reset_clipboard_retry(hwnd, state);
-                return;
-            }
-            if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
-                reset_clipboard_retry(hwnd, state);
-                return;
-            }
-            let candidate = ClipItem {
-                id: 0,
-                kind: ClipKind::Text,
-                preview,
-                text: Some(normalized),
-                source_app: source_app.clone(),
-                file_paths: None,
-                image_bytes: None,
-                image_path: None,
-                image_width: 0,
-                image_height: 0,
-                pinned: false,
-                group_id: 0,
-                created_at: String::new(),
-            };
-            if state.is_recent_top_duplicate_item(&candidate) {
-                reset_clipboard_retry(hwnd, state);
-                return;
-            }
-            state.add_clip_item(
-                candidate,
-                sig,
-            );
             reset_clipboard_retry(hwnd, state);
             InvalidateRect(hwnd, null(), 1);
             return;
@@ -6911,12 +8794,19 @@ unsafe fn apply_item_to_clipboard_plain_text(state: &mut AppState, item_ref: &Cl
         return false;
     };
     let text = match item.kind {
-        ClipKind::Text | ClipKind::Phrase => item.text.as_ref().map(|t| normalize_plain_text_for_paste(t)),
+        ClipKind::Text | ClipKind::Phrase => item
+            .text
+            .as_ref()
+            .map(|t| normalize_plain_text_for_paste(t)),
         ClipKind::Files => item
             .file_paths
             .as_ref()
             .map(|paths| paths.join("\n"))
-            .or_else(|| item.text.as_ref().map(|t| normalize_plain_text_for_paste(t))),
+            .or_else(|| {
+                item.text
+                    .as_ref()
+                    .map(|t| normalize_plain_text_for_paste(t))
+            }),
         ClipKind::Image => None,
     };
     let Some(text) = text else {
@@ -6963,15 +8853,7 @@ fn spawn_async_image_paste_load(
             backspaces,
         });
         unsafe {
-            let hwnd = hwnd_raw as HWND;
-            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-                let _ = PostMessageW(
-                    hwnd,
-                    WM_IMAGE_PASTE_READY,
-                    0,
-                    Box::into_raw(payload) as LPARAM,
-                );
-            }
+            let _ = post_boxed_message(hwnd_raw as HWND, WM_IMAGE_PASTE_READY, 0, payload);
         }
     });
 }
@@ -7044,7 +8926,12 @@ unsafe fn try_apply_to_explorer_rename(state: &mut AppState, item_ref: &ClipItem
     ) != 0;
     if ok {
         let caret = text.encode_utf16().count() as isize;
-        SendMessageW(state.hotkey_passthrough_edit, EM_SETSEL, caret as usize, caret);
+        SendMessageW(
+            state.hotkey_passthrough_edit,
+            EM_SETSEL,
+            caret as usize,
+            caret,
+        );
         set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_DIRECT_EDIT);
         clear_hotkey_passthrough_state(state);
     }
@@ -7163,7 +9050,10 @@ unsafe fn settings_set_hotkey_recording(st: &mut SettingsWndState, recording: bo
         } else {
             settings_set_text(
                 st.lb_hk_preview,
-                &hotkey_preview_text(&get_window_text(st.cb_hk_mod), &get_window_text(st.cb_hk_key)),
+                &hotkey_preview_text(
+                    &get_window_text(st.cb_hk_mod),
+                    &get_window_text(st.cb_hk_key),
+                ),
             );
         }
         InvalidateRect(st.lb_hk_preview, null(), 1);
@@ -7232,7 +9122,10 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
     }
     let target = state.vv_popup_target;
     let backspaces = if state.vv_popup_replaces_ime { 0 } else { 2 };
-    let item = state.vv_popup_items.get(index).map(|entry| entry.item.clone());
+    let item = state
+        .vv_popup_items
+        .get(index)
+        .map(|entry| entry.item.clone());
     vv_popup_hide(hwnd, state);
     let Some(item) = item else {
         return;
@@ -7265,7 +9158,12 @@ unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
 fn strip_invisible_text_chars(input: &str) -> String {
     input
         .chars()
-        .filter(|ch| !matches!(ch, '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'))
+        .filter(|ch| {
+            !matches!(
+                ch,
+                '\u{feff}' | '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{2060}'
+            )
+        })
         .collect()
 }
 
@@ -7290,7 +9188,9 @@ fn strip_markdown_links_and_images(input: &str) -> String {
                 }
             }
         }
-        let ch = input[i..].chars().next().unwrap();
+        let Some(ch) = input[i..].chars().next() else {
+            break;
+        };
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -7319,7 +9219,9 @@ fn strip_markdown_prefix(line: &str) -> String {
         return trimmed[idx + 1..].to_string();
     }
 
-    for prefix in ["- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "* [X] ", "- ", "* ", "+ "] {
+    for prefix in [
+        "- [ ] ", "- [x] ", "- [X] ", "* [ ] ", "* [x] ", "* [X] ", "- ", "* ", "+ ",
+    ] {
         if let Some(rest) = trimmed.strip_prefix(prefix) {
             return rest.to_string();
         }
@@ -7356,11 +9258,7 @@ fn looks_like_markdown_document(input: &str) -> bool {
                 || trimmed.starts_with("![")
                 || trimmed.starts_with("- [")
                 || trimmed.starts_with("* [")
-                || trimmed
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_digit())
-                    .count()
-                    > 0
+                || trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count() > 0
                     && (trimmed.contains(". ") || trimmed.contains(") "))
         })
 }
@@ -7526,7 +9424,6 @@ unsafe fn begin_file_drag(_hwnd: HWND, paths: &[PathBuf]) -> bool {
     drag_hr >= 0
 }
 
-
 fn export_dir() -> PathBuf {
     let dir = data_dir().join("exports");
     let _ = fs::create_dir_all(&dir);
@@ -7534,17 +9431,36 @@ fn export_dir() -> PathBuf {
 }
 
 fn sanitize_export_name(name: &str, fallback: &str) -> String {
-    let mut s = name.chars().take(40).map(|ch| {
-        if matches!(ch, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { ch }
-    }).collect::<String>().trim().to_string();
-    if s.is_empty() { s = fallback.to_string(); }
+    let mut s = name
+        .chars()
+        .take(40)
+        .map(|ch| {
+            if matches!(ch, '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if s.is_empty() {
+        s = fallback.to_string();
+    }
     s
 }
 
 fn materialize_item_as_file(item: &ClipItem) -> Option<PathBuf> {
     let base = export_dir();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
-    let suffix = if item.id > 0 { item.id.to_string() } else { ts.to_string() };
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+    let suffix = if item.id > 0 {
+        item.id.to_string()
+    } else {
+        ts.to_string()
+    };
     match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             let name = sanitize_export_name(&item.preview, "text");
@@ -7565,13 +9481,19 @@ fn materialize_item_as_file(item: &ClipItem) -> Option<PathBuf> {
             }
             Some(path)
         }
-        ClipKind::Files => item.file_paths.as_ref().and_then(|v| v.first()).map(PathBuf::from),
+        ClipKind::Files => item
+            .file_paths
+            .as_ref()
+            .and_then(|v| v.first())
+            .map(PathBuf::from),
     }
 }
 
 fn drag_export_paths_for_item(item: &ClipItem) -> Vec<PathBuf> {
     match item.kind {
-        ClipKind::Text | ClipKind::Phrase | ClipKind::Image => materialize_item_as_file(item).into_iter().collect(),
+        ClipKind::Text | ClipKind::Phrase | ClipKind::Image => {
+            materialize_item_as_file(item).into_iter().collect()
+        }
         ClipKind::Files => Vec::new(),
     }
 }
@@ -7593,10 +9515,17 @@ pub(crate) struct OcrImageInput {
     pub(crate) delete_after: bool,
 }
 
-pub(crate) fn write_image_bytes_to_ocr_temp_path(bytes: &[u8], width: u32, height: u32) -> Option<PathBuf> {
+pub(crate) fn write_image_bytes_to_ocr_temp_path(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<PathBuf> {
     let base = std::env::temp_dir().join("zsclip").join("ocr");
     let _ = fs::create_dir_all(&base);
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
     let out = base.join(format!("ocr_{}.png", ts));
     write_image_bytes_to_path(&out, bytes, width, height)
 }
@@ -7607,28 +9536,34 @@ pub(crate) fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
             if let Some(path) = item.image_path.as_ref() {
                 let src = PathBuf::from(path);
                 if src.is_file() && is_supported_ocr_image_path(&src) {
-                    return Some(OcrImageInput { path: src, delete_after: false });
+                    return Some(OcrImageInput {
+                        path: src,
+                        delete_after: false,
+                    });
                 }
             }
             let (bytes, width, height) = ensure_item_image_bytes(item)?;
             let path = write_image_bytes_to_ocr_temp_path(&bytes, width as u32, height as u32)?;
-            Some(OcrImageInput { path, delete_after: true })
+            Some(OcrImageInput {
+                path,
+                delete_after: true,
+            })
         }
-        ClipKind::Files => item
-            .file_paths
-            .as_ref()
-            .and_then(|paths| {
-                if paths.len() == 1 {
-                    let path = PathBuf::from(paths[0].clone());
-                    if path.is_file() && is_supported_ocr_image_path(&path) {
-                        Some(OcrImageInput { path, delete_after: false })
-                    } else {
-                        None
-                    }
+        ClipKind::Files => item.file_paths.as_ref().and_then(|paths| {
+            if paths.len() == 1 {
+                let path = PathBuf::from(paths[0].clone());
+                if path.is_file() && is_supported_ocr_image_path(&path) {
+                    Some(OcrImageInput {
+                        path,
+                        delete_after: false,
+                    })
                 } else {
                     None
                 }
-            }),
+            } else {
+                None
+            }
+        }),
         _ => None,
     }
 }
@@ -7642,7 +9577,11 @@ fn text_input_for_translate(item: &ClipItem) -> Option<String> {
             .filter(|s| !s.is_empty())
             .or_else(|| {
                 let s = item.preview.trim();
-                if s.is_empty() { None } else { Some(s.to_string()) }
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
             }),
         _ => None,
     }
@@ -7653,18 +9592,37 @@ unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem)
     std::thread::spawn(move || {
         let result = match settings.image_ocr_provider.as_str() {
             "baidu" => image_input_for_ocr(&item)
-                .ok_or_else(|| tr("当前记录没有可识别的图片文件", "This item does not contain a recognizable image file").to_string())
+                .ok_or_else(|| {
+                    tr(
+                        "当前记录没有可识别的图片文件",
+                        "This item does not contain a recognizable image file",
+                    )
+                    .to_string()
+                })
                 .and_then(|input| {
-                    let result = fs::read(&input.path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|bytes| run_baidu_ocr_api(&settings.image_ocr_cloud_url, &settings.image_ocr_cloud_token, &bytes));
+                    let result =
+                        fs::read(&input.path)
+                            .map_err(|e| e.to_string())
+                            .and_then(|bytes| {
+                                run_baidu_ocr_api(
+                                    &settings.image_ocr_cloud_url,
+                                    &settings.image_ocr_cloud_token,
+                                    &bytes,
+                                )
+                            });
                     if input.delete_after {
                         let _ = fs::remove_file(&input.path);
                     }
                     result
                 }),
             "winocr" => image_input_for_ocr(&item)
-                .ok_or_else(|| tr("当前记录没有可识别的图片文件", "This item does not contain a recognizable image file").to_string())
+                .ok_or_else(|| {
+                    tr(
+                        "当前记录没有可识别的图片文件",
+                        "This item does not contain a recognizable image file",
+                    )
+                    .to_string()
+                })
                 .and_then(|input| {
                     let result = run_winocr_dll_ocr(&input.path, &settings.image_ocr_wechat_dir);
                     if input.delete_after {
@@ -7672,7 +9630,11 @@ unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem)
                     }
                     result
                 }),
-            _ => Err(tr("请先在设置-插件中启用图片 OCR", "Please enable Image OCR in Settings > Plugins first").to_string()),
+            _ => Err(tr(
+                "请先在设置-插件中启用图片 OCR",
+                "Please enable Image OCR in Settings > Plugins first",
+            )
+            .to_string()),
         };
 
         let payload = match result {
@@ -7686,12 +9648,7 @@ unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem)
             },
         };
         let _ = unsafe {
-            PostMessageW(
-                hwnd_value as HWND,
-                WM_IMAGE_OCR_READY,
-                0,
-                Box::into_raw(Box::new(payload)) as LPARAM,
-            )
+            post_boxed_message(hwnd_value as HWND, WM_IMAGE_OCR_READY, 0, Box::new(payload))
         };
     });
 }
@@ -7701,7 +9658,13 @@ unsafe fn spawn_text_translate_job(hwnd: HWND, settings: AppSettings, item: Clip
     std::thread::spawn(move || {
         let result = match settings.text_translate_provider.as_str() {
             "baidu" => text_input_for_translate(&item)
-                .ok_or_else(|| tr("当前记录没有可翻译的文本", "This item does not contain translatable text").to_string())
+                .ok_or_else(|| {
+                    tr(
+                        "当前记录没有可翻译的文本",
+                        "This item does not contain translatable text",
+                    )
+                    .to_string()
+                })
                 .and_then(|text| {
                     run_baidu_translate_api(
                         &settings.text_translate_app_id,
@@ -7710,7 +9673,11 @@ unsafe fn spawn_text_translate_job(hwnd: HWND, settings: AppSettings, item: Clip
                         &settings.text_translate_target_lang,
                     )
                 }),
-            _ => Err(tr("请先在设置-插件中启用文本翻译", "Please enable Text Translate in Settings > Plugins first").to_string()),
+            _ => Err(tr(
+                "请先在设置-插件中启用文本翻译",
+                "Please enable Text Translate in Settings > Plugins first",
+            )
+            .to_string()),
         };
 
         let payload = match result {
@@ -7724,11 +9691,11 @@ unsafe fn spawn_text_translate_job(hwnd: HWND, settings: AppSettings, item: Clip
             },
         };
         let _ = unsafe {
-            PostMessageW(
+            post_boxed_message(
                 hwnd_value as HWND,
                 WM_TEXT_TRANSLATE_READY,
                 0,
-                Box::into_raw(Box::new(payload)) as LPARAM,
+                Box::new(payload),
             )
         };
     });
@@ -7775,111 +9742,331 @@ unsafe fn show_row_menu(
     }
     apply_theme_to_menu(menu as _);
     let groups = state.groups_for_tab(tab_index);
-    let group_menu = if state.settings.grouping_enabled { CreatePopupMenu() } else { null_mut() };
+    let group_menu = if state.settings.grouping_enabled {
+        CreatePopupMenu()
+    } else {
+        null_mut()
+    };
     if !group_menu.is_null() {
         apply_theme_to_menu(group_menu as _);
         if groups.is_empty() {
-            AppendMenuW(group_menu, MF_GRAYED | MF_STRING, 0xFFFFusize, to_wide(translate("（暂无分组）").as_ref()).as_ptr());
+            AppendMenuW(
+                group_menu,
+                MF_GRAYED | MF_STRING,
+                0xFFFFusize,
+                to_wide(translate("（暂无分组）").as_ref()).as_ptr(),
+            );
         } else {
             for (idx, g) in groups.iter().enumerate() {
-                AppendMenuW(group_menu, MF_STRING, IDM_ROW_GROUP_BASE + idx, to_wide(&g.name).as_ptr());
+                AppendMenuW(
+                    group_menu,
+                    MF_STRING,
+                    IDM_ROW_GROUP_BASE + idx,
+                    to_wide(&g.name).as_ptr(),
+                );
             }
         }
     }
     if selected_count > 1 {
-        AppendMenuW(menu, MF_STRING, IDM_ROW_COPY, to_wide(translate("合并复制").as_ref()).as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, null());
-        let pin_text = if has_unpinned { "置顶所选" } else { "取消置顶" };
-        AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide(translate("添加到短语").as_ref()).as_ptr());
-        if !group_menu.is_null() {
-            AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
-        }
-        AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
-        AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除所选").as_ref()).as_ptr());
         AppendMenuW(
             menu,
-            if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+            MF_STRING,
+            IDM_ROW_COPY,
+            to_wide(translate("合并复制").as_ref()).as_ptr(),
+        );
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let pin_text = if has_unpinned {
+            "置顶所选"
+        } else {
+            "取消置顶"
+        };
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_ROW_PIN,
+            to_wide(translate(pin_text).as_ref()).as_ptr(),
+        );
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_ROW_TO_PHRASE,
+            to_wide(translate("添加到短语").as_ref()).as_ptr(),
+        );
+        if !group_menu.is_null() {
+            AppendMenuW(
+                menu,
+                MF_POPUP,
+                group_menu as usize,
+                to_wide(translate("添加到分组").as_ref()).as_ptr(),
+            );
+        }
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_ROW_GROUP_REMOVE,
+            to_wide(translate("移出分组").as_ref()).as_ptr(),
+        );
+        AppendMenuW(
+            menu,
+            MF_STRING,
+            IDM_ROW_DELETE,
+            to_wide(translate("删除所选").as_ref()).as_ptr(),
+        );
+        AppendMenuW(
+            menu,
+            if has_unpinned {
+                MF_STRING
+            } else {
+                MF_GRAYED | MF_STRING
+            },
             IDM_ROW_DELETE_UNPINNED,
             to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
         );
     } else {
         match current_kind {
             ClipKind::Image => {
-                AppendMenuW(menu, MF_STRING, IDM_ROW_STICKER, to_wide(translate("贴图").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_SAVE_IMAGE, to_wide(translate("另存为 PNG").as_ref()).as_ptr());
-                if current_can_ocr {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_IMAGE_OCR, to_wide(tr("图片转文字", "Image OCR")).as_ptr());
-                }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide(translate("导出为文件").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
-                if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
-                }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
                 AppendMenuW(
                     menu,
-                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    MF_STRING,
+                    IDM_ROW_STICKER,
+                    to_wide(translate("贴图").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_SAVE_IMAGE,
+                    to_wide(translate("另存为 PNG").as_ref()).as_ptr(),
+                );
+                if current_can_ocr {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_IMAGE_OCR,
+                        to_wide(tr("图片转文字", "Image OCR")).as_ptr(),
+                    );
+                }
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_EXPORT_FILE,
+                    to_wide(translate("导出为文件").as_ref()).as_ptr(),
+                );
+                AppendMenuW(menu, MF_SEPARATOR, 0, null());
+                let pin_text = if has_unpinned {
+                    "置顶"
+                } else {
+                    "取消置顶"
+                };
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_PIN,
+                    to_wide(translate(pin_text).as_ref()).as_ptr(),
+                );
+                if !group_menu.is_null() {
+                    AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        group_menu as usize,
+                        to_wide(translate("添加到分组").as_ref()).as_ptr(),
+                    );
+                }
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_GROUP_REMOVE,
+                    to_wide(translate("移出分组").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_DELETE,
+                    to_wide(translate("删除").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    if has_unpinned {
+                        MF_STRING
+                    } else {
+                        MF_GRAYED | MF_STRING
+                    },
                     IDM_ROW_DELETE_UNPINNED,
                     to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
                 );
             }
             ClipKind::Files => {
-                let open_text = if current_is_dir { "打开文件夹" } else { "打开文件" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_PATH, to_wide(translate(open_text).as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_OPEN_FOLDER, to_wide(translate("打开所在文件夹").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_COPY_PATH, to_wide(translate("复制路径").as_ref()).as_ptr());
-                if current_can_ocr {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_IMAGE_OCR, to_wide(tr("图片转文字", "Image OCR")).as_ptr());
-                }
-                if state.settings.qr_quick_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_QR_IMAGE, to_wide(tr("快捷转换二维码", "Quick QR Convert")).as_ptr());
-                }
-                if current_is_excel && state.settings.super_mail_merge_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_MAIL_MERGE, to_wide(translate("超级邮件合并").as_ref()).as_ptr());
-                }
-                AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
-                if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
-                }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
+                let open_text = if current_is_dir {
+                    "打开文件夹"
+                } else {
+                    "打开文件"
+                };
                 AppendMenuW(
                     menu,
-                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    MF_STRING,
+                    IDM_ROW_OPEN_PATH,
+                    to_wide(translate(open_text).as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_OPEN_FOLDER,
+                    to_wide(translate("打开所在文件夹").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_COPY_PATH,
+                    to_wide(translate("复制路径").as_ref()).as_ptr(),
+                );
+                if current_can_ocr {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_IMAGE_OCR,
+                        to_wide(tr("图片转文字", "Image OCR")).as_ptr(),
+                    );
+                }
+                if state.settings.qr_quick_enabled {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_QR_IMAGE,
+                        to_wide(tr("快捷转换二维码", "Quick QR Convert")).as_ptr(),
+                    );
+                }
+                if current_is_excel && state.settings.super_mail_merge_enabled {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_MAIL_MERGE,
+                        to_wide(translate("超级邮件合并").as_ref()).as_ptr(),
+                    );
+                }
+                AppendMenuW(menu, MF_SEPARATOR, 0, null());
+                let pin_text = if has_unpinned {
+                    "置顶"
+                } else {
+                    "取消置顶"
+                };
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_PIN,
+                    to_wide(translate(pin_text).as_ref()).as_ptr(),
+                );
+                if !group_menu.is_null() {
+                    AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        group_menu as usize,
+                        to_wide(translate("添加到分组").as_ref()).as_ptr(),
+                    );
+                }
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_GROUP_REMOVE,
+                    to_wide(translate("移出分组").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_DELETE,
+                    to_wide(translate("删除").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    if has_unpinned {
+                        MF_STRING
+                    } else {
+                        MF_GRAYED | MF_STRING
+                    },
                     IDM_ROW_DELETE_UNPINNED,
                     to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
                 );
             }
             _ => {
-                let pin_text = if has_unpinned { "置顶" } else { "取消置顶" };
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EDIT, to_wide(translate("编辑").as_ref()).as_ptr());
-                if state.settings.quick_search_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_QUICK_SEARCH, to_wide(translate("快速搜索").as_ref()).as_ptr());
-                }
-                if current_can_translate {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_TEXT_TRANSLATE, to_wide(tr("文本翻译", "Text Translate")).as_ptr());
-                }
-                if state.settings.qr_quick_enabled {
-                    AppendMenuW(menu, MF_STRING, IDM_ROW_QR_IMAGE, to_wide(tr("快捷转换二维码", "Quick QR Convert")).as_ptr());
-                }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_EXPORT_FILE, to_wide(translate("导出为文件").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_SEPARATOR, 0, null());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_PIN, to_wide(translate(pin_text).as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_TO_PHRASE, to_wide(translate("添加到短语").as_ref()).as_ptr());
-                if !group_menu.is_null() {
-                    AppendMenuW(menu, MF_POPUP, group_menu as usize, to_wide(translate("添加到分组").as_ref()).as_ptr());
-                }
-                AppendMenuW(menu, MF_STRING, IDM_ROW_GROUP_REMOVE, to_wide(translate("移出分组").as_ref()).as_ptr());
-                AppendMenuW(menu, MF_STRING, IDM_ROW_DELETE, to_wide(translate("删除").as_ref()).as_ptr());
+                let pin_text = if has_unpinned {
+                    "置顶"
+                } else {
+                    "取消置顶"
+                };
                 AppendMenuW(
                     menu,
-                    if has_unpinned { MF_STRING } else { MF_GRAYED | MF_STRING },
+                    MF_STRING,
+                    IDM_ROW_EDIT,
+                    to_wide(translate("编辑").as_ref()).as_ptr(),
+                );
+                if state.settings.quick_search_enabled {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_QUICK_SEARCH,
+                        to_wide(translate("快速搜索").as_ref()).as_ptr(),
+                    );
+                }
+                if current_can_translate {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_TEXT_TRANSLATE,
+                        to_wide(tr("文本翻译", "Text Translate")).as_ptr(),
+                    );
+                }
+                if state.settings.qr_quick_enabled {
+                    AppendMenuW(
+                        menu,
+                        MF_STRING,
+                        IDM_ROW_QR_IMAGE,
+                        to_wide(tr("快捷转换二维码", "Quick QR Convert")).as_ptr(),
+                    );
+                }
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_EXPORT_FILE,
+                    to_wide(translate("导出为文件").as_ref()).as_ptr(),
+                );
+                AppendMenuW(menu, MF_SEPARATOR, 0, null());
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_PIN,
+                    to_wide(translate(pin_text).as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_TO_PHRASE,
+                    to_wide(translate("添加到短语").as_ref()).as_ptr(),
+                );
+                if !group_menu.is_null() {
+                    AppendMenuW(
+                        menu,
+                        MF_POPUP,
+                        group_menu as usize,
+                        to_wide(translate("添加到分组").as_ref()).as_ptr(),
+                    );
+                }
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_GROUP_REMOVE,
+                    to_wide(translate("移出分组").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    MF_STRING,
+                    IDM_ROW_DELETE,
+                    to_wide(translate("删除").as_ref()).as_ptr(),
+                );
+                AppendMenuW(
+                    menu,
+                    if has_unpinned {
+                        MF_STRING
+                    } else {
+                        MF_GRAYED | MF_STRING
+                    },
                     IDM_ROW_DELETE_UNPINNED,
                     to_wide(translate("删除除置顶以外").as_ref()).as_ptr(),
                 );
@@ -7889,7 +10076,10 @@ unsafe fn show_row_menu(
 
     let mut rc: RECT = zeroed();
     GetWindowRect(hwnd, &mut rc);
-    let pt = POINT { x: rc.left + x, y: rc.top + y };
+    let pt = POINT {
+        x: rc.left + x,
+        y: rc.top + y,
+    };
     SetForegroundWindow(hwnd);
     let cmd = TrackPopupMenu(
         menu,
@@ -7906,7 +10096,13 @@ unsafe fn show_row_menu(
     cmd
 }
 
-unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, state: &AppState) -> usize {
+unsafe fn show_group_filter_menu(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    tab_index: usize,
+    state: &AppState,
+) -> usize {
     if !state.settings.grouping_enabled {
         return 0;
     }
@@ -7921,13 +10117,31 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
     } else {
         state.current_group_filter
     };
-    let all_flags = if cur_gid == 0 { MF_STRING | MF_CHECKED } else { MF_STRING };
-    AppendMenuW(menu, all_flags, IDM_GROUP_FILTER_ALL, to_wide(translate("全部").as_ref()).as_ptr());
+    let all_flags = if cur_gid == 0 {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
+    AppendMenuW(
+        menu,
+        all_flags,
+        IDM_GROUP_FILTER_ALL,
+        to_wide(translate("全部").as_ref()).as_ptr(),
+    );
     if !groups.is_empty() {
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         for (idx, g) in groups.iter().enumerate() {
-            let flags = if cur_gid == g.id { MF_STRING | MF_CHECKED } else { MF_STRING };
-            AppendMenuW(menu, flags, IDM_GROUP_FILTER_BASE + idx, to_wide(&g.name).as_ptr());
+            let flags = if cur_gid == g.id {
+                MF_STRING | MF_CHECKED
+            } else {
+                MF_STRING
+            };
+            AppendMenuW(
+                menu,
+                flags,
+                IDM_GROUP_FILTER_BASE + idx,
+                to_wide(&g.name).as_ptr(),
+            );
         }
     }
     SetForegroundWindow(hwnd);
@@ -7946,7 +10160,6 @@ unsafe fn show_group_filter_menu(hwnd: HWND, x: i32, y: i32, tab_index: usize, s
     vv_set_popup_menu_active(false);
     cmd
 }
-
 
 fn clear_hotkey_passthrough_state(state: &mut AppState) {
     state.hotkey_passthrough_active = false;
@@ -8021,12 +10234,17 @@ unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -> bool {
     if focus.is_null() {
         return true;
     }
-    GetAncestor(focus, GA_ROOT) == target || focus == target || focus == state.hotkey_passthrough_focus
+    GetAncestor(focus, GA_ROOT) == target
+        || focus == target
+        || focus == state.hotkey_passthrough_focus
 }
 
 unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> String {
     let detail = if target.is_null() || IsWindow(target) == 0 {
-        tr("目标窗口已经关闭。", "The target window is no longer available.")
+        tr(
+            "目标窗口已经关闭。",
+            "The target window is no longer available.",
+        )
     } else if GetForegroundWindow() != target {
         tr(
             "未能把目标窗口切到前台。",
@@ -8055,7 +10273,10 @@ unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> St
                 "The current focus is no longer inside the target input area.",
             )
         } else {
-            tr("目标窗口拒绝了粘贴。", "The target window rejected the paste action.")
+            tr(
+                "目标窗口拒绝了粘贴。",
+                "The target window rejected the paste action.",
+            )
         }
     };
     format!(
@@ -8081,10 +10302,7 @@ unsafe fn show_paste_failure_message(hwnd: HWND, state: &AppState, target: HWND)
 unsafe fn show_clipboard_write_failure_message(hwnd: HWND) {
     MessageBoxW(
         hwnd,
-        to_wide(
-            translate("内容未能写入系统剪贴板，请重试一次。").as_ref(),
-        )
-        .as_ptr(),
+        to_wide(translate("内容未能写入系统剪贴板，请重试一次。").as_ref()).as_ptr(),
         to_wide(translate("复制失败").as_ref()).as_ptr(),
         MB_OK | MB_ICONWARNING,
     );
@@ -8111,7 +10329,13 @@ unsafe fn paste_after_clipboard_ready(hwnd: HWND, state: &mut AppState, hide_mai
     paste_after_clipboard_ready_to_target(hwnd, state, target, hide_main, 0);
 }
 
-unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState, target: HWND, hide_main: bool, backspaces: u8) {
+unsafe fn paste_after_clipboard_ready_to_target(
+    hwnd: HWND,
+    state: &mut AppState,
+    target: HWND,
+    hide_main: bool,
+    backspaces: u8,
+) {
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
     if !target.is_null() {
@@ -8130,10 +10354,8 @@ unsafe fn paste_after_clipboard_ready_to_target(hwnd: HWND, state: &mut AppState
         }
         MessageBoxW(
             hwnd,
-            to_wide(
-                translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").as_ref(),
-            )
-            .as_ptr(),
+            to_wide(translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").as_ref())
+                .as_ptr(),
             to_wide(translate("粘贴失败").as_ref()).as_ptr(),
             MB_OK | MB_ICONWARNING,
         );
@@ -8181,7 +10403,9 @@ unsafe fn paint(hwnd: HWND) {
     if app_icon != 0 {
         let app_pad_x = ((layout.title_h - app_size) / 2).max(min_pad);
         let app_pad_y = ((layout.title_h - app_size) / 2).max(min_pad.saturating_sub(1));
-        draw_icon_tinted_soft(memdc as _, app_pad_x, app_pad_y, app_icon, app_size, app_size, false, 0);
+        draw_icon_tinted_soft(
+            memdc as _, app_pad_x, app_pad_y, app_icon, app_size, app_size, false, 0,
+        );
     }
     for key in ["search", "setting", "min", "close"] {
         if !title_button_visible(&state.settings, key) {
@@ -8196,7 +10420,11 @@ unsafe fn paint(hwnd: HWND) {
                 FillRect(memdc, &rc, br);
                 DeleteObject(br as _);
             } else {
-                let col = if down { th.button_pressed } else { th.button_hover };
+                let col = if down {
+                    th.button_pressed
+                } else {
+                    th.button_hover
+                };
                 draw_round_rect(memdc as _, &inflate_rect(&rc, -2, -2), col, 0, 6);
             }
         }
@@ -8229,8 +10457,15 @@ unsafe fn paint(hwnd: HWND) {
         bottom: layout.seg_y + layout.seg_h,
     };
     let (tab0, tab1) = state.segment_rects();
-    draw_main_segment_bar(memdc as _, &seg_rc, &tab0, &tab1, state.tab_index as i32, state.hover_tab, th);
-
+    draw_main_segment_bar(
+        memdc as _,
+        &seg_rc,
+        &tab0,
+        &tab1,
+        state.tab_index as i32,
+        state.hover_tab,
+        th,
+    );
 
     let list_rc = RECT {
         left: layout.list_x,
@@ -8271,7 +10506,9 @@ unsafe fn paint(hwnd: HWND) {
             msg,
             &text_rect,
             th.text_muted,
-            layout.row_muted_text_size().max(scale_for_window(state.hwnd, 13)),
+            layout
+                .row_muted_text_size()
+                .max(scale_for_window(state.hwnd, 13)),
             false,
             true,
         );
@@ -8309,19 +10546,36 @@ unsafe fn paint(hwnd: HWND) {
                 let icon_h = icon_rc.bottom - icon_rc.top;
                 let icon = item_icon_handle(&item, icon_w.max(icon_h));
                 if icon != 0 {
-                    draw_icon_tinted(memdc as _, icon_rc.left, icon_rc.top, icon, icon_w, icon_h, dark);
+                    draw_icon_tinted(
+                        memdc as _,
+                        icon_rc.left,
+                        icon_rc.top,
+                        icon,
+                        icon_w,
+                        icon_h,
+                        dark,
+                    );
                 }
                 text_left = text_left.max(icon_rc.right + (layout.row_h * 12 / 44).clamp(10, 18));
             }
 
             if item.pinned {
-                if let Some(pin_rc) = layout.row_pin_rect(i, state.visible_count(), state.scroll_y) {
+                if let Some(pin_rc) = layout.row_pin_rect(i, state.visible_count(), state.scroll_y)
+                {
                     let pin_w = pin_rc.right - pin_rc.left;
                     let pin_h = pin_rc.bottom - pin_rc.top;
                     if pin_rc.top >= (view_top + 2) && pin_rc.bottom <= (view_bottom - 2) {
                         let pin_icon = icon_handle_for(IconAssetKind::Pin, pin_w.max(pin_h));
                         if pin_icon != 0 {
-                            draw_icon_tinted(memdc as _, pin_rc.left, pin_rc.top, pin_icon, pin_w, pin_h, dark);
+                            draw_icon_tinted(
+                                memdc as _,
+                                pin_rc.left,
+                                pin_rc.top,
+                                pin_icon,
+                                pin_w,
+                                pin_h,
+                                dark,
+                            );
                         }
                     }
                     text_left = text_left.max(pin_rc.right + (layout.row_h * 8 / 44).clamp(8, 16));
@@ -8353,9 +10607,13 @@ unsafe fn paint(hwnd: HWND) {
             if let Some(preview_rc) = row_inline_preview_rect(&row_rc, &item, &state.settings) {
                 let bg = inflate_rect(&preview_rc, 2, 2);
                 draw_round_rect(memdc as _, &bg, th.surface2, th.stroke, 8);
-                let thumb_px = ((preview_rc.right - preview_rc.left).max(preview_rc.bottom - preview_rc.top) + 8)
-                    .clamp(32, 96) as usize;
-                if let Some((bytes, width, height)) = ensure_item_thumbnail_bytes(state, &item, thumb_px) {
+                let thumb_px = ((preview_rc.right - preview_rc.left)
+                    .max(preview_rc.bottom - preview_rc.top)
+                    + 8)
+                .clamp(32, 96) as usize;
+                if let Some((bytes, width, height)) =
+                    ensure_item_thumbnail_bytes(state, &item, thumb_px)
+                {
                     draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc);
                 }
                 row_rc.left = preview_rc.right + (layout.row_h * 10 / 44).clamp(10, 16);
@@ -8425,7 +10683,16 @@ unsafe fn paint(hwnd: HWND) {
                 th.surface
             };
             draw_round_rect(memdc as _, &top_rc, fill, th.stroke, 10);
-            draw_text_ex(memdc as _, "↑", &top_rc, th.text, 18, true, true, "Segoe UI Variable Display");
+            draw_text_ex(
+                memdc as _,
+                "↑",
+                &top_rc,
+                th.text,
+                18,
+                true,
+                true,
+                "Segoe UI Variable Display",
+            );
         }
     }
     RestoreDC(memdc, saved_clip);
@@ -8436,7 +10703,6 @@ unsafe fn paint(hwnd: HWND) {
     DeleteDC(memdc);
     EndPaint(hwnd, &ps);
 }
-
 
 fn build_preview(text: &str) -> String {
     let one_line = text.replace(['\r', '\n'], " ").trim().to_string();
@@ -8454,7 +10720,6 @@ fn build_preview(text: &str) -> String {
         one_line
     }
 }
-
 
 fn build_files_preview(paths: &[String]) -> String {
     if paths.is_empty() {
@@ -8496,7 +10761,8 @@ fn text_payload_for_qr(item: &ClipItem) -> Option<String> {
             .file_paths
             .as_ref()
             .map(|paths| {
-                paths.iter()
+                paths
+                    .iter()
                     .map(|s| s.trim())
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
@@ -8564,7 +10830,10 @@ fn build_qr_clip_item(text: &str) -> Option<(ClipItem, String)> {
 fn output_image_path() -> PathBuf {
     let base = data_dir().join("images");
     let _ = fs::create_dir_all(&base);
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     base.join(format!("zsclip_{}.png", ts))
 }
 
@@ -8710,9 +10979,12 @@ unsafe fn clipboard_file_paths() -> Option<Vec<String>> {
         }
     }
     CloseClipboard();
-    if paths.is_empty() { None } else { Some(paths) }
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
 }
-
 
 fn save_image_item(item: &ClipItem) -> Option<PathBuf> {
     if let Some(path) = item.image_path.as_ref() {
@@ -8741,10 +11013,17 @@ pub(crate) fn ensure_item_image_bytes(item: &ClipItem) -> Option<(Vec<u8>, usize
     if let Some(bytes) = full.image_bytes {
         return Some((bytes, full.image_width, full.image_height));
     }
-    full.image_path.as_deref().and_then(load_image_bytes_from_path)
+    full.image_path
+        .as_deref()
+        .and_then(load_image_bytes_from_path)
 }
 
-fn build_image_thumbnail_rgba(bytes: &[u8], width: usize, height: usize, max_side: usize) -> Option<ImageThumbnail> {
+fn build_image_thumbnail_rgba(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    max_side: usize,
+) -> Option<ImageThumbnail> {
     if bytes.len() < 4 || width == 0 || height == 0 || max_side == 0 {
         return None;
     }
@@ -8775,6 +11054,19 @@ fn build_image_thumbnail_rgba(bytes: &[u8], width: usize, height: usize, max_sid
     })
 }
 
+fn spawn_image_thumbnail_load(hwnd: HWND, item_id: i64, path: String, max_side: usize) {
+    let hwnd_raw = hwnd as isize;
+    std::thread::spawn(move || {
+        let image = load_image_bytes_from_path(&path).and_then(|(bytes, width, height)| {
+            build_image_thumbnail_rgba(&bytes, width, height, max_side)
+        });
+        let payload = Box::new(ImageThumbReadyResult { item_id, image });
+        unsafe {
+            let _ = post_boxed_message(hwnd_raw as HWND, WM_IMAGE_THUMB_READY, 0, payload);
+        }
+    });
+}
+
 fn ensure_item_thumbnail_bytes(
     state: &mut AppState,
     item: &ClipItem,
@@ -8788,7 +11080,10 @@ fn ensure_item_thumbnail_bytes(
     let (bytes, width, height) = if let Some(bytes) = &item.image_bytes {
         (bytes.clone(), item.image_width, item.image_height)
     } else if let Some(path) = item.image_path.as_ref() {
-        load_image_bytes_from_path(path)?
+        if item.id > 0 && state.image_thumb_loading.insert(item.id) {
+            spawn_image_thumbnail_load(state.hwnd, item.id, path.clone(), max_side);
+        }
+        return None;
     } else {
         return None;
     };
@@ -8811,8 +11106,6 @@ fn normalize_captured_image_rgba(
     if bytes.len() < expected {
         return None;
     }
-    const MAX_CAPTURE_PIXELS: usize = 16_000_000;
-    const MAX_CAPTURE_SIDE: usize = 8192;
     if width <= MAX_CAPTURE_SIDE
         && height <= MAX_CAPTURE_SIDE
         && width.saturating_mul(height) <= MAX_CAPTURE_PIXELS
@@ -8820,10 +11113,9 @@ fn normalize_captured_image_rgba(
         return Some((bytes, width, height));
     }
 
-    let scale_by_pixels =
-        ((MAX_CAPTURE_PIXELS as f64) / ((width as f64) * (height as f64))).sqrt();
-    let scale_by_side = (MAX_CAPTURE_SIDE as f64 / width as f64)
-        .min(MAX_CAPTURE_SIDE as f64 / height as f64);
+    let scale_by_pixels = ((MAX_CAPTURE_PIXELS as f64) / ((width as f64) * (height as f64))).sqrt();
+    let scale_by_side =
+        (MAX_CAPTURE_SIDE as f64 / width as f64).min(MAX_CAPTURE_SIDE as f64 / height as f64);
     let scale = scale_by_pixels.min(scale_by_side).min(1.0);
     let out_w = ((width as f64 * scale).round() as usize).max(1);
     let out_h = ((height as f64 * scale).round() as usize).max(1);
@@ -8842,10 +11134,53 @@ fn normalize_captured_image_rgba(
 
 fn read_windows_clipboard_bitmap_rgba() -> Option<(Vec<u8>, usize, usize)> {
     let bmp_bytes: Vec<u8> = clipboard_win::get_clipboard(clipboard_win::formats::Bitmap).ok()?;
+    let (declared_w, declared_h) = clipboard_bitmap_dimensions(&bmp_bytes)?;
+    let declared_pixels = declared_w.checked_mul(declared_h)?;
+    if declared_w > MAX_CAPTURE_SIDE
+        || declared_h > MAX_CAPTURE_SIDE
+        || declared_pixels > MAX_CLIPBOARD_BITMAP_DECODE_PIXELS
+    {
+        return None;
+    }
     let image = image::load_from_memory_with_format(&bmp_bytes, ImageFormat::Bmp).ok()?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     Some((rgba.into_raw(), width as usize, height as usize))
+}
+
+fn clipboard_bitmap_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
+    if bytes.len() < 16 {
+        return None;
+    }
+    if bytes.starts_with(b"BM") && bytes.len() >= 26 {
+        let width = i32::from_le_bytes(bytes.get(18..22)?.try_into().ok()?);
+        let height = i32::from_le_bytes(bytes.get(22..26)?.try_into().ok()?);
+        return bitmap_dimension_pair(width, height);
+    }
+    let header_size = u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?);
+    match header_size {
+        12 if bytes.len() >= 8 => {
+            let width = u16::from_le_bytes(bytes.get(4..6)?.try_into().ok()?) as i32;
+            let height = u16::from_le_bytes(bytes.get(6..8)?.try_into().ok()?) as i32;
+            bitmap_dimension_pair(width, height)
+        }
+        40..=124 if bytes.len() >= 12 => {
+            let width = i32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
+            let height = i32::from_le_bytes(bytes.get(8..12)?.try_into().ok()?);
+            bitmap_dimension_pair(width, height)
+        }
+        _ => None,
+    }
+}
+
+fn bitmap_dimension_pair(width: i32, height: i32) -> Option<(usize, usize)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    Some((
+        width.unsigned_abs() as usize,
+        height.unsigned_abs() as usize,
+    ))
 }
 
 fn hash_bytes(data: &[u8]) -> String {
@@ -8927,7 +11262,12 @@ fn row_inline_preview_rect(row_rc: &RECT, item: &ClipItem, settings: &AppSetting
     let size = ((row_rc.bottom - row_rc.top) - 8).max(24);
     let left = row_rc.left + 2;
     let top = row_rc.top + ((row_rc.bottom - row_rc.top - size) / 2);
-    Some(RECT { left, top, right: left + size, bottom: top + size })
+    Some(RECT {
+        left,
+        top,
+        right: left + size,
+        bottom: top + size,
+    })
 }
 
 fn scroll_to_top_visible(state: &AppState) -> bool {

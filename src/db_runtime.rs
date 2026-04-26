@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
 
@@ -30,10 +31,7 @@ fn ensure_table_column(
     if !table_has_column(conn, table, column)? {
         let table = validate_schema_table(table)?;
         let definition = validate_schema_column_definition(table, column, definition)?;
-        conn.execute(
-            &format!("ALTER TABLE {table} ADD COLUMN {definition}"),
-            [],
-        )?;
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {definition}"), [])?;
     }
     Ok(())
 }
@@ -126,10 +124,20 @@ fn migrate_clip_groups_schema(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
-    ensure_table_column(conn, "items", "category", "category INTEGER NOT NULL DEFAULT 0")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "category",
+        "category INTEGER NOT NULL DEFAULT 0",
+    )?;
     ensure_table_column(conn, "items", "kind", "kind TEXT NOT NULL DEFAULT 'text'")?;
     ensure_table_column(conn, "items", "preview", "preview TEXT NOT NULL DEFAULT ''")?;
-    ensure_table_column(conn, "items", "signature", "signature TEXT NOT NULL DEFAULT ''")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "signature",
+        "signature TEXT NOT NULL DEFAULT ''",
+    )?;
     ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
     ensure_table_column(
         conn,
@@ -153,7 +161,12 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
         "image_height INTEGER NOT NULL DEFAULT 0",
     )?;
     ensure_table_column(conn, "items", "pinned", "pinned INTEGER NOT NULL DEFAULT 0")?;
-    ensure_table_column(conn, "items", "group_id", "group_id INTEGER NOT NULL DEFAULT 0")?;
+    ensure_table_column(
+        conn,
+        "items",
+        "group_id",
+        "group_id INTEGER NOT NULL DEFAULT 0",
+    )?;
     ensure_table_column(
         conn,
         "items",
@@ -208,13 +221,18 @@ fn migrate_phrase_group_assignments(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
+fn configure_db_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.busy_timeout(Duration::from_millis(5_000))?;
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
     let _ = conn.pragma_update(None, "temp_store", "MEMORY");
     let _ = conn.pragma_update(None, "foreign_keys", "ON");
     let _ = conn.pragma_update(None, "cache_size", -8192i32);
     let _ = conn.pragma_update(None, "mmap_size", 134_217_728i64);
+    Ok(())
+}
+
+fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS items(
@@ -257,7 +275,9 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
 fn ensure_connection(cell: &RefCell<Option<Connection>>) -> rusqlite::Result<()> {
     let mut slot = cell.borrow_mut();
     if slot.is_none() {
-        *slot = Some(Connection::open(crate::app::db_file())?);
+        let conn = Connection::open(crate::app::db_file())?;
+        configure_db_connection(&conn)?;
+        *slot = Some(conn);
     }
     if DB_MIGRATED.get().is_none() {
         if let Some(conn) = slot.as_ref() {

@@ -1,4 +1,4 @@
-﻿use std::borrow::Cow;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -86,7 +86,9 @@ fn load_active_translations() -> TranslationMap {
     }
 
     for code in translation_search_codes(current_language_code()) {
-        if let Some(map) = load_translation_from_disk(&code).or_else(|| load_embedded_translation(&code)) {
+        if let Some(map) =
+            load_translation_from_disk(&code).or_else(|| load_embedded_translation(&code))
+        {
             return map;
         }
     }
@@ -111,11 +113,13 @@ fn push_unique_code(codes: &mut Vec<String>, code: &str) {
 }
 
 fn load_translation_from_disk(code: &str) -> Option<TranslationMap> {
-    translation_file_candidates(code).into_iter().find_map(|path| {
-        fs::read_to_string(path)
-            .ok()
-            .and_then(|text| parse_translation_map(&text).ok())
-    })
+    translation_file_candidates(code)
+        .into_iter()
+        .find_map(|path| {
+            fs::read_to_string(path)
+                .ok()
+                .and_then(|text| parse_translation_map(&text).ok())
+        })
 }
 
 fn translation_file_candidates(code: &str) -> Vec<PathBuf> {
@@ -211,7 +215,16 @@ fn registry_preferred_ui_language_code() -> Option<String> {
     let key = to_wide("Control Panel\\Desktop");
     let value = to_wide("PreferredUILanguages");
     let mut hkey = 0isize;
-    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER_VAL, key.as_ptr(), 0, KEY_READ_VAL, &mut hkey) } != 0 {
+    if unsafe {
+        RegOpenKeyExW(
+            HKEY_CURRENT_USER_VAL,
+            key.as_ptr(),
+            0,
+            KEY_READ_VAL,
+            &mut hkey,
+        )
+    } != 0
+    {
         return None;
     }
 
@@ -255,7 +268,10 @@ fn registry_preferred_ui_language_code() -> Option<String> {
     match reg_type {
         REG_MULTI_SZ_VAL => first_locale_from_multi_sz(&buffer),
         REG_SZ_VAL => {
-            let end = buffer.iter().position(|&ch| ch == 0).unwrap_or(buffer.len());
+            let end = buffer
+                .iter()
+                .position(|&ch| ch == 0)
+                .unwrap_or(buffer.len());
             sanitize_locale_code(&String::from_utf16_lossy(&buffer[..end]))
         }
         _ => None,

@@ -1,34 +1,32 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::mem::zeroed;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use crate::i18n::translate;
 pub use crate::settings_model::SettingsPage;
 pub use crate::settings_render::{
-    draw_settings_nav_item, draw_settings_page_cards, nav_divider_x,
-    settings_title_rect_win,
+    draw_settings_nav_item, draw_settings_page_cards, nav_divider_x, settings_title_rect_win,
 };
-use crate::i18n::translate;
 pub use crate::settings_ui_host::{
-    create_settings_button, create_settings_component, create_settings_dropdown_button, create_settings_edit,
-    create_settings_fonts, create_settings_label, create_settings_label_auto, create_settings_listbox,
-    create_settings_password_edit, create_settings_small_button, create_settings_toggle_plain,
-    draw_settings_button_component, draw_settings_toggle_component, draw_text_wide_centered, get_ctrl_text_wide,
-    set_settings_font, settings_child_visible, settings_dropdown_index_for_max_items,
-    settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items,
-    settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label,
-    settings_dropdown_pos_mode_from_label, settings_safe_paint_rect, settings_viewport_mask_rect,
-    settings_viewport_rect, show_settings_dropdown_popup, SettingsComponentKind, SettingsCtrlReg,
-    SettingsUiRegistry, WM_SETTINGS_DROPDOWN_SELECTED,
+    create_settings_button, create_settings_component, create_settings_dropdown_button,
+    create_settings_edit, create_settings_fonts, create_settings_label, create_settings_label_auto,
+    create_settings_listbox, create_settings_password_edit, create_settings_small_button,
+    create_settings_toggle_plain, draw_settings_button_component, draw_settings_toggle_component,
+    draw_text_wide_centered, get_ctrl_text_wide, set_settings_font, settings_child_visible,
+    settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode,
+    settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode,
+    settings_dropdown_max_items_from_label, settings_dropdown_pos_mode_from_label,
+    settings_safe_paint_rect, settings_viewport_mask_rect, settings_viewport_rect,
+    show_settings_dropdown_popup, SettingsComponentKind, SettingsCtrlReg, SettingsUiRegistry,
+    WM_SETTINGS_DROPDOWN_SELECTED,
 };
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::{
         CreateFontW, DrawTextW, GetDC, GetDeviceCaps, GetStockObject, MonitorFromPoint,
         MonitorFromWindow, ReleaseDC, SelectObject, SetBkMode, SetTextColor, DEFAULT_GUI_FONT,
-        LOGPIXELSX, LOGPIXELSY,
-        MONITOR_DEFAULTTONEAREST,
+        LOGPIXELSX, LOGPIXELSY, MONITOR_DEFAULTTONEAREST,
     },
     System::Ole::DROPEFFECT,
     UI::{
@@ -37,16 +35,15 @@ use windows_sys::Win32::{
             KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_MENU, VK_SHIFT, VK_V,
         },
         WindowsAndMessaging::{
-            GA_ROOT, GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-            IsWindow, SetForegroundWindow, SystemParametersInfoW, WindowFromPoint,
+            GetAncestor, GetParent, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow,
+            SetForegroundWindow, SystemParametersInfoW, WindowFromPoint, GA_ROOT,
         },
     },
 };
 
 use crate::win_system_params::{
-    DRAGDROP_S_CANCEL_HR, DRAGDROP_S_DROP_HR, DRAGDROP_S_USEDEFAULTCURSORS_HR,
-    E_NOINTERFACE_HR, E_POINTER_HR, IID_IDROPSOURCE_RAW, IID_IUNKNOWN_RAW, MK_LBUTTON_FLAG,
-    S_OK_HR,
+    DRAGDROP_S_CANCEL_HR, DRAGDROP_S_DROP_HR, DRAGDROP_S_USEDEFAULTCURSORS_HR, E_NOINTERFACE_HR,
+    E_POINTER_HR, IID_IDROPSOURCE_RAW, IID_IUNKNOWN_RAW, MK_LBUTTON_FLAG, S_OK_HR,
 };
 
 const HKEY_CURRENT_USER: isize = -2147483647i32 as isize;
@@ -93,7 +90,9 @@ struct RawNonClientMetricsW {
 }
 
 static SYSTEM_UI_FONT_FAMILY: OnceLock<String> = OnceLock::new();
-static SCALED_FONT_CACHE: OnceLock<Mutex<HashMap<(String, i32, i32, i32), isize>>> = OnceLock::new();
+static SCALED_FONT_CACHE: OnceLock<Mutex<HashMap<(String, i32, i32, i32), isize>>> =
+    OnceLock::new();
+static DPI_AWARENESS_CACHE: AtomicU32 = AtomicU32::new(0);
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -194,7 +193,11 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
     let font_name = resolve_ui_font_family(family);
     let hdc_dpi = GetDeviceCaps(hdc as _, LOGPIXELSY as i32).max(96) as u32;
     let override_dpi = paint_dpi_override();
-    let dpi = if override_dpi > hdc_dpi { override_dpi as i32 } else { hdc_dpi as i32 };
+    let dpi = if override_dpi > hdc_dpi {
+        override_dpi as i32
+    } else {
+        hdc_dpi as i32
+    };
     let scaled_size = ((size.max(1) * dpi) + 48) / 96;
     let key = (font_name.to_string(), dpi, scaled_size, weight);
     let cache = SCALED_FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -242,11 +245,7 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
     }
 }
 
-pub(crate) unsafe fn create_font_px(
-    family: &str,
-    pixel_size: i32,
-    weight: i32,
-) -> *mut c_void {
+pub(crate) unsafe fn create_font_px(family: &str, pixel_size: i32, weight: i32) -> *mut c_void {
     CreateFontW(
         -pixel_size.max(1),
         0,
@@ -287,13 +286,21 @@ pub(crate) unsafe fn draw_translated_text_line(
         font
     };
     let old = SelectObject(hdc as _, font as _);
-    let flags =
-        (if center { crate::ui::DT_CENTER } else { crate::ui::DT_LEFT })
-        | crate::ui::DT_VCENTER
+    let flags = (if center {
+        crate::ui::DT_CENTER
+    } else {
+        crate::ui::DT_LEFT
+    }) | crate::ui::DT_VCENTER
         | crate::ui::DT_SINGLELINE
         | crate::ui::DT_END_ELLIPSIS
         | flags_extra;
-    DrawTextW(hdc as _, to_wide(translated.as_ref()).as_ptr(), -1, rc, flags);
+    DrawTextW(
+        hdc as _,
+        to_wide(translated.as_ref()).as_ptr(),
+        -1,
+        rc,
+        flags,
+    );
     SelectObject(hdc as _, old);
 }
 
@@ -319,7 +326,13 @@ pub(crate) unsafe fn draw_translated_text_block(
     };
     let old = SelectObject(hdc as _, font as _);
     let flags = crate::ui::DT_LEFT | crate::ui::DT_WORDBREAK | crate::ui::DT_NOPREFIX | flags_extra;
-    DrawTextW(hdc as _, to_wide(translated.as_ref()).as_ptr(), -1, rc, flags);
+    DrawTextW(
+        hdc as _,
+        to_wide(translated.as_ref()).as_ptr(),
+        -1,
+        rc,
+        flags,
+    );
     SelectObject(hdc as _, old);
 }
 
@@ -436,36 +449,121 @@ pub(crate) unsafe fn init_dpi_awareness_for_process() {
         )) {
             const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4isize;
             if f(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != 0 {
+                DPI_AWARENESS_CACHE.store(0, Ordering::Relaxed);
                 FreeLibrary(user32);
                 return;
             }
         }
+        FreeLibrary(user32);
+    }
 
+    let shcore = LoadLibraryW(to_wide("shcore.dll").as_ptr());
+    if !shcore.is_null() {
+        type FnSetAwareness = unsafe extern "system" fn(i32) -> i32;
+        if let Some(f) = core::mem::transmute::<_, Option<FnSetAwareness>>(GetProcAddress(
+            shcore,
+            b"SetProcessDpiAwareness\0".as_ptr(),
+        )) {
+            const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
+            if f(PROCESS_PER_MONITOR_DPI_AWARE) == 0 {
+                DPI_AWARENESS_CACHE.store(0, Ordering::Relaxed);
+                FreeLibrary(shcore);
+                return;
+            }
+        }
+        FreeLibrary(shcore);
+    }
+
+    let user32 = LoadLibraryW(to_wide("user32.dll").as_ptr());
+    if !user32.is_null() {
         type FnSetAware = unsafe extern "system" fn() -> i32;
         if let Some(f) = core::mem::transmute::<_, Option<FnSetAware>>(GetProcAddress(
             user32,
             b"SetProcessDPIAware\0".as_ptr(),
         )) {
             let _ = f();
+            DPI_AWARENESS_CACHE.store(0, Ordering::Relaxed);
             FreeLibrary(user32);
             return;
         }
         FreeLibrary(user32);
     }
+}
+
+unsafe fn detect_per_monitor_dpi_awareness() -> bool {
+    use windows_sys::Win32::Foundation::FreeLibrary;
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+
+    let user32 = LoadLibraryW(to_wide("user32.dll").as_ptr());
+    if !user32.is_null() {
+        type FnGetThreadCtx = unsafe extern "system" fn() -> isize;
+        type FnAreCtxEqual = unsafe extern "system" fn(isize, isize) -> i32;
+        type FnGetAwareness = unsafe extern "system" fn(isize) -> i32;
+        let get_ctx = core::mem::transmute::<_, Option<FnGetThreadCtx>>(GetProcAddress(
+            user32,
+            b"GetThreadDpiAwarenessContext\0".as_ptr(),
+        ));
+        if let Some(get_ctx) = get_ctx {
+            let ctx = get_ctx();
+            if ctx != 0 {
+                if let Some(eq) = core::mem::transmute::<_, Option<FnAreCtxEqual>>(GetProcAddress(
+                    user32,
+                    b"AreDpiAwarenessContextsEqual\0".as_ptr(),
+                )) {
+                    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE: isize = -3isize;
+                    const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4isize;
+                    if eq(ctx, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) != 0
+                        || eq(ctx, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE) != 0
+                    {
+                        FreeLibrary(user32);
+                        return true;
+                    }
+                }
+                if let Some(get_awareness) = core::mem::transmute::<_, Option<FnGetAwareness>>(
+                    GetProcAddress(user32, b"GetAwarenessFromDpiAwarenessContext\0".as_ptr()),
+                ) {
+                    const DPI_AWARENESS_PER_MONITOR_AWARE: i32 = 2;
+                    if get_awareness(ctx) == DPI_AWARENESS_PER_MONITOR_AWARE {
+                        FreeLibrary(user32);
+                        return true;
+                    }
+                }
+            }
+        }
+        FreeLibrary(user32);
+    }
 
     let shcore = LoadLibraryW(to_wide("shcore.dll").as_ptr());
-    if shcore.is_null() {
-        return;
+    if !shcore.is_null() {
+        type FnGetProcessAwareness =
+            unsafe extern "system" fn(*mut core::ffi::c_void, *mut i32) -> i32;
+        if let Some(get_awareness) = core::mem::transmute::<_, Option<FnGetProcessAwareness>>(
+            GetProcAddress(shcore, b"GetProcessDpiAwareness\0".as_ptr()),
+        ) {
+            let mut awareness = -1i32;
+            const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
+            if get_awareness(null_mut(), &mut awareness) == 0
+                && awareness == PROCESS_PER_MONITOR_DPI_AWARE
+            {
+                FreeLibrary(shcore);
+                return true;
+            }
+        }
+        FreeLibrary(shcore);
     }
-    type FnSetAwareness = unsafe extern "system" fn(i32) -> i32;
-    if let Some(f) = core::mem::transmute::<_, Option<FnSetAwareness>>(GetProcAddress(
-        shcore,
-        b"SetProcessDpiAwareness\0".as_ptr(),
-    )) {
-        const PROCESS_PER_MONITOR_DPI_AWARE: i32 = 2;
-        let _ = f(PROCESS_PER_MONITOR_DPI_AWARE);
+    false
+}
+
+pub(crate) unsafe fn is_per_monitor_dpi_aware() -> bool {
+    match DPI_AWARENESS_CACHE.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let per_monitor = detect_per_monitor_dpi_awareness();
+            DPI_AWARENESS_CACHE.store(if per_monitor { 2 } else { 1 }, Ordering::Relaxed);
+            per_monitor
+        }
     }
-    FreeLibrary(shcore);
 }
 
 pub(crate) unsafe fn window_dpi(hwnd: HWND) -> u32 {
@@ -513,52 +611,95 @@ pub(crate) unsafe fn window_dpi(hwnd: HWND) -> u32 {
 }
 
 pub(crate) unsafe fn monitor_dpi_for_point(pt: POINT) -> u32 {
+    let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+    monitor_dpi_for_handle(monitor).unwrap_or_else(|| window_dpi(null_mut()))
+}
+
+unsafe fn monitor_dpi_for_handle(monitor: *mut core::ffi::c_void) -> Option<u32> {
     use windows_sys::Win32::Foundation::FreeLibrary;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
+    if monitor.is_null() {
+        return None;
+    }
+    type FnSetThreadCtx = unsafe extern "system" fn(isize) -> isize;
+    let mut user32 = null_mut();
+    let mut restore_thread_ctx = 0isize;
+    let mut set_thread_ctx: Option<FnSetThreadCtx> = None;
+    if !is_per_monitor_dpi_aware() {
+        user32 = LoadLibraryW(to_wide("user32.dll").as_ptr());
+        if !user32.is_null() {
+            set_thread_ctx = core::mem::transmute::<_, Option<FnSetThreadCtx>>(GetProcAddress(
+                user32,
+                b"SetThreadDpiAwarenessContext\0".as_ptr(),
+            ));
+            if let Some(set_ctx) = set_thread_ctx {
+                const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: isize = -4isize;
+                const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE: isize = -3isize;
+                restore_thread_ctx = set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                if restore_thread_ctx == 0 {
+                    restore_thread_ctx = set_ctx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE);
+                }
+            }
+        }
+    }
     let shcore = LoadLibraryW(to_wide("shcore.dll").as_ptr());
+    let mut result = None;
     if !shcore.is_null() {
-        type FnGetDpiForMonitor = unsafe extern "system" fn(*mut core::ffi::c_void, i32, *mut u32, *mut u32) -> i32;
+        type FnGetDpiForMonitor =
+            unsafe extern "system" fn(*mut core::ffi::c_void, i32, *mut u32, *mut u32) -> i32;
         if let Some(f) = core::mem::transmute::<_, Option<FnGetDpiForMonitor>>(GetProcAddress(
             shcore,
             b"GetDpiForMonitor\0".as_ptr(),
         )) {
-            let monitor = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-            if !monitor.is_null() {
-                let mut dpi_x = 0u32;
-                let mut dpi_y = 0u32;
-                const MDT_EFFECTIVE_DPI: i32 = 0;
-                if f(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 && dpi_x != 0 {
-                    FreeLibrary(shcore);
-                    return dpi_x;
-                }
+            let mut dpi_x = 0u32;
+            let mut dpi_y = 0u32;
+            const MDT_EFFECTIVE_DPI: i32 = 0;
+            if f(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) == 0 && dpi_x != 0 {
+                result = Some(dpi_x);
             }
         }
         FreeLibrary(shcore);
     }
-
-    window_dpi(null_mut())
+    if restore_thread_ctx != 0 {
+        if let Some(set_ctx) = set_thread_ctx {
+            let _ = set_ctx(restore_thread_ctx);
+        }
+    }
+    if !user32.is_null() {
+        FreeLibrary(user32);
+    }
+    result
 }
 
 pub(crate) unsafe fn monitor_dpi_for_window(hwnd: HWND) -> u32 {
     if !hwnd.is_null() {
-        let mut rc: RECT = zeroed();
-        if GetWindowRect(hwnd, &mut rc) != 0 && rc.right > rc.left && rc.bottom > rc.top {
-            let center = POINT {
-                x: rc.left + ((rc.right - rc.left) / 2),
-                y: rc.top + ((rc.bottom - rc.top) / 2),
-            };
-            let dpi = monitor_dpi_for_point(center);
-            if dpi != 0 {
-                return dpi;
-            }
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if let Some(dpi) = monitor_dpi_for_handle(monitor) {
+            return dpi;
         }
     }
     window_dpi(hwnd)
 }
 
+pub(crate) unsafe fn layout_dpi_for_point(pt: POINT) -> u32 {
+    if is_per_monitor_dpi_aware() {
+        monitor_dpi_for_point(pt)
+    } else {
+        window_dpi(null_mut())
+    }
+}
+
+pub(crate) unsafe fn layout_dpi_for_window(hwnd: HWND) -> u32 {
+    if is_per_monitor_dpi_aware() {
+        monitor_dpi_for_window(hwnd)
+    } else {
+        window_dpi(hwnd)
+    }
+}
+
 pub(crate) unsafe fn scale_for_window(hwnd: HWND, value: i32) -> i32 {
-    let dpi = monitor_dpi_for_window(hwnd).max(96) as i32;
+    let dpi = layout_dpi_for_window(hwnd).max(96) as i32;
     ((value * dpi) + 48) / 96
 }
 
@@ -572,7 +713,8 @@ pub(crate) unsafe fn init_dark_mode_for_process() {
     }
 
     type FnSetMode = unsafe extern "system" fn(i32) -> i32;
-    if let Some(f) = core::mem::transmute::<_, Option<FnSetMode>>(GetProcAddress(lib, 135usize as _))
+    if let Some(f) =
+        core::mem::transmute::<_, Option<FnSetMode>>(GetProcAddress(lib, 135usize as _))
     {
         f(if is_dark_mode() { 2 } else { 0 });
     }
@@ -659,12 +801,7 @@ pub(crate) unsafe fn get_window_text(hwnd: HWND) -> String {
 pub(crate) unsafe fn system_mouse_hover_time_ms() -> u32 {
     const SPI_GETMOUSEHOVERTIME: u32 = 0x0066;
     let mut hover_ms = 0u32;
-    if SystemParametersInfoW(
-        SPI_GETMOUSEHOVERTIME,
-        0,
-        &mut hover_ms as *mut _ as _,
-        0,
-    ) != 0
+    if SystemParametersInfoW(SPI_GETMOUSEHOVERTIME, 0, &mut hover_ms as *mut _ as _, 0) != 0
         && hover_ms > 0
     {
         hover_ms
@@ -983,14 +1120,8 @@ pub(crate) unsafe fn caret_accessible_rect(hwnd: HWND) -> Option<RECT> {
     let mut width = 0i32;
     let mut height = 0i32;
     let child = variant_child_self();
-    let location_hr = ((*(*acc).vtbl).acc_location)(
-        obj,
-        &mut left,
-        &mut top,
-        &mut width,
-        &mut height,
-        child,
-    );
+    let location_hr =
+        ((*(*acc).vtbl).acc_location)(obj, &mut left, &mut top, &mut width, &mut height, child);
     release_raw_com(obj);
     if location_hr != S_OK_HR || width <= 0 || height <= 0 {
         return None;

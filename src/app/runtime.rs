@@ -2,6 +2,13 @@ use super::*;
 use std::ptr::{null, null_mut};
 
 const CLOUD_WEBDAV_PASS_ENCRYPTED_KEY: &str = "cloud_webdav_pass_encrypted";
+const SECRET_STORAGE_FIELDS: [(&str, &str); 5] = [
+    ("cloud_webdav_pass", CLOUD_WEBDAV_PASS_ENCRYPTED_KEY),
+    ("image_ocr_cloud_url", "image_ocr_cloud_url_encrypted"),
+    ("image_ocr_cloud_token", "image_ocr_cloud_token_encrypted"),
+    ("text_translate_app_id", "text_translate_app_id_encrypted"),
+    ("text_translate_secret", "text_translate_secret_encrypted"),
+];
 const CRYPTPROTECT_UI_FORBIDDEN: u32 = 0x1;
 
 #[repr(C)]
@@ -151,34 +158,39 @@ pub(super) fn current_cloud_sync_paths() -> CloudSyncPaths {
 }
 
 fn load_settings_from_text(text: &str) -> AppSettings {
-    let mut settings = serde_json::from_str::<AppSettings>(text).unwrap_or_default();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text) {
-        if let Some(enc) = value
-            .get(CLOUD_WEBDAV_PASS_ENCRYPTED_KEY)
-            .and_then(|v| v.as_str())
-        {
-            if let Some(password) = decrypt_secret_from_storage(enc) {
-                settings.cloud_webdav_pass = password;
+    if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(obj) = value.as_object_mut() {
+            for (plain_key, encrypted_key) in SECRET_STORAGE_FIELDS {
+                if let Some(enc) = obj.get(encrypted_key).and_then(|v| v.as_str()) {
+                    if let Some(secret) = decrypt_secret_from_storage(enc) {
+                        obj.insert(plain_key.to_string(), serde_json::Value::String(secret));
+                    }
+                }
             }
         }
+        return serde_json::from_value::<AppSettings>(value).unwrap_or_default();
     }
-    settings
+    AppSettings::default()
 }
 
 fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Error> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(obj) = value.as_object_mut() {
-        obj.insert(
-            "cloud_webdav_pass".to_string(),
-            serde_json::Value::String(String::new()),
-        );
-        if settings.cloud_webdav_pass.trim().is_empty() {
-            obj.remove(CLOUD_WEBDAV_PASS_ENCRYPTED_KEY);
-        } else if let Some(enc) = encrypt_secret_for_storage(&settings.cloud_webdav_pass) {
+        for (plain_key, encrypted_key) in SECRET_STORAGE_FIELDS {
+            let secret = obj
+                .get(plain_key)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
             obj.insert(
-                CLOUD_WEBDAV_PASS_ENCRYPTED_KEY.to_string(),
-                serde_json::Value::String(enc),
+                plain_key.to_string(),
+                serde_json::Value::String(String::new()),
             );
+            if secret.trim().is_empty() {
+                obj.remove(encrypted_key);
+            } else if let Some(enc) = encrypt_secret_for_storage(&secret) {
+                obj.insert(encrypted_key.to_string(), serde_json::Value::String(enc));
+            }
         }
     }
     serde_json::to_string_pretty(&value)
@@ -462,22 +474,14 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
         let run_key = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
         let mut hkey: isize = 0;
         let flags = KEY_READ_VAL | KEY_SET_VALUE;
-        if RegOpenKeyExW(
-            HKEY_CURRENT_USER_VAL,
-            run_key.as_ptr(),
-            0,
-            flags,
-            &mut hkey,
-        ) != 0
-        {
+        if RegOpenKeyExW(HKEY_CURRENT_USER_VAL, run_key.as_ptr(), 0, flags, &mut hkey) != 0 {
             return false;
         }
         let mut changed = false;
         if enabled {
             if let Some(cmdline) = autostart_command_for_current_exe() {
                 let wide = to_wide(&cmdline);
-                let bytes =
-                    std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2);
+                let bytes = std::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * 2);
                 let stable_name = to_wide(AUTOSTART_VALUE_NAME);
                 changed = RegSetValueExW(
                     hkey,

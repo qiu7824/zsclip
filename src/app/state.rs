@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 
 pub(super) const HOTKEY_MOD_OPTIONS: [&str; 8] = [
     "Win",
@@ -12,10 +12,57 @@ pub(super) const HOTKEY_MOD_OPTIONS: [&str; 8] = [
 ];
 
 pub(super) const HOTKEY_KEY_OPTIONS: [&str; 51] = [
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R",
-    "S", "T", "U", "V", "W", "X", "Y", "Z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
-    "Space", "Enter", "Tab", "Esc", "Backspace", "Delete", "Insert", "Up", "Down", "Left",
-    "Right", "Home", "End", "PageUp", "PageDown",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "0",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "Space",
+    "Enter",
+    "Tab",
+    "Esc",
+    "Backspace",
+    "Delete",
+    "Insert",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
 ];
 
 pub(super) const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
@@ -43,10 +90,8 @@ pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 3] = [
     ("winocr", "WinOCR（微信 OCR）"),
 ];
 
-pub(super) const TEXT_TRANSLATE_PROVIDER_OPTIONS: [(&str, &str); 2] = [
-    ("off", "关闭"),
-    ("baidu", "百度翻译"),
-];
+pub(super) const TEXT_TRANSLATE_PROVIDER_OPTIONS: [(&str, &str); 2] =
+    [("off", "关闭"), ("baidu", "百度翻译")];
 
 pub(super) const TEXT_TRANSLATE_TARGET_OPTIONS: [(&str, &str); 4] = [
     ("zh", "简体中文"),
@@ -305,7 +350,11 @@ pub(super) fn group_name_for_display(
 }
 
 pub(super) fn normalize_source_tab(tab: usize) -> usize {
-    if tab == 1 { 1 } else { 0 }
+    if tab == 1 {
+        1
+    } else {
+        0
+    }
 }
 
 pub(super) fn source_tab_category(tab: usize) -> i64 {
@@ -672,7 +721,12 @@ impl AppState {
             role,
             hwnd,
             search_hwnd,
-            ui_dpi: unsafe { crate::win_system_ui::monitor_dpi_for_window(hwnd) },
+            ui_dpi: unsafe { crate::win_system_ui::layout_dpi_for_window(hwnd) },
+            dpi_comp_base_w: 0,
+            dpi_comp_base_h: 0,
+            dpi_comp_base_monitor_dpi: 0,
+            dpi_comp_last_monitor_dpi: 0,
+            dpi_comp_applying: false,
             search_font: null_mut(),
             theme: Theme::default(),
             icons,
@@ -723,6 +777,7 @@ impl AppState {
             tab_loads: [TabLoadState::default(), TabLoadState::default()],
             payload_cache: ItemPayloadCache::default(),
             image_thumb_cache: ImageThumbnailCache::default(),
+            image_thumb_loading: HashSet::new(),
             vv_popup_visible: false,
             vv_popup_pending_target: null_mut(),
             vv_popup_pending_retries: 0,
@@ -796,6 +851,7 @@ impl AppState {
         self.vv_popup_items.shrink_to_fit();
         self.payload_cache.shrink_to_fit();
         self.image_thumb_cache.shrink_to_fit();
+        self.image_thumb_loading.shrink_to_fit();
     }
 
     pub(super) fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {
@@ -954,7 +1010,8 @@ impl AppState {
         if loaded == 0 {
             return;
         }
-        let last_visible = ((self.scroll_y + self.list_view_height()) / self.layout().row_h).max(0) as usize
+        let last_visible = ((self.scroll_y + self.list_view_height()) / self.layout().row_h).max(0)
+            as usize
             + ITEMS_LOAD_AHEAD_ROWS as usize;
         if last_visible >= loaded {
             self.request_tab_page(tab, query, cursor, false);
@@ -1039,4 +1096,3 @@ pub(crate) fn apply_shared_tab_view_state(state: &mut AppState) -> bool {
     state.current_group_filter = next_filters[next_tab];
     changed
 }
-

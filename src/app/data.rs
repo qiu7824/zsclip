@@ -24,7 +24,11 @@ fn split_paths_blob(value: Option<String>) -> Option<Vec<String>> {
         .filter(|item| !item.is_empty())
         .map(|item| item.to_string())
         .collect();
-    if paths.is_empty() { None } else { Some(paths) }
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
 }
 
 fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
@@ -63,6 +67,38 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
         group_id: row.group_id,
         created_at: row.created_at,
     }
+}
+
+fn remove_stored_image_files(paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let root = data_dir().join("images");
+    let root_canon = root.canonicalize().unwrap_or(root);
+    for raw in paths {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(raw);
+        let path_canon = path.canonicalize().unwrap_or(path);
+        if path_canon.starts_with(&root_canon) {
+            let _ = fs::remove_file(path_canon);
+        }
+    }
+}
+
+fn collect_image_paths_for_delete(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> rusqlite::Result<Vec<String>> {
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params, |row| row.get::<_, Option<String>>(0))?;
+    Ok(rows
+        .filter_map(|row| row.ok().flatten())
+        .filter(|path| !path.trim().is_empty())
+        .collect())
 }
 
 fn row_to_clip_item(row: DbItem) -> ClipItem {
@@ -509,10 +545,16 @@ pub(super) fn db_prune_items(category: i64, max_items: usize) {
             .unwrap_or(0);
         let excess = count - max_items as i64;
         if excess > 0 {
+            let paths = collect_image_paths_for_delete(
+                conn,
+                "SELECT image_path FROM items WHERE category=? AND pinned=0 ORDER BY id ASC LIMIT ?",
+                &[&category, &excess],
+            )?;
             conn.execute(
                 "DELETE FROM items WHERE id IN (SELECT id FROM items WHERE category=? AND pinned=0 ORDER BY id ASC LIMIT ?)",
                 params![category, excess],
             )?;
+            remove_stored_image_files(paths);
         }
         Ok(())
     });
@@ -520,17 +562,29 @@ pub(super) fn db_prune_items(category: i64, max_items: usize) {
 
 pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {
     with_db(|conn| {
+        let paths = collect_image_paths_for_delete(
+            conn,
+            "SELECT image_path FROM items WHERE id=?",
+            &[&id],
+        )?;
         conn.execute("DELETE FROM items WHERE id=?", params![id])?;
+        remove_stored_image_files(paths);
         Ok(())
     })
 }
 
 pub(super) fn db_delete_unpinned_items(category: i64) -> rusqlite::Result<usize> {
     with_db(|conn| {
+        let paths = collect_image_paths_for_delete(
+            conn,
+            "SELECT image_path FROM items WHERE category=? AND pinned=0",
+            &[&category],
+        )?;
         let affected = conn.execute(
             "DELETE FROM items WHERE category=? AND pinned=0",
             params![category],
         )?;
+        remove_stored_image_files(paths);
         Ok(affected)
     })
 }
@@ -555,7 +609,10 @@ pub(super) fn db_load_groups(category: i64) -> Vec<ClipGroup> {
 pub(super) fn db_delete_group(group_id: i64) -> rusqlite::Result<()> {
     with_db_mut(|conn| {
         let tx = conn.unchecked_transaction()?;
-        tx.execute("UPDATE items SET group_id=0 WHERE group_id=?", params![group_id])?;
+        tx.execute(
+            "UPDATE items SET group_id=0 WHERE group_id=?",
+            params![group_id],
+        )?;
         tx.execute("DELETE FROM clip_groups WHERE id=?", params![group_id])?;
         tx.commit()?;
         Ok(())
@@ -662,14 +719,21 @@ pub(super) fn reload_state_from_db(state: &mut AppState) -> bool {
     }
     let vv_groups = state.groups_for_tab(state.settings.vv_source_tab);
     if state.settings.vv_group_id > 0
-        && !vv_groups.iter().any(|group| group.id == state.settings.vv_group_id)
+        && !vv_groups
+            .iter()
+            .any(|group| group.id == state.settings.vv_group_id)
     {
         state.settings.vv_group_id = 0;
         settings_changed = true;
     }
     for idx in 0..state.tab_group_filters.len() {
         let gid = state.tab_group_filters[idx];
-        if gid > 0 && !state.groups_for_tab(idx).iter().any(|group| group.id == gid) {
+        if gid > 0
+            && !state
+                .groups_for_tab(idx)
+                .iter()
+                .any(|group| group.id == gid)
+        {
             state.tab_group_filters[idx] = 0;
         }
     }

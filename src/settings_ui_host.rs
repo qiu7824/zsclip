@@ -1,13 +1,13 @@
-﻿use std::ffi::c_void;
-use std::ptr::{null, null_mut};
 use std::cmp::max;
+use std::ffi::c_void;
+use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-        GetStockObject, InvalidateRect, PAINTSTRUCT, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
-        DEFAULT_GUI_FONT,
+        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
+        GetDC, GetStockObject, InvalidateRect, ReleaseDC, SelectObject, SetBkMode, SetTextColor,
+        DEFAULT_GUI_FONT, PAINTSTRUCT,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
@@ -16,13 +16,12 @@ use windows_sys::Win32::{
 use crate::i18n::{tr, translate};
 use crate::settings_model::SETTINGS_PAGE_COUNT;
 use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb,
-    settings_content_y_scaled, settings_nav_w_scaled, settings_scale, ui_display_font_family,
-    ui_icon_font_family, ui_text_font_family, Theme, UiRect,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_content_y_scaled,
+    settings_nav_w_scaled, settings_scale, ui_display_font_family, ui_icon_font_family,
+    ui_text_font_family, Theme, UiRect, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
 };
 use crate::win_buffered_paint::{begin_buffered_paint, end_buffered_paint};
-use crate::win_system_ui::{create_font_px, monitor_dpi_for_window, scale_for_window};
+use crate::win_system_ui::{create_font_px, layout_dpi_for_window, scale_for_window};
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -62,7 +61,15 @@ pub struct SettingsCtrlReg {
 }
 
 impl SettingsCtrlReg {
-    pub const fn new(hwnd: HWND, page: usize, x: i32, y: i32, w: i32, h: i32, scrollable: bool) -> Self {
+    pub const fn new(
+        hwnd: HWND,
+        page: usize,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        scrollable: bool,
+    ) -> Self {
         Self {
             hwnd,
             page,
@@ -84,6 +91,7 @@ pub struct SettingsUiRegistry {
     page_ctrls: Vec<Vec<HWND>>,
     regs: Vec<SettingsCtrlReg>,
     scroll_ctrls: Vec<SettingsCtrlSlot>,
+    content_bottoms: [i32; SETTINGS_PAGE_COUNT],
 }
 
 impl SettingsUiRegistry {
@@ -93,6 +101,7 @@ impl SettingsUiRegistry {
             page_ctrls: vec![Vec::new(); SETTINGS_PAGE_COUNT],
             regs: Vec::new(),
             scroll_ctrls: Vec::new(),
+            content_bottoms: [0; SETTINGS_PAGE_COUNT],
         }
     }
 
@@ -112,8 +121,15 @@ impl SettingsUiRegistry {
         if let Some(list) = self.page_ctrls.get_mut(page) {
             list.push(reg.hwnd);
         }
+        if let Some(bottom) = self.content_bottoms.get_mut(page) {
+            *bottom = (*bottom).max(reg.bounds.bottom + settings_scale(18));
+        }
         if reg.scrollable {
-            self.scroll_ctrls.push(SettingsCtrlSlot { hwnd: reg.hwnd, page, bounds: reg.bounds });
+            self.scroll_ctrls.push(SettingsCtrlSlot {
+                hwnd: reg.hwnd,
+                page,
+                bounds: reg.bounds,
+            });
         }
     }
 
@@ -122,7 +138,18 @@ impl SettingsUiRegistry {
     }
 
     pub fn scroll_ctrls_for_page(&self, page: usize) -> impl Iterator<Item = &SettingsCtrlSlot> {
-        self.scroll_ctrls.iter().filter(move |slot| slot.page == page)
+        self.scroll_ctrls
+            .iter()
+            .filter(move |slot| slot.page == page)
+    }
+
+    pub fn measured_content_total_h(&self, page: usize) -> i32 {
+        self.content_bottoms
+            .get(page)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(settings_content_y_scaled())
+            .max(0)
     }
 
     pub unsafe fn clear_page(&mut self, page: usize) {
@@ -137,6 +164,9 @@ impl SettingsUiRegistry {
         self.regs.retain(|reg| reg.page != page);
         self.scroll_ctrls
             .retain(|slot| slot.page != page && !slot.hwnd.is_null() && IsWindow(slot.hwnd) != 0);
+        if let Some(bottom) = self.content_bottoms.get_mut(page) {
+            *bottom = 0;
+        }
         if let Some(flag) = self.built_pages.get_mut(page) {
             *flag = false;
         }
@@ -145,7 +175,12 @@ impl SettingsUiRegistry {
 
 #[link(name = "dwmapi")]
 unsafe extern "system" {
-    fn DwmSetWindowAttribute(hwnd: HWND, dwattribute: u32, pvattribute: *const c_void, cbattribute: u32) -> i32;
+    fn DwmSetWindowAttribute(
+        hwnd: HWND,
+        dwattribute: u32,
+        pvattribute: *const c_void,
+        cbattribute: u32,
+    ) -> i32;
 }
 
 #[link(name = "uxtheme")]
@@ -381,7 +416,17 @@ pub unsafe fn create_settings_toggle_plain(
 
     let btn_x = x + w - toggle_w;
     let btn_y = y + max(0, (row_h - toggle_h) / 2);
-    let btn = create_settings_component(parent, "", id, SettingsComponentKind::Toggle, btn_x, btn_y, toggle_w, toggle_h, font);
+    let btn = create_settings_component(
+        parent,
+        "",
+        id,
+        SettingsComponentKind::Toggle,
+        btn_x,
+        btn_y,
+        toggle_w,
+        toggle_h,
+        font,
+    );
     (label, btn, x, y, label_w, row_h, btn_x, btn_y)
 }
 
@@ -389,14 +434,64 @@ pub unsafe fn create_settings_fonts(hwnd: HWND) -> (*mut c_void, *mut c_void, *m
     let nav_size = scale_for_window(hwnd, 18);
     let ui_size = scale_for_window(hwnd, 14);
     let title_size = scale_for_window(hwnd, 20);
-    let nav: *mut c_void =
-        CreateFontW(-nav_size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_icon_font_family()).as_ptr()) as _;
-    let ui: *mut c_void =
-        CreateFontW(-ui_size, 0, 0, 0, 400, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_text_font_family()).as_ptr()) as _;
-    let title: *mut c_void =
-        CreateFontW(-title_size, 0, 0, 0, 600, 0, 0, 0, 1, 0, 0, 5, 0, to_wide(ui_display_font_family()).as_ptr()) as _;
-    let default_ui: *mut c_void = if ui.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { ui };
-    let default_title: *mut c_void = if title.is_null() { GetStockObject(DEFAULT_GUI_FONT) as _ } else { title };
+    let nav: *mut c_void = CreateFontW(
+        -nav_size,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(ui_icon_font_family()).as_ptr(),
+    ) as _;
+    let ui: *mut c_void = CreateFontW(
+        -ui_size,
+        0,
+        0,
+        0,
+        400,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(ui_text_font_family()).as_ptr(),
+    ) as _;
+    let title: *mut c_void = CreateFontW(
+        -title_size,
+        0,
+        0,
+        0,
+        600,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        to_wide(ui_display_font_family()).as_ptr(),
+    ) as _;
+    let default_ui: *mut c_void = if ui.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT) as _
+    } else {
+        ui
+    };
+    let default_title: *mut c_void = if title.is_null() {
+        GetStockObject(DEFAULT_GUI_FONT) as _
+    } else {
+        title
+    };
     (nav, default_ui, default_title)
 }
 
@@ -473,7 +568,11 @@ pub unsafe fn settings_measure_text_height(
     if hdc.is_null() {
         return min_h.max(24);
     }
-    let old = if !font.is_null() { SelectObject(hdc, font) } else { null_mut() };
+    let old = if !font.is_null() {
+        SelectObject(hdc, font)
+    } else {
+        null_mut()
+    };
     let horizontal_pad = scale_for_window(parent, 4);
     let vertical_pad = scale_for_window(parent, 8);
     let mut rc = RECT {
@@ -543,13 +642,18 @@ pub unsafe fn create_settings_edit(
     );
     if !hwnd.is_null() {
         SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
-        let theme = if crate::win_system_ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+        let theme = if crate::win_system_ui::is_dark_mode() {
+            "DarkMode_Explorer"
+        } else {
+            "Explorer"
+        };
         SetWindowTheme(hwnd, to_wide(theme).as_ptr(), null());
         SendMessageW(
             hwnd,
             EM_SETMARGINS_MSG,
             (EC_LEFTMARGIN | EC_RIGHTMARGIN) as WPARAM,
-            ((scale_for_window(parent, 6) & 0xffff) | ((scale_for_window(parent, 6) & 0xffff) << 16)) as LPARAM,
+            ((scale_for_window(parent, 6) & 0xffff)
+                | ((scale_for_window(parent, 6) & 0xffff) << 16)) as LPARAM,
         );
     }
     hwnd
@@ -625,7 +729,13 @@ pub unsafe fn draw_text_wide_centered(
     let old = SelectObject(hdc, font as _);
     SetBkMode(hdc, 1);
     SetTextColor(hdc, color);
-    DrawTextW(hdc, text_w.as_ptr(), text_w.len() as i32, rc as *const _ as *mut _, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    DrawTextW(
+        hdc,
+        text_w.as_ptr(),
+        text_w.len() as i32,
+        rc as *const _ as *mut _,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
     SelectObject(hdc, old);
     DeleteObject(font as _);
 }
@@ -647,7 +757,12 @@ pub unsafe fn draw_settings_toggle_component(
     let tw = ((thh * 40) / 20).clamp(thh + 12, row_w - 6);
     let cx = rc.left + (rc.right - rc.left - tw) / 2;
     let cy = rc.top + (rc.bottom - rc.top - thh) / 2;
-    let track = RECT { left: cx, top: cy, right: cx + tw, bottom: cy + thh };
+    let track = RECT {
+        left: cx,
+        top: cy,
+        right: cx + tw,
+        bottom: cy + thh,
+    };
     let radius = (thh / 2).max(6);
 
     if checked {
@@ -655,16 +770,34 @@ pub unsafe fn draw_settings_toggle_component(
         let k = ((thh * 14) / 20).max(12);
         let ky = cy + (thh - k) / 2;
         let knob_pad = ((thh - k) / 2).max(3);
-        let krc = RECT { left: cx + tw - k - knob_pad, top: ky, right: cx + tw - knob_pad, bottom: ky + k };
+        let krc = RECT {
+            left: cx + tw - k - knob_pad,
+            top: ky,
+            right: cx + tw - knob_pad,
+            bottom: ky + k,
+        };
         draw_round_rect(hdc, &krc, rgb(255, 255, 255), rgb(255, 255, 255), 7);
     } else {
-        let border = if hover { rgb(28, 28, 28) } else { rgb(136, 136, 136) };
+        let border = if hover {
+            rgb(28, 28, 28)
+        } else {
+            rgb(136, 136, 136)
+        };
         draw_round_rect(hdc, &track, th.bg, border, radius);
         let k = ((thh * 12) / 20).max(10);
         let ky = cy + (thh - k) / 2;
         let knob_pad = ((thh - k) / 2).max(4);
-        let krc = RECT { left: cx + knob_pad, top: ky, right: cx + knob_pad + k, bottom: ky + k };
-        let knob_color = if hover { rgb(28, 28, 28) } else { rgb(102, 102, 102) };
+        let krc = RECT {
+            left: cx + knob_pad,
+            top: ky,
+            right: cx + knob_pad + k,
+            bottom: ky + k,
+        };
+        let knob_color = if hover {
+            rgb(28, 28, 28)
+        } else {
+            rgb(102, 102, 102)
+        };
         draw_round_rect(hdc, &krc, knob_color, knob_color, 6);
     }
 }
@@ -678,22 +811,61 @@ pub unsafe fn draw_settings_button_component(
     pressed: bool,
     th: Theme,
 ) {
-    let rr = RECT { left: rc.left + 1, top: rc.top + 1, right: rc.right - 1, bottom: rc.bottom - 1 };
+    let rr = RECT {
+        left: rc.left + 1,
+        top: rc.top + 1,
+        right: rc.right - 1,
+        bottom: rc.bottom - 1,
+    };
     let text_px = 14;
     match kind {
         SettingsComponentKind::Dropdown => {
             draw_settings_dropdown_button(hdc, &rr, text, hover, pressed, th);
         }
         SettingsComponentKind::AccentButton => {
-            let fill = if pressed { th.accent_pressed } else if hover { th.accent_hover } else { th.accent };
+            let fill = if pressed {
+                th.accent_pressed
+            } else if hover {
+                th.accent_hover
+            } else {
+                th.accent
+            };
             draw_round_rect(hdc, &rr, fill, fill, 4);
-            draw_text_ex(hdc, text, &rr, rgb(255, 255, 255), text_px, false, true, ui_text_font_family());
+            draw_text_ex(
+                hdc,
+                text,
+                &rr,
+                rgb(255, 255, 255),
+                text_px,
+                false,
+                true,
+                ui_text_font_family(),
+            );
         }
         SettingsComponentKind::Button => {
-            let fill = if pressed { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
-            let border = if pressed || hover { rgb(196, 196, 196) } else { rgb(204, 204, 204) };
+            let fill = if pressed {
+                th.button_pressed
+            } else if hover {
+                th.button_hover
+            } else {
+                th.button_bg
+            };
+            let border = if pressed || hover {
+                rgb(196, 196, 196)
+            } else {
+                rgb(204, 204, 204)
+            };
             draw_round_rect(hdc, &rr, fill, border, 4);
-            draw_text_ex(hdc, text, &rr, th.text, text_px, false, true, ui_text_font_family());
+            draw_text_ex(
+                hdc,
+                text,
+                &rr,
+                th.text,
+                text_px,
+                false,
+                true,
+                ui_text_font_family(),
+            );
         }
         SettingsComponentKind::Toggle => {}
     }
@@ -718,7 +890,11 @@ pub unsafe fn draw_settings_dropdown_button(
     let arrow_px = 10;
     let text_pad = (control_h * 12 / 32).max(10);
     let arrow_w = (control_h * 20 / 32).max(18);
-    let fill = if pressed { th.button_pressed } else { th.surface };
+    let fill = if pressed {
+        th.button_pressed
+    } else {
+        th.surface
+    };
     let border = th.control_stroke;
     draw_round_rect(hdc, &rr, fill, border, 6);
 
@@ -728,7 +904,16 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rr.right - arrow_w,
         bottom: rr.bottom,
     };
-    draw_text_ex(hdc, text, &text_rc, th.text, text_px, false, false, ui_text_font_family());
+    draw_text_ex(
+        hdc,
+        text,
+        &text_rc,
+        th.text,
+        text_px,
+        false,
+        false,
+        ui_text_font_family(),
+    );
 
     let arrow_rc = RECT {
         left: rr.right - arrow_w,
@@ -736,7 +921,16 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rr.right - (control_h * 8 / 32).max(6),
         bottom: rr.bottom,
     };
-    draw_text_ex(hdc, "\u{25BE}", &arrow_rc, th.text_muted, arrow_px, false, true, ui_icon_font_family());
+    draw_text_ex(
+        hdc,
+        "\u{25BE}",
+        &arrow_rc,
+        th.text_muted,
+        arrow_px,
+        false,
+        true,
+        ui_icon_font_family(),
+    );
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
@@ -745,7 +939,11 @@ unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
         let _ = DwmSetWindowAttribute(hwnd, 20, &val as *const u32 as _, 4);
         let _ = DwmSetWindowAttribute(hwnd, 19, &val as *const u32 as _, 4);
     }
-    let theme_name = if crate::win_system_ui::is_dark_mode() { "DarkMode_Explorer" } else { "Explorer" };
+    let theme_name = if crate::win_system_ui::is_dark_mode() {
+        "DarkMode_Explorer"
+    } else {
+        "Explorer"
+    };
     let _ = SetWindowTheme(hwnd, to_wide(theme_name).as_ptr(), null());
 }
 
@@ -786,7 +984,12 @@ fn dropdown_max_scroll(st: &DropdownPopupState) -> i32 {
     (st.items.len() as i32 - st.visible_rows).max(0)
 }
 
-unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn dropdown_popup_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -834,7 +1037,12 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                 let y = ((lparam >> 16) & 0xffff) as u16 as i16 as i32;
                 let idx = dropdown_index_from_y(st, y);
                 if idx >= 0 {
-                    SendMessageW(st.parent, WM_SETTINGS_DROPDOWN_SELECTED, st.control_id as usize, idx as isize);
+                    SendMessageW(
+                        st.parent,
+                        WM_SETTINGS_DROPDOWN_SELECTED,
+                        st.control_id as usize,
+                        idx as isize,
+                    );
                 }
             }
             DestroyWindow(hwnd);
@@ -843,7 +1051,7 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
         WM_ACTIVATE => 0,
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            let dpi = monitor_dpi_for_window(hwnd);
+            let dpi = layout_dpi_for_window(hwnd);
             crate::ui::set_settings_ui_dpi(dpi);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut DropdownPopupState;
             let mut ps: PAINTSTRUCT = std::mem::zeroed();
@@ -853,24 +1061,40 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                 let mut rc: RECT = std::mem::zeroed();
                 GetClientRect(hwnd, &mut rc);
                 let paint_target = begin_buffered_paint(hdc, &rc);
-                let memdc = if let Some((_, pdc)) = paint_target { pdc } else { hdc };
+                let memdc = if let Some((_, pdc)) = paint_target {
+                    pdc
+                } else {
+                    hdc
+                };
                 let th = Theme::default();
                 let w = (rc.right - rc.left).max(1);
                 let h = (rc.bottom - rc.top).max(1);
                 let bg = CreateSolidBrush(th.bg);
                 FillRect(memdc, &rc, bg);
                 DeleteObject(bg as _);
-                let shell = RECT { left: 0, top: 0, right: w, bottom: h };
+                let shell = RECT {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                };
                 draw_round_rect(memdc as _, &shell, th.surface, th.stroke, 8);
                 if !ptr.is_null() {
                     let st = &mut *ptr;
                     let start = st.scroll_top.max(0) as usize;
-                    let end = (st.scroll_top + st.visible_rows).min(st.items.len() as i32).max(0) as usize;
+                    let end = (st.scroll_top + st.visible_rows)
+                        .min(st.items.len() as i32)
+                        .max(0) as usize;
                     for (visible_idx, idx) in (start..end).enumerate() {
                         let item = &st.items[idx];
                         let pad = settings_scale(DROPDOWN_PAD);
                         let top = pad + visible_idx as i32 * st.item_h;
-                        let item_rc = RECT { left: pad, top, right: w - pad, bottom: top + st.item_h };
+                        let item_rc = RECT {
+                            left: pad,
+                            top,
+                            right: w - pad,
+                            bottom: top + st.item_h,
+                        };
                         let selected = st.selected == idx as i32;
                         if selected {
                             let fill = th.nav_sel_fill;
@@ -878,7 +1102,12 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                         }
                         if selected {
                             let cy = (item_rc.top + item_rc.bottom) / 2;
-                            let bar = RECT { left: item_rc.left + 4, top: cy - 8, right: item_rc.left + 7, bottom: cy + 8 };
+                            let bar = RECT {
+                                left: item_rc.left + 4,
+                                top: cy - 8,
+                                right: item_rc.left + 7,
+                                bottom: cy + 8,
+                            };
                             draw_round_fill(memdc as _, &bar, th.accent, 2);
                         }
                         let text_rc = RECT {
@@ -887,7 +1116,16 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                             right: item_rc.right - settings_scale(12),
                             bottom: item_rc.bottom,
                         };
-                        draw_text_ex(memdc as _, item, &text_rc, th.text, 14, false, false, ui_text_font_family());
+                        draw_text_ex(
+                            memdc as _,
+                            item,
+                            &text_rc,
+                            th.text,
+                            14,
+                            false,
+                            false,
+                            ui_text_font_family(),
+                        );
                     }
                     if dropdown_max_scroll(st) > 0 {
                         if st.scroll_top > 0 {
@@ -897,7 +1135,16 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                                 right: w - settings_scale(8),
                                 bottom: settings_scale(20),
                             };
-                            draw_text_ex(memdc as _, "\u{25B4}", &top_hint, th.text_muted, 8, false, true, ui_icon_font_family());
+                            draw_text_ex(
+                                memdc as _,
+                                "\u{25B4}",
+                                &top_hint,
+                                th.text_muted,
+                                8,
+                                false,
+                                true,
+                                ui_icon_font_family(),
+                            );
                         }
                         if st.scroll_top < dropdown_max_scroll(st) {
                             let bottom_hint = RECT {
@@ -906,7 +1153,16 @@ unsafe extern "system" fn dropdown_popup_proc(hwnd: HWND, msg: u32, wparam: WPAR
                                 right: w - settings_scale(8),
                                 bottom: h - settings_scale(6),
                             };
-                            draw_text_ex(memdc as _, "\u{25BE}", &bottom_hint, th.text_muted, 8, false, true, ui_icon_font_family());
+                            draw_text_ex(
+                                memdc as _,
+                                "\u{25BE}",
+                                &bottom_hint,
+                                th.text_muted,
+                                8,
+                                false,
+                                true,
+                                ui_icon_font_family(),
+                            );
                         }
                     }
                 }
@@ -996,4 +1252,3 @@ pub unsafe fn show_settings_dropdown_popup(
     }
     hwnd
 }
-

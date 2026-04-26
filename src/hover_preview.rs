@@ -1,4 +1,4 @@
-﻿use std::mem::{size_of, zeroed};
+use std::mem::{size_of, zeroed};
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
@@ -6,15 +6,14 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
-        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT,
-        SRCCOPY,
+        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, ClipItem, ClipKind},
+    app::{ensure_item_image_bytes, post_boxed_message, ClipItem, ClipKind},
     i18n::tr,
     ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_bgra, Theme},
     win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
@@ -305,15 +304,7 @@ fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) {
             image: ensure_item_image_bytes(&item),
         });
         unsafe {
-            let hwnd = hwnd_raw as HWND;
-            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-                let _ = PostMessageW(
-                    hwnd,
-                    WM_HOVER_IMAGE_READY,
-                    0,
-                    Box::into_raw(payload) as LPARAM,
-                );
-            }
+            let _ = post_boxed_message(hwnd_raw as HWND, WM_HOVER_IMAGE_READY, 0, payload);
         }
     });
 }
@@ -335,9 +326,11 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         ClipKind::Text => tr("文本预览", "Text Preview").to_string(),
     };
     let body = match item.kind {
-        ClipKind::Text | ClipKind::Phrase => {
-            limit_preview_text(item.text.as_deref().unwrap_or(item.preview.as_str()), 10, 420)
-        }
+        ClipKind::Text | ClipKind::Phrase => limit_preview_text(
+            item.text.as_deref().unwrap_or(item.preview.as_str()),
+            10,
+            420,
+        ),
         ClipKind::Files => item
             .file_paths
             .as_ref()
@@ -356,7 +349,10 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     } else {
         (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
     };
-    let wa = nearest_monitor_work_rect_for_point(POINT { x: cursor_x, y: cursor_y });
+    let wa = nearest_monitor_work_rect_for_point(POINT {
+        x: cursor_x,
+        y: cursor_y,
+    });
     let mut x = cursor_x + 16;
     let mut y = cursor_y + 22;
     if x + w > wa.right {
@@ -370,11 +366,10 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
 
     let data = &mut *ptr;
     let same_image_shape = image_shape == Some((data.image_width, data.image_height));
-    let same_content = data.item_id == item.id
-        && data.header == header
-        && data.body == body
-        && same_image_shape;
-    let same_geometry = data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
+    let same_content =
+        data.item_id == item.id && data.header == header && data.body == body && same_image_shape;
+    let same_geometry =
+        data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
     let visible = IsWindowVisible(hwnd) != 0;
 
     if visible && same_content && same_geometry {

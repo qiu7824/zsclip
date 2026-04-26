@@ -1,21 +1,26 @@
-﻿use std::mem::zeroed;
+use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::{
     Foundation::{HWND, POINT, RECT},
     UI::{
         Input::KeyboardAndMouse::SetFocus,
-        Shell::{Shell_NotifyIconW, NOTIFYICONDATAW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE},
+        Shell::{
+            Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+        },
         WindowsAndMessaging::*,
     },
 };
 
-use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
 use crate::app::state::{apply_shared_tab_view_state, AppSettings};
 use crate::app::AppState;
+use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
 use crate::i18n::{app_title, translate};
 use crate::ui::MainUiLayout;
-use crate::win_system_ui::{apply_theme_to_menu, monitor_dpi_for_point, nearest_monitor_rect_for_point, nearest_monitor_work_rect_for_point, to_wide};
+use crate::win_system_ui::{
+    apply_theme_to_menu, layout_dpi_for_point, nearest_monitor_rect_for_point,
+    nearest_monitor_work_rect_for_point, to_wide,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MainWindowPosMode {
@@ -35,7 +40,7 @@ fn parse_main_window_pos_mode(mode: &str) -> MainWindowPosMode {
 }
 
 fn main_window_layout_for_point(pt: POINT) -> MainUiLayout {
-    unsafe { MainUiLayout::zsclip().scaled(monitor_dpi_for_point(pt)) }
+    unsafe { MainUiLayout::zsclip().scaled(layout_dpi_for_point(pt)) }
 }
 
 fn main_window_size_for_point(pt: POINT) -> (i32, i32) {
@@ -60,7 +65,10 @@ fn edge_preferred_position(state: &AppState) -> Option<(i32, i32)> {
 }
 
 unsafe fn position_window_at_restore(hwnd: HWND, restore_x: i32, restore_y: i32) {
-    let anchor = POINT { x: restore_x, y: restore_y };
+    let anchor = POINT {
+        x: restore_x,
+        y: restore_y,
+    };
     let (win_w, win_h) = main_window_size_for_point(anchor);
     let work = nearest_monitor_work_rect_for_point(anchor);
     let monitor = nearest_monitor_rect_for_point(anchor);
@@ -71,13 +79,27 @@ unsafe fn position_window_at_restore(hwnd: HWND, restore_x: i32, restore_y: i32)
         bottom: std::cmp::min(work.bottom, monitor.bottom),
     };
     let (x, y) = clamp_to_rect(restore_x, restore_y, &clamp_rect, win_w, win_h);
-    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        win_w,
+        win_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 fn clamp_to_rect(x: i32, y: i32, rc: &RECT, win_w: i32, win_h: i32) -> (i32, i32) {
     (
-        std::cmp::max(rc.left, std::cmp::min(x, std::cmp::max(rc.left, rc.right - win_w))),
-        std::cmp::max(rc.top, std::cmp::min(y, std::cmp::max(rc.top, rc.bottom - win_h))),
+        std::cmp::max(
+            rc.left,
+            std::cmp::min(x, std::cmp::max(rc.left, rc.right - win_w)),
+        ),
+        std::cmp::max(
+            rc.top,
+            std::cmp::min(y, std::cmp::max(rc.top, rc.bottom - win_h)),
+        ),
     )
 }
 
@@ -141,7 +163,10 @@ unsafe fn window_class_name(hwnd: HWND) -> String {
 unsafe fn explorer_rename_target() -> Option<(HWND, HWND)> {
     let (fg, focus) = foreground_focus_snapshot()?;
     let fg_class = window_class_name(fg);
-    if !matches!(fg_class.as_str(), "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW") {
+    if !matches!(
+        fg_class.as_str(),
+        "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW"
+    ) {
         return None;
     }
     if matches!(window_class_name(focus).as_str(), "Edit") {
@@ -190,16 +215,36 @@ pub(crate) unsafe fn handle_tray(hwnd: HWND, msg: u32) {
 
 pub(crate) unsafe fn show_tray_menu_localized(hwnd: HWND) {
     let menu = CreatePopupMenu();
-    if menu.is_null() { return; }
+    if menu.is_null() {
+        return;
+    }
     apply_theme_to_menu(menu as _);
-    AppendMenuW(menu, MF_STRING, IDM_TRAY_TOGGLE, to_wide(translate("显示/隐藏").as_ref()).as_ptr());
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_TRAY_TOGGLE,
+        to_wide(translate("显示/隐藏").as_ref()).as_ptr(),
+    );
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
-    AppendMenuW(menu, MF_STRING, IDM_TRAY_EXIT, to_wide(translate("退出").as_ref()).as_ptr());
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_TRAY_EXIT,
+        to_wide(translate("退出").as_ref()).as_ptr(),
+    );
 
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
     SetForegroundWindow(hwnd);
-    TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN, pt.x, pt.y, 0, hwnd, null());
+    TrackPopupMenu(
+        menu,
+        TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+        pt.x,
+        pt.y,
+        0,
+        hwnd,
+        null(),
+    );
     PostMessageW(hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
 }
@@ -230,18 +275,42 @@ unsafe fn position_main_window_for_state(hwnd: HWND, state: &AppState, by_hotkey
         let (win_w, win_h) = main_window_size_for_point(pt);
         let x = work.left + ((work.right - work.left - win_w) / 2);
         let y = work.top + ((work.bottom - work.top - win_h) / 3);
-        SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            x,
+            y,
+            win_w,
+            win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
         return;
     }
     let (x, y, win_w, win_h) = resolve_main_window_position(&state.settings, by_hotkey, pt);
-    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        win_w,
+        win_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 pub(crate) unsafe fn position_main_window(hwnd: HWND, settings: &AppSettings, by_hotkey: bool) {
     let mut pt: POINT = zeroed();
     GetCursorPos(&mut pt);
     let (x, y, win_w, win_h) = resolve_main_window_position(settings, by_hotkey, pt);
-    SetWindowPos(hwnd, null_mut(), x, y, win_w, win_h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        x,
+        y,
+        win_w,
+        win_h,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
@@ -274,7 +343,15 @@ pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {
     }
     crate::app::set_main_window_noactivate_mode(hwnd, false);
     ShowWindow(hwnd, SW_SHOW);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+    );
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
     crate::app::refresh_low_level_input_hooks();
@@ -311,8 +388,9 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool, plain_text_mode: bool) {
                 state.hotkey_passthrough_active = true;
                 state.hotkey_passthrough_target = target;
                 state.hotkey_passthrough_focus = focus;
-                state.hotkey_passthrough_edit =
-                    explorer_rename_target().map(|(_, edit)| edit).unwrap_or(null_mut());
+                state.hotkey_passthrough_edit = explorer_rename_target()
+                    .map(|(_, edit)| edit)
+                    .unwrap_or(null_mut());
             } else {
                 state.hotkey_passthrough_active = false;
                 state.hotkey_passthrough_target = null_mut();
@@ -329,7 +407,15 @@ pub(crate) unsafe fn show_quick_window(by_hotkey: bool, plain_text_mode: bool) {
     }
     crate::app::set_main_window_noactivate_mode(hwnd, true);
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
     crate::app::refresh_low_level_input_hooks();
 }
 
@@ -431,4 +517,3 @@ pub(crate) unsafe fn remove_tray_icon(hwnd: HWND) {
     nid.uID = TRAY_UID;
     Shell_NotifyIconW(NIM_DELETE, &nid);
 }
-

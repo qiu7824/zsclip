@@ -1,4 +1,4 @@
-﻿use crate::ui::{
+use crate::ui::{
     settings_content_w_scaled, settings_content_x_scaled, settings_content_y_scaled,
     settings_nav_w_scaled, settings_scale, UiRect,
 };
@@ -13,6 +13,7 @@ pub const SETTINGS_FORM_ROW_H: i32 = 32;
 pub const SETTINGS_FORM_ROW_GAP: i32 = 8;
 pub const SETTINGS_FORM_SECTION_GAP: i32 = 12;
 pub const SETTINGS_FORM_SECTION_PAD: i32 = 18;
+pub const SETTINGS_FORM_BOTTOM_SAFE_H: i32 = 24;
 
 #[inline]
 pub fn settings_card_rect(y: i32, h: i32) -> UiRect {
@@ -64,40 +65,92 @@ pub struct SettingsFormCardSpec {
 }
 
 const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 6, extra_px: 0 },
-    SettingsFormCardSpec { rows: 2, extra_px: 24 },
-    SettingsFormCardSpec { rows: 2, extra_px: 12 },
+    SettingsFormCardSpec {
+        rows: 6,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 2,
+        extra_px: 24,
+    },
+    SettingsFormCardSpec {
+        rows: 2,
+        extra_px: 12,
+    },
 ];
 
 const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
-    SettingsFormCardSpec { rows: 10, extra_px: 0 },
-    SettingsFormCardSpec { rows: 1, extra_px: 0 },
-    SettingsFormCardSpec { rows: 7, extra_px: 0 },
-    SettingsFormCardSpec { rows: 3, extra_px: 0 },
-    SettingsFormCardSpec { rows: 1, extra_px: 0 },
+    SettingsFormCardSpec {
+        rows: 10,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 1,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 7,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 3,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 1,
+        extra_px: 0,
+    },
 ];
 
 const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
-    SettingsFormCardSpec { rows: 4, extra_px: 10 },
-    SettingsFormCardSpec { rows: 4, extra_px: 20 },
-    SettingsFormCardSpec { rows: 5, extra_px: 12 },
-    SettingsFormCardSpec { rows: 5, extra_px: 0 },
+    SettingsFormCardSpec {
+        rows: 4,
+        extra_px: 10,
+    },
+    SettingsFormCardSpec {
+        rows: 4,
+        extra_px: 20,
+    },
+    SettingsFormCardSpec {
+        rows: 5,
+        extra_px: 12,
+    },
+    SettingsFormCardSpec {
+        rows: 5,
+        extra_px: 0,
+    },
 ];
 
 const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
-    SettingsFormCardSpec { rows: 3, extra_px: 0 },
-    SettingsFormCardSpec { rows: 9, extra_px: 0 },
+    SettingsFormCardSpec {
+        rows: 3,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 9,
+        extra_px: 0,
+    },
 ];
 
 const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec { rows: 3, extra_px: 0 },
-    SettingsFormCardSpec { rows: 4, extra_px: 0 },
-    SettingsFormCardSpec { rows: 2, extra_px: 0 },
+    SettingsFormCardSpec {
+        rows: 3,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 4,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 2,
+        extra_px: 0,
+    },
 ];
 
-const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 1] = [
-    SettingsFormCardSpec { rows: 12, extra_px: 96 },
-];
+const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 1] = [SettingsFormCardSpec {
+    rows: 12,
+    extra_px: 96,
+}];
 
 pub fn settings_title_rect() -> UiRect {
     UiRect::new(
@@ -118,6 +171,7 @@ pub fn settings_form_section_height_with_extra(rows: i32, extra_px: i32) -> i32 
         + rows * settings_scale(SETTINGS_FORM_ROW_H)
         + (rows - 1) * settings_scale(SETTINGS_FORM_ROW_GAP)
         + settings_scale(SETTINGS_FORM_SECTION_PAD)
+        + settings_scale(SETTINGS_FORM_BOTTOM_SAFE_H)
         + settings_scale(extra_px.max(0))
 }
 
@@ -210,11 +264,9 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
             ],
             &PLUGIN_FORM_SECTIONS,
         ),
-        SettingsPage::Group => settings_make_form_cards_dyn(
-            16,
-            &["分组功能", "分组管理"],
-            &GROUP_FORM_SECTIONS,
-        ),
+        SettingsPage::Group => {
+            settings_make_form_cards_dyn(16, &["分组功能", "分组管理"], &GROUP_FORM_SECTIONS)
+        }
         SettingsPage::Cloud => settings_make_form_cards(
             16,
             ["同步设置", "WebDAV 连接", "同步操作"],
@@ -228,7 +280,10 @@ pub fn settings_section(page: usize, index: usize) -> SettingsSection {
     settings_cards_for_page_vec(page)
         .get(index)
         .copied()
-        .unwrap_or(SettingsSection { title: "", rect: settings_card_rect(16, 96) })
+        .unwrap_or(SettingsSection {
+            title: "",
+            rect: settings_card_rect(16, 96),
+        })
 }
 
 pub fn settings_section_body_rect(page: usize, index: usize, padding: i32) -> UiRect {
@@ -256,18 +311,31 @@ impl SettingsFormSectionLayout {
         }
     }
 
-    pub fn left(&self) -> i32 { self.body.left }
-    pub fn label_w(&self) -> i32 { self.label_w }
-    pub fn full_w(&self) -> i32 { self.body.right - self.body.left }
+    pub fn left(&self) -> i32 {
+        self.body.left
+    }
+    pub fn label_w(&self) -> i32 {
+        self.label_w
+    }
+    pub fn full_w(&self) -> i32 {
+        self.body.right - self.body.left
+    }
     pub fn row_y(&self, row: i32) -> i32 {
-        self.body.top + row * (settings_scale(SETTINGS_FORM_ROW_H) + settings_scale(SETTINGS_FORM_ROW_GAP))
+        self.body.top
+            + row * (settings_scale(SETTINGS_FORM_ROW_H) + settings_scale(SETTINGS_FORM_ROW_GAP))
     }
     pub fn label_y(&self, row: i32, h: i32) -> i32 {
         self.row_y(row) + ((settings_scale(SETTINGS_FORM_ROW_H) - h).max(0) / 2)
     }
-    pub fn field_x(&self) -> i32 { self.body.left + self.label_w }
-    pub fn field_w(&self) -> i32 { (self.body.right - self.field_x()).max(40) }
-    pub fn field_w_from(&self, x: i32) -> i32 { (self.body.right - x).max(40) }
+    pub fn field_x(&self) -> i32 {
+        self.body.left + self.label_w
+    }
+    pub fn field_w(&self) -> i32 {
+        (self.body.right - self.field_x()).max(40)
+    }
+    pub fn field_w_from(&self, x: i32) -> i32 {
+        (self.body.right - x).max(40)
+    }
     pub fn action_x(&self, slot: i32, w: i32) -> i32 {
         self.body.left + slot * (w + settings_scale(14))
     }
@@ -281,11 +349,4 @@ pub fn settings_page_content_total_h(page: usize) -> i32 {
         .max()
         .unwrap_or(0);
     content_bottom.max(0)
-}
-
-pub fn settings_page_max_scroll(page: usize, view_h: i32) -> i32 {
-    if !settings_page_scrollable(page) {
-        return 0;
-    }
-    (settings_page_content_total_h(page) - view_h).max(0)
 }
