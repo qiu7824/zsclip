@@ -38,10 +38,19 @@ unsafe fn ensure_buffered_paint() {
     });
 }
 
-pub unsafe fn begin_buffered_paint(hdc_target: *mut c_void, rc: &RECT) -> Option<(HPAINTBUFFER, *mut c_void)> {
+pub unsafe fn begin_buffered_paint(
+    hdc_target: *mut c_void,
+    rc: &RECT,
+) -> Option<(HPAINTBUFFER, *mut c_void)> {
     ensure_buffered_paint();
     let mut paint_dc: *mut c_void = std::ptr::null_mut();
-    let hbuf = BeginBufferedPaint(hdc_target, rc as *const RECT, BPBF_TOPDOWNDIB, null(), &mut paint_dc);
+    let hbuf = BeginBufferedPaint(
+        hdc_target,
+        rc as *const RECT,
+        BPBF_TOPDOWNDIB,
+        null(),
+        &mut paint_dc,
+    );
     if hbuf.is_null() || paint_dc.is_null() {
         None
     } else {

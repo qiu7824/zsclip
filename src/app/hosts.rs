@@ -1,7 +1,9 @@
-﻿use super::*;
-use std::time::Duration;
+use super::*;
+use crate::settings_render::{
+    IDC_SET_TRANSLATE_APP_ID, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_SECRET,
+    IDC_SET_TRANSLATE_TARGET,
+};
 use crate::shell::{image_ocr_status_text, text_translate_status_text};
-use crate::settings_render::{IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_APP_ID, IDC_SET_TRANSLATE_SECRET, IDC_SET_TRANSLATE_TARGET};
 use crate::win_system_ui::{
     create_settings_dropdown_button as settings_create_dropdown_btn,
     create_settings_edit as host_create_settings_edit,
@@ -10,11 +12,10 @@ use crate::win_system_ui::{
     create_settings_listbox as host_create_settings_listbox,
     create_settings_password_edit as host_create_settings_password_edit,
     create_settings_small_button as settings_create_small_btn,
-    create_settings_toggle_plain as settings_create_toggle_plain,
-    draw_settings_button_component,
-    draw_settings_toggle_component,
-    SettingsComponentKind,
+    create_settings_toggle_plain as settings_create_toggle_plain, draw_settings_button_component,
+    draw_settings_toggle_component, SettingsComponentKind,
 };
+use std::time::Duration;
 
 #[derive(Default)]
 struct WindowHosts {
@@ -166,8 +167,7 @@ unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
             if !(*ptr).settings_hwnd.is_null() {
                 let st_ptr =
                     GetWindowLongPtrW((*ptr).settings_hwnd, GWLP_USERDATA) as *mut SettingsWndState;
-                if !st_ptr.is_null()
-                    && screen_point_hits_window_scope((*st_ptr).dropdown_popup, pt)
+                if !st_ptr.is_null() && screen_point_hits_window_scope((*st_ptr).dropdown_popup, pt)
                 {
                     return true;
                 }
@@ -200,7 +200,8 @@ unsafe fn window_needs_outside_hide_timer(hwnd: HWND) -> bool {
         return false;
     }
     let state = &*ptr;
-    state.settings.auto_hide_on_blur && (state.role == WindowRole::Quick || state.main_window_noactivate)
+    state.settings.auto_hide_on_blur
+        && (state.role == WindowRole::Quick || state.main_window_noactivate)
 }
 
 unsafe fn refresh_outside_hide_timers() {
@@ -248,7 +249,12 @@ unsafe fn refresh_edge_auto_hide_timers() {
             continue;
         }
         if window_needs_edge_auto_hide_timer(hwnd) {
-            SetTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE, edge_auto_hide_timer_interval(hwnd), None);
+            SetTimer(
+                hwnd,
+                ID_TIMER_EDGE_AUTO_HIDE,
+                edge_auto_hide_timer_interval(hwnd),
+                None,
+            );
         } else {
             KillTimer(hwnd, ID_TIMER_EDGE_AUTO_HIDE);
         }
@@ -372,7 +378,11 @@ pub(crate) unsafe fn get_state_ptr(hwnd: HWND) -> *mut AppState {
 
 unsafe extern "system" fn enum_visible_windows(hwnd: HWND, lparam: LPARAM) -> i32 {
     let list = &mut *(lparam as *mut Vec<HWND>);
-    if hwnd.is_null() || IsWindowVisible(hwnd) == 0 || !is_window_enabled_compat(hwnd) || IsIconic(hwnd) != 0 {
+    if hwnd.is_null()
+        || IsWindowVisible(hwnd) == 0
+        || !is_window_enabled_compat(hwnd)
+        || IsIconic(hwnd) != 0
+    {
         return 1;
     }
     list.push(hwnd);
@@ -451,7 +461,8 @@ fn edge_docked_rect(state: &AppState) -> RECT {
 }
 
 fn edge_docked_rect_valid(state: &AppState) -> bool {
-    state.edge_docked_right > state.edge_docked_left && state.edge_docked_bottom > state.edge_docked_top
+    state.edge_docked_right > state.edge_docked_left
+        && state.edge_docked_bottom > state.edge_docked_top
 }
 
 fn edge_side_valid(side: i32) -> bool {
@@ -603,14 +614,54 @@ unsafe fn edge_choose_dock_side(hwnd: HWND, rc: &RECT) -> Option<(i32, RECT)> {
     let margin_h = edge_detect_margin_h(hwnd);
 
     let candidates = [
-        ((rc.left - work.left).abs(), EDGE_AUTO_HIDE_LEFT, work, margin_h),
-        ((rc.left - monitor.left).abs(), EDGE_AUTO_HIDE_LEFT, monitor, margin_h),
-        ((work.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, work, margin_h),
-        ((monitor.right - rc.right).abs(), EDGE_AUTO_HIDE_RIGHT, monitor, margin_h),
-        ((rc.top - work.top).abs(), EDGE_AUTO_HIDE_TOP, work, margin_v),
-        ((rc.top - monitor.top).abs(), EDGE_AUTO_HIDE_TOP, monitor, margin_v),
-        ((work.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, work, margin_v),
-        ((monitor.bottom - rc.bottom).abs(), EDGE_AUTO_HIDE_BOTTOM, monitor, margin_v),
+        (
+            (rc.left - work.left).abs(),
+            EDGE_AUTO_HIDE_LEFT,
+            work,
+            margin_h,
+        ),
+        (
+            (rc.left - monitor.left).abs(),
+            EDGE_AUTO_HIDE_LEFT,
+            monitor,
+            margin_h,
+        ),
+        (
+            (work.right - rc.right).abs(),
+            EDGE_AUTO_HIDE_RIGHT,
+            work,
+            margin_h,
+        ),
+        (
+            (monitor.right - rc.right).abs(),
+            EDGE_AUTO_HIDE_RIGHT,
+            monitor,
+            margin_h,
+        ),
+        (
+            (rc.top - work.top).abs(),
+            EDGE_AUTO_HIDE_TOP,
+            work,
+            margin_v,
+        ),
+        (
+            (rc.top - monitor.top).abs(),
+            EDGE_AUTO_HIDE_TOP,
+            monitor,
+            margin_v,
+        ),
+        (
+            (work.bottom - rc.bottom).abs(),
+            EDGE_AUTO_HIDE_BOTTOM,
+            work,
+            margin_v,
+        ),
+        (
+            (monitor.bottom - rc.bottom).abs(),
+            EDGE_AUTO_HIDE_BOTTOM,
+            monitor,
+            margin_v,
+        ),
     ];
 
     let mut best: Option<(i32, i32, RECT)> = None;
@@ -698,21 +749,17 @@ unsafe fn edge_hidden_position(hwnd: HWND, state: &AppState, rc: &RECT) -> Optio
     let x = match state.edge_hidden_side {
         EDGE_AUTO_HIDE_LEFT => docked.left + peek - width,
         EDGE_AUTO_HIDE_RIGHT => docked.right - peek,
-        EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM => {
-            state
-                .edge_restore_x
-                .clamp(docked.left, (docked.right - width).max(docked.left))
-        }
+        EDGE_AUTO_HIDE_TOP | EDGE_AUTO_HIDE_BOTTOM => state
+            .edge_restore_x
+            .clamp(docked.left, (docked.right - width).max(docked.left)),
         _ => rc.left,
     };
     let y = match state.edge_hidden_side {
         EDGE_AUTO_HIDE_TOP => docked.top + peek - height,
         EDGE_AUTO_HIDE_BOTTOM => monitor.bottom - peek,
-        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => {
-            state
-                .edge_restore_y
-                .clamp(docked.top, (docked.bottom - height).max(docked.top))
-        }
+        EDGE_AUTO_HIDE_LEFT | EDGE_AUTO_HIDE_RIGHT => state
+            .edge_restore_y
+            .clamp(docked.top, (docked.bottom - height).max(docked.top)),
         _ => rc.top,
     };
     Some((x, y))
@@ -940,10 +987,7 @@ pub(super) unsafe fn handle_mouse_leave_main(hwnd: HWND) {
         dirty = true;
     }
     hide_hover_preview();
-    if state.settings.edge_auto_hide
-        && !state.edge_hidden
-        && !vv_popup_menu_active()
-    {
+    if state.settings.edge_auto_hide && !state.edge_hidden && !vv_popup_menu_active() {
         let mut pt: POINT = zeroed();
         if GetCursorPos(&mut pt) != 0 {
             if edge_window_scope_contains_point(hwnd, pt) {
@@ -976,10 +1020,9 @@ pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
     if GetCursorPos(&mut pt) != 0 && should_ignore_outside_click_for_point(pt) {
         return;
     }
-    let mouse_down =
-        (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
-            || (GetAsyncKeyState(VK_MBUTTON as i32) as u16 & 0x8000) != 0;
+    let mouse_down = (GetAsyncKeyState(VK_LBUTTON as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_RBUTTON as i32) as u16 & 0x8000) != 0
+        || (GetAsyncKeyState(VK_MBUTTON as i32) as u16 & 0x8000) != 0;
     if !mouse_down {
         return;
     }
@@ -1007,8 +1050,11 @@ pub(crate) unsafe fn set_main_window_noactivate_mode(hwnd: HWND, enable: bool) {
         return;
     }
     SetWindowLongW(hwnd, GWL_EXSTYLE, desired as i32);
-    let flags =
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | if enable { SWP_NOACTIVATE } else { 0 };
+    let flags = SWP_NOMOVE
+        | SWP_NOSIZE
+        | SWP_NOZORDER
+        | SWP_FRAMECHANGED
+        | if enable { SWP_NOACTIVATE } else { 0 };
     SetWindowPos(hwnd, null_mut(), 0, 0, 0, 0, flags);
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
@@ -1088,9 +1134,8 @@ pub(super) unsafe fn main_window_should_stay_noactivate(state: &AppState, x: i32
 }
 
 pub(super) fn taskbar_created_message() -> u32 {
-    *TASKBAR_CREATED_MESSAGE.get_or_init(|| unsafe {
-        RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr())
-    })
+    *TASKBAR_CREATED_MESSAGE
+        .get_or_init(|| unsafe { RegisterWindowMessageW(to_wide("TaskbarCreated").as_ptr()) })
 }
 
 pub(super) unsafe fn sync_main_tray_icon(hwnd: HWND, state: &mut AppState) {
@@ -1131,9 +1176,7 @@ pub(super) unsafe fn notify_update_state_changed() {
         }
         let _ = PostMessageW(hwnd, WM_UPDATE_CHECK_READY, 0, 0);
         let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null()
-            && !(*ptr).settings_hwnd.is_null()
-            && IsWindow((*ptr).settings_hwnd) != 0
+        if !ptr.is_null() && !(*ptr).settings_hwnd.is_null() && IsWindow((*ptr).settings_hwnd) != 0
         {
             InvalidateRect((*ptr).settings_hwnd, null(), 1);
         }
@@ -1232,7 +1275,11 @@ pub(super) unsafe fn settings_sync_vv_group_display(st: &mut SettingsWndState) {
         let groups = settings_groups_cache_for_tab(st, source_tab);
         settings_set_text(
             st.cb_vv_group,
-            &group_name_for_display(groups, st.vv_group_selected, source_tab_all_label(source_tab)),
+            &group_name_for_display(
+                groups,
+                st.vv_group_selected,
+                source_tab_all_label(source_tab),
+            ),
         );
     }
 }
@@ -1330,10 +1377,7 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     st.cb_paste_sound,
                     &paste_sound_display(&st.draft.paste_success_sound_kind),
                 );
-                EnableWindow(
-                    st.cb_paste_sound,
-                    if sound_enabled { 1 } else { 0 },
-                );
+                EnableWindow(st.cb_paste_sound, if sound_enabled { 1 } else { 0 });
             }
             if !st.btn_paste_sound_pick.is_null() {
                 settings_set_text(
@@ -1342,7 +1386,11 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                 );
                 EnableWindow(
                     st.btn_paste_sound_pick,
-                    if sound_enabled && st.draft.paste_success_sound_kind == "custom" { 1 } else { 0 },
+                    if sound_enabled && st.draft.paste_success_sound_kind == "custom" {
+                        1
+                    } else {
+                        0
+                    },
                 );
             }
         }
@@ -1350,24 +1398,39 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             let s = &st.draft;
             settings_set_text(st.cb_hk_mod, &normalize_hotkey_mod(&s.hotkey_mod));
             settings_set_text(st.cb_hk_key, &normalize_hotkey_key(&s.hotkey_key));
-            settings_set_text(st.lb_hk_preview, &hotkey_preview_text(&s.hotkey_mod, &s.hotkey_key));
-            if !st.btn_hk_record.is_null() {
             settings_set_text(
-                st.btn_hk_record,
-                if st.hotkey_recording {
-                    tr("按下快捷键...", "Press shortcut...")
-                } else {
-                    tr("录制热键", "Record Hotkey")
-                },
+                st.lb_hk_preview,
+                &hotkey_preview_text(&s.hotkey_mod, &s.hotkey_key),
             );
+            if !st.btn_hk_record.is_null() {
+                settings_set_text(
+                    st.btn_hk_record,
+                    if st.hotkey_recording {
+                        tr("按下快捷键...", "Press shortcut...")
+                    } else {
+                        tr("录制热键", "Record Hotkey")
+                    },
+                );
             }
             if !st.cb_plain_hk_mod.is_null() {
-                settings_set_text(st.cb_plain_hk_mod, &normalize_hotkey_mod(&s.plain_paste_hotkey_mod));
-                EnableWindow(st.cb_plain_hk_mod, if s.plain_paste_hotkey_enabled { 1 } else { 0 });
+                settings_set_text(
+                    st.cb_plain_hk_mod,
+                    &normalize_hotkey_mod(&s.plain_paste_hotkey_mod),
+                );
+                EnableWindow(
+                    st.cb_plain_hk_mod,
+                    if s.plain_paste_hotkey_enabled { 1 } else { 0 },
+                );
             }
             if !st.cb_plain_hk_key.is_null() {
-                settings_set_text(st.cb_plain_hk_key, &normalize_hotkey_key(&s.plain_paste_hotkey_key));
-                EnableWindow(st.cb_plain_hk_key, if s.plain_paste_hotkey_enabled { 1 } else { 0 });
+                settings_set_text(
+                    st.cb_plain_hk_key,
+                    &normalize_hotkey_key(&s.plain_paste_hotkey_key),
+                );
+                EnableWindow(
+                    st.cb_plain_hk_key,
+                    if s.plain_paste_hotkey_enabled { 1 } else { 0 },
+                );
             }
             if !st.lb_plain_hk_preview.is_null() {
                 settings_set_text(
@@ -1380,7 +1443,10 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             let s = &st.draft;
             settings_set_text(st.cb_engine, &search_engine_display(&s.search_engine));
             settings_set_text(st.ed_tpl, &s.search_template);
-            settings_set_text(st.cb_ocr_provider, &image_ocr_provider_display(&s.image_ocr_provider));
+            settings_set_text(
+                st.cb_ocr_provider,
+                &image_ocr_provider_display(&s.image_ocr_provider),
+            );
             let baidu_enabled = s.image_ocr_provider == "baidu";
             let winocr_enabled = s.image_ocr_provider == "winocr";
             let ocr_fields_visible = baidu_enabled || winocr_enabled;
@@ -1392,14 +1458,7 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     tr("API Key：", "API Key:")
                 },
             );
-            settings_set_text(
-                st.lb_ocr_secondary,
-                if winocr_enabled {
-                    tr("Secret Key：", "Secret Key:")
-                } else {
-                    tr("Secret Key：", "Secret Key:")
-                },
-            );
+            settings_set_text(st.lb_ocr_secondary, tr("Secret Key：", "Secret Key:"));
             settings_set_text(
                 st.ed_ocr_cloud_url,
                 if winocr_enabled {
@@ -1410,23 +1469,45 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             );
             settings_set_text(st.ed_ocr_cloud_token, &s.image_ocr_cloud_token);
             if !st.lb_ocr_primary.is_null() {
-                ShowWindow(st.lb_ocr_primary, if ocr_fields_visible { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.lb_ocr_primary,
+                    if ocr_fields_visible { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.ed_ocr_cloud_url.is_null() {
-                EnableWindow(st.ed_ocr_cloud_url, if baidu_enabled || winocr_enabled { 1 } else { 0 });
-                ShowWindow(st.ed_ocr_cloud_url, if ocr_fields_visible { SW_SHOW } else { SW_HIDE });
+                EnableWindow(
+                    st.ed_ocr_cloud_url,
+                    if baidu_enabled || winocr_enabled {
+                        1
+                    } else {
+                        0
+                    },
+                );
+                ShowWindow(
+                    st.ed_ocr_cloud_url,
+                    if ocr_fields_visible { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.ed_ocr_cloud_token.is_null() {
                 EnableWindow(st.ed_ocr_cloud_token, if baidu_enabled { 1 } else { 0 });
             }
             if !st.lb_ocr_secondary.is_null() {
-                ShowWindow(st.lb_ocr_secondary, if baidu_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.lb_ocr_secondary,
+                    if baidu_enabled { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.ed_ocr_cloud_token.is_null() {
-                ShowWindow(st.ed_ocr_cloud_token, if baidu_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.ed_ocr_cloud_token,
+                    if baidu_enabled { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.btn_ocr_detect.is_null() {
-                ShowWindow(st.btn_ocr_detect, if winocr_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.btn_ocr_detect,
+                    if winocr_enabled { SW_SHOW } else { SW_HIDE },
+                );
                 EnableWindow(st.btn_ocr_detect, if winocr_enabled { 1 } else { 0 });
             }
             settings_set_text(
@@ -1450,25 +1531,52 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             );
             let translate_enabled = s.text_translate_provider == "baidu";
             if !st.lb_translate_primary.is_null() {
-                ShowWindow(st.lb_translate_primary, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.lb_translate_primary,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.ed_translate_app_id.is_null() {
-                ShowWindow(st.ed_translate_app_id, if translate_enabled { SW_SHOW } else { SW_HIDE });
-                EnableWindow(st.ed_translate_app_id, if translate_enabled { 1 } else { 0 });
+                ShowWindow(
+                    st.ed_translate_app_id,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
+                EnableWindow(
+                    st.ed_translate_app_id,
+                    if translate_enabled { 1 } else { 0 },
+                );
             }
             if !st.lb_translate_secondary.is_null() {
-                ShowWindow(st.lb_translate_secondary, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.lb_translate_secondary,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.ed_translate_secret.is_null() {
-                ShowWindow(st.ed_translate_secret, if translate_enabled { SW_SHOW } else { SW_HIDE });
-                EnableWindow(st.ed_translate_secret, if translate_enabled { 1 } else { 0 });
+                ShowWindow(
+                    st.ed_translate_secret,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
+                EnableWindow(
+                    st.ed_translate_secret,
+                    if translate_enabled { 1 } else { 0 },
+                );
             }
             if !st.lb_translate_target.is_null() {
-                ShowWindow(st.lb_translate_target, if translate_enabled { SW_SHOW } else { SW_HIDE });
+                ShowWindow(
+                    st.lb_translate_target,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
             }
             if !st.cb_translate_target.is_null() {
-                ShowWindow(st.cb_translate_target, if translate_enabled { SW_SHOW } else { SW_HIDE });
-                EnableWindow(st.cb_translate_target, if translate_enabled { 1 } else { 0 });
+                ShowWindow(
+                    st.cb_translate_target,
+                    if translate_enabled { SW_SHOW } else { SW_HIDE },
+                );
+                EnableWindow(
+                    st.cb_translate_target,
+                    if translate_enabled { 1 } else { 0 },
+                );
             }
             if !st.lb_translate_status.is_null() {
                 settings_set_text(
@@ -1561,10 +1669,23 @@ pub(super) unsafe fn settings_page_push_ctrl(
     w: i32,
     h: i32,
 ) {
-    settings_register_ctrl(st, page, hwnd, x, y, w, h, crate::settings_model::settings_page_scrollable(page));
+    settings_register_ctrl(
+        st,
+        page,
+        hwnd,
+        x,
+        y,
+        w,
+        h,
+        crate::settings_model::settings_page_scrollable(page),
+    );
 }
 
-pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, redraw_children: bool) {
+pub(super) unsafe fn settings_repos_controls(
+    hwnd: HWND,
+    st: &SettingsWndState,
+    redraw_children: bool,
+) {
     let slots: Vec<_> = st.ui.scroll_ctrls_for_page(st.cur_page).copied().collect();
     if slots.is_empty() || !crate::settings_model::settings_page_scrollable(st.cur_page) {
         return;
@@ -1621,7 +1742,11 @@ pub(super) unsafe fn settings_repos_controls(hwnd: HWND, st: &SettingsWndState, 
 
         let flags = SWP_NOZORDER
             | SWP_NOACTIVATE
-            | if visible { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW };
+            | if visible {
+                SWP_SHOWWINDOW
+            } else {
+                SWP_HIDEWINDOW
+            };
         let r = DeferWindowPos(hdwp, hchild, null_mut(), ox, new_y, ow, oh, flags);
         if !r.is_null() {
             hdwp = r;
@@ -1671,7 +1796,10 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     GetClientRect(hwnd, &mut crc);
     let content_y = settings_content_y_scaled();
     let view_h = (crc.bottom - crc.top) - content_y;
-    let new_y = new_y.clamp(0, settings_page_max_scroll(st.cur_page, view_h));
+    let new_y = new_y.clamp(
+        0,
+        settings_page_max_scroll_for_state(st, st.cur_page, view_h),
+    );
     if new_y == st.content_scroll_y {
         return;
     }
@@ -1739,7 +1867,10 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
         if !st.lb_hk_preview.is_null() {
             settings_set_text(
                 st.lb_hk_preview,
-                &hotkey_preview_text(&get_window_text(st.cb_hk_mod), &get_window_text(st.cb_hk_key)),
+                &hotkey_preview_text(
+                    &get_window_text(st.cb_hk_mod),
+                    &get_window_text(st.cb_hk_key),
+                ),
             );
             InvalidateRect(st.lb_hk_preview, null(), 1);
         }
@@ -1775,7 +1906,14 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
             if reg.hwnd.is_null() {
                 continue;
             }
-            ShowWindow(reg.hwnd, if other_page == st.cur_page { SW_SHOW } else { SW_HIDE });
+            ShowWindow(
+                reg.hwnd,
+                if other_page == st.cur_page {
+                    SW_SHOW
+                } else {
+                    SW_HIDE
+                },
+            );
         }
     }
 
@@ -1806,12 +1944,18 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     st.vv_group_selected = st.draft.vv_group_id;
     st.group_view_tab = normalize_source_tab(app.tab_index);
     let s = &st.draft;
-    settings_set_text(st.cb_max, settings_dropdown_label_for_max_items(s.max_items));
+    settings_set_text(
+        st.cb_max,
+        settings_dropdown_label_for_max_items(s.max_items),
+    );
     settings_set_text(st.ed_dx, &s.show_mouse_dx.to_string());
     settings_set_text(st.ed_dy, &s.show_mouse_dy.to_string());
     settings_set_text(st.ed_fx, &s.show_fixed_x.to_string());
     settings_set_text(st.ed_fy, &s.show_fixed_y.to_string());
-    settings_set_text(st.cb_pos, settings_dropdown_label_for_pos_mode(&s.show_pos_mode));
+    settings_set_text(
+        st.cb_pos,
+        settings_dropdown_label_for_pos_mode(&s.show_pos_mode),
+    );
     if !st.cb_paste_sound.is_null() {
         settings_set_text(
             st.cb_paste_sound,
@@ -1870,7 +2014,10 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         st.draft.paste_success_sound_kind =
             paste_sound_key_from_display(&get_window_text(st.cb_paste_sound)).to_string();
     }
-    if st.ui.is_built(SettingsPage::Hotkey.index()) && !st.cb_hk_mod.is_null() && !st.cb_hk_key.is_null() {
+    if st.ui.is_built(SettingsPage::Hotkey.index())
+        && !st.cb_hk_mod.is_null()
+        && !st.cb_hk_key.is_null()
+    {
         st.draft.hotkey_mod = normalize_hotkey_mod(&get_window_text(st.cb_hk_mod));
         st.draft.hotkey_key = normalize_hotkey_key(&get_window_text(st.cb_hk_key));
         if !st.cb_plain_hk_mod.is_null() && !st.cb_plain_hk_key.is_null() {
@@ -1881,7 +2028,8 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         }
     }
     if st.ui.is_built(SettingsPage::Plugin.index()) && !st.cb_engine.is_null() {
-        st.draft.search_engine = search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
+        st.draft.search_engine =
+            search_engine_key_from_display(&get_window_text(st.cb_engine)).to_string();
         st.draft.search_template = {
             let tpl = get_window_text(st.ed_tpl);
             if tpl.trim().is_empty() {
@@ -1899,23 +2047,24 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
             st.draft.image_ocr_cloud_token = get_window_text(st.ed_ocr_cloud_token);
         }
         st.draft.text_translate_provider =
-            text_translate_provider_key_from_display(&get_window_text(st.cb_translate_provider)).to_string();
+            text_translate_provider_key_from_display(&get_window_text(st.cb_translate_provider))
+                .to_string();
         if st.draft.text_translate_provider == "baidu" {
             st.draft.text_translate_app_id = get_window_text(st.ed_translate_app_id);
             st.draft.text_translate_secret = get_window_text(st.ed_translate_secret);
             st.draft.text_translate_target_lang =
-                text_translate_target_key_from_display(&get_window_text(st.cb_translate_target)).to_string();
+                text_translate_target_key_from_display(&get_window_text(st.cb_translate_target))
+                    .to_string();
         }
     }
     st.draft.vv_source_tab = settings_vv_source_current(st);
     let vv_groups = settings_groups_cache_for_tab(st, st.draft.vv_source_tab);
-    st.draft.vv_group_id = if st.vv_group_selected > 0
-        && vv_groups.iter().any(|g| g.id == st.vv_group_selected)
-    {
-        st.vv_group_selected
-    } else {
-        0
-    };
+    st.draft.vv_group_id =
+        if st.vv_group_selected > 0 && vv_groups.iter().any(|g| g.id == st.vv_group_selected) {
+            st.vv_group_selected
+        } else {
+            0
+        };
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.cb_cloud_interval.is_null() {
         st.draft.cloud_sync_interval = {
             let label = get_window_text(st.cb_cloud_interval);
@@ -2017,12 +2166,13 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     schedule_cloud_sync(app, false);
     let new_max = app.settings.max_items;
     if new_max > 0 {
-                                    db_prune_items(0, new_max);
+        db_prune_items(0, new_max);
         reload_state_from_db_persisting(app);
     }
     if edge_hide_old && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
-    } else if !edge_hide_old && app.settings.edge_auto_hide && IsWindowVisible(st.parent_hwnd) != 0 {
+    } else if !edge_hide_old && app.settings.edge_auto_hide && IsWindowVisible(st.parent_hwnd) != 0
+    {
         clear_edge_dock_state(app);
         note_window_moved_for_edge_hide(st.parent_hwnd, app);
     }
@@ -2075,9 +2225,7 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_PASTE_MOVE_TOP => {
             st.draft.move_pasted_item_to_top = !st.draft.move_pasted_item_to_top
         }
-        IDC_SET_DEDUPE_FILTER => {
-            st.draft.dedupe_filter_enabled = !st.draft.dedupe_filter_enabled
-        }
+        IDC_SET_DEDUPE_FILTER => st.draft.dedupe_filter_enabled = !st.draft.dedupe_filter_enabled,
         IDC_SET_PERSIST_SEARCH => st.draft.persistent_search_box = !st.draft.persistent_search_box,
         IDC_SET_PASTE_SOUND_ENABLE => {
             st.draft.paste_success_sound_enabled = !st.draft.paste_success_sound_enabled
@@ -2086,9 +2234,7 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
         IDC_SET_VV_MODE => st.draft.vv_mode_enabled = !st.draft.vv_mode_enabled,
-        IDC_SET_IMAGE_PREVIEW => {
-            st.draft.image_preview_enabled = !st.draft.image_preview_enabled
-        }
+        IDC_SET_IMAGE_PREVIEW => st.draft.image_preview_enabled = !st.draft.image_preview_enabled,
         IDC_SET_QUICK_DELETE => st.draft.quick_delete_button = !st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
@@ -2111,42 +2257,159 @@ struct SettingsPageBuilder {
 }
 
 impl SettingsPageBuilder {
-    unsafe fn add(&self, st: &mut SettingsWndState, hwnd: HWND, x: i32, y: i32, w: i32, h: i32) -> HWND {
-        if !hwnd.is_null() { settings_page_push_ctrl(st, self.page, hwnd, x, y, w, h); }
+    unsafe fn add(
+        &self,
+        st: &mut SettingsWndState,
+        hwnd: HWND,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> HWND {
+        if !hwnd.is_null() {
+            settings_page_push_ctrl(st, self.page, hwnd, x, y, w, h);
+        }
         hwnd
     }
 
-    unsafe fn label(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, h: i32) -> HWND {
-        self.add(st, settings_create_label(self.hwnd, text, x, y, w, h, self.font), x, y, w, h)
+    unsafe fn label(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_label(self.hwnd, text, x, y, w, h, self.font),
+            x,
+            y,
+            w,
+            h,
+        )
     }
 
-    unsafe fn label_auto(&self, st: &mut SettingsWndState, text: &str, x: i32, y: i32, w: i32, min_h: i32) -> (HWND, i32) {
+    unsafe fn label_auto(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        x: i32,
+        y: i32,
+        w: i32,
+        min_h: i32,
+    ) -> (HWND, i32) {
         let (hwnd, h) = settings_create_label_auto(self.hwnd, text, x, y, w, min_h, self.font);
         (self.add(st, hwnd, x, y, w, h), h)
     }
 
-    unsafe fn button(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(32))
+    unsafe fn button(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font),
+            x,
+            y,
+            w,
+            settings_scale(32),
+        )
     }
 
-    unsafe fn dropdown(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(32))
+    unsafe fn dropdown(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font),
+            x,
+            y,
+            w,
+            settings_scale(32),
+        )
     }
 
-    unsafe fn edit(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_edit(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(28))
+    unsafe fn edit(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_edit(self.hwnd, text, id, x, y, w, self.font),
+            x,
+            y,
+            w,
+            settings_scale(28),
+        )
     }
 
-    unsafe fn password_edit(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> HWND {
-        self.add(st, settings_create_password_edit(self.hwnd, text, id, x, y, w, self.font), x, y, w, settings_scale(28))
+    unsafe fn password_edit(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_password_edit(self.hwnd, text, id, x, y, w, self.font),
+            x,
+            y,
+            w,
+            settings_scale(28),
+        )
     }
 
-    unsafe fn listbox(&self, st: &mut SettingsWndState, id: isize, x: i32, y: i32, w: i32, h: i32) -> HWND {
-        self.add(st, settings_create_listbox(self.hwnd, id, x, y, w, h, self.font), x, y, w, h)
+    unsafe fn listbox(
+        &self,
+        st: &mut SettingsWndState,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> HWND {
+        self.add(
+            st,
+            settings_create_listbox(self.hwnd, id, x, y, w, h, self.font),
+            x,
+            y,
+            w,
+            h,
+        )
     }
 
-    unsafe fn toggle_row(&self, st: &mut SettingsWndState, text: &str, id: isize, x: i32, y: i32, w: i32) -> (HWND, HWND) {
-        let (label, btn, ..) = settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
+    unsafe fn toggle_row(
+        &self,
+        st: &mut SettingsWndState,
+        text: &str,
+        id: isize,
+        x: i32,
+        y: i32,
+        w: i32,
+    ) -> (HWND, HWND) {
+        let (label, btn, ..) =
+            settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
         let label_h = settings_scale(24);
         let btn_w = settings_scale(44);
         let btn_h = settings_scale(24);
@@ -2159,78 +2422,272 @@ impl SettingsPageBuilder {
     }
 }
 
-pub(super) unsafe fn settings_create_label(parent: HWND, text: &str, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
+pub(super) unsafe fn settings_create_label(
+    parent: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    font: *mut core::ffi::c_void,
+) -> HWND {
     host_create_settings_label(parent, text, x, y, w, h, font)
 }
 
-pub(super) unsafe fn settings_create_label_auto(parent: HWND, text: &str, x: i32, y: i32, w: i32, min_h: i32, font: *mut core::ffi::c_void) -> (HWND, i32) {
+pub(super) unsafe fn settings_create_label_auto(
+    parent: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    min_h: i32,
+    font: *mut core::ffi::c_void,
+) -> (HWND, i32) {
     host_create_settings_label_auto(parent, text, x, y, w, min_h, font)
 }
 
-pub(super) unsafe fn settings_create_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
+pub(super) unsafe fn settings_create_edit(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut core::ffi::c_void,
+) -> HWND {
     host_create_settings_edit(parent, text, id, x, y, w, font)
 }
 
-pub(super) unsafe fn settings_create_password_edit(parent: HWND, text: &str, id: isize, x: i32, y: i32, w: i32, font: *mut core::ffi::c_void) -> HWND {
+pub(super) unsafe fn settings_create_password_edit(
+    parent: HWND,
+    text: &str,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    font: *mut core::ffi::c_void,
+) -> HWND {
     host_create_settings_password_edit(parent, text, id, x, y, w, font)
 }
 
 pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::General.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 0);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 130);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
     let sec3 = SettingsFormSectionLayout::new(page, 3, 138);
     let sec4 = SettingsFormSectionLayout::new(page, 4, 0);
 
-    let (_, btn) = b.toggle_row(st, "开机自启", IDC_SET_AUTOSTART, sec0.left(), sec0.row_y(0), sec0.full_w());
+    let (_, btn) = b.toggle_row(
+        st,
+        "开机自启",
+        IDC_SET_AUTOSTART,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
     st.chk_autostart = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "静默启动（打开默认不显示）", IDC_SET_SILENTSTART, sec0.left(), sec0.row_y(1), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "静默启动（打开默认不显示）",
+        IDC_SET_SILENTSTART,
+        sec0.left(),
+        sec0.row_y(1),
+        sec0.full_w(),
+    );
     st.chk_silent_start = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "右下角图标开启/关闭", IDC_SET_TRAYICON, sec0.left(), sec0.row_y(2), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "右下角图标开启/关闭",
+        IDC_SET_TRAYICON,
+        sec0.left(),
+        sec0.row_y(2),
+        sec0.full_w(),
+    );
     st.chk_tray_icon = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "关闭不退出（托盘驻留）", IDC_SET_CLOSETRAY, sec0.left(), sec0.row_y(3), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "关闭不退出（托盘驻留）",
+        IDC_SET_CLOSETRAY,
+        sec0.left(),
+        sec0.row_y(3),
+        sec0.full_w(),
+    );
     st.chk_close_tray = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "呼出后点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR, sec0.left(), sec0.row_y(4), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "呼出后点击外部自动隐藏",
+        IDC_SET_AUTOHIDE_BLUR,
+        sec0.left(),
+        sec0.row_y(4),
+        sec0.full_w(),
+    );
     st.chk_auto_hide_on_blur = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "贴边自动隐藏", IDC_SET_EDGEHIDE, sec0.left(), sec0.row_y(5), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "贴边自动隐藏",
+        IDC_SET_EDGEHIDE,
+        sec0.left(),
+        sec0.row_y(5),
+        sec0.full_w(),
+    );
     st.chk_edge_hide = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "悬停预览", IDC_SET_HOVERPREVIEW, sec0.left(), sec0.row_y(6), sec0.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "悬停预览",
+        IDC_SET_HOVERPREVIEW,
+        sec0.left(),
+        sec0.row_y(6),
+        sec0.full_w(),
+    );
     st.chk_hover_preview = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, tr("VV 模式", "VV Mode"), IDC_SET_VV_MODE, sec0.left(), sec0.row_y(7), sec0.full_w());
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, tr("显示图片缩略图", "Show image thumbnails"), IDC_SET_IMAGE_PREVIEW, sec0.left(), sec0.row_y(8), sec0.full_w());
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, tr("快速删除按钮", "Quick delete button"), IDC_SET_QUICK_DELETE, sec0.left(), sec0.row_y(9), sec0.full_w());
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        tr("VV 模式", "VV Mode"),
+        IDC_SET_VV_MODE,
+        sec0.left(),
+        sec0.row_y(7),
+        sec0.full_w(),
+    );
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        tr("显示图片缩略图", "Show image thumbnails"),
+        IDC_SET_IMAGE_PREVIEW,
+        sec0.left(),
+        sec0.row_y(8),
+        sec0.full_w(),
+    );
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        tr("快速删除按钮", "Quick delete button"),
+        IDC_SET_QUICK_DELETE,
+        sec0.left(),
+        sec0.row_y(9),
+        sec0.full_w(),
+    );
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
 
-    b.label(st, "最大保存条数：", sec1.left(), sec1.label_y(0, settings_scale(24)), sec1.label_w(), settings_scale(24));
-    st.cb_max = b.dropdown(st, "200", IDC_SET_MAX, sec1.field_x(), sec1.row_y(0), settings_scale(150));
-    if !st.cb_max.is_null() { st.ownerdraw_ctrls.push(st.cb_max); }
+    b.label(
+        st,
+        "最大保存条数：",
+        sec1.left(),
+        sec1.label_y(0, settings_scale(24)),
+        sec1.label_w(),
+        settings_scale(24),
+    );
+    st.cb_max = b.dropdown(
+        st,
+        "200",
+        IDC_SET_MAX,
+        sec1.field_x(),
+        sec1.row_y(0),
+        settings_scale(150),
+    );
+    if !st.cb_max.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_max);
+    }
 
-    let (_, btn) = b.toggle_row(st, "单击后隐藏主窗口", IDC_SET_CLICK_HIDE, sec2.left(), sec2.row_y(0), sec2.full_w());
+    let (_, btn) = b.toggle_row(
+        st,
+        "单击后隐藏主窗口",
+        IDC_SET_CLICK_HIDE,
+        sec2.left(),
+        sec2.row_y(0),
+        sec2.full_w(),
+    );
     st.chk_click_hide = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "粘贴后上移到首行", IDC_SET_PASTE_MOVE_TOP, sec2.left(), sec2.row_y(1), sec2.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "粘贴后上移到首行",
+        IDC_SET_PASTE_MOVE_TOP,
+        sec2.left(),
+        sec2.row_y(1),
+        sec2.full_w(),
+    );
     st.chk_move_pasted_to_top = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "重复内容过滤并提升到首行", IDC_SET_DEDUPE_FILTER, sec2.left(), sec2.row_y(2), sec2.full_w());
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "常驻搜索框", IDC_SET_PERSIST_SEARCH, sec2.left(), sec2.row_y(3), sec2.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "重复内容过滤并提升到首行",
+        IDC_SET_DEDUPE_FILTER,
+        sec2.left(),
+        sec2.row_y(2),
+        sec2.full_w(),
+    );
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "常驻搜索框",
+        IDC_SET_PERSIST_SEARCH,
+        sec2.left(),
+        sec2.row_y(3),
+        sec2.full_w(),
+    );
     st.chk_persistent_search = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    let (_, btn) = b.toggle_row(st, "粘贴成功声音", IDC_SET_PASTE_SOUND_ENABLE, sec2.left(), sec2.row_y(4), sec2.full_w());
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let (_, btn) = b.toggle_row(
+        st,
+        "粘贴成功声音",
+        IDC_SET_PASTE_SOUND_ENABLE,
+        sec2.left(),
+        sec2.row_y(4),
+        sec2.full_w(),
+    );
     st.chk_paste_sound = btn;
-    if !btn.is_null() { st.ownerdraw_ctrls.push(btn); }
-    b.label(st, "提示音：", sec2.left(), sec2.label_y(5, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    b.label(
+        st,
+        "提示音：",
+        sec2.left(),
+        sec2.label_y(5, settings_scale(24)),
+        sec2.label_w(),
+        settings_scale(24),
+    );
     st.cb_paste_sound = b.dropdown(
         st,
         &paste_sound_display("default"),
@@ -2242,7 +2699,14 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
     if !st.cb_paste_sound.is_null() {
         st.ownerdraw_ctrls.push(st.cb_paste_sound);
     }
-    b.label(st, "声音文件：", sec2.left(), sec2.label_y(6, settings_scale(24)), sec2.label_w(), settings_scale(24));
+    b.label(
+        st,
+        "声音文件：",
+        sec2.left(),
+        sec2.label_y(6, settings_scale(24)),
+        sec2.label_w(),
+        settings_scale(24),
+    );
     st.btn_paste_sound_pick = b.button(
         st,
         &paste_sound_file_button_text(""),
@@ -2255,43 +2719,140 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
         st.ownerdraw_ctrls.push(st.btn_paste_sound_pick);
     }
 
-    b.label(st, "弹出位置：", sec3.left(), sec3.label_y(0, settings_scale(24)), sec3.label_w(), settings_scale(24));
-    st.cb_pos = b.dropdown(st, "跟随鼠标", IDC_SET_POSMODE, sec3.field_x(), sec3.row_y(0), settings_scale(170));
-    if !st.cb_pos.is_null() { st.ownerdraw_ctrls.push(st.cb_pos); }
+    b.label(
+        st,
+        "弹出位置：",
+        sec3.left(),
+        sec3.label_y(0, settings_scale(24)),
+        sec3.label_w(),
+        settings_scale(24),
+    );
+    st.cb_pos = b.dropdown(
+        st,
+        "跟随鼠标",
+        IDC_SET_POSMODE,
+        sec3.field_x(),
+        sec3.row_y(0),
+        settings_scale(170),
+    );
+    if !st.cb_pos.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_pos);
+    }
 
-    b.label(st, "鼠标偏移 dx/dy：", sec3.left(), sec3.label_y(1, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    b.label(
+        st,
+        "鼠标偏移 dx/dy：",
+        sec3.left(),
+        sec3.label_y(1, settings_scale(24)),
+        sec3.label_w(),
+        settings_scale(24),
+    );
     let mouse_x = sec3.field_x();
-    st.ed_dx = b.edit(st, "", IDC_SET_DX, mouse_x, sec3.row_y(1), settings_scale(64));
-    st.ed_dy = b.edit(st, "", IDC_SET_DY, mouse_x + settings_scale(74), sec3.row_y(1), settings_scale(64));
+    st.ed_dx = b.edit(
+        st,
+        "",
+        IDC_SET_DX,
+        mouse_x,
+        sec3.row_y(1),
+        settings_scale(64),
+    );
+    st.ed_dy = b.edit(
+        st,
+        "",
+        IDC_SET_DY,
+        mouse_x + settings_scale(74),
+        sec3.row_y(1),
+        settings_scale(64),
+    );
 
-    b.label(st, "固定位置 x/y：", sec3.left(), sec3.label_y(2, settings_scale(24)), sec3.label_w(), settings_scale(24));
+    b.label(
+        st,
+        "固定位置 x/y：",
+        sec3.left(),
+        sec3.label_y(2, settings_scale(24)),
+        sec3.label_w(),
+        settings_scale(24),
+    );
     let fixed_x = sec3.field_x();
-    st.ed_fx = b.edit(st, "", IDC_SET_FX, fixed_x, sec3.row_y(2), settings_scale(64));
-    st.ed_fy = b.edit(st, "", IDC_SET_FY, fixed_x + settings_scale(74), sec3.row_y(2), settings_scale(64));
+    st.ed_fx = b.edit(
+        st,
+        "",
+        IDC_SET_FX,
+        fixed_x,
+        sec3.row_y(2),
+        settings_scale(64),
+    );
+    st.ed_fy = b.edit(
+        st,
+        "",
+        IDC_SET_FY,
+        fixed_x + settings_scale(74),
+        sec3.row_y(2),
+        settings_scale(64),
+    );
 
     let btn_y = sec4.row_y(0);
-    st.btn_open_cfg = b.button(st, "打开设置文件", IDC_SET_BTN_OPENCFG, sec4.action_x(0, settings_scale(130)), btn_y, settings_scale(130));
-    st.btn_open_db = b.button(st, "打开数据库文件", IDC_SET_BTN_OPENDB, sec4.action_x(1, settings_scale(130)), btn_y, settings_scale(130));
-    st.btn_open_data = b.button(st, "打开数据目录", IDC_SET_BTN_OPENDATA, sec4.action_x(2, settings_scale(130)), btn_y, settings_scale(130));
+    st.btn_open_cfg = b.button(
+        st,
+        "打开设置文件",
+        IDC_SET_BTN_OPENCFG,
+        sec4.action_x(0, settings_scale(130)),
+        btn_y,
+        settings_scale(130),
+    );
+    st.btn_open_db = b.button(
+        st,
+        "打开数据库文件",
+        IDC_SET_BTN_OPENDB,
+        sec4.action_x(1, settings_scale(130)),
+        btn_y,
+        settings_scale(130),
+    );
+    st.btn_open_data = b.button(
+        st,
+        "打开数据目录",
+        IDC_SET_BTN_OPENDATA,
+        sec4.action_x(2, settings_scale(130)),
+        btn_y,
+        settings_scale(130),
+    );
     for &hh in &[st.btn_open_cfg, st.btn_open_db, st.btn_open_data] {
-        if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
+        if !hh.is_null() {
+            st.ownerdraw_ctrls.push(hh);
+        }
     }
     st.ui.mark_built(page);
 }
 
-pub(super) unsafe fn settings_create_listbox(parent: HWND, id: isize, x: i32, y: i32, w: i32, h: i32, font: *mut core::ffi::c_void) -> HWND {
+pub(super) unsafe fn settings_create_listbox(
+    parent: HWND,
+    id: isize,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    font: *mut core::ffi::c_void,
+) -> HWND {
     host_create_settings_listbox(parent, id, x, y, w, h, font)
 }
 
 pub(super) unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, select_gid: i64) {
-    if st.lb_groups.is_null() { return; }
+    if st.lb_groups.is_null() {
+        return;
+    }
     let category = source_tab_category(settings_group_view_current(st));
     SendMessageW(st.lb_groups, LB_RESETCONTENT, 0, 0);
-    *settings_groups_cache_for_tab_mut(st, settings_group_view_current(st)) = db_load_groups(category);
+    *settings_groups_cache_for_tab_mut(st, settings_group_view_current(st)) =
+        db_load_groups(category);
     let groups = settings_groups_cache_for_tab(st, settings_group_view_current(st));
     let mut sel_idx: i32 = -1;
     for (i, g) in groups.iter().enumerate() {
-        SendMessageW(st.lb_groups, LB_ADDSTRING, 0, to_wide(&g.name).as_ptr() as LPARAM);
+        SendMessageW(
+            st.lb_groups,
+            LB_ADDSTRING,
+            0,
+            to_wide(&g.name).as_ptr() as LPARAM,
+        );
         if g.id == select_gid {
             sel_idx = i as i32;
         }
@@ -2313,9 +2874,13 @@ pub(super) unsafe fn settings_groups_refresh_list(st: &mut SettingsWndState, sel
 }
 
 pub(super) unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(usize, ClipGroup)> {
-    if st.lb_groups.is_null() { return None; }
+    if st.lb_groups.is_null() {
+        return None;
+    }
     let row = SendMessageW(st.lb_groups, LB_GETCURSEL, 0, 0) as i32;
-    if row < 0 { return None; }
+    if row < 0 {
+        return None;
+    }
     settings_groups_cache_for_tab(st, settings_group_view_current(st))
         .get(row as usize)
         .cloned()
@@ -2325,7 +2890,9 @@ pub(super) unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(
 pub(super) unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {}
 
 pub(super) unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) {
-    let Some((idx, _)) = settings_groups_selected(st) else { return; };
+    let Some((idx, _)) = settings_groups_selected(st) else {
+        return;
+    };
     let tab = settings_group_view_current(st);
     let category = source_tab_category(tab);
     let groups = settings_groups_cache_for_tab(st, tab);
@@ -2348,7 +2915,11 @@ pub(super) unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) 
 
 pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Hotkey.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 86);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
@@ -2356,20 +2927,77 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     let note_h = settings_scale(40);
     let small_gap = settings_scale(6);
 
-    let (_hk_lbl, hk_btn) = b.toggle_row(st, "启用快捷键", 6101, sec0.left(), sec0.row_y(0), sec0.full_w());
+    let (_hk_lbl, hk_btn) = b.toggle_row(
+        st,
+        "启用快捷键",
+        6101,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
     st.chk_hk_enable = hk_btn;
-    if !st.chk_hk_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_hk_enable); }
+    if !st.chk_hk_enable.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_hk_enable);
+    }
 
-    b.label(st, "修饰键：", sec0.left(), sec0.label_y(1, line_h), settings_scale(70), line_h);
-    st.cb_hk_mod = b.dropdown(st, "Win", 6102, sec0.field_x(), sec0.row_y(1), settings_scale(170));
-    if !st.cb_hk_mod.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_mod); }
+    b.label(
+        st,
+        "修饰键：",
+        sec0.left(),
+        sec0.label_y(1, line_h),
+        settings_scale(70),
+        line_h,
+    );
+    st.cb_hk_mod = b.dropdown(
+        st,
+        "Win",
+        6102,
+        sec0.field_x(),
+        sec0.row_y(1),
+        settings_scale(170),
+    );
+    if !st.cb_hk_mod.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_hk_mod);
+    }
     let key_label_x = sec0.field_x() + settings_scale(186);
-    b.label(st, "按键：", key_label_x, sec0.label_y(1, line_h), settings_scale(50), line_h);
-    st.cb_hk_key = b.dropdown(st, "V", 6103, key_label_x + settings_scale(50), sec0.row_y(1), settings_scale(120));
-    if !st.cb_hk_key.is_null() { st.ownerdraw_ctrls.push(st.cb_hk_key); }
-    st.lb_hk_preview = b.label(st, "当前设置：Win + V", sec0.left(), sec0.label_y(2, line_h), sec0.full_w() - settings_scale(124), line_h);
-    st.btn_hk_record = b.button(st, tr("录制热键", "Record Hotkey"), IDC_SET_HK_RECORD, sec0.left() + sec0.full_w() - settings_scale(110), sec0.row_y(2) - settings_scale(2), settings_scale(110));
-    if !st.btn_hk_record.is_null() { st.ownerdraw_ctrls.push(st.btn_hk_record); }
+    b.label(
+        st,
+        "按键：",
+        key_label_x,
+        sec0.label_y(1, line_h),
+        settings_scale(50),
+        line_h,
+    );
+    st.cb_hk_key = b.dropdown(
+        st,
+        "V",
+        6103,
+        key_label_x + settings_scale(50),
+        sec0.row_y(1),
+        settings_scale(120),
+    );
+    if !st.cb_hk_key.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_hk_key);
+    }
+    st.lb_hk_preview = b.label(
+        st,
+        "当前设置：Win + V",
+        sec0.left(),
+        sec0.label_y(2, line_h),
+        sec0.full_w() - settings_scale(124),
+        line_h,
+    );
+    st.btn_hk_record = b.button(
+        st,
+        tr("录制热键", "Record Hotkey"),
+        IDC_SET_HK_RECORD,
+        sec0.left() + sec0.full_w() - settings_scale(110),
+        sec0.row_y(2) - settings_scale(2),
+        settings_scale(110),
+    );
+    if !st.btn_hk_record.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_hk_record);
+    }
 
     let (_plain_lbl, plain_btn) = b.toggle_row(
         st,
@@ -2432,47 +3060,184 @@ pub(super) unsafe fn settings_create_hotkey_page(hwnd: HWND, st: &mut SettingsWn
     );
 
     let _ = b.label_auto(st, "说明：通过注册表 DisabledHotkeys 屏蔽或恢复 Win+V。修改后通常需要重启资源管理器或重新登录。", sec1.left(), sec1.row_y(0), sec1.full_w(), note_h);
-    st.btn_clip_hist_block = b.button(st, "屏蔽 Win+V", 6111, sec1.action_x(0, settings_scale(110)), sec1.row_y(1), settings_scale(110));
-    st.btn_clip_hist_restore = b.button(st, "恢复 Win+V", 6112, sec1.action_x(1, settings_scale(110)), sec1.row_y(1), settings_scale(110));
-    st.btn_restart_explorer = b.button(st, "重启资源管理器", 6113, sec1.action_x(2, settings_scale(130)), sec1.row_y(1), settings_scale(130));
-    for &hh in &[st.btn_clip_hist_block, st.btn_clip_hist_restore, st.btn_restart_explorer] {
-        if !hh.is_null() { st.ownerdraw_ctrls.push(hh); }
+    st.btn_clip_hist_block = b.button(
+        st,
+        "屏蔽 Win+V",
+        6111,
+        sec1.action_x(0, settings_scale(110)),
+        sec1.row_y(1),
+        settings_scale(110),
+    );
+    st.btn_clip_hist_restore = b.button(
+        st,
+        "恢复 Win+V",
+        6112,
+        sec1.action_x(1, settings_scale(110)),
+        sec1.row_y(1),
+        settings_scale(110),
+    );
+    st.btn_restart_explorer = b.button(
+        st,
+        "重启资源管理器",
+        6113,
+        sec1.action_x(2, settings_scale(130)),
+        sec1.row_y(1),
+        settings_scale(130),
+    );
+    for &hh in &[
+        st.btn_clip_hist_block,
+        st.btn_clip_hist_restore,
+        st.btn_restart_explorer,
+    ] {
+        if !hh.is_null() {
+            st.ownerdraw_ctrls.push(hh);
+        }
     }
 
-    let (_desc1, d1h) = b.label_auto(st, "说明：保存后会立即重新注册主快捷键。", sec2.left(), sec2.row_y(0), sec2.full_w(), line_h);
-    let _ = b.label_auto(st, "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。", sec2.left(), sec2.row_y(0) + d1h + small_gap, sec2.full_w(), line_h);
+    let (_desc1, d1h) = b.label_auto(
+        st,
+        "说明：保存后会立即重新注册主快捷键。",
+        sec2.left(),
+        sec2.row_y(0),
+        sec2.full_w(),
+        line_h,
+    );
+    let _ = b.label_auto(
+        st,
+        "建议避免使用 Ctrl+C / Ctrl+V 等系统级常用组合。",
+        sec2.left(),
+        sec2.row_y(0) + d1h + small_gap,
+        sec2.full_w(),
+        line_h,
+    );
 
     st.ui.mark_built(page);
 }
 
 pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Plugin.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 110);
     let sec3 = SettingsFormSectionLayout::new(page, 3, 0);
     let line_h = settings_scale(24);
 
-    let (_qs_lbl, qs_btn) = b.toggle_row(st, "启用快速搜索", 7102, sec0.left(), sec0.row_y(0), sec0.full_w());
+    let (_qs_lbl, qs_btn) = b.toggle_row(
+        st,
+        "启用快速搜索",
+        7102,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
     st.chk_qs = qs_btn;
-    if !st.chk_qs.is_null() { st.ownerdraw_ctrls.push(st.chk_qs); }
-    b.label(st, "搜索引擎：", sec0.left(), sec0.label_y(1, line_h), sec0.label_w(), line_h);
-    st.cb_engine = b.dropdown(st, "筑森搜索（zxx.vip）", 7201, sec0.field_x(), sec0.row_y(1), settings_scale(240));
-    if !st.cb_engine.is_null() { st.ownerdraw_ctrls.push(st.cb_engine); }
-    b.label(st, "URL 模板：", sec0.left(), sec0.label_y(2, line_h), sec0.label_w(), line_h);
+    if !st.chk_qs.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_qs);
+    }
+    b.label(
+        st,
+        "搜索引擎：",
+        sec0.left(),
+        sec0.label_y(1, line_h),
+        sec0.label_w(),
+        line_h,
+    );
+    st.cb_engine = b.dropdown(
+        st,
+        "筑森搜索（zxx.vip）",
+        7201,
+        sec0.field_x(),
+        sec0.row_y(1),
+        settings_scale(240),
+    );
+    if !st.cb_engine.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_engine);
+    }
+    b.label(
+        st,
+        "URL 模板：",
+        sec0.left(),
+        sec0.label_y(2, line_h),
+        sec0.label_w(),
+        line_h,
+    );
     st.ed_tpl = b.edit(st, "", 7202, sec0.field_x(), sec0.row_y(2), sec0.field_w());
-    let btn_restore_tpl = b.button(st, "恢复预设模板", 7203, sec0.left(), sec0.row_y(3), settings_scale(130));
-    if !btn_restore_tpl.is_null() { st.ownerdraw_ctrls.push(btn_restore_tpl); }
-    let _ = b.label_auto(st, "占位符：{q}=编码后关键词，{raw}=原文", sec0.left() + settings_scale(146), sec0.row_y(3) + settings_scale(4), sec0.field_w_from(sec0.left() + settings_scale(146)), line_h);
+    let btn_restore_tpl = b.button(
+        st,
+        "恢复预设模板",
+        7203,
+        sec0.left(),
+        sec0.row_y(3),
+        settings_scale(130),
+    );
+    if !btn_restore_tpl.is_null() {
+        st.ownerdraw_ctrls.push(btn_restore_tpl);
+    }
+    let _ = b.label_auto(
+        st,
+        "占位符：{q}=编码后关键词，{raw}=原文",
+        sec0.left() + settings_scale(146),
+        sec0.row_y(3) + settings_scale(4),
+        sec0.field_w_from(sec0.left() + settings_scale(146)),
+        line_h,
+    );
 
-    b.label(st, tr("识别来源：", "Provider:"), sec1.left(), sec1.label_y(0, line_h), sec1.label_w(), line_h);
-    st.cb_ocr_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_OCR_PROVIDER, sec1.field_x(), sec1.row_y(0), settings_scale(220));
-    if !st.cb_ocr_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_ocr_provider); }
-    st.lb_ocr_status = b.label(st, tr("图片 OCR：已关闭", "Image OCR: disabled"), sec1.left(), sec1.label_y(1, line_h), sec1.full_w(), line_h);
-    st.lb_ocr_primary = b.label(st, tr("API Key：", "API Key:"), sec1.left(), sec1.label_y(2, line_h), sec1.label_w(), line_h);
-    st.ed_ocr_cloud_url = b.edit(st, "", IDC_SET_OCR_CLOUD_URL, sec1.field_x(), sec1.row_y(2), sec1.field_w());
-    st.lb_ocr_secondary = b.label(st, tr("Secret Key：", "Secret Key:"), sec1.left(), sec1.label_y(3, line_h), sec1.label_w(), line_h);
+    b.label(
+        st,
+        tr("识别来源：", "Provider:"),
+        sec1.left(),
+        sec1.label_y(0, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.cb_ocr_provider = b.dropdown(
+        st,
+        tr("关闭", "Off"),
+        IDC_SET_OCR_PROVIDER,
+        sec1.field_x(),
+        sec1.row_y(0),
+        settings_scale(220),
+    );
+    if !st.cb_ocr_provider.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_ocr_provider);
+    }
+    st.lb_ocr_status = b.label(
+        st,
+        tr("图片 OCR：已关闭", "Image OCR: disabled"),
+        sec1.left(),
+        sec1.label_y(1, line_h),
+        sec1.full_w(),
+        line_h,
+    );
+    st.lb_ocr_primary = b.label(
+        st,
+        tr("API Key：", "API Key:"),
+        sec1.left(),
+        sec1.label_y(2, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_ocr_cloud_url = b.edit(
+        st,
+        "",
+        IDC_SET_OCR_CLOUD_URL,
+        sec1.field_x(),
+        sec1.row_y(2),
+        sec1.field_w(),
+    );
+    st.lb_ocr_secondary = b.label(
+        st,
+        tr("Secret Key：", "Secret Key:"),
+        sec1.left(),
+        sec1.label_y(3, line_h),
+        sec1.label_w(),
+        line_h,
+    );
     st.ed_ocr_cloud_token = b.password_edit(
         st,
         "",
@@ -2481,82 +3246,306 @@ pub(super) unsafe fn settings_create_plugin_page(hwnd: HWND, st: &mut SettingsWn
         sec1.row_y(3),
         sec1.field_w(),
     );
-    st.btn_ocr_detect = b.button(st, tr("自动检测微信目录", "Auto-detect WeChat directory"), IDC_SET_OCR_WECHAT_DETECT, sec1.left(), sec1.row_y(3), settings_scale(180));
-    if !st.btn_ocr_detect.is_null() { st.ownerdraw_ctrls.push(st.btn_ocr_detect); }
+    st.btn_ocr_detect = b.button(
+        st,
+        tr("自动检测微信目录", "Auto-detect WeChat directory"),
+        IDC_SET_OCR_WECHAT_DETECT,
+        sec1.left(),
+        sec1.row_y(3),
+        settings_scale(180),
+    );
+    if !st.btn_ocr_detect.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_ocr_detect);
+    }
 
-    b.label(st, tr("翻译来源：", "Provider:"), sec2.left(), sec2.label_y(0, line_h), sec2.label_w(), line_h);
-    st.cb_translate_provider = b.dropdown(st, tr("关闭", "Off"), IDC_SET_TRANSLATE_PROVIDER, sec2.field_x(), sec2.row_y(0), settings_scale(220));
-    if !st.cb_translate_provider.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_provider); }
-    st.lb_translate_status = b.label(st, tr("文本翻译：已关闭", "Text translation: disabled"), sec2.left(), sec2.label_y(1, line_h), sec2.full_w(), line_h);
-    st.lb_translate_primary = b.label(st, tr("APP ID：", "APP ID:"), sec2.left(), sec2.label_y(2, line_h), sec2.label_w(), line_h);
-    st.ed_translate_app_id = b.edit(st, "", IDC_SET_TRANSLATE_APP_ID, sec2.field_x(), sec2.row_y(2), sec2.field_w());
-    st.lb_translate_secondary = b.label(st, tr("密钥：", "Secret:"), sec2.left(), sec2.label_y(3, line_h), sec2.label_w(), line_h);
-    st.ed_translate_secret = b.password_edit(st, "", IDC_SET_TRANSLATE_SECRET, sec2.field_x(), sec2.row_y(3), sec2.field_w());
-    st.lb_translate_target = b.label(st, tr("目标语言：", "Target language:"), sec2.left(), sec2.label_y(4, line_h), sec2.label_w(), line_h);
-    st.cb_translate_target = b.dropdown(st, tr("简体中文", "Simplified Chinese"), IDC_SET_TRANSLATE_TARGET, sec2.field_x(), sec2.row_y(4), settings_scale(180));
-    if !st.cb_translate_target.is_null() { st.ownerdraw_ctrls.push(st.cb_translate_target); }
+    b.label(
+        st,
+        tr("翻译来源：", "Provider:"),
+        sec2.left(),
+        sec2.label_y(0, line_h),
+        sec2.label_w(),
+        line_h,
+    );
+    st.cb_translate_provider = b.dropdown(
+        st,
+        tr("关闭", "Off"),
+        IDC_SET_TRANSLATE_PROVIDER,
+        sec2.field_x(),
+        sec2.row_y(0),
+        settings_scale(220),
+    );
+    if !st.cb_translate_provider.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_translate_provider);
+    }
+    st.lb_translate_status = b.label(
+        st,
+        tr("文本翻译：已关闭", "Text translation: disabled"),
+        sec2.left(),
+        sec2.label_y(1, line_h),
+        sec2.full_w(),
+        line_h,
+    );
+    st.lb_translate_primary = b.label(
+        st,
+        tr("APP ID：", "APP ID:"),
+        sec2.left(),
+        sec2.label_y(2, line_h),
+        sec2.label_w(),
+        line_h,
+    );
+    st.ed_translate_app_id = b.edit(
+        st,
+        "",
+        IDC_SET_TRANSLATE_APP_ID,
+        sec2.field_x(),
+        sec2.row_y(2),
+        sec2.field_w(),
+    );
+    st.lb_translate_secondary = b.label(
+        st,
+        tr("密钥：", "Secret:"),
+        sec2.left(),
+        sec2.label_y(3, line_h),
+        sec2.label_w(),
+        line_h,
+    );
+    st.ed_translate_secret = b.password_edit(
+        st,
+        "",
+        IDC_SET_TRANSLATE_SECRET,
+        sec2.field_x(),
+        sec2.row_y(3),
+        sec2.field_w(),
+    );
+    st.lb_translate_target = b.label(
+        st,
+        tr("目标语言：", "Target language:"),
+        sec2.left(),
+        sec2.label_y(4, line_h),
+        sec2.label_w(),
+        line_h,
+    );
+    st.cb_translate_target = b.dropdown(
+        st,
+        tr("简体中文", "Simplified Chinese"),
+        IDC_SET_TRANSLATE_TARGET,
+        sec2.field_x(),
+        sec2.row_y(4),
+        settings_scale(180),
+    );
+    if !st.cb_translate_target.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_translate_target);
+    }
 
-    let (_ai_lbl, ai_btn) = b.toggle_row(st, "AI 文本清洗", 7101, sec3.left(), sec3.row_y(0), sec3.full_w());
+    let (_ai_lbl, ai_btn) = b.toggle_row(
+        st,
+        "AI 文本清洗",
+        7101,
+        sec3.left(),
+        sec3.row_y(0),
+        sec3.full_w(),
+    );
     st.chk_ai = ai_btn;
-    if !st.chk_ai.is_null() { st.ownerdraw_ctrls.push(st.chk_ai); }
-    let (_mm_lbl, mm_btn) = b.toggle_row(st, "启用超级邮件合并", 7103, sec3.left(), sec3.row_y(1), sec3.full_w());
+    if !st.chk_ai.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_ai);
+    }
+    let (_mm_lbl, mm_btn) = b.toggle_row(
+        st,
+        "启用超级邮件合并",
+        7103,
+        sec3.left(),
+        sec3.row_y(1),
+        sec3.full_w(),
+    );
     st.chk_mm = mm_btn;
-    if !st.chk_mm.is_null() { st.ownerdraw_ctrls.push(st.chk_mm); }
-    let btn_mail_merge = b.button(st, "打开超级邮件合并", IDC_SET_PLUGIN_MAILMERGE, sec3.left(), sec3.row_y(2), settings_scale(170));
-    if !btn_mail_merge.is_null() { st.ownerdraw_ctrls.push(btn_mail_merge); }
-    let (_qr_lbl, qr_btn) = b.toggle_row(st, "启用快捷转换二维码", 7104, sec3.left(), sec3.row_y(3), sec3.full_w());
+    if !st.chk_mm.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_mm);
+    }
+    let btn_mail_merge = b.button(
+        st,
+        "打开超级邮件合并",
+        IDC_SET_PLUGIN_MAILMERGE,
+        sec3.left(),
+        sec3.row_y(2),
+        settings_scale(170),
+    );
+    if !btn_mail_merge.is_null() {
+        st.ownerdraw_ctrls.push(btn_mail_merge);
+    }
+    let (_qr_lbl, qr_btn) = b.toggle_row(
+        st,
+        "启用快捷转换二维码",
+        7104,
+        sec3.left(),
+        sec3.row_y(3),
+        sec3.full_w(),
+    );
     st.chk_qr = qr_btn;
-    if !st.chk_qr.is_null() { st.ownerdraw_ctrls.push(st.chk_qr); }
-    st.btn_plugin_downloads = b.button(st, tr("独立插件下载", "Standalone plugin downloads"), IDC_SET_PLUGIN_DOWNLOADS, sec3.left(), sec3.row_y(4), settings_scale(170));
-    if !st.btn_plugin_downloads.is_null() { st.ownerdraw_ctrls.push(st.btn_plugin_downloads); }
+    if !st.chk_qr.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_qr);
+    }
+    st.btn_plugin_downloads = b.button(
+        st,
+        tr("独立插件下载", "Standalone plugin downloads"),
+        IDC_SET_PLUGIN_DOWNLOADS,
+        sec3.left(),
+        sec3.row_y(4),
+        settings_scale(170),
+    );
+    if !st.btn_plugin_downloads.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_plugin_downloads);
+    }
     st.ui.mark_built(page);
 }
 
 pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Group.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 104);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 0);
-    let (_, btn) = b.toggle_row(st, "启用分组功能", IDC_SET_GROUP_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
+    let (_, btn) = b.toggle_row(
+        st,
+        "启用分组功能",
+        IDC_SET_GROUP_ENABLE,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
     st.chk_group_enable = btn;
-    if !st.chk_group_enable.is_null() { st.ownerdraw_ctrls.push(st.chk_group_enable); }
+    if !st.chk_group_enable.is_null() {
+        st.ownerdraw_ctrls.push(st.chk_group_enable);
+    }
 
-    b.label(st, tr("VV 来源：", "VV Source:"), sec0.left(), sec0.label_y(1, settings_scale(24)), sec0.label_w(), settings_scale(24));
-    st.cb_vv_source = b.dropdown(st, source_tab_label(0), IDC_SET_VV_SOURCE, sec0.field_x(), sec0.row_y(1), settings_scale(180));
+    b.label(
+        st,
+        tr("VV 来源：", "VV Source:"),
+        sec0.left(),
+        sec0.label_y(1, settings_scale(24)),
+        sec0.label_w(),
+        settings_scale(24),
+    );
+    st.cb_vv_source = b.dropdown(
+        st,
+        source_tab_label(0),
+        IDC_SET_VV_SOURCE,
+        sec0.field_x(),
+        sec0.row_y(1),
+        settings_scale(180),
+    );
     if !st.cb_vv_source.is_null() {
         st.ownerdraw_ctrls.push(st.cb_vv_source);
     }
 
-    b.label(st, tr("VV 默认分组：", "VV Default Group:"), sec0.left(), sec0.label_y(2, settings_scale(24)), sec0.label_w(), settings_scale(24));
-    st.cb_vv_group = b.dropdown(st, source_tab_all_label(0), IDC_SET_VV_GROUP, sec0.field_x(), sec0.row_y(2), settings_scale(220));
+    b.label(
+        st,
+        tr("VV 默认分组：", "VV Default Group:"),
+        sec0.left(),
+        sec0.label_y(2, settings_scale(24)),
+        sec0.label_w(),
+        settings_scale(24),
+    );
+    st.cb_vv_group = b.dropdown(
+        st,
+        source_tab_all_label(0),
+        IDC_SET_VV_GROUP,
+        sec0.field_x(),
+        sec0.row_y(2),
+        settings_scale(220),
+    );
     if !st.cb_vv_group.is_null() {
         st.ownerdraw_ctrls.push(st.cb_vv_group);
     }
 
     let tab_w = settings_scale(118);
-    st.btn_group_view_records = b.button(st, "复制记录", IDC_SET_GROUP_VIEW_RECORDS, sec1.left(), sec1.row_y(0), tab_w);
-    st.btn_group_view_phrases = b.button(st, "常用短语", IDC_SET_GROUP_VIEW_PHRASES, sec1.left() + tab_w + settings_scale(10), sec1.row_y(0), tab_w);
+    st.btn_group_view_records = b.button(
+        st,
+        "复制记录",
+        IDC_SET_GROUP_VIEW_RECORDS,
+        sec1.left(),
+        sec1.row_y(0),
+        tab_w,
+    );
+    st.btn_group_view_phrases = b.button(
+        st,
+        "常用短语",
+        IDC_SET_GROUP_VIEW_PHRASES,
+        sec1.left() + tab_w + settings_scale(10),
+        sec1.row_y(0),
+        tab_w,
+    );
     for &hh in &[st.btn_group_view_records, st.btn_group_view_phrases] {
         if !hh.is_null() {
             st.ownerdraw_ctrls.push(hh);
         }
     }
 
-    st.lb_group_current = b.label(st, "当前分组：全部记录", sec1.left(), sec1.row_y(1), sec1.full_w(), settings_scale(24));
-    b.label(st, "分组列表：", sec1.left(), sec1.row_y(2), settings_scale(220), settings_scale(22));
+    st.lb_group_current = b.label(
+        st,
+        "当前分组：全部记录",
+        sec1.left(),
+        sec1.row_y(1),
+        sec1.full_w(),
+        settings_scale(24),
+    );
+    b.label(
+        st,
+        "分组列表：",
+        sec1.left(),
+        sec1.row_y(2),
+        settings_scale(220),
+        settings_scale(22),
+    );
 
-    st.lb_groups = b.listbox(st, IDC_SET_GROUP_LIST, sec1.left(), sec1.row_y(3), sec1.full_w(), settings_scale(170));
+    st.lb_groups = b.listbox(
+        st,
+        IDC_SET_GROUP_LIST,
+        sec1.left(),
+        sec1.row_y(3),
+        sec1.full_w(),
+        settings_scale(170),
+    );
 
     let btn_y = sec1.row_y(3) + settings_scale(186);
     let bw = settings_scale(90);
     let gap = settings_scale(10);
     let x0 = sec1.left();
     st.btn_group_add = b.button(st, "新建分组", IDC_SET_GROUP_ADD, x0, btn_y, bw);
-    st.btn_group_rename = b.button(st, "重命名", IDC_SET_GROUP_RENAME, x0 + (bw + gap), btn_y, bw);
-    st.btn_group_delete = b.button(st, "删除", IDC_SET_GROUP_DELETE, x0 + (bw + gap) * 2, btn_y, bw);
+    st.btn_group_rename = b.button(
+        st,
+        "重命名",
+        IDC_SET_GROUP_RENAME,
+        x0 + (bw + gap),
+        btn_y,
+        bw,
+    );
+    st.btn_group_delete = b.button(
+        st,
+        "删除",
+        IDC_SET_GROUP_DELETE,
+        x0 + (bw + gap) * 2,
+        btn_y,
+        bw,
+    );
     st.btn_group_up = b.button(st, "上移", IDC_SET_GROUP_UP, x0 + (bw + gap) * 3, btn_y, bw);
-    st.btn_group_down = b.button(st, "下移", IDC_SET_GROUP_DOWN, x0 + (bw + gap) * 4, btn_y, bw);
-    for &hh in &[st.btn_group_add, st.btn_group_rename, st.btn_group_delete, st.btn_group_up, st.btn_group_down] {
+    st.btn_group_down = b.button(
+        st,
+        "下移",
+        IDC_SET_GROUP_DOWN,
+        x0 + (bw + gap) * 4,
+        btn_y,
+        bw,
+    );
+    for &hh in &[
+        st.btn_group_add,
+        st.btn_group_rename,
+        st.btn_group_delete,
+        st.btn_group_up,
+        st.btn_group_down,
+    ] {
         if !hh.is_null() {
             st.ownerdraw_ctrls.push(hh);
         }
@@ -2567,38 +3556,154 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
 
 pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Cloud.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
     let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
     let sec2 = SettingsFormSectionLayout::new(page, 2, 0);
     let line_h = settings_scale(24);
 
-    let (_, toggle) = b.toggle_row(st, "启用自动同步", IDC_SET_CLOUD_ENABLE, sec0.left(), sec0.row_y(0), sec0.full_w());
+    let (_, toggle) = b.toggle_row(
+        st,
+        "启用自动同步",
+        IDC_SET_CLOUD_ENABLE,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
     st.chk_cloud_enable = toggle;
     if !st.chk_cloud_enable.is_null() {
         st.ownerdraw_ctrls.push(st.chk_cloud_enable);
     }
-    b.label(st, "同步间隔：", sec0.left(), sec0.label_y(1, line_h), sec0.label_w(), line_h);
-    st.cb_cloud_interval = b.dropdown(st, "1小时", IDC_SET_CLOUD_INTERVAL, sec0.field_x(), sec0.row_y(1), settings_scale(150));
-    st.lb_cloud_status = b.label(st, "上次同步：未同步", sec0.left(), sec0.label_y(2, line_h), sec0.full_w(), line_h);
+    b.label(
+        st,
+        "同步间隔：",
+        sec0.left(),
+        sec0.label_y(1, line_h),
+        sec0.label_w(),
+        line_h,
+    );
+    st.cb_cloud_interval = b.dropdown(
+        st,
+        "1小时",
+        IDC_SET_CLOUD_INTERVAL,
+        sec0.field_x(),
+        sec0.row_y(1),
+        settings_scale(150),
+    );
+    st.lb_cloud_status = b.label(
+        st,
+        "上次同步：未同步",
+        sec0.left(),
+        sec0.label_y(2, line_h),
+        sec0.full_w(),
+        line_h,
+    );
 
-    b.label(st, "WebDAV 地址：", sec1.left(), sec1.label_y(0, line_h), sec1.label_w(), line_h);
-    st.ed_cloud_url = b.edit(st, "", IDC_SET_CLOUD_URL, sec1.field_x(), sec1.row_y(0), sec1.field_w());
-    b.label(st, "用户名：", sec1.left(), sec1.label_y(1, line_h), sec1.label_w(), line_h);
-    st.ed_cloud_user = b.edit(st, "", IDC_SET_CLOUD_USER, sec1.field_x(), sec1.row_y(1), sec1.field_w());
-    b.label(st, "密码：", sec1.left(), sec1.label_y(2, line_h), sec1.label_w(), line_h);
-    st.ed_cloud_pass = b.password_edit(st, "", IDC_SET_CLOUD_PASS, sec1.field_x(), sec1.row_y(2), sec1.field_w());
-    b.label(st, "远程目录：", sec1.left(), sec1.label_y(3, line_h), sec1.label_w(), line_h);
-    st.ed_cloud_dir = b.edit(st, "", IDC_SET_CLOUD_DIR, sec1.field_x(), sec1.row_y(3), sec1.field_w());
+    b.label(
+        st,
+        "WebDAV 地址：",
+        sec1.left(),
+        sec1.label_y(0, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_cloud_url = b.edit(
+        st,
+        "",
+        IDC_SET_CLOUD_URL,
+        sec1.field_x(),
+        sec1.row_y(0),
+        sec1.field_w(),
+    );
+    b.label(
+        st,
+        "用户名：",
+        sec1.left(),
+        sec1.label_y(1, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_cloud_user = b.edit(
+        st,
+        "",
+        IDC_SET_CLOUD_USER,
+        sec1.field_x(),
+        sec1.row_y(1),
+        sec1.field_w(),
+    );
+    b.label(
+        st,
+        "密码：",
+        sec1.left(),
+        sec1.label_y(2, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_cloud_pass = b.password_edit(
+        st,
+        "",
+        IDC_SET_CLOUD_PASS,
+        sec1.field_x(),
+        sec1.row_y(2),
+        sec1.field_w(),
+    );
+    b.label(
+        st,
+        "远程目录：",
+        sec1.left(),
+        sec1.label_y(3, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_cloud_dir = b.edit(
+        st,
+        "",
+        IDC_SET_CLOUD_DIR,
+        sec1.field_x(),
+        sec1.row_y(3),
+        sec1.field_w(),
+    );
 
     let btn_w = settings_scale(130);
     let gap = settings_scale(14);
     let x0 = sec2.left();
     let x1 = x0 + btn_w + gap;
-    let btn_sync = b.button(st, "立即同步", IDC_SET_CLOUD_SYNC_NOW, x0, sec2.row_y(0), btn_w);
-    let btn_upload = b.button(st, "上传配置", IDC_SET_CLOUD_UPLOAD_CFG, x1, sec2.row_y(0), btn_w);
-    let btn_apply = b.button(st, "应用云端配置", IDC_SET_CLOUD_APPLY_CFG, x0, sec2.row_y(1), btn_w);
-    let btn_restore = b.button(st, "云备份恢复", IDC_SET_CLOUD_RESTORE_BACKUP, x1, sec2.row_y(1), btn_w);
+    let btn_sync = b.button(
+        st,
+        "立即同步",
+        IDC_SET_CLOUD_SYNC_NOW,
+        x0,
+        sec2.row_y(0),
+        btn_w,
+    );
+    let btn_upload = b.button(
+        st,
+        "上传配置",
+        IDC_SET_CLOUD_UPLOAD_CFG,
+        x1,
+        sec2.row_y(0),
+        btn_w,
+    );
+    let btn_apply = b.button(
+        st,
+        "应用云端配置",
+        IDC_SET_CLOUD_APPLY_CFG,
+        x0,
+        sec2.row_y(1),
+        btn_w,
+    );
+    let btn_restore = b.button(
+        st,
+        "云备份恢复",
+        IDC_SET_CLOUD_RESTORE_BACKUP,
+        x1,
+        sec2.row_y(1),
+        btn_w,
+    );
     for &hh in &[btn_sync, btn_upload, btn_apply, btn_restore] {
         if !hh.is_null() {
             st.ownerdraw_ctrls.push(hh);
@@ -2610,12 +3715,23 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
 
 pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::About.index();
-    let b = SettingsPageBuilder { hwnd, page, font: st.ui_font };
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
     let sec = SettingsFormSectionLayout::new(page, 0, 96);
     let update_state = update_check_state_snapshot();
     let mut y = sec.row_y(0);
     let version_text = format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION"));
-    let (_, version_h) = b.label_auto(st, &version_text, sec.left(), y, sec.full_w(), settings_scale(28));
+    let (_, version_h) = b.label_auto(
+        st,
+        &version_text,
+        sec.left(),
+        y,
+        sec.full_w(),
+        settings_scale(28),
+    );
     y += version_h + settings_scale(8);
 
     let summary_text = format!(
@@ -2629,7 +3745,14 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
             "New settings can reuse the same cards, field columns, action rows, and spacing.",
         )
     );
-    let (_, summary_h) = b.label_auto(st, &summary_text, sec.left(), y, sec.full_w(), settings_scale(72));
+    let (_, summary_h) = b.label_auto(
+        st,
+        &summary_text,
+        sec.left(),
+        y,
+        sec.full_w(),
+        settings_scale(72),
+    );
     y += summary_h + settings_scale(10);
 
     let source_label_w = sec.label_w();
@@ -2658,7 +3781,11 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
     let update_text = if update_state.checking {
         tr("检查更新中…", "Checking for updates...").to_string()
     } else if !update_state.started {
-        tr("点击下方按钮后再检查更新。", "Click the button below to check for updates.").to_string()
+        tr(
+            "点击下方按钮后再检查更新。",
+            "Click the button below to check for updates.",
+        )
+        .to_string()
     } else if update_state.available {
         format!(
             "{} {}",
@@ -2670,11 +3797,26 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
             }
         )
     } else if !update_state.error.trim().is_empty() {
-        format!("{} {}", tr("更新检查失败：", "Update check failed: "), update_state.error)
+        format!(
+            "{} {}",
+            tr("更新检查失败：", "Update check failed: "),
+            update_state.error
+        )
     } else {
-        tr("当前已经是最新版本。", "You are already on the latest version.").to_string()
+        tr(
+            "当前已经是最新版本。",
+            "You are already on the latest version.",
+        )
+        .to_string()
     };
-    let (_, update_h) = b.label_auto(st, &update_text, sec.left(), y, sec.full_w(), settings_scale(44));
+    let (_, update_h) = b.label_auto(
+        st,
+        &update_text,
+        sec.left(),
+        y,
+        sec.full_w(),
+        settings_scale(44),
+    );
     y += update_h + settings_scale(8);
     st.btn_open_update = b.button(
         st,
@@ -2704,22 +3846,41 @@ pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWnd
         tr("数据库：", "Database: "),
         db_file().to_string_lossy(),
     );
-    let _ = b.label_auto(st, &info_text, sec.left(), y, sec.full_w(), settings_scale(72));
+    let _ = b.label_auto(
+        st,
+        &info_text,
+        sec.left(),
+        y,
+        sec.full_w(),
+        settings_scale(72),
+    );
     st.ui.mark_built(page);
 }
 
 pub(super) unsafe fn settings_button_hover(st: &SettingsWndState, hwnd_item: HWND) -> bool {
-    if hwnd_item.is_null() { return false; }
+    if hwnd_item.is_null() {
+        return false;
+    }
     let mut pt: POINT = zeroed();
-    if GetCursorPos(&mut pt) == 0 { return false; }
+    if GetCursorPos(&mut pt) == 0 {
+        return false;
+    }
     let mut rc: RECT = zeroed();
-    if GetWindowRect(hwnd_item, &mut rc) == 0 { return false; }
-    pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom && st.hot_ownerdraw == hwnd_item
+    if GetWindowRect(hwnd_item, &mut rc) == 0 {
+        return false;
+    }
+    pt.x >= rc.left
+        && pt.x < rc.right
+        && pt.y >= rc.top
+        && pt.y < rc.bottom
+        && st.hot_ownerdraw == hwnd_item
 }
 
 pub(super) unsafe fn settings_ensure_page(hwnd: HWND, st: &mut SettingsWndState, page: usize) {
     let page = page.min(SETTINGS_PAGES.len().saturating_sub(1));
-    if st.ui.is_built(page) { return; }
+    if st.ui.is_built(page) {
+        return;
+    }
     match SettingsPage::from_index(page) {
         SettingsPage::General => {
             settings_create_general_page(hwnd, st);
@@ -2742,12 +3903,28 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
     let hover = settings_button_hover(st, dis.hwndItem);
     let text = get_window_text(dis.hwndItem);
 
-    if cid == IDC_SET_AUTOSTART || cid == IDC_SET_SILENTSTART || cid == IDC_SET_TRAYICON || cid == IDC_SET_CLOSETRAY
-        || cid == IDC_SET_CLICK_HIDE || cid == IDC_SET_PASTE_MOVE_TOP || cid == IDC_SET_DEDUPE_FILTER || cid == IDC_SET_PERSIST_SEARCH || cid == IDC_SET_PASTE_SOUND_ENABLE || cid == IDC_SET_AUTOHIDE_BLUR || cid == IDC_SET_EDGEHIDE
-        || cid == IDC_SET_HOVERPREVIEW || cid == IDC_SET_VV_MODE || cid == IDC_SET_IMAGE_PREVIEW
-        || cid == IDC_SET_QUICK_DELETE || cid == IDC_SET_GROUP_ENABLE
+    if cid == IDC_SET_AUTOSTART
+        || cid == IDC_SET_SILENTSTART
+        || cid == IDC_SET_TRAYICON
+        || cid == IDC_SET_CLOSETRAY
+        || cid == IDC_SET_CLICK_HIDE
+        || cid == IDC_SET_PASTE_MOVE_TOP
+        || cid == IDC_SET_DEDUPE_FILTER
+        || cid == IDC_SET_PERSIST_SEARCH
+        || cid == IDC_SET_PASTE_SOUND_ENABLE
+        || cid == IDC_SET_AUTOHIDE_BLUR
+        || cid == IDC_SET_EDGEHIDE
+        || cid == IDC_SET_HOVERPREVIEW
+        || cid == IDC_SET_VV_MODE
+        || cid == IDC_SET_IMAGE_PREVIEW
+        || cid == IDC_SET_QUICK_DELETE
+        || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
-        || cid == 6101 || cid == 7102 || cid == 7101 || cid == 7103 || cid == 7104
+        || cid == 6101
+        || cid == 7102
+        || cid == 7101
+        || cid == 7103
+        || cid == 7104
     {
         let checked = settings_toggle_get(st, cid);
         draw_settings_toggle_component(hdc as _, &rc, hover, checked, th);
@@ -2792,7 +3969,13 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
         text_rc.left += if pressed { 5 } else { 4 };
         text_rc.top += if pressed { 1 } else { 0 };
         let text_w = to_wide(&text);
-        DrawTextW(hdc, text_w.as_ptr(), -1, &mut text_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(
+            hdc,
+            text_w.as_ptr(),
+            -1,
+            &mut text_rc,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+        );
         if !old_font.is_null() {
             SelectObject(hdc, old_font);
         }
@@ -2901,4 +4084,3 @@ pub(super) unsafe fn sync_peer_windows_from_settings(source_hwnd: HWND) {
 pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
     refresh_window_state(hwnd, true);
 }
-

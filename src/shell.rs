@@ -1,21 +1,21 @@
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{c_void, CStr, CString, OsStr};
 use std::io::Write;
-use std::os::windows::process::CommandExt;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::ptr::{null_mut};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::ptr::null_mut;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
 use windows_sys::Win32::{
+    System::LibraryLoader::{GetProcAddress, LoadLibraryW},
     UI::{
         Shell::ShellExecuteW,
         WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL},
     },
-    System::LibraryLoader::{GetProcAddress, LoadLibraryW},
 };
 
 use crate::app::{ClipItem, ClipKind, Icons};
@@ -142,13 +142,51 @@ fn icon_handle_cache() -> &'static Mutex<HashMap<(u8, i32), isize>> {
 macro_rules! icon_png_pack {
     ($dir:literal, $name:literal) => {
         build_ico_from_png_entries(&[
-            (16, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_16x16.png")) as &[u8]),
-            (24, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_24x24.png")) as &[u8]),
-            (32, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_32x32.png")) as &[u8]),
-            (48, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_48x48.png")) as &[u8]),
-            (64, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_64x64.png")) as &[u8]),
-            (128, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_128x128.png")) as &[u8]),
-            (0, include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_256x256.png")) as &[u8]),
+            (
+                16,
+                include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_16x16.png"))
+                    as &[u8],
+            ),
+            (
+                24,
+                include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_24x24.png"))
+                    as &[u8],
+            ),
+            (
+                32,
+                include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_32x32.png"))
+                    as &[u8],
+            ),
+            (
+                48,
+                include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_48x48.png"))
+                    as &[u8],
+            ),
+            (
+                64,
+                include_bytes!(concat!("../assets/icons/", $dir, "/", $name, "_64x64.png"))
+                    as &[u8],
+            ),
+            (
+                128,
+                include_bytes!(concat!(
+                    "../assets/icons/",
+                    $dir,
+                    "/",
+                    $name,
+                    "_128x128.png"
+                )) as &[u8],
+            ),
+            (
+                0,
+                include_bytes!(concat!(
+                    "../assets/icons/",
+                    $dir,
+                    "/",
+                    $name,
+                    "_256x256.png"
+                )) as &[u8],
+            ),
         ])
     };
 }
@@ -180,7 +218,14 @@ pub(crate) unsafe fn open_path_with_shell(path: &str) {
     }
     let op = to_wide("open");
     let wp = to_wide(path);
-    ShellExecuteW(std::ptr::null_mut(), op.as_ptr(), wp.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL);
+    ShellExecuteW(
+        std::ptr::null_mut(),
+        op.as_ptr(),
+        wp.as_ptr(),
+        std::ptr::null(),
+        std::ptr::null(),
+        SW_SHOWNORMAL,
+    );
 }
 
 pub(crate) unsafe fn open_parent_folder(path: &str) {
@@ -254,7 +299,10 @@ fn runtime_dir_from_candidate(path: &Path) -> Option<PathBuf> {
     }?;
     for candidate in [
         direct.clone(),
-        direct.parent().map(Path::to_path_buf).unwrap_or_else(|| direct.clone()),
+        direct
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| direct.clone()),
     ] {
         if is_wechat_runtime_dir(&candidate) {
             return Some(candidate);
@@ -268,7 +316,7 @@ fn runtime_dir_from_candidate(path: &Path) -> Option<PathBuf> {
                 }
             }
         }
-        version_dirs.sort_by(|a, b| version_score(b).cmp(&version_score(a)));
+        version_dirs.sort_by_key(|path| std::cmp::Reverse(version_score(path)));
         if let Some(best) = version_dirs.into_iter().next() {
             return Some(best);
         }
@@ -481,16 +529,29 @@ fn find_wechat_runtime_dir() -> Option<PathBuf> {
     for dir in running_wechat_install_dirs() {
         push_runtime(&mut candidates, &dir);
     }
-    candidates.sort_by(|a, b| version_score(b).cmp(&version_score(a)).then_with(|| a.cmp(b)));
+    candidates.sort_by(|a, b| {
+        version_score(b)
+            .cmp(&version_score(a))
+            .then_with(|| a.cmp(b))
+    });
     candidates.dedup();
     candidates.into_iter().next()
 }
 
-pub(crate) fn image_ocr_status_text(provider: &str, primary: &str, secondary: &str, wechat_dir: &str) -> String {
+pub(crate) fn image_ocr_status_text(
+    provider: &str,
+    primary: &str,
+    secondary: &str,
+    wechat_dir: &str,
+) -> String {
     match provider {
         "baidu" => {
             if primary.trim().is_empty() || secondary.trim().is_empty() {
-                tr("百度 OCR：未配置 API Key / Secret Key", "Baidu OCR: API Key / Secret Key not configured").to_string()
+                tr(
+                    "百度 OCR：未配置 API Key / Secret Key",
+                    "Baidu OCR: API Key / Secret Key not configured",
+                )
+                .to_string()
             } else {
                 tr("百度 OCR：已配置", "Baidu OCR: configured").to_string()
             }
@@ -503,17 +564,46 @@ pub(crate) fn image_ocr_status_text(provider: &str, primary: &str, secondary: &s
                 (Some(wrapper), Some(ocr_bin), Some(runtime)) => format!(
                     "{} {} / {} / {}",
                     tr("WinOCR：已就绪", "WinOCR: ready"),
-                    wrapper.file_name().and_then(|n| n.to_str()).unwrap_or("wcocr.dll"),
-                    ocr_bin.file_name().and_then(|n| n.to_str()).unwrap_or("wxocr.dll"),
-                    runtime.file_name().and_then(|n| n.to_str()).unwrap_or("Weixin")
+                    wrapper
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("wcocr.dll"),
+                    ocr_bin
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("wxocr.dll"),
+                    runtime
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Weixin")
                 ),
-                (None, Some(_), _) => tr("WinOCR：已找到 wxocr.dll，但缺少兼容的 wcocr.dll 桥接层", "WinOCR: wxocr.dll found, but compatible wcocr.dll bridge is missing").to_string(),
-                (None, _, _) => tr("WinOCR：未找到兼容的 wcocr.dll", "WinOCR: compatible wcocr.dll not found").to_string(),
-                (_, None, _) => tr("WinOCR：未找到微信 OCR 插件", "WinOCR: WeChat OCR plugin not found").to_string(),
-                (_, _, None) => tr("WinOCR：未找到微信运行时目录", "WinOCR: WeChat runtime directory not found").to_string(),
+                (None, Some(_), _) => tr(
+                    "WinOCR：已找到 wxocr.dll，但缺少兼容的 wcocr.dll 桥接层",
+                    "WinOCR: wxocr.dll found, but compatible wcocr.dll bridge is missing",
+                )
+                .to_string(),
+                (None, _, _) => tr(
+                    "WinOCR：未找到兼容的 wcocr.dll",
+                    "WinOCR: compatible wcocr.dll not found",
+                )
+                .to_string(),
+                (_, None, _) => tr(
+                    "WinOCR：未找到微信 OCR 插件",
+                    "WinOCR: WeChat OCR plugin not found",
+                )
+                .to_string(),
+                (_, _, None) => tr(
+                    "WinOCR：未找到微信运行时目录",
+                    "WinOCR: WeChat runtime directory not found",
+                )
+                .to_string(),
             }
         }
-        _ => tr("\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}", "Image OCR: disabled").to_string(),
+        _ => tr(
+            "\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}",
+            "Image OCR: disabled",
+        )
+        .to_string(),
     }
 }
 
@@ -526,15 +616,27 @@ fn baidu_translate_target_name(key: &str) -> &'static str {
     }
 }
 
-pub(crate) fn text_translate_status_text(provider: &str, app_id: &str, secret: &str, target_lang: &str) -> String {
+pub(crate) fn text_translate_status_text(
+    provider: &str,
+    app_id: &str,
+    secret: &str,
+    target_lang: &str,
+) -> String {
     match provider {
         "baidu" => {
             if app_id.trim().is_empty() || secret.trim().is_empty() {
-                tr("百度翻译：请配置 APP ID / 密钥", "Baidu Translate: please configure APP ID / Secret").to_string()
+                tr(
+                    "百度翻译：请配置 APP ID / 密钥",
+                    "Baidu Translate: please configure APP ID / Secret",
+                )
+                .to_string()
             } else {
                 format!(
                     "{} {}",
-                    tr("百度翻译：已就绪，目标语言：", "Baidu Translate: ready, target language: "),
+                    tr(
+                        "百度翻译：已就绪，目标语言：",
+                        "Baidu Translate: ready, target language: "
+                    ),
                     baidu_translate_target_name(target_lang),
                 )
             }
@@ -556,6 +658,52 @@ fn url_encode_form_component(input: &str) -> String {
     out
 }
 
+fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "zsclip_{}_{}_{}.{}",
+        prefix,
+        std::process::id(),
+        ts,
+        ext.trim_start_matches('.')
+    ))
+}
+
+fn curl_config_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn curl_config_option(name: &str, value: &str) -> String {
+    format!("{} = {}\n", name, curl_config_quote(value))
+}
+
+fn run_curl_config(config: &str, prefix: &str) -> Result<Output, String> {
+    let config_path = temp_unique_path(prefix, "curl");
+    std::fs::write(&config_path, config).map_err(|e| e.to_string())?;
+    let config_arg = config_path.to_string_lossy().to_string();
+    let output = hidden_command("curl.exe")
+        .args(["--config", config_arg.as_str()])
+        .output()
+        .map_err(|e| e.to_string());
+    let _ = std::fs::remove_file(&config_path);
+    output
+}
+
 fn parse_baidu_access_token(body: &str) -> Result<(String, u64), String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
     let token = json
@@ -564,7 +712,13 @@ fn parse_baidu_access_token(body: &str) -> Result<(String, u64), String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .ok_or_else(|| tr("百度 OCR access_token 返回无效", "Baidu OCR access_token response is invalid").to_string())?;
+        .ok_or_else(|| {
+            tr(
+                "百度 OCR access_token 返回无效",
+                "Baidu OCR access_token response is invalid",
+            )
+            .to_string()
+        })?;
     let expires_in = json
         .get("expires_in")
         .and_then(|v| v.as_u64())
@@ -582,7 +736,13 @@ fn cached_baidu_access_token(api_key: &str, secret_key: &str) -> Option<String> 
         .lock()
         .ok()
         .and_then(|cache| cache.get(&cache_key).cloned())
-        .and_then(|(token, expires_at)| if expires_at > now + 60 { Some(token) } else { None })
+        .and_then(|(token, expires_at)| {
+            if expires_at > now + 60 {
+                Some(token)
+            } else {
+                None
+            }
+        })
 }
 
 fn fetch_baidu_access_token(api_key: &str, secret_key: &str) -> Result<String, String> {
@@ -592,30 +752,44 @@ fn fetch_baidu_access_token(api_key: &str, secret_key: &str) -> Result<String, S
     let api_key = api_key.trim();
     let secret_key = secret_key.trim();
     if api_key.is_empty() || secret_key.is_empty() {
-        return Err(tr("请先在设置-插件中配置百度 OCR 的 API Key / Secret Key", "Please configure the Baidu OCR API Key / Secret Key in Settings > Plugins").to_string());
+        return Err(tr(
+            "请先在设置-插件中配置百度 OCR 的 API Key / Secret Key",
+            "Please configure the Baidu OCR API Key / Secret Key in Settings > Plugins",
+        )
+        .to_string());
     }
     let body = format!(
         "grant_type=client_credentials&client_id={}&client_secret={}",
         url_encode_form_component(api_key),
         url_encode_form_component(secret_key),
     );
-    let mut cmd = hidden_command("curl.exe");
-    cmd.args([
-        "-sS",
-        "-L",
-        "-X",
-        "POST",
+    let body_path = temp_unique_path("baidu_token_body", "txt");
+    std::fs::write(&body_path, body).map_err(|e| e.to_string())?;
+    let mut config = String::from("silent\nshow-error\nlocation\n");
+    config.push_str(&curl_config_option("request", "POST"));
+    config.push_str(&curl_config_option(
+        "url",
         "https://aip.baidubce.com/oauth/2.0/token",
-        "-H",
+    ));
+    config.push_str(&curl_config_option(
+        "header",
         "Content-Type: application/x-www-form-urlencoded",
-        "--data-raw",
-        &body,
-    ]);
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    ));
+    config.push_str(&curl_config_option(
+        "data-binary",
+        &format!("@{}", body_path.to_string_lossy()),
+    ));
+    let output = run_curl_config(&config, "baidu_token");
+    let _ = std::fs::remove_file(&body_path);
+    let output = output?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
-            tr("百度 OCR 获取 access_token 失败", "Failed to obtain Baidu OCR access_token").to_string()
+            tr(
+                "百度 OCR 获取 access_token 失败",
+                "Failed to obtain Baidu OCR access_token",
+            )
+            .to_string()
         } else {
             stderr
         });
@@ -644,20 +818,24 @@ pub(crate) fn run_baidu_ocr_api(
         "image={}",
         url_encode_form_component(&base64::engine::general_purpose::STANDARD.encode(image_bytes))
     );
-    let request_path = std::env::temp_dir().join(format!(
-        "zsclip_baidu_ocr_{}_{}.txt",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
-    ));
+    let request_path = temp_unique_path("baidu_ocr_body", "txt");
     std::fs::write(&request_path, form_body).map_err(|e| e.to_string())?;
-    let mut cmd = hidden_command("curl.exe");
     let request_url = format!(
         "https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token={}",
         access_token
     );
-    cmd.args(["-sS", "-L", "-X", "POST", &request_url, "-H", "Content-Type: application/x-www-form-urlencoded"]);
-    cmd.args(["--data-binary", &format!("@{}", request_path.to_string_lossy())]);
-    let output = cmd.output().map_err(|e| e.to_string());
+    let mut config = String::from("silent\nshow-error\nlocation\n");
+    config.push_str(&curl_config_option("request", "POST"));
+    config.push_str(&curl_config_option("url", &request_url));
+    config.push_str(&curl_config_option(
+        "header",
+        "Content-Type: application/x-www-form-urlencoded",
+    ));
+    config.push_str(&curl_config_option(
+        "data-binary",
+        &format!("@{}", request_path.to_string_lossy()),
+    ));
+    let output = run_curl_config(&config, "baidu_ocr");
     let _ = std::fs::remove_file(&request_path);
     let output = output?;
     if !output.status.success() {
@@ -684,52 +862,81 @@ pub(crate) struct OcrLine {
 
 fn parse_baidu_ocr_lines(body: &str) -> Result<Vec<OcrLine>, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
-    if let Some(err) = json.get("error_msg").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(err) = json
+        .get("error_msg")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         return Err(err.to_string());
     }
     let lines: Vec<OcrLine> = json
         .get("words_result")
         .and_then(|v| v.as_array())
         .map(|arr| {
-            arr.iter().filter_map(|item| {
-                let text = item.get("words").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty())?;
-                let loc = item.get("location")?;
-                let left   = loc.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let top    = loc.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                let width  = loc.get("width").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                let height = loc.get("height").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                Some(OcrLine { text: text.to_string(), left, top, width, height })
-            }).collect()
+            arr.iter()
+                .filter_map(|item| {
+                    let text = item
+                        .get("words")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())?;
+                    let loc = item.get("location")?;
+                    let left = loc.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let top = loc.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    let width = loc.get("width").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                    let height = loc.get("height").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+                    Some(OcrLine {
+                        text: text.to_string(),
+                        left,
+                        top,
+                        width,
+                        height,
+                    })
+                })
+                .collect()
         })
         .unwrap_or_default();
     if lines.is_empty() {
-        Err(tr("百度 OCR 返回中未找到可用文本字段", "Baidu OCR response does not contain recognized text").to_string())
+        Err(tr(
+            "百度 OCR 返回中未找到可用文本字段",
+            "Baidu OCR response does not contain recognized text",
+        )
+        .to_string())
     } else {
         Ok(lines)
     }
 }
 
 /// Like `run_baidu_ocr_api` but returns per-line text with bounding boxes.
-pub(crate) fn run_baidu_ocr_api_lines(api_key: &str, secret_key: &str, image_bytes: &[u8]) -> Result<Vec<OcrLine>, String> {
+pub(crate) fn run_baidu_ocr_api_lines(
+    api_key: &str,
+    secret_key: &str,
+    image_bytes: &[u8],
+) -> Result<Vec<OcrLine>, String> {
     let access_token = fetch_baidu_access_token(api_key, secret_key)?;
     let form_body = format!(
         "image={}",
         url_encode_form_component(&base64::engine::general_purpose::STANDARD.encode(image_bytes))
     );
-    let request_path = std::env::temp_dir().join(format!(
-        "zsclip_baidu_ocr_{}_{}.txt",
-        std::process::id(),
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
-    ));
+    let request_path = temp_unique_path("baidu_ocr_lines_body", "txt");
     std::fs::write(&request_path, &form_body).map_err(|e| e.to_string())?;
-    let mut cmd = hidden_command("curl.exe");
     let request_url = format!(
         "https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token={}",
         access_token
     );
-    cmd.args(["-sS", "-L", "-X", "POST", &request_url, "-H", "Content-Type: application/x-www-form-urlencoded"]);
-    cmd.args(["--data-binary", &format!("@{}", request_path.to_string_lossy())]);
-    let output = cmd.output().map_err(|e| e.to_string());
+    let mut config = String::from("silent\nshow-error\nlocation\n");
+    config.push_str(&curl_config_option("request", "POST"));
+    config.push_str(&curl_config_option("url", &request_url));
+    config.push_str(&curl_config_option(
+        "header",
+        "Content-Type: application/x-www-form-urlencoded",
+    ));
+    config.push_str(&curl_config_option(
+        "data-binary",
+        &format!("@{}", request_path.to_string_lossy()),
+    ));
+    let output = run_curl_config(&config, "baidu_ocr_lines");
     let _ = std::fs::remove_file(&request_path);
     let output = output?;
     if !output.status.success() {
@@ -766,7 +973,11 @@ fn parse_baidu_ocr_text(body: &str) -> Result<String, String> {
         })
         .unwrap_or_default();
     if lines.is_empty() {
-        return Err(tr("百度 OCR 返回中未找到可用文本字段", "Baidu OCR response does not contain recognized text").to_string());
+        return Err(tr(
+            "百度 OCR 返回中未找到可用文本字段",
+            "Baidu OCR response does not contain recognized text",
+        )
+        .to_string());
     }
     Ok(lines.join("\r\n"))
 }
@@ -794,7 +1005,11 @@ fn parse_baidu_translate_text(body: &str) -> Result<String, String> {
         })
         .unwrap_or_default();
     if lines.is_empty() {
-        return Err(tr("百度翻译返回中未找到可用文本字段", "Baidu Translate response does not contain translated text").to_string());
+        return Err(tr(
+            "百度翻译返回中未找到可用文本字段",
+            "Baidu Translate response does not contain translated text",
+        )
+        .to_string());
     }
     Ok(lines.join("\r\n"))
 }
@@ -810,37 +1025,58 @@ pub(crate) fn run_baidu_translate_api(
     let text = text.trim();
     let target_lang = target_lang.trim();
     if app_id.is_empty() || secret.is_empty() {
-        return Err(tr("请先在设置-插件中配置百度翻译的 APP ID / 密钥", "Please configure the Baidu Translate APP ID / Secret in Settings > Plugins").to_string());
+        return Err(tr(
+            "请先在设置-插件中配置百度翻译的 APP ID / 密钥",
+            "Please configure the Baidu Translate APP ID / Secret in Settings > Plugins",
+        )
+        .to_string());
     }
     if text.is_empty() {
-        return Err(tr("当前记录没有可翻译的文本", "This item does not contain translatable text").to_string());
+        return Err(tr(
+            "当前记录没有可翻译的文本",
+            "This item does not contain translatable text",
+        )
+        .to_string());
     }
     let salt = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis().to_string())
         .unwrap_or_else(|_| format!("{}", std::process::id()));
-    let sign = format!("{:x}", md5::compute(format!("{}{}{}{}", app_id, text, salt, secret)));
+    let sign = format!(
+        "{:x}",
+        md5::compute(format!("{}{}{}{}", app_id, text, salt, secret))
+    );
     let body = format!(
         "q={}&from=auto&to={}&appid={}&salt={}&sign={}",
         url_encode_form_component(text),
-        url_encode_form_component(if target_lang.is_empty() { "zh" } else { target_lang }),
+        url_encode_form_component(if target_lang.is_empty() {
+            "zh"
+        } else {
+            target_lang
+        }),
         url_encode_form_component(app_id),
         url_encode_form_component(&salt),
         sign
     );
-    let mut cmd = hidden_command("curl.exe");
-    cmd.args([
-        "-sS",
-        "-L",
-        "-X",
-        "POST",
+    let body_path = temp_unique_path("baidu_translate_body", "txt");
+    std::fs::write(&body_path, body).map_err(|e| e.to_string())?;
+    let mut config = String::from("silent\nshow-error\nlocation\n");
+    config.push_str(&curl_config_option("request", "POST"));
+    config.push_str(&curl_config_option(
+        "url",
         "https://fanyi-api.baidu.com/api/trans/vip/translate",
-        "-H",
+    ));
+    config.push_str(&curl_config_option(
+        "header",
         "Content-Type: application/x-www-form-urlencoded",
-        "--data-raw",
-        &body,
-    ]);
-    let output = cmd.output().map_err(|e| e.to_string())?;
+    ));
+    config.push_str(&curl_config_option(
+        "data-binary",
+        &format!("@{}", body_path.to_string_lossy()),
+    ));
+    let output = run_curl_config(&config, "baidu_translate");
+    let _ = std::fs::remove_file(&body_path);
+    let output = output?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() {
@@ -852,7 +1088,8 @@ pub(crate) fn run_baidu_translate_api(
     parse_baidu_translate_text(&String::from_utf8_lossy(&output.stdout))
 }
 
-type WeChatOcrFn = unsafe extern "C" fn(*const u16, *const u16, *const i8, extern "C" fn(*const i8)) -> bool;
+type WeChatOcrFn =
+    unsafe extern "C" fn(*const u16, *const u16, *const i8, extern "C" fn(*const i8)) -> bool;
 type WeChatStopOcrFn = unsafe extern "C" fn() -> i32;
 
 unsafe fn winocr_get_proc<T: Sized>(module: *mut c_void, names: &[&[u8]]) -> Option<T> {
@@ -869,7 +1106,9 @@ extern "C" fn wechat_ocr_callback(ptr: *const i8) {
     if ptr.is_null() {
         return;
     }
-    let text = unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned();
+    let text = unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
     let (lock, cvar) = wechat_ocr_callback_state();
     if let Ok(mut slot) = lock.lock() {
         *slot = Some(text);
@@ -878,10 +1117,15 @@ extern "C" fn wechat_ocr_callback(ptr: *const i8) {
 }
 
 fn parse_wechat_ocr_json(payload: &str) -> Result<String, String> {
-    let json: serde_json::Value = serde_json::from_str(payload).map_err(|_| payload.trim().to_string())?;
+    let json: serde_json::Value =
+        serde_json::from_str(payload).map_err(|_| payload.trim().to_string())?;
     let errcode = json.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
     if errcode != 0 {
-        if let Some(err_msg) = json.get("msg").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
+        if let Some(err_msg) = json
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+        {
             return Err(err_msg.to_string());
         }
         return Err(format!("errcode={}", errcode));
@@ -899,7 +1143,11 @@ fn parse_wechat_ocr_json(payload: &str) -> Result<String, String> {
         })
         .unwrap_or_default();
     if lines.is_empty() {
-        return Err(tr("WinOCR 未识别到文字", "WinOCR did not return any recognized text").to_string());
+        return Err(tr(
+            "WinOCR 未识别到文字",
+            "WinOCR did not return any recognized text",
+        )
+        .to_string());
     }
     Ok(lines.join("\r\n"))
 }
@@ -931,17 +1179,32 @@ pub(crate) fn run_winocr_dll_ocr(image_path: &Path, wechat_dir: &str) -> Result<
 }
 
 fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<String, String> {
-    let wrapper_path = find_wcocr_wrapper_path()
-        .ok_or_else(|| tr("WinOCR：未找到兼容的 wcocr.dll", "WinOCR: compatible wcocr.dll not found").to_string())?;
-    let ocr_bin = find_wechat_ocr_binary_path()
-        .ok_or_else(|| tr("WinOCR：未找到微信 OCR 插件", "WinOCR: WeChat OCR plugin not found").to_string())?;
+    let wrapper_path = find_wcocr_wrapper_path().ok_or_else(|| {
+        tr(
+            "WinOCR：未找到兼容的 wcocr.dll",
+            "WinOCR: compatible wcocr.dll not found",
+        )
+        .to_string()
+    })?;
+    let ocr_bin = find_wechat_ocr_binary_path().ok_or_else(|| {
+        tr(
+            "WinOCR：未找到微信 OCR 插件",
+            "WinOCR: WeChat OCR plugin not found",
+        )
+        .to_string()
+    })?;
     let runtime_dirs = resolve_wechat_runtime_dir_candidates(wechat_dir);
     if runtime_dirs.is_empty() {
-        return Err(tr("WinOCR：未找到微信运行时目录", "WinOCR: WeChat runtime directory not found").to_string());
+        return Err(tr(
+            "WinOCR：未找到微信运行时目录",
+            "WinOCR: WeChat runtime directory not found",
+        )
+        .to_string());
     }
     let wrapper_wide = to_wide(&wrapper_path.to_string_lossy());
     let ocr_bin_wide = to_wide(&ocr_bin.to_string_lossy());
-    let image_c = CString::new(image_path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    let image_c =
+        CString::new(image_path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
     unsafe {
         let module = LoadLibraryW(wrapper_wide.as_ptr());
         if module.is_null() {
@@ -951,7 +1214,11 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
             Some(func) => func,
             None => {
                 FreeLibrary(module);
-                return Err(tr("WinOCR DLL 未导出可用的 OCR 接口", "WinOCR DLL does not export a supported OCR entry point").to_string());
+                return Err(tr(
+                    "WinOCR DLL 未导出可用的 OCR 接口",
+                    "WinOCR DLL does not export a supported OCR entry point",
+                )
+                .to_string());
             }
         };
         let stop_ocr: Option<WeChatStopOcrFn> = winocr_get_proc(module, &[b"stop_ocr\0"]);
@@ -977,10 +1244,14 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
                 continue;
             }
             let received = {
-                let guard = lock.lock().map_err(|_| tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string())?;
+                let guard = lock.lock().map_err(|_| {
+                    tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string()
+                })?;
                 let (mut guard, timeout) = cvar
                     .wait_timeout_while(guard, Duration::from_secs(15), |slot| slot.is_none())
-                    .map_err(|_| tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string())?;
+                    .map_err(|_| {
+                        tr("WinOCR 回调等待失败", "WinOCR callback wait failed").to_string()
+                    })?;
                 let value = guard.take();
                 (value, timeout.timed_out())
             };
@@ -1022,9 +1293,7 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
 pub(crate) fn maybe_run_wechat_ocr_helper_from_args() -> Option<i32> {
     let mut args = std::env::args_os();
     let _exe = args.next();
-    let Some(mode) = args.next() else {
-        return None;
-    };
+    let mode = args.next()?;
     if mode != OsStr::new("--wechat-ocr-helper") {
         return None;
     }
@@ -1032,7 +1301,11 @@ pub(crate) fn maybe_run_wechat_ocr_helper_from_args() -> Option<i32> {
     let wechat_dir = args.next().unwrap_or_default();
     let result = match image_path {
         Some(path) => run_wechat_wcocr_with_runtime(&path, &wechat_dir.to_string_lossy()),
-        None => Err(tr("WinOCR 缺少图片路径参数", "WinOCR helper missing image path argument").to_string()),
+        None => Err(tr(
+            "WinOCR 缺少图片路径参数",
+            "WinOCR helper missing image path argument",
+        )
+        .to_string()),
     };
     match result {
         Ok(text) => {
@@ -1258,7 +1531,9 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
             &mut key,
         );
         if open != 0 {
-            return Err(format!("\u{6253}\u{5f00}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {open}"));
+            return Err(format!(
+                "\u{6253}\u{5f00}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {open}"
+            ));
         }
 
         if txt.trim().is_empty() {
@@ -1267,7 +1542,9 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
             if delete == 0 || delete == ERROR_FILE_NOT_FOUND {
                 return Ok(());
             }
-            return Err(format!("\u{5220}\u{9664}\u{6ce8}\u{518c}\u{8868}\u{503c}\u{5931}\u{8d25}: {delete}"));
+            return Err(format!(
+                "\u{5220}\u{9664}\u{6ce8}\u{518c}\u{8868}\u{503c}\u{5931}\u{8d25}: {delete}"
+            ));
         }
 
         let mut wide = to_wide(txt);
@@ -1286,7 +1563,9 @@ fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
         if set == 0 {
             Ok(())
         } else {
-            Err(format!("\u{5199}\u{5165}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {set}"))
+            Err(format!(
+                "\u{5199}\u{5165}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {set}"
+            ))
         }
     }
 }
@@ -1377,9 +1656,7 @@ fn releases_url() -> String {
 
 fn encode_powershell_script(script: &str) -> String {
     let utf16: Vec<u16> = OsStr::new(script).encode_wide().collect();
-    let bytes = unsafe {
-        std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2)
-    };
+    let bytes = unsafe { std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2) };
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -1457,7 +1734,11 @@ pub(crate) unsafe fn play_paste_success_sound(kind: &str, custom_path: &str) {
         "bright" => PASTE_SOUND_BRIGHT,
         _ => PASTE_SOUND_DEFAULT,
     };
-    let _ = PlaySoundW(bytes.as_ptr() as *const u16, 0, SND_ASYNC | SND_MEMORY | SND_NODEFAULT);
+    let _ = PlaySoundW(
+        bytes.as_ptr() as *const u16,
+        0,
+        SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
+    );
 }
 
 pub(crate) fn plugin_downloads_url() -> String {
@@ -1495,7 +1776,13 @@ pub(crate) unsafe fn item_icon_handle(item: &ClipItem, target_px: i32) -> isize 
         ClipKind::Text | ClipKind::Phrase => icon_handle_for(IconAssetKind::Text, target_px),
         ClipKind::Image => icon_handle_for(IconAssetKind::Image, target_px),
         ClipKind::Files => {
-            if item.file_paths.as_ref().and_then(|v| v.first()).map(|p| Path::new(p).is_dir()).unwrap_or(false) {
+            if item
+                .file_paths
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|p| Path::new(p).is_dir())
+                .unwrap_or(false)
+            {
                 icon_handle_for(IconAssetKind::Folder, target_px)
             } else {
                 icon_handle_for(IconAssetKind::File, target_px)
@@ -1507,17 +1794,17 @@ pub(crate) unsafe fn item_icon_handle(item: &ClipItem, target_px: i32) -> isize 
 pub(crate) fn load_icons() -> Icons {
     unsafe {
         Icons {
-            app:    load_icon_from_bytes(ICO_APP,       64, 64),
+            app: load_icon_from_bytes(ICO_APP, 64, 64),
             search: 0,
-            setting:0,
-            min:    0,
-            close:  0,
-            text:   0,
-            image:  0,
-            file:   0,
+            setting: 0,
+            min: 0,
+            close: 0,
+            text: 0,
+            image: 0,
+            file: 0,
             folder: 0,
-            pin:    0,
-            del:    0,
+            pin: 0,
+            del: 0,
         }
     }
 }
@@ -1525,16 +1812,36 @@ pub(crate) fn load_icons() -> Icons {
 fn icon_bytes_for(kind: IconAssetKind) -> &'static [u8] {
     match kind {
         IconAssetKind::App => ICO_APP,
-        IconAssetKind::Search => ICO_SEARCH.get_or_init(|| icon_png_pack!("search", "search")).as_slice(),
-        IconAssetKind::Setting => ICO_SETTING.get_or_init(|| icon_png_pack!("setting", "setting")).as_slice(),
-        IconAssetKind::Min => ICO_MIN.get_or_init(|| icon_png_pack!("min", "min")).as_slice(),
-        IconAssetKind::Close => ICO_EXIT.get_or_init(|| icon_png_pack!("exit", "exit")).as_slice(),
-        IconAssetKind::Text => ICO_TEXT.get_or_init(|| icon_png_pack!("text", "text")).as_slice(),
-        IconAssetKind::Image => ICO_IMAGE.get_or_init(|| icon_png_pack!("image", "image")).as_slice(),
-        IconAssetKind::File => ICO_FILE.get_or_init(|| icon_png_pack!("file", "file")).as_slice(),
-        IconAssetKind::Folder => ICO_FOLDER.get_or_init(|| icon_png_pack!("fold", "fold")).as_slice(),
-        IconAssetKind::Pin => ICO_TOP.get_or_init(|| icon_png_pack!("top", "top")).as_slice(),
-        IconAssetKind::Delete => ICO_DEL.get_or_init(|| icon_png_pack!("del", "del")).as_slice(),
+        IconAssetKind::Search => ICO_SEARCH
+            .get_or_init(|| icon_png_pack!("search", "search"))
+            .as_slice(),
+        IconAssetKind::Setting => ICO_SETTING
+            .get_or_init(|| icon_png_pack!("setting", "setting"))
+            .as_slice(),
+        IconAssetKind::Min => ICO_MIN
+            .get_or_init(|| icon_png_pack!("min", "min"))
+            .as_slice(),
+        IconAssetKind::Close => ICO_EXIT
+            .get_or_init(|| icon_png_pack!("exit", "exit"))
+            .as_slice(),
+        IconAssetKind::Text => ICO_TEXT
+            .get_or_init(|| icon_png_pack!("text", "text"))
+            .as_slice(),
+        IconAssetKind::Image => ICO_IMAGE
+            .get_or_init(|| icon_png_pack!("image", "image"))
+            .as_slice(),
+        IconAssetKind::File => ICO_FILE
+            .get_or_init(|| icon_png_pack!("file", "file"))
+            .as_slice(),
+        IconAssetKind::Folder => ICO_FOLDER
+            .get_or_init(|| icon_png_pack!("fold", "fold"))
+            .as_slice(),
+        IconAssetKind::Pin => ICO_TOP
+            .get_or_init(|| icon_png_pack!("top", "top"))
+            .as_slice(),
+        IconAssetKind::Delete => ICO_DEL
+            .get_or_init(|| icon_png_pack!("del", "del"))
+            .as_slice(),
     }
 }
 
@@ -1587,14 +1894,18 @@ fn build_ico_from_png_entries(entries: &[(u8, &[u8])]) -> Vec<u8> {
 
 /// Load icon handle from ICO bytes.
 unsafe fn load_icon_from_bytes(data: &[u8], w: i32, h: i32) -> isize {
-    if data.len() < 6 { return 0; }
+    if data.len() < 6 {
+        return 0;
+    }
     let count = u16::from_le_bytes([data[4], data[5]]) as usize;
     let mut exact = Vec::new();
     let mut larger = Vec::new();
     let mut smaller = Vec::new();
     for i in 0..count {
         let base = 6 + i * 16;
-        if base + 16 > data.len() { break; }
+        if base + 16 > data.len() {
+            break;
+        }
         let icon_w = data[base] as i32;
         let icon_h = data[base + 1] as i32;
         let icon_w = if icon_w == 0 { 256 } else { icon_w };
@@ -1628,14 +1939,37 @@ unsafe fn load_icon_from_bytes(data: &[u8], w: i32, h: i32) -> isize {
 }
 
 unsafe fn try_create_icon(data: &[u8], base: usize, w: i32, h: i32) -> Option<isize> {
-    if base + 16 > data.len() { return None; }
-    let size   = u32::from_le_bytes([data[base+8],  data[base+9],  data[base+10], data[base+11]]) as usize;
-    let offset = u32::from_le_bytes([data[base+12], data[base+13], data[base+14], data[base+15]]) as usize;
-    if offset == 0 || size == 0 || offset + size > data.len() { return None; }
+    if base + 16 > data.len() {
+        return None;
+    }
+    let size = u32::from_le_bytes([
+        data[base + 8],
+        data[base + 9],
+        data[base + 10],
+        data[base + 11],
+    ]) as usize;
+    let offset = u32::from_le_bytes([
+        data[base + 12],
+        data[base + 13],
+        data[base + 14],
+        data[base + 15],
+    ]) as usize;
+    if offset == 0 || size == 0 || offset + size > data.len() {
+        return None;
+    }
     let slice = &data[offset..offset + size];
     let handle = CreateIconFromResourceEx(
-        slice.as_ptr(), slice.len() as u32, 1, 0x00030000, w, h, LR_DEFAULTCOLOR,
+        slice.as_ptr(),
+        slice.len() as u32,
+        1,
+        0x00030000,
+        w,
+        h,
+        LR_DEFAULTCOLOR,
     );
-    if !handle.is_null() { Some(handle as isize) } else { None }
+    if !handle.is_null() {
+        Some(handle as isize)
+    } else {
+        None
+    }
 }
-

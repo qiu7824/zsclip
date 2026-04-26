@@ -6,22 +6,22 @@ use std::sync::OnceLock;
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-        DeleteDC, DeleteObject, EndPaint, FillRect, FrameRect, PatBlt, PAINTSTRUCT, SelectObject,
-        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY, WHITE_BRUSH,
+        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
+        DeleteObject, EndPaint, FillRect, FrameRect, PatBlt, SelectObject, StretchDIBits,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY, WHITE_BRUSH,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Input::KeyboardAndMouse::{
-            GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE,
-            VK_OEM_MINUS, VK_OEM_PLUS, VK_UP,
+            GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_OEM_MINUS,
+            VK_OEM_PLUS, VK_UP,
         },
         WindowsAndMessaging::*,
     },
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, image_input_for_ocr, ClipItem},
+    app::{ensure_item_image_bytes, image_input_for_ocr, post_boxed_message, ClipItem},
     i18n::tr,
     ui::{draw_round_rect, draw_text, draw_text_ex, rgb, Theme},
     win_system_ui::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide},
@@ -102,9 +102,9 @@ struct StickerData {
     ocr_lines: Vec<crate::shell::OcrLine>,
     ocr_plain_text: String,
     // Selection state
-    ocr_sel_anchor: i32,   // -1 = none
-    ocr_sel_cursor: i32,   // -1 = none
-    ocr_hover_line: i32,   // -1 = none
+    ocr_sel_anchor: i32, // -1 = none
+    ocr_sel_cursor: i32, // -1 = none
+    ocr_hover_line: i32, // -1 = none
     ocr_mouse_selecting: bool,
 }
 
@@ -138,7 +138,9 @@ impl ImgToScreen {
         let zoom = data.zoom_pct.clamp(20, 400) as f32 / 100.0;
         let iw = max(1, (data.width as f32 * zoom).round() as i32);
         let ih = max(1, (data.height as f32 * zoom).round() as i32);
-        let scale = (avail_w as f32 / iw as f32).min(avail_h as f32 / ih as f32).min(1.0);
+        let scale = (avail_w as f32 / iw as f32)
+            .min(avail_h as f32 / ih as f32)
+            .min(1.0);
         let dw = max(1, (iw as f32 * scale).round() as i32);
         let dh = max(1, (ih as f32 * scale).round() as i32);
         Some(ImgToScreen {
@@ -204,17 +206,26 @@ fn get_ocr_copy_text(data: &StickerData) -> String {
 
 fn sticker_btn_rect(hwnd: HWND, index: i32) -> RECT {
     let mut rc: RECT = unsafe { zeroed() };
-    unsafe { GetClientRect(hwnd, &mut rc); }
+    unsafe {
+        GetClientRect(hwnd, &mut rc);
+    }
     let right_pad = 10;
     let top = 6;
     let right = rc.right - right_pad - index * (STICKER_BTN_W + STICKER_BTN_GAP);
-    RECT { left: right - STICKER_BTN_W, top, right, bottom: top + STICKER_BTN_H }
+    RECT {
+        left: right - STICKER_BTN_W,
+        top,
+        right,
+        bottom: top + STICKER_BTN_H,
+    }
 }
 
 fn sticker_hit_btn(hwnd: HWND, x: i32, y: i32) -> i32 {
     for idx in 0..5i32 {
         let rc = sticker_btn_rect(hwnd, idx);
-        if x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom { return idx + 1; }
+        if x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom {
+            return idx + 1;
+        }
     }
     0
 }
@@ -223,7 +234,15 @@ unsafe fn sticker_apply_zoom(hwnd: HWND, data: &StickerData) {
     let zoom = data.zoom_pct.clamp(20, 400);
     let w = max(180, min(960, data.width * zoom / 100 + 24));
     let h = max(120, min(960, data.height * zoom / 100 + STICKER_BAR_H + 24));
-    SetWindowPos(hwnd, null_mut(), 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(
+        hwnd,
+        null_mut(),
+        0,
+        0,
+        w,
+        h,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+    );
 }
 
 unsafe fn sticker_track_mouse(hwnd: HWND) {
@@ -240,7 +259,9 @@ unsafe fn copy_text_to_clipboard(hwnd: HWND, text: &str) {
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let byte_len = wide.len() * 2;
     let hmem = GlobalAlloc(GMEM_MOVEABLE_FLAG, byte_len);
-    if hmem.is_null() { return; }
+    if hmem.is_null() {
+        return;
+    }
     let ptr = GlobalLock(hmem);
     if ptr.is_null() {
         GlobalFree(hmem);
@@ -311,13 +332,11 @@ unsafe fn sticker_spawn_ocr(
                         error_message: String::new(),
                     })
                 }),
-            _ => Err(
-                tr(
-                    "请先在设置-插件中启用图片 OCR",
-                    "Please enable Image OCR in Settings > Plugins first",
-                )
-                .to_string(),
-            ),
+            _ => Err(tr(
+                "请先在设置-插件中启用图片 OCR",
+                "Please enable Image OCR in Settings > Plugins first",
+            )
+            .to_string()),
         };
         let payload = Box::new(match result {
             Ok(r) => r,
@@ -329,15 +348,17 @@ unsafe fn sticker_spawn_ocr(
             },
         });
         unsafe {
-            let hwnd = hwnd_val as HWND;
-            if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-                let _ = PostMessageW(hwnd, WM_STICKER_OCR_READY, 0, Box::into_raw(payload) as LPARAM);
-            }
+            let _ = post_boxed_message(hwnd_val as HWND, WM_STICKER_OCR_READY, 0, payload);
         }
     });
 }
 
-unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn sticker_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     unsafe fn sticker_cancel_ocr_selection(hwnd: HWND, data: &mut StickerData, invalidate: bool) {
         data.ocr_mouse_selecting = false;
         data.ocr_sel_anchor = -1;
@@ -395,7 +416,9 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                         }
                     }
                 }
-                if changed { InvalidateRect(hwnd, null(), 0); }
+                if changed {
+                    InvalidateRect(hwnd, null(), 0);
+                }
                 sticker_track_mouse(hwnd);
             }
             0
@@ -460,7 +483,9 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 (*ptr).down_btn = 0;
                 if hit != 0 && hit == down {
                     match hit {
-                        1 => { DestroyWindow(hwnd); }
+                        1 => {
+                            DestroyWindow(hwnd);
+                        }
                         2 => {
                             (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
                             sticker_apply_zoom(hwnd, &*ptr);
@@ -535,14 +560,18 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
         }
         WM_STICKER_IMAGE_READY => {
             let payload_ptr = lparam as *mut StickerImageResult;
-            if payload_ptr.is_null() { return 0; }
+            if payload_ptr.is_null() {
+                return 0;
+            }
             let payload = Box::from_raw(payload_ptr);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
             if !ptr.is_null() {
                 let data = &mut *ptr;
                 data.loading = false;
                 if let Some((mut bytes, width, height)) = payload.image {
-                    for px in bytes.chunks_exact_mut(4) { px.swap(0, 2); }
+                    for px in bytes.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
                     data.width = width as i32;
                     data.height = height as i32;
                     data.bgra = bytes;
@@ -553,7 +582,9 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             0
         }
         WM_STICKER_OCR_READY => {
-            if lparam == 0 { return 0; }
+            if lparam == 0 {
+                return 0;
+            }
             let payload = Box::from_raw(lparam as *mut StickerOcrResult);
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
             if !ptr.is_null() {
@@ -578,7 +609,10 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
         }
         WM_KEYDOWN => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
-            if (wparam as u32) == VK_ESCAPE as u32 { DestroyWindow(hwnd); return 0; }
+            if (wparam as u32) == VK_ESCAPE as u32 {
+                DestroyWindow(hwnd);
+                return 0;
+            }
             if !ptr.is_null() {
                 if (wparam as u32) == STICKER_ZOOM_IN_KEY || (wparam as u32) == VK_UP as u32 {
                     (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
@@ -625,23 +659,43 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let mut rc: RECT = zeroed();
             GetWindowRect(hwnd, &mut rc);
             let grip = 8;
-            if x >= rc.right - grip && y >= rc.bottom - grip { return HTBOTTOMRIGHT as isize; }
-            if x <= rc.left + grip && y >= rc.bottom - grip { return HTBOTTOMLEFT as isize; }
-            if x >= rc.right - grip && y <= rc.top + grip { return HTTOPRIGHT as isize; }
-            if x <= rc.left + grip && y <= rc.top + grip { return HTTOPLEFT as isize; }
-            if x <= rc.left + grip { return HTLEFT as isize; }
-            if x >= rc.right - grip { return HTRIGHT as isize; }
-            if y <= rc.top + grip { return HTTOP as isize; }
-            if y >= rc.bottom - grip { return HTBOTTOM as isize; }
+            if x >= rc.right - grip && y >= rc.bottom - grip {
+                return HTBOTTOMRIGHT as isize;
+            }
+            if x <= rc.left + grip && y >= rc.bottom - grip {
+                return HTBOTTOMLEFT as isize;
+            }
+            if x >= rc.right - grip && y <= rc.top + grip {
+                return HTTOPRIGHT as isize;
+            }
+            if x <= rc.left + grip && y <= rc.top + grip {
+                return HTTOPLEFT as isize;
+            }
+            if x <= rc.left + grip {
+                return HTLEFT as isize;
+            }
+            if x >= rc.right - grip {
+                return HTRIGHT as isize;
+            }
+            if y <= rc.top + grip {
+                return HTTOP as isize;
+            }
+            if y >= rc.bottom - grip {
+                return HTBOTTOM as isize;
+            }
             let cx = x - rc.left;
             let cy = y - rc.top;
-            if cy <= STICKER_BAR_H && sticker_hit_btn(hwnd, cx, cy) == 0 { return HTCAPTION as isize; }
+            if cy <= STICKER_BAR_H && sticker_hit_btn(hwnd, cx, cy) == 0 {
+                return HTCAPTION as isize;
+            }
             HTCLIENT as isize
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
-            if ptr.is_null() { return DefWindowProcW(hwnd, msg, wparam, lparam); }
+            if ptr.is_null() {
+                return DefWindowProcW(hwnd, msg, wparam, lparam);
+            }
             let data = &mut *ptr;
             let mut ps: PAINTSTRUCT = zeroed();
             let hdc = BeginPaint(hwnd, &mut ps);
@@ -652,11 +706,31 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let membmp = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
             let oldbmp = SelectObject(memdc, membmp as _);
             let bg = CreateSolidBrush(th.bg);
-            FillRect(memdc, &rc, bg); DeleteObject(bg as _);
+            FillRect(memdc, &rc, bg);
+            DeleteObject(bg as _);
             draw_round_rect(memdc as _, &rc, th.surface, th.stroke, 8);
-            let bar = RECT { left: 1, top: 1, right: rc.right - 1, bottom: STICKER_BAR_H };
+            let bar = RECT {
+                left: 1,
+                top: 1,
+                right: rc.right - 1,
+                bottom: STICKER_BAR_H,
+            };
             draw_round_rect(memdc as _, &bar, th.surface2, th.surface2, 8);
-            draw_text_ex(memdc as _, tr("贴图", "Sticker"), &RECT{ left: 14, top: 8, right: 120, bottom: 30 }, th.text, 13, true, false, "Segoe UI");
+            draw_text_ex(
+                memdc as _,
+                tr("贴图", "Sticker"),
+                &RECT {
+                    left: 14,
+                    top: 8,
+                    right: 120,
+                    bottom: 30,
+                },
+                th.text,
+                13,
+                true,
+                false,
+                "Segoe UI",
+            );
 
             // Base buttons: ×(0), +(1), −(2)
             let base_labels = ["×", "+", "−"];
@@ -664,11 +738,35 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 let brc = sticker_btn_rect(hwnd, idx);
                 let hover = data.hover_btn == idx + 1;
                 let down = data.down_btn == idx + 1;
-                let fill = if idx == 0 && hover { th.close_hover } else if down { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
-                let stroke = if idx == 0 && hover { th.close_hover } else { th.control_stroke };
+                let fill = if idx == 0 && hover {
+                    th.close_hover
+                } else if down {
+                    th.button_pressed
+                } else if hover {
+                    th.button_hover
+                } else {
+                    th.button_bg
+                };
+                let stroke = if idx == 0 && hover {
+                    th.close_hover
+                } else {
+                    th.control_stroke
+                };
                 draw_round_rect(memdc as _, &brc, fill, stroke, 4);
-                let txt = if idx == 0 && hover { rgb(255, 255, 255) } else { th.text };
-                draw_text(memdc as _, base_labels[idx as usize], &brc, txt, 14, false, true);
+                let txt = if idx == 0 && hover {
+                    rgb(255, 255, 255)
+                } else {
+                    th.text
+                };
+                draw_text(
+                    memdc as _,
+                    base_labels[idx as usize],
+                    &brc,
+                    txt,
+                    14,
+                    false,
+                    true,
+                );
             }
 
             // OCR button (index 3): shown when OCR is enabled
@@ -677,16 +775,32 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 let hover = data.hover_btn == 4;
                 let down = data.down_btn == 4;
                 let is_error = data.ocr_error && !data.ocr_loading;
-                let fill = if is_error && hover { rgb(180, 50, 50) }
-                           else if is_error { rgb(100, 30, 30) }
-                           else if down { th.button_pressed }
-                           else if hover { th.button_hover }
-                           else { th.button_bg };
+                let fill = if is_error && hover {
+                    rgb(180, 50, 50)
+                } else if is_error {
+                    rgb(100, 30, 30)
+                } else if down {
+                    th.button_pressed
+                } else if hover {
+                    th.button_hover
+                } else {
+                    th.button_bg
+                };
                 draw_round_rect(memdc as _, &brc, fill, th.control_stroke, 4);
-                let label = if data.ocr_loading { "…" } else if is_error { "!" } else { "文" };
-                let txt_color = if is_error { rgb(255, 150, 150) }
-                                else if data.ocr_loading { th.text_muted }
-                                else { th.text };
+                let label = if data.ocr_loading {
+                    "…"
+                } else if is_error {
+                    "!"
+                } else {
+                    "文"
+                };
+                let txt_color = if is_error {
+                    rgb(255, 150, 150)
+                } else if data.ocr_loading {
+                    th.text_muted
+                } else {
+                    th.text
+                };
                 draw_text(memdc as _, label, &brc, txt_color, 12, false, true);
             }
 
@@ -695,13 +809,24 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 let brc = sticker_btn_rect(hwnd, 4);
                 let hover = data.hover_btn == 5;
                 let down = data.down_btn == 5;
-                let fill = if down { th.button_pressed } else if hover { th.button_hover } else { th.button_bg };
+                let fill = if down {
+                    th.button_pressed
+                } else if hover {
+                    th.button_hover
+                } else {
+                    th.button_bg
+                };
                 draw_round_rect(memdc as _, &brc, fill, th.control_stroke, 4);
                 draw_text(memdc as _, "复", &brc, th.text, 12, false, true);
             }
 
             // Image content area
-            let content = RECT { left: 12, top: STICKER_BAR_H + 2, right: rc.right - 12, bottom: rc.bottom - 12 };
+            let content = RECT {
+                left: 12,
+                top: STICKER_BAR_H + 2,
+                right: rc.right - 12,
+                bottom: rc.bottom - 12,
+            };
             if data.loading || data.bgra.is_empty() {
                 draw_text_ex(
                     memdc as _,
@@ -719,7 +844,9 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 let zoom = data.zoom_pct.clamp(20, 400) as f32 / 100.0;
                 let iw = max(1, (data.width as f32 * zoom).round() as i32);
                 let ih = max(1, (data.height as f32 * zoom).round() as i32);
-                let scale = (avail_w as f32 / iw as f32).min(avail_h as f32 / ih as f32).min(1.0);
+                let scale = (avail_w as f32 / iw as f32)
+                    .min(avail_h as f32 / ih as f32)
+                    .min(1.0);
                 let dw = max(1, (iw as f32 * scale).round() as i32);
                 let dh = max(1, (ih as f32 * scale).round() as i32);
                 let dx = content.left + (avail_w - dw) / 2;
@@ -731,7 +858,21 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 bmi.bmiHeader.biPlanes = 1;
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = BI_RGB;
-                StretchDIBits(memdc, dx, dy, dw, dh, 0, 0, data.width, data.height, data.bgra.as_ptr() as _, &bmi, DIB_RGB_COLORS, SRCCOPY);
+                StretchDIBits(
+                    memdc,
+                    dx,
+                    dy,
+                    dw,
+                    dh,
+                    0,
+                    0,
+                    data.width,
+                    data.height,
+                    data.bgra.as_ptr() as _,
+                    &bmi,
+                    DIB_RGB_COLORS,
+                    SRCCOPY,
+                );
 
                 // Draw OCR text region overlays
                 if !data.ocr_lines.is_empty() {
@@ -746,7 +887,14 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                             let hovering = hover_line == i as i32 && !selected;
                             if selected {
                                 // Invert pixels to indicate selection
-                                PatBlt(memdc, lrc.left, lrc.top, lrc.right - lrc.left, lrc.bottom - lrc.top, DSTINVERT);
+                                PatBlt(
+                                    memdc,
+                                    lrc.left,
+                                    lrc.top,
+                                    lrc.right - lrc.left,
+                                    lrc.bottom - lrc.top,
+                                    DSTINVERT,
+                                );
                             } else if hovering {
                                 // Blue border for hover hint
                                 let border_brush = CreateSolidBrush(rgb(80, 140, 255));
@@ -757,8 +905,20 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     }
                 }
             }
-            BitBlt(hdc, 0, 0, rc.right - rc.left, rc.bottom - rc.top, memdc, 0, 0, SRCCOPY);
-            SelectObject(memdc, oldbmp); DeleteObject(membmp as _); DeleteDC(memdc);
+            BitBlt(
+                hdc,
+                0,
+                0,
+                rc.right - rc.left,
+                rc.bottom - rc.top,
+                memdc,
+                0,
+                0,
+                SRCCOPY,
+            );
+            SelectObject(memdc, oldbmp);
+            DeleteObject(membmp as _);
+            DeleteDC(memdc);
             EndPaint(hwnd, &ps);
             0
         }
@@ -779,7 +939,9 @@ unsafe extern "system" fn sticker_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM,
 
 unsafe fn ensure_sticker_class() {
     static DONE: OnceLock<()> = OnceLock::new();
-    if DONE.get().is_some() { return; }
+    if DONE.get().is_some() {
+        return;
+    }
     let hinstance = GetModuleHandleW(null());
     let class_name = to_wide(STICKER_CLASS);
     let mut wc: WNDCLASSW = zeroed();
@@ -792,7 +954,10 @@ unsafe fn ensure_sticker_class() {
     let _ = DONE.set(());
 }
 
-pub(crate) unsafe fn show_image_sticker(item: &ClipItem, settings: &crate::app::state::AppSettings) {
+pub(crate) unsafe fn show_image_sticker(
+    item: &ClipItem,
+    settings: &crate::app::state::AppSettings,
+) {
     ensure_sticker_class();
     let ocr_enabled = settings.image_ocr_provider != "off";
     let data = Box::new(StickerData {
@@ -828,8 +993,13 @@ pub(crate) unsafe fn show_image_sticker(item: &ClipItem, settings: &crate::app::
         to_wide(STICKER_CLASS).as_ptr(),
         to_wide("").as_ptr(),
         WS_POPUP | WS_VISIBLE | WS_THICKFRAME,
-        pt.x + 16, pt.y + 16, w, h,
-        null_mut(), null_mut(), GetModuleHandleW(null()),
+        pt.x + 16,
+        pt.y + 16,
+        w,
+        h,
+        null_mut(),
+        null_mut(),
+        GetModuleHandleW(null()),
         Box::into_raw(data) as _,
     );
     if !hwnd.is_null() {
@@ -842,10 +1012,7 @@ pub(crate) unsafe fn show_image_sticker(item: &ClipItem, settings: &crate::app::
                 image: ensure_item_image_bytes(&item),
             });
             unsafe {
-                let hwnd = hwnd_raw as HWND;
-                if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-                    let _ = PostMessageW(hwnd, WM_STICKER_IMAGE_READY, 0, Box::into_raw(payload) as LPARAM);
-                }
+                let _ = post_boxed_message(hwnd_raw as HWND, WM_STICKER_IMAGE_READY, 0, payload);
             }
         });
     }

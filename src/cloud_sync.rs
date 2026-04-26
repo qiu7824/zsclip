@@ -1,6 +1,6 @@
-﻿use crate::i18n::tr;
-use serde::{Deserialize, Serialize};
+use crate::i18n::tr;
 use crate::time_utils::utc_secs_to_local_parts;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -125,7 +125,11 @@ fn sync_snapshot(
             && !version_cmp.is_gt()
         {
             return Ok(CloudSyncOutcome {
-                status_text: tr("本地与云端已同步，无需更新。", "Local and cloud data are already in sync.").to_string(),
+                status_text: tr(
+                    "本地与云端已同步，无需更新。",
+                    "Local and cloud data are already in sync.",
+                )
+                .to_string(),
                 reload_settings: false,
                 reload_data: false,
             });
@@ -136,14 +140,20 @@ fn sync_snapshot(
                     "{}{}{}",
                     tr("云端备份版本较新（", "Cloud backup version is newer ("),
                     manifest.version,
-                    tr("），请先升级当前程序。", "). Please upgrade this app first."),
+                    tr(
+                        "），请先升级当前程序。",
+                        "). Please upgrade this app first."
+                    ),
                 ));
             }
             let outcome = restore_remote_backup(config, remote, paths)?;
             return Ok(CloudSyncOutcome {
                 status_text: format!(
                     "{}{}，{}{}。",
-                    tr("云端较新，已恢复到本地（版本 ", "Cloud copy was newer and has been restored locally (version "),
+                    tr(
+                        "云端较新，已恢复到本地（版本 ",
+                        "Cloud copy was newer and has been restored locally (version "
+                    ),
                     manifest.version,
                     tr("时间 ", "time "),
                     format_unix_ts(manifest.updated_at)
@@ -232,7 +242,10 @@ fn restore_remote_backup(
                 "{}{}{}",
                 tr("云端备份版本较新（", "Cloud backup version is newer ("),
                 manifest.version,
-                tr("），请先升级当前程序。", "). Please upgrade this app first."),
+                tr(
+                    "），请先升级当前程序。",
+                    "). Please upgrade this app first."
+                ),
             ));
         }
     }
@@ -247,7 +260,10 @@ fn restore_remote_backup(
         status_text: if let Some(path) = local_backup {
             format!(
                 "{}{}",
-                tr("已从云端恢复数据备份，本地旧数据已备份到：", "Cloud backup restored. Previous local data was backed up to: "),
+                tr(
+                    "已从云端恢复数据备份，本地旧数据已备份到：",
+                    "Cloud backup restored. Previous local data was backed up to: "
+                ),
                 path.to_string_lossy()
             )
         } else {
@@ -285,7 +301,9 @@ fn download_remote_manifest(
     }
     let manifest = fs::read_to_string(&temp_path)
         .map_err(|err| err.to_string())
-        .and_then(|raw| serde_json::from_str::<CloudSyncManifest>(&raw).map_err(|err| err.to_string()))?;
+        .and_then(|raw| {
+            serde_json::from_str::<CloudSyncManifest>(&raw).map_err(|err| err.to_string())
+        })?;
     let _ = fs::remove_file(temp_path);
     Ok(Some(manifest))
 }
@@ -299,10 +317,12 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, stamp: u64) -> Result<PathBuf
     fs::create_dir_all(&payload_dir).map_err(|err| err.to_string())?;
 
     if paths.settings_file.exists() {
-        fs::copy(&paths.settings_file, payload_dir.join("settings.json")).map_err(|err| err.to_string())?;
+        fs::copy(&paths.settings_file, payload_dir.join("settings.json"))
+            .map_err(|err| err.to_string())?;
     }
     if paths.db_file.exists() {
-        fs::copy(&paths.db_file, payload_dir.join("clipboard.db")).map_err(|err| err.to_string())?;
+        fs::copy(&paths.db_file, payload_dir.join("clipboard.db"))
+            .map_err(|err| err.to_string())?;
     }
     let images_dir = paths.data_dir.join("images");
     if images_dir.exists() {
@@ -342,7 +362,11 @@ fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Resu
     fs::create_dir_all(&extract_root).map_err(|err| err.to_string())?;
     expand_archive(archive_path, &extract_root)?;
     let payload_dir = extract_root.join("payload");
-    let source_dir = if payload_dir.exists() { payload_dir } else { extract_root.clone() };
+    let source_dir = if payload_dir.exists() {
+        payload_dir
+    } else {
+        extract_root.clone()
+    };
 
     if let Some(parent) = paths.settings_file.parent() {
         let _ = fs::create_dir_all(parent);
@@ -429,7 +453,9 @@ impl Fnv64 {
     const PRIME: u64 = 0x100000001b3;
 
     fn new() -> Self {
-        Self { value: Self::OFFSET }
+        Self {
+            value: Self::OFFSET,
+        }
     }
 
     fn update(&mut self, bytes: &[u8]) {
@@ -536,7 +562,11 @@ Expand-Archive -LiteralPath '{archive}' -DestinationPath '{dest}' -Force
     run_powershell(&script).map(|_| ())
 }
 
-fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) -> Result<(), String> {
+fn upload_file(
+    config: &CloudSyncConfig,
+    local_path: &Path,
+    remote_url: &str,
+) -> Result<(), String> {
     if !local_path.exists() {
         return Err(format!(
             "{}{}",
@@ -545,7 +575,7 @@ fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) ->
         ));
     }
 
-    let status = run_curl_status(build_webdav_args(
+    let status = run_webdav_curl_status(
         config,
         &[
             "-X".to_string(),
@@ -558,24 +588,31 @@ fn upload_file(config: &CloudSyncConfig, local_path: &Path, remote_url: &str) ->
             "%{http_code}".to_string(),
             remote_url.to_string(),
         ],
-    ))?;
+    )?;
 
     match status.as_str() {
         "200" | "201" | "204" => Ok(()),
         _ => Err(format!(
             "{}{}",
-            tr("上传失败，HTTP 状态码：", "Upload failed with HTTP status: "),
+            tr(
+                "上传失败，HTTP 状态码：",
+                "Upload failed with HTTP status: "
+            ),
             status
         )),
     }
 }
 
-fn download_file(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) -> Result<bool, String> {
+fn download_file(
+    config: &CloudSyncConfig,
+    remote_url: &str,
+    local_path: &Path,
+) -> Result<bool, String> {
     if let Some(parent) = local_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
 
-    let status = run_curl_status(build_webdav_args(
+    let status = run_webdav_curl_status(
         config,
         &[
             "-L".to_string(),
@@ -585,7 +622,7 @@ fn download_file(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) 
             "%{http_code}".to_string(),
             remote_url.to_string(),
         ],
-    ))?;
+    )?;
 
     match status.as_str() {
         "200" | "206" => Ok(true),
@@ -595,14 +632,17 @@ fn download_file(config: &CloudSyncConfig, remote_url: &str, local_path: &Path) 
         }
         _ => Err(format!(
             "{}{}",
-            tr("下载失败，HTTP 状态码：", "Download failed with HTTP status: "),
+            tr(
+                "下载失败，HTTP 状态码：",
+                "Download failed with HTTP status: "
+            ),
             status
         )),
     }
 }
 
 fn webdav_mkcol(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
-    let status = run_curl_status(build_webdav_args(
+    let status = run_webdav_curl_status(
         config,
         &[
             "-X".to_string(),
@@ -613,19 +653,22 @@ fn webdav_mkcol(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String
             "%{http_code}".to_string(),
             remote_url.to_string(),
         ],
-    ))?;
+    )?;
 
     match status.as_str() {
         "200" | "201" | "204" | "301" | "302" | "405" | "409" => Ok(()),
         _ => Err(format!(
             "{}{}",
-            tr("创建云端目录失败，HTTP 状态码：", "Failed to create remote directory. HTTP status: "),
+            tr(
+                "创建云端目录失败，HTTP 状态码：",
+                "Failed to create remote directory. HTTP status: "
+            ),
             status
         )),
     }
 }
 
-fn build_webdav_args(config: &CloudSyncConfig, extra: &[String]) -> Vec<String> {
+fn build_webdav_args(extra: &[String]) -> Vec<String> {
     let mut args = vec![
         "--silent".to_string(),
         "--show-error".to_string(),
@@ -634,14 +677,35 @@ fn build_webdav_args(config: &CloudSyncConfig, extra: &[String]) -> Vec<String> 
         "--max-time".to_string(),
         "300".to_string(),
     ];
-
-    if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
-        args.push("--user".to_string());
-        args.push(format!("{}:{}", config.webdav_user.trim(), config.webdav_pass));
-    }
-
     args.extend(extra.iter().cloned());
     args
+}
+
+fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<String, String> {
+    let mut args = build_webdav_args(extra);
+    let config_path = if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
+        let path = temp_unique_path("webdav_auth", "curl");
+        let content = format!(
+            "user = {}\n",
+            curl_config_quote(&format!(
+                "{}:{}",
+                config.webdav_user.trim(),
+                config.webdav_pass
+            ))
+        );
+        fs::write(&path, content).map_err(|err| err.to_string())?;
+        let path_arg = path.to_string_lossy().to_string();
+        args.insert(0, path_arg);
+        args.insert(0, "--config".to_string());
+        Some(path)
+    } else {
+        None
+    };
+    let result = run_curl_status(args);
+    if let Some(path) = config_path {
+        let _ = fs::remove_file(path);
+    }
+    result
 }
 
 fn run_curl_status(args: Vec<String>) -> Result<String, String> {
@@ -662,10 +726,47 @@ fn run_curl_status(args: Vec<String>) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!(
+        "zsclip_{}_{}_{}.{}",
+        prefix,
+        std::process::id(),
+        ts,
+        ext.trim_start_matches('.')
+    ))
+}
+
+fn curl_config_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn run_powershell(script: &str) -> Result<String, String> {
     let encoded = encode_powershell(script);
     let output = hidden_powershell()
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", &encoded])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            &encoded,
+        ])
         .output()
         .map_err(|err| err.to_string())?;
     if output.status.success() {
@@ -716,8 +817,16 @@ fn base64_encode(bytes: &[u8]) -> String {
         let triple = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
         out.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
         out.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
-        out.push(if pad >= 2 { '=' } else { TABLE[((triple >> 6) & 0x3f) as usize] as char });
-        out.push(if pad >= 1 { '=' } else { TABLE[(triple & 0x3f) as usize] as char });
+        out.push(if pad >= 2 {
+            '='
+        } else {
+            TABLE[((triple >> 6) & 0x3f) as usize] as char
+        });
+        out.push(if pad >= 1 {
+            '='
+        } else {
+            TABLE[(triple & 0x3f) as usize] as char
+        });
         i += 3;
     }
     out
@@ -813,4 +922,3 @@ fn remove_optional_file(path: &Path) {
         let _ = fs::remove_file(path);
     }
 }
-

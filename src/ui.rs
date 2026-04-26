@@ -1,8 +1,8 @@
-﻿use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::gdiplus;
 use crate::time_utils::{gregorian_to_days, utc_secs_to_local_parts};
@@ -13,14 +13,13 @@ use crate::win_system_ui::{
 use windows_sys::Win32::{
     Foundation::RECT,
     Graphics::Gdi::{
-        BitBlt, CreateCompatibleDC, DeleteDC, CreateSolidBrush, DeleteObject, FillRect,
-        GetStockObject, RoundRect, SelectObject,
-        NULL_PEN, SRCCOPY,
-        CreateDIBSection, BITMAPINFO, BITMAPINFOHEADER, DIB_RGB_COLORS, BI_RGB,
+        BitBlt, CreateCompatibleDC, CreateDIBSection, CreateSolidBrush, DeleteDC, DeleteObject,
+        FillRect, GetStockObject, RoundRect, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, NULL_PEN, SRCCOPY,
     },
 };
 
-// Registry API 鈥?Win32_System_Registry feature not enabled, declare manually
+// DrawText format flags used by the Win32 renderer.
 pub const DT_LEFT: u32 = 0x0000;
 pub const DT_CENTER: u32 = 0x0001;
 pub const DT_VCENTER: u32 = 0x0004;
@@ -55,13 +54,27 @@ pub fn settings_scale(value: i32) -> i32 {
     (((value as i64) * dpi) + 48) as i32 / 96
 }
 
-pub fn settings_w_scaled() -> i32 { settings_scale(SETTINGS_W) }
-pub fn settings_h_scaled() -> i32 { settings_scale(SETTINGS_H) }
-pub fn settings_nav_w_scaled() -> i32 { settings_scale(SETTINGS_NAV_W) }
-pub fn settings_top_h_scaled() -> i32 { settings_scale(SETTINGS_TOP_H) }
-pub fn settings_content_x_scaled() -> i32 { settings_scale(SETTINGS_CONTENT_X) }
-pub fn settings_content_w_scaled() -> i32 { settings_w_scaled() - settings_content_x_scaled() - settings_scale(28) }
-pub fn settings_content_y_scaled() -> i32 { settings_top_h_scaled() }
+pub fn settings_w_scaled() -> i32 {
+    settings_scale(SETTINGS_W)
+}
+pub fn settings_h_scaled() -> i32 {
+    settings_scale(SETTINGS_H)
+}
+pub fn settings_nav_w_scaled() -> i32 {
+    settings_scale(SETTINGS_NAV_W)
+}
+pub fn settings_top_h_scaled() -> i32 {
+    settings_scale(SETTINGS_TOP_H)
+}
+pub fn settings_content_x_scaled() -> i32 {
+    settings_scale(SETTINGS_CONTENT_X)
+}
+pub fn settings_content_w_scaled() -> i32 {
+    settings_w_scaled() - settings_content_x_scaled() - settings_scale(28)
+}
+pub fn settings_content_y_scaled() -> i32 {
+    settings_top_h_scaled()
+}
 
 pub fn ui_text_font_family() -> &'static str {
     crate::win_system_ui::system_ui_text_font_family()
@@ -85,7 +98,12 @@ pub struct UiRect {
 
 impl UiRect {
     pub const fn new(left: i32, top: i32, right: i32, bottom: i32) -> Self {
-        Self { left, top, right, bottom }
+        Self {
+            left,
+            top,
+            right,
+            bottom,
+        }
     }
 
     pub const fn offset_y(self, dy: i32) -> Self {
@@ -176,22 +194,22 @@ impl Default for Theme {
                 accent,
                 accent_hover,
                 accent_pressed,
-                bg:             rgb(32, 32, 32),   // SolidBackgroundFillColorBase dark
-                nav_bg:         rgb(40, 40, 40),
-                nav_sel_fill:   rgb(58, 58, 58),
-                surface:        rgb(44, 44, 44),   // LayerFillColorDefault dark
-                surface2:       rgb(50, 50, 50),
-                stroke:         rgb(60, 60, 60),   // CardStrokeColorDefault dark
-                text:           rgb(255, 255, 255),// TextFillColorPrimary dark
-                text_muted:     rgb(162, 162, 162),
-                item_hover:     rgb(54, 54, 54),
-                item_selected:  mix(accent, rgb(44, 44, 44), 0.75),
-                control_bg:     rgb(58, 58, 58),   // ControlFillColorDefault dark
+                bg: rgb(32, 32, 32), // SolidBackgroundFillColorBase dark
+                nav_bg: rgb(40, 40, 40),
+                nav_sel_fill: rgb(58, 58, 58),
+                surface: rgb(44, 44, 44), // LayerFillColorDefault dark
+                surface2: rgb(50, 50, 50),
+                stroke: rgb(60, 60, 60),  // CardStrokeColorDefault dark
+                text: rgb(255, 255, 255), // TextFillColorPrimary dark
+                text_muted: rgb(162, 162, 162),
+                item_hover: rgb(54, 54, 54),
+                item_selected: mix(accent, rgb(44, 44, 44), 0.75),
+                control_bg: rgb(58, 58, 58), // ControlFillColorDefault dark
                 control_stroke: rgb(80, 80, 80),
-                button_bg:      rgb(58, 58, 58),
-                button_hover:   rgb(68, 68, 68),
+                button_bg: rgb(58, 58, 58),
+                button_hover: rgb(68, 68, 68),
                 button_pressed: rgb(50, 50, 50),
-                close_hover:    rgb(196, 43, 28),
+                close_hover: rgb(196, 43, 28),
             }
         } else {
             // WinUI3 Light theme tokens
@@ -199,22 +217,22 @@ impl Default for Theme {
                 accent,
                 accent_hover,
                 accent_pressed,
-                bg:             rgb(243, 243, 243), // SolidBackgroundFillColorBase
-                nav_bg:         rgb(243, 243, 243),
-                nav_sel_fill:   rgb(255, 255, 255),
-                surface:        rgb(255, 255, 255),
-                surface2:       rgb(250, 250, 250),
-                stroke:         rgb(229, 229, 229),
-                text:           rgb(28, 28, 28),
-                text_muted:     rgb(96, 96, 96),
-                item_hover:     rgb(249, 249, 249),
-                item_selected:  mix(accent, rgb(255, 255, 255), 0.85),
-                control_bg:     rgb(255, 255, 255),
+                bg: rgb(243, 243, 243), // SolidBackgroundFillColorBase
+                nav_bg: rgb(243, 243, 243),
+                nav_sel_fill: rgb(255, 255, 255),
+                surface: rgb(255, 255, 255),
+                surface2: rgb(250, 250, 250),
+                stroke: rgb(229, 229, 229),
+                text: rgb(28, 28, 28),
+                text_muted: rgb(96, 96, 96),
+                item_hover: rgb(249, 249, 249),
+                item_selected: mix(accent, rgb(255, 255, 255), 0.85),
+                control_bg: rgb(255, 255, 255),
                 control_stroke: rgb(204, 204, 204),
-                button_bg:      rgb(255, 255, 255),
-                button_hover:   rgb(249, 249, 249),
+                button_bg: rgb(255, 255, 255),
+                button_hover: rgb(249, 249, 249),
                 button_pressed: rgb(238, 238, 238),
-                close_hover:    rgb(196, 43, 28),
+                close_hover: rgb(196, 43, 28),
             }
         }
     }
@@ -345,7 +363,13 @@ fn parse_time_filter(raw: &str) -> Option<SearchTimeFilter> {
             if let Some((y, m, d)) = value
                 .split_once('-')
                 .and_then(|(a, rest)| rest.split_once('-').map(|(b, c)| (a, b, c)))
-                .and_then(|(y, m, d)| Some((y.parse::<i32>().ok()?, m.parse::<i32>().ok()?, d.parse::<i32>().ok()?)))
+                .and_then(|(y, m, d)| {
+                    Some((
+                        y.parse::<i32>().ok()?,
+                        m.parse::<i32>().ok()?,
+                        d.parse::<i32>().ok()?,
+                    ))
+                })
             {
                 return Some(SearchTimeFilter::ExactDay(gregorian_to_days(y, m, d)));
             }
@@ -398,7 +422,11 @@ fn tokenize_search_query(query: &str) -> Vec<String> {
     tokens
 }
 
-fn prefixed_search_value<'a>(token: &'a str, ascii_prefix: &str, cn_prefixes: &[&str]) -> Option<&'a str> {
+fn prefixed_search_value<'a>(
+    token: &'a str,
+    ascii_prefix: &str,
+    cn_prefixes: &[&str],
+) -> Option<&'a str> {
     let lower = token.to_lowercase();
     if let Some(value) = lower.strip_prefix(ascii_prefix) {
         let start = token.len().saturating_sub(value.len());
@@ -435,7 +463,9 @@ fn collect_prefixed_value(tokens: &[String], start: usize, initial: &str) -> (St
     (parts.join(" ").trim().to_string(), index)
 }
 
-pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTimeFilter>, Option<String>) {
+pub(crate) fn parse_search_query(
+    query: &str,
+) -> (Vec<String>, Option<SearchTimeFilter>, Option<String>) {
     let mut text_terms = Vec::new();
     let mut time_filter = None;
     let mut app_filter = None;
@@ -449,8 +479,11 @@ pub(crate) fn parse_search_query(query: &str) -> (Vec<String>, Option<SearchTime
             continue;
         }
 
-        if let Some(initial) = prefixed_search_value(token, "time:", &["时间:", "时间：", "日期:", "日期："]) 
-            .or_else(|| prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："])) {
+        if let Some(initial) =
+            prefixed_search_value(token, "time:", &["时间:", "时间：", "日期:", "日期："]).or_else(
+                || prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："]),
+            )
+        {
             let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
             if let Some(filter) = parse_time_filter(&value) {
                 time_filter = Some(filter);
@@ -528,7 +561,8 @@ impl ClipListState {
     }
 
     pub(crate) fn row_is_selected(&self, visible_idx: i32) -> bool {
-        visible_idx >= 0 && (self.sel_idx == visible_idx || self.selected_rows.contains(&visible_idx))
+        visible_idx >= 0
+            && (self.sel_idx == visible_idx || self.selected_rows.contains(&visible_idx))
     }
 
     pub(crate) fn selected_visible_rows(&self) -> Vec<i32> {
@@ -558,7 +592,11 @@ impl ClipListState {
 
     pub(crate) fn context_selection_count(&self) -> usize {
         let n = self.selected_count();
-        if n == 0 && self.context_row >= 0 { 1 } else { n }
+        if n == 0 && self.context_row >= 0 {
+            1
+        } else {
+            n
+        }
     }
 }
 
@@ -677,7 +715,12 @@ impl MainUiLayout {
         self.clamp_scroll(next, filtered_len)
     }
 
-    pub(crate) fn row_rect(self, visible_idx: i32, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+    pub(crate) fn row_rect(
+        self,
+        visible_idx: i32,
+        filtered_len: usize,
+        scroll_y: i32,
+    ) -> Option<UiRect> {
         if visible_idx < 0 || visible_idx >= filtered_len as i32 {
             return None;
         }
@@ -785,7 +828,12 @@ impl MainUiLayout {
         let btn_w = (inner_w - gap) / 2;
         (
             UiRect::new(inner_l, inner_t, inner_l + btn_w, inner_t + inner_h),
-            UiRect::new(inner_l + btn_w + gap, inner_t, inner_l + inner_w, inner_t + inner_h),
+            UiRect::new(
+                inner_l + btn_w + gap,
+                inner_t,
+                inner_l + inner_w,
+                inner_t + inner_h,
+            ),
         )
     }
 
@@ -811,12 +859,33 @@ impl MainUiLayout {
         let thumb_h = ((track_h as f32) * (view_h as f32 / total_h as f32)) as i32;
         let thumb_h = thumb_h.max(28);
         let max_scroll = self.max_scroll(filtered_len).max(1);
-        let thumb_y = track.top + ((track_h - thumb_h) as f32 * (scroll_y as f32 / max_scroll as f32)) as i32;
-        Some(UiRect::new(track.left + 1, thumb_y, track.right - 1, thumb_y + thumb_h))
+        let thumb_y =
+            track.top + ((track_h - thumb_h) as f32 * (scroll_y as f32 / max_scroll as f32)) as i32;
+        Some(UiRect::new(
+            track.left + 1,
+            thumb_y,
+            track.right - 1,
+            thumb_y + thumb_h,
+        ))
     }
 }
-pub unsafe fn draw_round_rect(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32, border: u32, radius: i32) {
-    if gdiplus::draw_round_rect(hdc, rc.left, rc.top, rc.right, rc.bottom, fill, border, radius.max(1)) {
+pub unsafe fn draw_round_rect(
+    hdc: *mut core::ffi::c_void,
+    rc: &RECT,
+    fill: u32,
+    border: u32,
+    radius: i32,
+) {
+    if gdiplus::draw_round_rect(
+        hdc,
+        rc.left,
+        rc.top,
+        rc.right,
+        rc.bottom,
+        fill,
+        border,
+        radius.max(1),
+    ) {
         return;
     }
     let er = (radius.max(1)) * 2;
@@ -841,7 +910,15 @@ pub unsafe fn draw_round_rect(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32,
             let old_pen2 = SelectObject(hdc, outer_pen as _);
             let old_br2 = SelectObject(hdc, inner_br as _);
             let inner_r = (radius - 1).max(1) * 2;
-            RoundRect(hdc, inner.left, inner.top, inner.right, inner.bottom, inner_r, inner_r);
+            RoundRect(
+                hdc,
+                inner.left,
+                inner.top,
+                inner.right,
+                inner.bottom,
+                inner_r,
+                inner_r,
+            );
             SelectObject(hdc, old_pen2);
             SelectObject(hdc, old_br2);
             DeleteObject(inner_br as _);
@@ -859,7 +936,16 @@ pub unsafe fn draw_round_rect(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32,
 }
 
 pub unsafe fn draw_round_fill(hdc: *mut core::ffi::c_void, rc: &RECT, fill: u32, radius: i32) {
-    if gdiplus::draw_round_rect(hdc, rc.left, rc.top, rc.right, rc.bottom, fill, fill, radius.max(1)) {
+    if gdiplus::draw_round_rect(
+        hdc,
+        rc.left,
+        rc.top,
+        rc.right,
+        rc.bottom,
+        fill,
+        fill,
+        radius.max(1),
+    ) {
         return;
     }
     let er = (radius.max(1)) * 2;
@@ -885,35 +971,76 @@ pub unsafe fn draw_main_segment_bar(
     draw_round_rect(hdc, outer, th.surface, th.stroke, 4);
 
     let mut sel_rc = *tab0;
-    if selected == 1 { sel_rc = *tab1; }
+    if selected == 1 {
+        sel_rc = *tab1;
+    }
     let inner_sel = RECT {
         left: sel_rc.left + 2,
         top: sel_rc.top + 2,
         right: sel_rc.right - 2,
         bottom: sel_rc.bottom - 2,
     };
-    let selected_fill = if th.bg == rgb(255, 255, 255) { th.surface2 } else { th.nav_sel_fill };
+    let selected_fill = if th.bg == rgb(255, 255, 255) {
+        th.surface2
+    } else {
+        th.nav_sel_fill
+    };
     draw_round_rect(hdc, &inner_sel, selected_fill, th.stroke, 3);
 
     if hover == 0 && selected != 0 {
-        let hr = RECT { left: tab0.left + 2, top: tab0.top + 2, right: tab0.right - 2, bottom: tab0.bottom - 2 };
+        let hr = RECT {
+            left: tab0.left + 2,
+            top: tab0.top + 2,
+            right: tab0.right - 2,
+            bottom: tab0.bottom - 2,
+        };
         draw_round_fill(hdc, &hr, th.item_hover, 3);
     }
     if hover == 1 && selected != 1 {
-        let hr = RECT { left: tab1.left + 2, top: tab1.top + 2, right: tab1.right - 2, bottom: tab1.bottom - 2 };
+        let hr = RECT {
+            left: tab1.left + 2,
+            top: tab1.top + 2,
+            right: tab1.right - 2,
+            bottom: tab1.bottom - 2,
+        };
         draw_round_fill(hdc, &hr, th.item_hover, 3);
     }
 
-    let t0c = if selected == 0 || hover == 0 { th.text } else { th.text_muted };
-    let t1c = if selected == 1 || hover == 1 { th.text } else { th.text_muted };
+    let t0c = if selected == 0 || hover == 0 {
+        th.text
+    } else {
+        th.text_muted
+    };
+    let t1c = if selected == 1 || hover == 1 {
+        th.text
+    } else {
+        th.text_muted
+    };
     let tab_font = ui_display_font_family();
     let tab_size = ((outer.bottom - outer.top) * 13 / 30).clamp(12, 16);
     draw_text_ex(hdc, "复制记录", tab0, t0c, tab_size, false, true, tab_font);
     draw_text_ex(hdc, "常用短语", tab1, t1c, tab_size, false, true, tab_font);
 }
 
-pub unsafe fn draw_text(hdc: *mut core::ffi::c_void, text: &str, rc: &RECT, color: u32, size: i32, bold: bool, center: bool) {
-    draw_text_ex(hdc, text, rc, color, size, bold, center, ui_text_font_family());
+pub unsafe fn draw_text(
+    hdc: *mut core::ffi::c_void,
+    text: &str,
+    rc: &RECT,
+    color: u32,
+    size: i32,
+    bold: bool,
+    center: bool,
+) {
+    draw_text_ex(
+        hdc,
+        text,
+        rc,
+        color,
+        size,
+        bold,
+        center,
+        ui_text_font_family(),
+    );
 }
 
 pub unsafe fn draw_text_block(
@@ -988,13 +1115,14 @@ pub fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 鍦ㄦ繁鑹叉ā寮忎笅缁樺埗鍥炬爣鏃讹紝灏嗛粦鑹插浘鏍囧弽鑹蹭负鐧借壊銆?
-/// 娣辫壊妯″紡涓嬫妸鍥炬爣鍙嶈壊涓虹櫧鑹茬増鏈紙涓ゆ缁樺埗鎻愬彇鐪熷疄鍍忕礌锛?
+/// 在深色模式绘制图标时，将深色图标转换为浅色版本。
 pub unsafe fn draw_icon_tinted(
     hdc: *mut core::ffi::c_void,
-    x: i32, y: i32,
+    x: i32,
+    y: i32,
     icon: isize,
-    w: i32, h: i32,
+    w: i32,
+    h: i32,
     dark: bool,
 ) {
     draw_icon_tinted_soft(hdc, x, y, icon, w, h, dark, 0);
@@ -1011,9 +1139,21 @@ pub unsafe fn draw_icon_tinted_soft(
     soften: u8,
 ) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL};
-    if icon == 0 { return; }
+    if icon == 0 {
+        return;
+    }
     if !dark {
-        DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+        DrawIconEx(
+            hdc,
+            x,
+            y,
+            icon as _,
+            w,
+            h,
+            0,
+            std::ptr::null_mut(),
+            DI_NORMAL,
+        );
         return;
     }
     let n = (w * h) as usize;
@@ -1022,7 +1162,17 @@ pub unsafe fn draw_icon_tinted_soft(
         let mut cache = match cache.lock() {
             Ok(cache) => cache,
             Err(_) => {
-                DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+                DrawIconEx(
+                    hdc,
+                    x,
+                    y,
+                    icon as _,
+                    w,
+                    h,
+                    0,
+                    std::ptr::null_mut(),
+                    DI_NORMAL,
+                );
                 return;
             }
         };
@@ -1039,26 +1189,60 @@ pub unsafe fn draw_icon_tinted_soft(
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = BI_RGB;
                 let mut ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-                let dib = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut ptr, core::ptr::null_mut(), 0);
+                let dib =
+                    CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut ptr, core::ptr::null_mut(), 0);
                 if dib.is_null() || ptr.is_null() {
                     DeleteDC(dc);
-                    return (core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut());
+                    return (
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                    );
                 }
                 SelectObject(dc, dib as _);
                 let br = CreateSolidBrush(bg);
-                let rc = RECT { left: 0, top: 0, right: w, bottom: h };
+                let rc = RECT {
+                    left: 0,
+                    top: 0,
+                    right: w,
+                    bottom: h,
+                };
                 FillRect(dc, &rc, br);
                 DeleteObject(br as _);
-                DrawIconEx(dc, 0, 0, icon as _, w, h, 0, core::ptr::null_mut(), DI_NORMAL);
+                DrawIconEx(
+                    dc,
+                    0,
+                    0,
+                    icon as _,
+                    w,
+                    h,
+                    0,
+                    core::ptr::null_mut(),
+                    DI_NORMAL,
+                );
                 (dc, dib, ptr as *mut u32)
             };
 
             let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32);
             let (dc_b, dib_b, px_b) = make_dib(0x00000000u32);
             if dc_w.is_null() || dc_b.is_null() {
-                if !dc_w.is_null() { DeleteDC(dc_w); }
-                if !dc_b.is_null() { DeleteDC(dc_b); }
-                DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+                if !dc_w.is_null() {
+                    DeleteDC(dc_w);
+                }
+                if !dc_b.is_null() {
+                    DeleteDC(dc_b);
+                }
+                DrawIconEx(
+                    hdc,
+                    x,
+                    y,
+                    icon as _,
+                    w,
+                    h,
+                    0,
+                    std::ptr::null_mut(),
+                    DI_NORMAL,
+                );
                 return;
             }
 
@@ -1120,7 +1304,14 @@ pub unsafe fn draw_icon_tinted_soft(
     bmi_bg.bmiHeader.biBitCount = 32;
     bmi_bg.bmiHeader.biCompression = BI_RGB;
     let mut px_bg_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-    let dib_bg = CreateDIBSection(dc_bg, &bmi_bg, DIB_RGB_COLORS, &mut px_bg_ptr, core::ptr::null_mut(), 0);
+    let dib_bg = CreateDIBSection(
+        dc_bg,
+        &bmi_bg,
+        DIB_RGB_COLORS,
+        &mut px_bg_ptr,
+        core::ptr::null_mut(),
+        0,
+    );
     SelectObject(dc_bg, dib_bg as _);
     BitBlt(dc_bg, 0, 0, w, h, hdc, x, y, SRCCOPY);
     let src_bg = if !dib_bg.is_null() && !px_bg_ptr.is_null() {
@@ -1138,12 +1329,31 @@ pub unsafe fn draw_icon_tinted_soft(
     bmi_out.bmiHeader.biBitCount = 32;
     bmi_out.bmiHeader.biCompression = BI_RGB;
     let mut px_out_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-    let dib_out = CreateDIBSection(dc_out, &bmi_out, DIB_RGB_COLORS, &mut px_out_ptr, core::ptr::null_mut(), 0);
+    let dib_out = CreateDIBSection(
+        dc_out,
+        &bmi_out,
+        DIB_RGB_COLORS,
+        &mut px_out_ptr,
+        core::ptr::null_mut(),
+        0,
+    );
     if dib_out.is_null() || px_out_ptr.is_null() {
-        if !dib_bg.is_null() { DeleteObject(dib_bg as _); }
+        if !dib_bg.is_null() {
+            DeleteObject(dib_bg as _);
+        }
         DeleteDC(dc_bg);
         DeleteDC(dc_out);
-        DrawIconEx(hdc, x, y, icon as _, w, h, 0, std::ptr::null_mut(), DI_NORMAL);
+        DrawIconEx(
+            hdc,
+            x,
+            y,
+            icon as _,
+            w,
+            h,
+            0,
+            std::ptr::null_mut(),
+            DI_NORMAL,
+        );
         return;
     }
     SelectObject(dc_out, dib_out as _);
@@ -1155,9 +1365,11 @@ pub unsafe fn draw_icon_tinted_soft(
         let alpha = (fg >> 24) & 0xFF;
         let (bg_r, bg_g, bg_b) = if i < src_bg.len() {
             let bg_px = src_bg[i];
-            (((bg_px >> 16) & 0xFF) as u32,
-             ((bg_px >> 8) & 0xFF) as u32,
-             (bg_px & 0xFF) as u32)
+            (
+                ((bg_px >> 16) & 0xFF) as u32,
+                ((bg_px >> 8) & 0xFF) as u32,
+                (bg_px & 0xFF) as u32,
+            )
         } else {
             (32, 32, 32)
         };
@@ -1172,7 +1384,9 @@ pub unsafe fn draw_icon_tinted_soft(
 
     BitBlt(hdc, x, y, w, h, dc_out, 0, 0, SRCCOPY);
 
-    if !dib_bg.is_null() { DeleteObject(dib_bg as _); }
+    if !dib_bg.is_null() {
+        DeleteObject(dib_bg as _);
+    }
     DeleteObject(dib_out as _);
     DeleteDC(dc_bg);
     DeleteDC(dc_out);
