@@ -74,6 +74,9 @@ pub const IDC_SET_HK_RECORD: isize = 6104;
 pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
 pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
 pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
+pub const IDC_SET_SKIP_WINDOW_ENABLE: isize = 6201;
+pub const IDC_SET_SKIP_WINDOW_CLASSNAMES: isize = 6202;
+pub const IDC_SET_SKIP_WINDOW_CAPTURE: isize = 6203;
 
 unsafe fn draw_settings_card(
     hdc: *mut core::ffi::c_void,
