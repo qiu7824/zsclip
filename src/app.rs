@@ -188,7 +188,9 @@ use crate::win_system_params::{
     IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD,
     IDC_SET_PLUGIN_DOWNLOADS, IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE,
     IDC_SET_SAVE, IDC_SET_SILENTSTART, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET,
-    IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, IID_IDATAOBJECT_RAW,
+    IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE,
+    IDC_SET_SKIP_WINDOW_ENABLE, IDC_SET_SKIP_WINDOW_CLASSNAMES, IDC_SET_SKIP_WINDOW_CAPTURE,
+    IID_IDATAOBJECT_RAW,
     RPC_E_CHANGED_MODE_HR, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE, SETTINGS_CLASS,
 };
 use crate::win_system_ui::{
@@ -2801,6 +2803,9 @@ struct SettingsWndState {
     control_brush: *mut core::ffi::c_void,
     nav_brush: *mut core::ffi::c_void,
     dropdown_popup: HWND,
+    chk_skip_window: HWND,
+    ed_skip_class_names: HWND,
+    btn_capture_skip_window: HWND,
 }
 
 fn settings_page_content_total_h_for_state(st: &SettingsWndState, page: usize) -> i32 {
@@ -4438,6 +4443,9 @@ unsafe extern "system" fn settings_wnd_proc(
                 control_brush: null_mut(),
                 nav_brush: null_mut(),
                 dropdown_popup: null_mut(),
+                chk_skip_window: null_mut(),
+                ed_skip_class_names: null_mut(),
+                btn_capture_skip_window: null_mut(),
             });
 
             settings_refresh_theme_resources(&mut st);
@@ -4935,7 +4943,8 @@ unsafe extern "system" fn settings_wnd_proc(
                 | 7102
                 | 7101
                 | 7103
-                | 7104 => {
+                | 7104
+                | IDC_SET_SKIP_WINDOW_ENABLE => {
                     settings_toggle_flip(st, cmd);
                     if cmd == IDC_SET_EDGEHIDE {
                         settings_sync_pos_fields_enabled(st);
@@ -5239,6 +5248,63 @@ unsafe extern "system" fn settings_wnd_proc(
                                 to_wide(tr("粘贴成功声音", "Paste success sound")).as_ptr(),
                                 MB_OK | MB_ICONERROR,
                             );
+                        }
+                    }
+                }
+                IDC_SET_SKIP_WINDOW_CAPTURE => {
+                    let mut target: HWND = null_mut();
+                    let pst = get_state_ptr(st.parent_hwnd);
+                    if !pst.is_null()
+                        && (*pst).hotkey_passthrough_active
+                        && !(*pst).hotkey_passthrough_target.is_null()
+                    {
+                        target = (*pst).hotkey_passthrough_target;
+                    }
+                    if target.is_null() {
+                        target = GetForegroundWindow();
+                        if target == hwnd || target == st.parent_hwnd {
+                            target = null_mut();
+                        }
+                    }
+                    if target.is_null() {
+                        target = find_next_paste_target(st.parent_hwnd, "");
+                    }
+                    if target.is_null() {
+                        MessageBoxW(
+                            hwnd,
+                            to_wide(tr("未能找到可捕获的窗口。请先通过快捷键呼出主窗口，或切换到目标窗口后再打开设置。", "Could not find a window to capture. Please activate the main window via hotkey first, or switch to the target window before opening settings.")).as_ptr(),
+                            to_wide(tr("捕获失败", "Capture failed")).as_ptr(),
+                            MB_OK | MB_ICONWARNING,
+                        );
+                    } else {
+                        let cls = vv_window_class_name(target);
+                        let class_name = cls.trim();
+                        if class_name.is_empty() {
+                            MessageBoxW(
+                                hwnd,
+                                to_wide(tr("未能获取目标窗口的类名。", "Could not get the target window's class name.")).as_ptr(),
+                                to_wide(tr("捕获失败", "Capture failed")).as_ptr(),
+                                MB_OK | MB_ICONWARNING,
+                            );
+                        } else {
+                            let existing = get_window_text(st.ed_skip_class_names);
+                            let trimmed_existing = existing.trim();
+                            let new_value = if trimmed_existing.is_empty() {
+                                class_name.to_string()
+                            } else {
+                                let parts: Vec<&str> = trimmed_existing
+                                    .split(',')
+                                    .map(|s| s.trim())
+                                    .filter(|s| !s.is_empty())
+                                    .collect();
+                                if parts.iter().any(|p| p.eq_ignore_ascii_case(class_name)) {
+                                    trimmed_existing.to_string()
+                                } else {
+                                    format!("{}, {}", trimmed_existing, class_name)
+                                }
+                            };
+                            st.draft.paste_target_skip_class_names = new_value;
+                            settings_set_text(st.ed_skip_class_names, &st.draft.paste_target_skip_class_names);
                         }
                     }
                 }
@@ -10309,6 +10375,11 @@ unsafe fn show_clipboard_write_failure_message(hwnd: HWND) {
 }
 
 unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
+    let skip_names = if state.settings.paste_target_skip_enabled {
+        &state.settings.paste_target_skip_class_names
+    } else {
+        ""
+    };
     if !state.paste_target_override.is_null() {
         return state.paste_target_override;
     }
@@ -10317,11 +10388,11 @@ unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
     }
     if state.role == WindowRole::Quick {
         let fg = GetForegroundWindow();
-        if is_viable_paste_window(fg, hwnd) {
+        if is_viable_paste_window(fg, hwnd, skip_names) {
             return fg;
         }
     }
-    find_next_paste_target(hwnd)
+    find_next_paste_target(hwnd, skip_names)
 }
 
 unsafe fn paste_after_clipboard_ready(hwnd: HWND, state: &mut AppState, hide_main: bool) {

@@ -389,7 +389,11 @@ unsafe extern "system" fn enum_visible_windows(hwnd: HWND, lparam: LPARAM) -> i3
     1
 }
 
-pub(super) unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool {
+pub(super) unsafe fn is_viable_paste_window(
+    hwnd: HWND,
+    app_hwnd: HWND,
+    skip_class_names: &str,
+) -> bool {
     if hwnd.is_null() || hwnd == app_hwnd || is_app_window(hwnd) {
         return false;
     }
@@ -400,10 +404,27 @@ pub(super) unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool 
         return false;
     }
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    (ex_style & WS_EX_TOOLWINDOW) == 0
+    if (ex_style & WS_EX_TOOLWINDOW) != 0 {
+        return false;
+    }
+    skip_class_names
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .all(|name| {
+            let mut buf = [0u16; 128];
+            let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+            len <= 0 || {
+                let cls = String::from_utf16_lossy(&buf[..len as usize]);
+                !cls.eq_ignore_ascii_case(name)
+            }
+        })
 }
 
-pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
+pub(super) unsafe fn find_next_paste_target(
+    app_hwnd: HWND,
+    skip_class_names: &str,
+) -> HWND {
     let mut wins: Vec<HWND> = Vec::new();
     EnumWindows(Some(enum_visible_windows), &mut wins as *mut _ as LPARAM);
 
@@ -415,7 +436,7 @@ pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
         .unwrap_or(0);
 
     for &h in wins.iter().skip(start) {
-        if !is_viable_paste_window(h, app_hwnd) {
+        if !is_viable_paste_window(h, app_hwnd, skip_class_names) {
             continue;
         }
         let title = get_window_text(h);
@@ -1393,6 +1414,22 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     },
                 );
             }
+            if !st.ed_skip_class_names.is_null() {
+                settings_set_text(
+                    st.ed_skip_class_names,
+                    &st.draft.paste_target_skip_class_names,
+                );
+                EnableWindow(
+                    st.ed_skip_class_names,
+                    if st.draft.paste_target_skip_enabled { 1 } else { 0 },
+                );
+            }
+            if !st.btn_capture_skip_window.is_null() {
+                EnableWindow(
+                    st.btn_capture_skip_window,
+                    if st.draft.paste_target_skip_enabled { 1 } else { 0 },
+                );
+            }
         }
         SettingsPage::Hotkey => {
             let s = &st.draft;
@@ -2014,6 +2051,11 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         st.draft.paste_success_sound_kind =
             paste_sound_key_from_display(&get_window_text(st.cb_paste_sound)).to_string();
     }
+    if st.ui.is_built(SettingsPage::General.index())
+        && !st.ed_skip_class_names.is_null()
+    {
+        st.draft.paste_target_skip_class_names = get_window_text(st.ed_skip_class_names);
+    }
     if st.ui.is_built(SettingsPage::Hotkey.index())
         && !st.cb_hk_mod.is_null()
         && !st.cb_hk_key.is_null()
@@ -2211,6 +2253,7 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         7101 => st.draft.ai_clean_enabled,
         7103 => st.draft.super_mail_merge_enabled,
         7104 => st.draft.qr_quick_enabled,
+        IDC_SET_SKIP_WINDOW_ENABLE => st.draft.paste_target_skip_enabled,
         _ => false,
     }
 }
@@ -2246,6 +2289,9 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         7101 => st.draft.ai_clean_enabled = !st.draft.ai_clean_enabled,
         7103 => st.draft.super_mail_merge_enabled = !st.draft.super_mail_merge_enabled,
         7104 => st.draft.qr_quick_enabled = !st.draft.qr_quick_enabled,
+        IDC_SET_SKIP_WINDOW_ENABLE => {
+            st.draft.paste_target_skip_enabled = !st.draft.paste_target_skip_enabled
+        }
         _ => {}
     }
 }
@@ -2719,6 +2765,43 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
         st.ownerdraw_ctrls.push(st.btn_paste_sound_pick);
     }
 
+    let (_, btn) = b.toggle_row(
+        st,
+        tr("焦点窗口跳过", "Skip focused window"),
+        IDC_SET_SKIP_WINDOW_ENABLE,
+        sec2.left(),
+        sec2.row_y(7),
+        sec2.full_w(),
+    );
+    st.chk_skip_window = btn;
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    b.label(
+        st,
+        tr("跳过窗口类名：", "Skip class names:"),
+        sec2.left(),
+        sec2.label_y(8, settings_scale(24)),
+        sec2.label_w(),
+        settings_scale(24),
+    );
+    st.ed_skip_class_names = b.edit(
+        st,
+        "",
+        IDC_SET_SKIP_WINDOW_CLASSNAMES,
+        sec2.field_x(),
+        sec2.row_y(8),
+        settings_scale(200),
+    );
+    st.btn_capture_skip_window = b.button(
+        st,
+        tr("捕获当前", "Capture current"),
+        IDC_SET_SKIP_WINDOW_CAPTURE,
+        sec2.field_x() + settings_scale(210),
+        sec2.row_y(8),
+        settings_scale(100),
+    );
+
     b.label(
         st,
         "弹出位置：",
@@ -2820,6 +2903,9 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
         if !hh.is_null() {
             st.ownerdraw_ctrls.push(hh);
         }
+    }
+    if !st.btn_capture_skip_window.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_capture_skip_window);
     }
     st.ui.mark_built(page);
 }
@@ -3925,6 +4011,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
         || cid == 7101
         || cid == 7103
         || cid == 7104
+        || cid == IDC_SET_SKIP_WINDOW_ENABLE
     {
         let checked = settings_toggle_get(st, cid);
         draw_settings_toggle_component(hdc as _, &rc, hover, checked, th);

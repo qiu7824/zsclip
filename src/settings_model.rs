@@ -89,7 +89,7 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 7,
+        rows: 9,
         extra_px: 0,
     },
     SettingsFormCardSpec {

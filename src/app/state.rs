@@ -167,6 +167,8 @@ pub(crate) struct AppSettings {
     pub(crate) last_window_y: i32,
     pub(crate) edit_dialog_w: i32,
     pub(crate) edit_dialog_h: i32,
+    pub(crate) paste_target_skip_enabled: bool,
+    pub(crate) paste_target_skip_class_names: String,
 }
 
 impl Default for AppSettings {
@@ -229,6 +231,8 @@ impl Default for AppSettings {
             last_window_y: -1,
             edit_dialog_w: 0,
             edit_dialog_h: 0,
+            paste_target_skip_enabled: false,
+            paste_target_skip_class_names: String::new(),
         }
     }
 }
