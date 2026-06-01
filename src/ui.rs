@@ -29,8 +29,9 @@ pub const DT_END_ELLIPSIS: u32 = 0x00008000;
 pub const DT_NOPREFIX: u32 = 0x00000800;
 pub const TRANSPARENT: i32 = 1;
 
-pub const SETTINGS_PAGES: [&str; 6] = ["常规", "快捷键", "插件", "分组", "云同步", "关于"];
-pub const SETTINGS_NAV_GLYPHS: [&str; 6] = ["", "", "", "", "", ""];
+pub const SETTINGS_PAGES: [&str; 7] =
+    ["常规", "快捷键", "插件", "分组", "云同步", "局域网", "关于"];
+pub const SETTINGS_NAV_GLYPHS: [&str; 7] = ["", "", "", "", "", "", ""];
 pub const SETTINGS_W: i32 = 1100;
 pub const SETTINGS_H: i32 = 740;
 pub const SETTINGS_NAV_W: i32 = 236;
@@ -1104,15 +1105,36 @@ pub unsafe fn draw_text_block_ex(
     );
 }
 
-pub fn rgba_to_bgra(bytes: &[u8]) -> Vec<u8> {
+pub fn rgba_to_opaque_bgra_on_bg(bytes: &[u8], bg: u32) -> Vec<u8> {
     if bytes.len() < 4 {
         return bytes.to_vec();
     }
-    let mut out = bytes.to_vec();
-    for px in out.chunks_exact_mut(4) {
-        px.swap(0, 2);
+    let br = (bg & 0xFF) as u32;
+    let bg_g = ((bg >> 8) & 0xFF) as u32;
+    let bb = ((bg >> 16) & 0xFF) as u32;
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut chunks = bytes.chunks_exact(4);
+    for px in &mut chunks {
+        let a = px[3] as u32;
+        let inv = 255 - a;
+        let r = ((px[0] as u32 * a + br * inv + 127) / 255) as u8;
+        let g = ((px[1] as u32 * a + bg_g * inv + 127) / 255) as u8;
+        let b = ((px[2] as u32 * a + bb * inv + 127) / 255) as u8;
+        out.extend_from_slice(&[b, g, r, 255]);
     }
+    out.extend_from_slice(chunks.remainder());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba_alpha_composites_to_opaque_bgra_without_channel_swap_error() {
+        let out = rgba_to_opaque_bgra_on_bg(&[255, 0, 0, 128], rgb(255, 255, 255));
+        assert_eq!(out, vec![127, 127, 255, 255]);
+    }
 }
 
 /// 在深色模式绘制图标时，将深色图标转换为浅色版本。

@@ -101,6 +101,52 @@ fn collect_image_paths_for_delete(
         .collect())
 }
 
+pub(super) fn db_cleanup_orphan_image_files() -> rusqlite::Result<usize> {
+    let root = data_dir().join("images");
+    if !root.is_dir() {
+        return Ok(0);
+    }
+    let root_canon = root.canonicalize().unwrap_or(root);
+    let referenced_paths = with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT image_path FROM items WHERE image_path IS NOT NULL AND TRIM(image_path)<>''",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(Result::ok).collect::<Vec<String>>())
+    })?;
+
+    let mut referenced = HashSet::<PathBuf>::new();
+    for raw in referenced_paths {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(raw);
+        let path_canon = path.canonicalize().unwrap_or(path);
+        if path_canon.starts_with(&root_canon) {
+            referenced.insert(path_canon);
+        }
+    }
+
+    let mut removed = 0;
+    if let Ok(entries) = fs::read_dir(&root_canon) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let path_canon = path.canonicalize().unwrap_or(path);
+            if path_canon.starts_with(&root_canon)
+                && !referenced.contains(&path_canon)
+                && fs::remove_file(&path_canon).is_ok()
+            {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
 fn row_to_clip_item(row: DbItem) -> ClipItem {
     row_to_clip_item_impl(row, false)
 }
@@ -355,6 +401,36 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
     .ok()
 }
 
+pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipItem, String)> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
+             COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
+             FROM items WHERE category=? ORDER BY id DESC LIMIT 1",
+            params![category],
+            |row| {
+                let item = row_to_clip_item(DbItem {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    preview: row.get(2)?,
+                    text: row.get(3)?,
+                    source_app: row.get(4)?,
+                    file_paths: row.get(5)?,
+                    image_bytes: row.get(6)?,
+                    image_path: row.get(11)?,
+                    image_width: row.get(7)?,
+                    image_height: row.get(8)?,
+                    pinned: row.get(9)?,
+                    group_id: row.get(10)?,
+                    created_at: row.get(12)?,
+                });
+                Ok((item, row.get::<_, String>(13)?))
+            },
+        )
+    })
+    .ok()
+}
+
 pub(super) fn db_insert_item(
     category: i64,
     item: &ClipItem,
@@ -452,6 +528,117 @@ pub(super) fn db_find_duplicate_item_ids(
     }
 }
 
+pub(super) fn db_item_is_pinned(item_id: i64) -> bool {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT pinned FROM items WHERE id=?",
+            params![item_id],
+            |row| row.get::<_, i64>(0),
+        )
+    })
+    .map(|value| value == 1)
+    .unwrap_or(false)
+}
+
+pub(super) fn db_latest_item_signature(category: i64) -> Option<String> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(signature, '') FROM items WHERE category=? ORDER BY id DESC LIMIT 1",
+            params![category],
+            |row| row.get::<_, String>(0),
+        )
+    })
+    .ok()
+    .map(|value| value.trim().to_string())
+    .filter(|value| !value.is_empty())
+}
+
+pub(super) fn db_reconcile_dedupe_signatures(
+    category: i64,
+    keep_duplicates: bool,
+) -> rusqlite::Result<usize> {
+    let rows = with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, \
+             COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
+             FROM items WHERE category=? ORDER BY id DESC",
+        )?;
+        let mapped = stmt.query_map(params![category], |row| {
+            let item = row_to_clip_item(DbItem {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                preview: row.get(2)?,
+                text: row.get(3)?,
+                source_app: row.get(4)?,
+                file_paths: row.get(5)?,
+                image_bytes: row.get(6)?,
+                image_path: row.get(7)?,
+                image_width: row.get(8)?,
+                image_height: row.get(9)?,
+                pinned: row.get(10)?,
+                group_id: row.get(11)?,
+                created_at: row.get(12)?,
+            });
+            Ok((item.id, item.pinned, row.get::<_, String>(13)?, item))
+        })?;
+        Ok(mapped.filter_map(Result::ok).collect::<Vec<_>>())
+    })?;
+
+    let mut updates = Vec::<(i64, String)>::new();
+    let mut groups = HashMap::<String, (Vec<i64>, Vec<i64>)>::new();
+    for (id, pinned, stored_signature, item) in rows {
+        let signature = dedupe_signature_for_item(&item, &stored_signature);
+        if signature.trim().is_empty() {
+            continue;
+        }
+        let stored = stored_signature.trim();
+        if stored != signature {
+            updates.push((id, signature.clone()));
+        }
+        let entry = groups.entry(signature).or_default();
+        if pinned {
+            entry.0.push(id);
+        } else {
+            entry.1.push(id);
+        }
+    }
+
+    let mut delete_ids = Vec::<i64>::new();
+    if !keep_duplicates {
+        for (_signature, (pinned_ids, nonpinned_ids)) in groups {
+            if !pinned_ids.is_empty() {
+                delete_ids.extend(nonpinned_ids);
+            } else if nonpinned_ids.len() > 1 {
+                delete_ids.extend(nonpinned_ids.into_iter().skip(1));
+            }
+        }
+    }
+
+    let mut deleted_image_paths = Vec::<String>::new();
+    with_db_mut(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for (id, signature) in &updates {
+            tx.execute(
+                "UPDATE items SET signature=? WHERE id=?",
+                params![signature, id],
+            )?;
+        }
+        for id in &delete_ids {
+            let mut stmt = tx.prepare(
+                "SELECT image_path FROM items WHERE id=? AND image_path IS NOT NULL AND TRIM(image_path)<>''",
+            )?;
+            let rows = stmt.query_map(params![id], |row| row.get::<_, Option<String>>(0))?;
+            deleted_image_paths.extend(rows.filter_map(|row| row.ok().flatten()));
+            tx.execute("DELETE FROM items WHERE id=?", params![id])?;
+        }
+        tx.commit()?;
+        Ok(())
+    })?;
+    remove_stored_image_files(deleted_image_paths);
+    let _ = db_cleanup_orphan_image_files();
+    Ok(delete_ids.len())
+}
+
 pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
     with_db_mut(|conn| {
         let tx = conn.unchecked_transaction()?;
@@ -533,6 +720,7 @@ pub(super) fn db_update_item_pinned(id: i64, pinned: bool) -> rusqlite::Result<(
 
 pub(super) fn db_prune_items(category: i64, max_items: usize) {
     if max_items == 0 {
+        let _ = db_cleanup_orphan_image_files();
         return;
     }
     let _ = with_db(|conn| {
@@ -558,6 +746,7 @@ pub(super) fn db_prune_items(category: i64, max_items: usize) {
         }
         Ok(())
     });
+    let _ = db_cleanup_orphan_image_files();
 }
 
 pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {

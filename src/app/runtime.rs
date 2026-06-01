@@ -99,7 +99,7 @@ pub(super) fn dir_is_writable(dir: &Path) -> bool {
     }
 }
 
-pub(super) fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     DATA_DIR_CACHE
         .get_or_init(|| {
             if let Some(exe_dir) =
@@ -168,9 +168,67 @@ fn load_settings_from_text(text: &str) -> AppSettings {
                 }
             }
         }
-        return serde_json::from_value::<AppSettings>(value).unwrap_or_default();
+        return load_settings_from_value(value);
     }
     AppSettings::default()
+}
+
+fn load_settings_from_value(value: serde_json::Value) -> AppSettings {
+    match serde_json::from_value::<AppSettings>(value.clone()) {
+        Ok(settings) => settings,
+        Err(_) => serde_json::from_value::<AppSettings>(sanitize_settings_value(value))
+            .unwrap_or_default(),
+    }
+}
+
+fn sanitize_settings_value(mut value: serde_json::Value) -> serde_json::Value {
+    let Ok(default_value) = serde_json::to_value(AppSettings::default()) else {
+        return value;
+    };
+    let Some(input) = value.as_object_mut() else {
+        return value;
+    };
+    let Some(defaults) = default_value.as_object() else {
+        return value;
+    };
+
+    input.retain(|key, incoming| {
+        let Some(expected) = defaults.get(key) else {
+            return true;
+        };
+        sanitize_setting_field(incoming, expected)
+    });
+    value
+}
+
+fn sanitize_setting_field(incoming: &mut serde_json::Value, expected: &serde_json::Value) -> bool {
+    match expected {
+        serde_json::Value::Bool(_) => incoming.is_boolean(),
+        serde_json::Value::Number(_) => {
+            if incoming.is_number() {
+                return true;
+            }
+            let Some(text) = incoming.as_str().map(str::trim) else {
+                return false;
+            };
+            let Ok(value) = text.parse::<i64>() else {
+                return false;
+            };
+            *incoming = serde_json::Value::Number(value.into());
+            true
+        }
+        serde_json::Value::String(_) => {
+            if incoming.is_string() {
+                return true;
+            }
+            if incoming.is_null() {
+                *incoming = serde_json::Value::String(String::new());
+                return true;
+            }
+            false
+        }
+        _ => true,
+    }
 }
 
 fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Error> {
@@ -196,14 +254,14 @@ fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Erro
     serde_json::to_string_pretty(&value)
 }
 
-fn encrypt_secret_for_storage(secret: &str) -> Option<String> {
+pub(crate) fn encrypt_secret_for_storage(secret: &str) -> Option<String> {
     if secret.is_empty() {
         return Some(String::new());
     }
     unsafe { protect_bytes(secret.as_bytes()).map(|bytes| hex_encode(&bytes)) }
 }
 
-fn decrypt_secret_from_storage(encoded: &str) -> Option<String> {
+pub(crate) fn decrypt_secret_from_storage(encoded: &str) -> Option<String> {
     if encoded.trim().is_empty() {
         return Some(String::new());
     }
@@ -519,5 +577,47 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
         } else {
             changed && !is_autostart_enabled()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_dedupe_filter_setting_defaults_enabled() {
+        let settings = load_settings_from_text(r#"{"hotkey_enabled":false}"#);
+        assert!(settings.dedupe_filter_enabled);
+    }
+
+    #[test]
+    fn explicit_dedupe_filter_false_is_preserved() {
+        let settings = load_settings_from_text(r#"{"dedupe_filter_enabled":false}"#);
+        assert!(!settings.dedupe_filter_enabled);
+    }
+
+    #[test]
+    fn invalid_setting_field_does_not_reset_max_items_to_default() {
+        let settings = load_settings_from_text(r#"{"max_items":1000,"lan_tcp_port":"not-a-port"}"#);
+
+        assert_eq!(settings.max_items, 1000);
+        assert_eq!(settings.lan_tcp_port, AppSettings::default().lan_tcp_port);
+    }
+
+    #[test]
+    fn string_max_items_is_migrated_to_number() {
+        let settings = load_settings_from_text(r#"{"max_items":"500"}"#);
+
+        assert_eq!(settings.max_items, 500);
+    }
+
+    #[test]
+    fn saved_max_items_round_trips() {
+        let mut settings = AppSettings::default();
+        settings.max_items = 3000;
+        let text = serialize_settings(&settings).unwrap();
+        let loaded = load_settings_from_text(&text);
+
+        assert_eq!(loaded.max_items, 3000);
     }
 }

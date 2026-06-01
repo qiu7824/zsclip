@@ -1,7 +1,19 @@
+﻿<div align="center">
+
 # Clipboard / ZSClip
 
-> A lightweight Windows clipboard enhancement tool built for local office workflows.  
-> It combines clipboard history, phrases, grouping, VV quick paste, drag-out export, image stickers, and Super Mail Merge in one compact window.
+A lightweight Windows clipboard enhancement tool built for local office workflows.
+
+It combines clipboard history, phrases, grouping, VV quick paste, drag-out export, image stickers, and Super Mail Merge in one compact window.
+
+[![Version](https://img.shields.io/github/v/release/qiu7824/zsclip?label=version)](https://github.com/qiu7824/zsclip/releases)
+[![License](https://img.shields.io/github/license/qiu7824/zsclip)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![Rust](https://img.shields.io/badge/core-Rust-orange)
+
+[简体中文](README.md) | **English**
+
+</div>
 
 ## Download
 
@@ -58,6 +70,7 @@ Typical use cases:
 - Image sticker window
 - AI text cleanup
 - WebDAV cloud sync
+- LAN clipboard sync, disabled by default
 - Edge auto-hide
 - Drag out text, images, and files to generate real files
 - Inline thumbnail preview for image records
@@ -92,6 +105,16 @@ Typical use cases:
 - Chinese / English UI with automatic system language detection
 - Native lightweight Win32 windows
 - Multi-monitor and mixed DPI support
+
+### LAN Sync
+
+- Independent from WebDAV cloud sync and disabled by default
+- UDP discovery and TCP API start only after LAN sync is enabled
+- Windows devices can be discovered automatically, or paired by manually entering an IP
+- Pairing is handled in `Settings -> LAN`: request pairing on one device, then approve the `[Pending]` request on the other device
+- Text, images under 10 MB, and small files can sync automatically
+- Remote content can be configured to enter history only or also overwrite the local system clipboard
+- iOS Shortcuts and the minimal Android client use the same protocol; see `docs/lan-sync.md` and `docs/ios-shortcuts.md`
 
 ### Translations
 
@@ -242,4 +265,4 @@ The goal is not just to change the shell, but to keep separating:
 
 If this project helps you, support is welcome.
 
-![Support](/E:/rust/zsclip/docs/images/donate.png)
+![Support](docs/images/donate.png)

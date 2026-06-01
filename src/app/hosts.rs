@@ -389,7 +389,74 @@ unsafe extern "system" fn enum_visible_windows(hwnd: HWND, lparam: LPARAM) -> i3
     1
 }
 
-pub(super) unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool {
+fn paste_skip_class_tokens(class_names: &str) -> Vec<String> {
+    class_names
+        .split(|ch: char| matches!(ch, ',' | '，' | ';' | '；' | '\n' | '\r' | '\t'))
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(|item| item.to_ascii_lowercase())
+        .collect()
+}
+
+unsafe fn paste_window_class_name(hwnd: HWND) -> String {
+    if hwnd.is_null() {
+        return String::new();
+    }
+    let mut buf = [0u16; 128];
+    let len = GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32);
+    if len <= 0 {
+        String::new()
+    } else {
+        String::from_utf16_lossy(&buf[..len as usize])
+    }
+}
+
+pub(super) fn paste_target_skip_classes(settings: &AppSettings) -> &str {
+    if settings.paste_target_skip_enabled {
+        &settings.paste_target_skip_class_names
+    } else {
+        ""
+    }
+}
+
+pub(super) unsafe fn paste_window_class_is_skipped(hwnd: HWND, skip_class_names: &str) -> bool {
+    if skip_class_names.trim().is_empty() {
+        return false;
+    }
+    let class_name = paste_window_class_name(hwnd).trim().to_ascii_lowercase();
+    if class_name.is_empty() {
+        return false;
+    }
+    paste_skip_class_tokens(skip_class_names)
+        .iter()
+        .any(|item| item == &class_name)
+}
+
+pub(super) fn append_unique_skip_class_name(class_names: &str, class_name: &str) -> String {
+    let class_name = class_name.trim();
+    if class_name.is_empty() {
+        return class_names.trim().to_string();
+    }
+    let mut items: Vec<String> = class_names
+        .split(|ch: char| matches!(ch, ',' | '，' | ';' | '；' | '\n' | '\r' | '\t'))
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect();
+    let exists = items
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(class_name));
+    if !exists {
+        items.push(class_name.to_string());
+    }
+    items.join(", ")
+}
+
+pub(super) unsafe fn is_viable_paste_window(
+    hwnd: HWND,
+    app_hwnd: HWND,
+    skip_class_names: &str,
+) -> bool {
     if hwnd.is_null() || hwnd == app_hwnd || is_app_window(hwnd) {
         return false;
     }
@@ -400,10 +467,36 @@ pub(super) unsafe fn is_viable_paste_window(hwnd: HWND, app_hwnd: HWND) -> bool 
         return false;
     }
     let ex_style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
-    (ex_style & WS_EX_TOOLWINDOW) == 0
+    (ex_style & WS_EX_TOOLWINDOW) == 0 && !paste_window_class_is_skipped(hwnd, skip_class_names)
 }
 
-pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
+unsafe fn paste_window_title_is_ignored(hwnd: HWND) -> bool {
+    let title = get_window_text(hwnd);
+    matches!(
+        title.trim(),
+        "" | "开始" | "dummyLayeredWnd" | "Float" | "屏幕录制" | "RecBackgroundForm"
+    )
+}
+
+unsafe fn first_viable_paste_window_from(
+    wins: &[HWND],
+    start: usize,
+    app_hwnd: HWND,
+    skip_class_names: &str,
+) -> HWND {
+    for &h in wins.iter().skip(start) {
+        if !is_viable_paste_window(h, app_hwnd, skip_class_names) {
+            continue;
+        }
+        if paste_window_title_is_ignored(h) {
+            continue;
+        }
+        return h;
+    }
+    null_mut()
+}
+
+pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND, skip_class_names: &str) -> HWND {
     let mut wins: Vec<HWND> = Vec::new();
     EnumWindows(Some(enum_visible_windows), &mut wins as *mut _ as LPARAM);
 
@@ -414,20 +507,29 @@ pub(super) unsafe fn find_next_paste_target(app_hwnd: HWND) -> HWND {
         .map(|idx| idx + 1)
         .unwrap_or(0);
 
-    for &h in wins.iter().skip(start) {
-        if !is_viable_paste_window(h, app_hwnd) {
-            continue;
-        }
-        let title = get_window_text(h);
-        if matches!(
-            title.trim(),
-            "" | "开始" | "dummyLayeredWnd" | "Float" | "屏幕录制" | "RecBackgroundForm"
-        ) {
-            continue;
-        }
-        return h;
-    }
-    null_mut()
+    first_viable_paste_window_from(&wins, start, app_hwnd, skip_class_names)
+}
+
+pub(super) unsafe fn find_next_paste_target_after(
+    anchor_hwnd: HWND,
+    app_hwnd: HWND,
+    skip_class_names: &str,
+) -> HWND {
+    let mut wins: Vec<HWND> = Vec::new();
+    EnumWindows(Some(enum_visible_windows), &mut wins as *mut _ as LPARAM);
+
+    let anchor = if anchor_hwnd.is_null() {
+        null_mut()
+    } else {
+        GetAncestor(anchor_hwnd, GA_ROOT)
+    };
+    let start = wins
+        .iter()
+        .position(|&h| h == anchor)
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+
+    first_viable_paste_window_from(&wins, start, app_hwnd, skip_class_names)
 }
 
 pub(crate) fn clear_edge_dock_state(state: &mut AppState) {
@@ -1159,13 +1261,46 @@ pub(super) unsafe fn retry_startup_integrations(hwnd: HWND, state: &mut AppState
         register_hotkey_for(hwnd, state);
     }
 
+    if state.settings.plain_paste_hotkey_enabled && !state.plain_paste_hotkey_registered {
+        register_plain_paste_hotkey_for(hwnd, state);
+    }
+
+    if state.settings.vv_mode_enabled && !vv_hook_registered() {
+        let _ = update_vv_mode_hook(hwnd, true);
+    }
+
+    if !state.clipboard_listener_registered {
+        register_clipboard_listener_for(hwnd, state);
+    }
+
     let tray_ready =
         !tray_mode_enabled(&state.settings) || state.icons.app == 0 || state.tray_icon_registered;
     let hotkey_ready = !state.settings.hotkey_enabled || state.hotkey_registered;
-    if tray_ready && hotkey_ready {
+    let plain_hotkey_ready =
+        !state.settings.plain_paste_hotkey_enabled || state.plain_paste_hotkey_registered;
+    let vv_ready = !state.settings.vv_mode_enabled || vv_hook_registered();
+    let clipboard_ready = state.clipboard_listener_registered;
+    if tray_ready && hotkey_ready && plain_hotkey_ready && vv_ready && clipboard_ready {
         state.startup_recovery_ticks = 0;
     } else {
         state.startup_recovery_ticks = state.startup_recovery_ticks.saturating_sub(1);
+    }
+}
+
+fn startup_integrations_need_retry(state: &AppState) -> bool {
+    state.role == WindowRole::Main
+        && ((tray_mode_enabled(&state.settings)
+            && state.icons.app != 0
+            && !state.tray_icon_registered)
+            || (state.settings.hotkey_enabled && !state.hotkey_registered)
+            || (state.settings.plain_paste_hotkey_enabled && !state.plain_paste_hotkey_registered)
+            || (state.settings.vv_mode_enabled && !vv_hook_registered())
+            || !state.clipboard_listener_registered)
+}
+
+pub(super) fn arm_startup_recovery_if_needed(state: &mut AppState) {
+    if startup_integrations_need_retry(state) {
+        state.startup_recovery_ticks = STARTUP_RECOVERY_TICKS;
     }
 }
 
@@ -1367,9 +1502,30 @@ pub(super) unsafe fn settings_invalidate_page_ctrls(
     }
 }
 
+pub(super) fn lan_receive_mode_display(mode: &str) -> &'static str {
+    match mode {
+        "clipboard" => "直接覆盖剪贴板",
+        _ => "只进入记录",
+    }
+}
+
+pub(super) fn lan_receive_mode_from_label(label: &str) -> &'static str {
+    if label.contains("剪贴板") || label.eq_ignore_ascii_case("clipboard") {
+        "clipboard"
+    } else {
+        "records_only"
+    }
+}
+
 pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
     match SettingsPage::from_index(page) {
         SettingsPage::General => {
+            if !st.cb_max.is_null() {
+                settings_set_text(
+                    st.cb_max,
+                    settings_dropdown_label_for_max_items(st.draft.max_items),
+                );
+            }
             settings_sync_pos_fields_enabled(st);
             let sound_enabled = st.draft.paste_success_sound_enabled;
             if !st.cb_paste_sound.is_null() {
@@ -1392,6 +1548,13 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                         0
                     },
                 );
+            }
+            let skip_enabled = st.draft.paste_target_skip_enabled;
+            if !st.ed_skip_class_names.is_null() {
+                EnableWindow(st.ed_skip_class_names, if skip_enabled { 1 } else { 0 });
+            }
+            if !st.btn_capture_skip_window.is_null() {
+                EnableWindow(st.btn_capture_skip_window, if skip_enabled { 1 } else { 0 });
             }
         }
         SettingsPage::Hotkey => {
@@ -1606,6 +1769,35 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     localized_cloud_status_text(&s.cloud_last_sync_status)
                 ),
             );
+        }
+        SettingsPage::Lan => {
+            let s = &st.draft;
+            settings_set_text(st.ed_lan_name, &s.lan_device_name);
+            settings_set_text(st.ed_lan_tcp_port, &s.lan_tcp_port.to_string());
+            settings_set_text(st.ed_lan_manual_host, &s.lan_manual_host);
+            settings_set_text(
+                st.cb_lan_receive_mode,
+                lan_receive_mode_display(&s.lan_receive_mode),
+            );
+            settings_set_text(st.lb_lan_status, &crate::lan_sync::status_summary(s));
+            settings_set_text(st.lb_lan_trusted, &crate::lan_sync::trusted_summary());
+            let enabled = s.lan_sync_enabled;
+            settings_lan_refresh_lists(st);
+            for hwnd in [
+                st.ed_lan_name,
+                st.ed_lan_tcp_port,
+                st.ed_lan_manual_host,
+                st.cb_lan_receive_mode,
+                st.btn_lan_pair,
+                st.btn_lan_refresh,
+                st.lb_lan_devices,
+                st.btn_lan_accept_pair,
+                st.btn_lan_reject_pair,
+            ] {
+                if !hwnd.is_null() {
+                    EnableWindow(hwnd, if enabled { 1 } else { 0 });
+                }
+            }
         }
         SettingsPage::About => {}
     }
@@ -1962,6 +2154,9 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
             &paste_sound_display(&s.paste_success_sound_kind),
         );
     }
+    if !st.ed_skip_class_names.is_null() {
+        settings_set_text(st.ed_skip_class_names, &s.paste_target_skip_class_names);
+    }
     settings_sync_page_state(st, SettingsPage::General.index());
     if st.ui.is_built(SettingsPage::Hotkey.index()) {
         settings_sync_page_state(st, SettingsPage::Hotkey.index());
@@ -1974,6 +2169,9 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     }
     if st.ui.is_built(SettingsPage::Cloud.index()) {
         settings_sync_page_state(st, SettingsPage::Cloud.index());
+    }
+    if st.ui.is_built(SettingsPage::Lan.index()) {
+        settings_sync_page_state(st, SettingsPage::Lan.index());
     }
 }
 
@@ -2004,7 +2202,13 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     if pst.is_null() {
         return;
     }
-    st.draft.max_items = settings_dropdown_max_items_from_label(&get_window_text(st.cb_max));
+    if st.ui.is_built(SettingsPage::General.index()) && !st.cb_max.is_null() {
+        if let Some(max_items) =
+            settings_dropdown_max_items_from_label_opt(&get_window_text(st.cb_max))
+        {
+            st.draft.max_items = max_items;
+        }
+    }
     st.draft.show_mouse_dx = get_window_text(st.ed_dx).parse::<i32>().ok().unwrap_or(12);
     st.draft.show_mouse_dy = get_window_text(st.ed_dy).parse::<i32>().ok().unwrap_or(12);
     st.draft.show_fixed_x = get_window_text(st.ed_fx).parse::<i32>().ok().unwrap_or(120);
@@ -2013,6 +2217,10 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     if st.ui.is_built(SettingsPage::General.index()) && !st.cb_paste_sound.is_null() {
         st.draft.paste_success_sound_kind =
             paste_sound_key_from_display(&get_window_text(st.cb_paste_sound)).to_string();
+    }
+    if st.ui.is_built(SettingsPage::General.index()) && !st.ed_skip_class_names.is_null() {
+        st.draft.paste_target_skip_class_names =
+            get_window_text(st.ed_skip_class_names).trim().to_string();
     }
     if st.ui.is_built(SettingsPage::Hotkey.index())
         && !st.cb_hk_mod.is_null()
@@ -2094,6 +2302,28 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
             }
         };
     }
+    if st.ui.is_built(SettingsPage::Lan.index()) && !st.ed_lan_name.is_null() {
+        st.draft.lan_device_name = get_window_text(st.ed_lan_name)
+            .trim()
+            .chars()
+            .take(48)
+            .collect();
+    }
+    if st.ui.is_built(SettingsPage::Lan.index()) && !st.ed_lan_tcp_port.is_null() {
+        st.draft.lan_tcp_port = get_window_text(st.ed_lan_tcp_port)
+            .trim()
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .unwrap_or(crate::lan_sync::LAN_TCP_PORT_DEFAULT);
+    }
+    if st.ui.is_built(SettingsPage::Lan.index()) && !st.ed_lan_manual_host.is_null() {
+        st.draft.lan_manual_host = get_window_text(st.ed_lan_manual_host).trim().to_string();
+    }
+    if st.ui.is_built(SettingsPage::Lan.index()) && !st.cb_lan_receive_mode.is_null() {
+        st.draft.lan_receive_mode =
+            lan_receive_mode_from_label(&get_window_text(st.cb_lan_receive_mode)).to_string();
+    }
     let app = &mut *pst;
     let grouping_old = app.settings.grouping_enabled;
     let autostart_old = app.settings.auto_start;
@@ -2111,6 +2341,7 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
     let edge_hide_old = app.settings.edge_auto_hide;
     let vv_mode_old = app.settings.vv_mode_enabled;
     let persistent_search_old = app.settings.persistent_search_box;
+    crate::lan_sync::ensure_device_identity(&mut st.draft);
     app.settings = st.draft.clone();
     if app.settings.edge_auto_hide {
         let mut rc: RECT = zeroed();
@@ -2158,17 +2389,31 @@ pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
         register_plain_paste_hotkey_for(st.parent_hwnd, app);
     }
     if vv_mode_old != app.settings.vv_mode_enabled {
-        update_vv_mode_hook(st.parent_hwnd, app.settings.vv_mode_enabled);
+        let _ = update_vv_mode_hook(st.parent_hwnd, app.settings.vv_mode_enabled);
         if !app.settings.vv_mode_enabled {
             vv_popup_hide(st.parent_hwnd, app);
         }
     }
+    arm_startup_recovery_if_needed(app);
     schedule_cloud_sync(app, false);
+    refresh_lan_latest_from_db(&app.settings);
+    crate::lan_sync::refresh_service(st.parent_hwnd, &app.settings);
     let new_max = app.settings.max_items;
+    let mut reload_needed = false;
     if new_max > 0 {
         db_prune_items(0, new_max);
+        reload_needed = true;
+    }
+    if db_reconcile_dedupe_signatures(0, !app.settings.dedupe_filter_enabled)
+        .map(|removed| removed > 0)
+        .unwrap_or(false)
+    {
+        reload_needed = true;
+    }
+    if reload_needed {
         reload_state_from_db_persisting(app);
     }
+    refresh_lan_latest_from_db(&app.settings);
     if edge_hide_old && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
     } else if !edge_hide_old && app.settings.edge_auto_hide && IsWindowVisible(st.parent_hwnd) != 0
@@ -2197,6 +2442,7 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         IDC_SET_DEDUPE_FILTER => st.draft.dedupe_filter_enabled,
         IDC_SET_PERSIST_SEARCH => st.draft.persistent_search_box,
         IDC_SET_PASTE_SOUND_ENABLE => st.draft.paste_success_sound_enabled,
+        IDC_SET_SKIP_WINDOW_ENABLE => st.draft.paste_target_skip_enabled,
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview,
@@ -2205,6 +2451,7 @@ pub(super) unsafe fn settings_toggle_get(st: &SettingsWndState, cid: isize) -> b
         IDC_SET_QUICK_DELETE => st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled,
+        IDC_SET_LAN_ENABLE => st.draft.lan_sync_enabled,
         6101 => st.draft.hotkey_enabled,
         IDC_SET_PLAIN_HK_ENABLE => st.draft.plain_paste_hotkey_enabled,
         7102 => st.draft.quick_search_enabled,
@@ -2230,6 +2477,9 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_PASTE_SOUND_ENABLE => {
             st.draft.paste_success_sound_enabled = !st.draft.paste_success_sound_enabled
         }
+        IDC_SET_SKIP_WINDOW_ENABLE => {
+            st.draft.paste_target_skip_enabled = !st.draft.paste_target_skip_enabled
+        }
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,
         IDC_SET_HOVERPREVIEW => st.draft.hover_preview = !st.draft.hover_preview,
@@ -2238,6 +2488,7 @@ pub(super) unsafe fn settings_toggle_flip(st: &mut SettingsWndState, cid: isize)
         IDC_SET_QUICK_DELETE => st.draft.quick_delete_button = !st.draft.quick_delete_button,
         IDC_SET_GROUP_ENABLE => st.draft.grouping_enabled = !st.draft.grouping_enabled,
         IDC_SET_CLOUD_ENABLE => st.draft.cloud_sync_enabled = !st.draft.cloud_sync_enabled,
+        IDC_SET_LAN_ENABLE => st.draft.lan_sync_enabled = !st.draft.lan_sync_enabled,
         6101 => st.draft.hotkey_enabled = !st.draft.hotkey_enabled,
         IDC_SET_PLAIN_HK_ENABLE => {
             st.draft.plain_paste_hotkey_enabled = !st.draft.plain_paste_hotkey_enabled
@@ -2718,6 +2969,51 @@ pub(super) unsafe fn settings_create_general_page(hwnd: HWND, st: &mut SettingsW
     if !st.btn_paste_sound_pick.is_null() {
         st.ownerdraw_ctrls.push(st.btn_paste_sound_pick);
     }
+    let (_, btn) = b.toggle_row(
+        st,
+        tr("焦点窗口跳过", "Skip focused window"),
+        IDC_SET_SKIP_WINDOW_ENABLE,
+        sec2.left(),
+        sec2.row_y(7),
+        sec2.full_w(),
+    );
+    st.chk_skip_window = btn;
+    if !btn.is_null() {
+        st.ownerdraw_ctrls.push(btn);
+    }
+    let skip_label_w = settings_scale(120);
+    b.label(
+        st,
+        tr("跳过窗口类名：", "Skip class names:"),
+        sec2.left(),
+        sec2.label_y(8, settings_scale(24)),
+        skip_label_w,
+        settings_scale(24),
+    );
+    let skip_button_w = settings_scale(96);
+    let skip_gap = settings_scale(10);
+    let skip_edit_x = sec2.left() + skip_label_w;
+    let skip_edit_w =
+        (sec2.full_w() - skip_label_w - skip_button_w - skip_gap).max(settings_scale(120));
+    st.ed_skip_class_names = b.edit(
+        st,
+        "",
+        IDC_SET_SKIP_WINDOW_CLASSNAMES,
+        skip_edit_x,
+        sec2.row_y(8),
+        skip_edit_w,
+    );
+    st.btn_capture_skip_window = b.button(
+        st,
+        tr("捕获当前", "Capture current"),
+        IDC_SET_SKIP_WINDOW_CAPTURE,
+        skip_edit_x + skip_edit_w + skip_gap,
+        sec2.row_y(8),
+        skip_button_w,
+    );
+    if !st.btn_capture_skip_window.is_null() {
+        st.ownerdraw_ctrls.push(st.btn_capture_skip_window);
+    }
 
     b.label(
         st,
@@ -2885,6 +3181,93 @@ pub(super) unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(
         .get(row as usize)
         .cloned()
         .map(|g| (row as usize, g))
+}
+
+pub(super) unsafe fn settings_lan_refresh_lists(st: &mut SettingsWndState) {
+    if !st.lb_lan_devices.is_null() {
+        let selected = SendMessageW(st.lb_lan_devices, LB_GETCURSEL, 0, 0) as i32;
+        SendMessageW(st.lb_lan_devices, LB_RESETCONTENT, 0, 0);
+        st.lan_pending_cache = crate::lan_sync::pending_pair_requests();
+        st.lan_discovered_cache = crate::lan_sync::discovered_devices();
+        let total_rows = st.lan_pending_cache.len() + st.lan_discovered_cache.len();
+        if total_rows == 0 {
+            SendMessageW(
+                st.lb_lan_devices,
+                LB_ADDSTRING,
+                0,
+                to_wide("暂无附近设备或待允许请求，可刷新或输入手动 IP").as_ptr() as LPARAM,
+            );
+        } else {
+            for pair in &st.lan_pending_cache {
+                let age =
+                    crate::lan_sync::now_ms_public().saturating_sub(pair.created_at_ms) / 1000;
+                let text = format!(
+                    "[待允许] {}   {}   {}秒前   安全码 {}",
+                    pair.device_name, pair.addr, age, pair.code
+                );
+                SendMessageW(
+                    st.lb_lan_devices,
+                    LB_ADDSTRING,
+                    0,
+                    to_wide(&text).as_ptr() as LPARAM,
+                );
+            }
+            for device in &st.lan_discovered_cache {
+                let text = format!(
+                    "[设备] {}   {}:{}   {}",
+                    device.name,
+                    device.addr,
+                    device.tcp_port,
+                    if device.trusted {
+                        "已信任"
+                    } else {
+                        "未配对"
+                    }
+                );
+                SendMessageW(
+                    st.lb_lan_devices,
+                    LB_ADDSTRING,
+                    0,
+                    to_wide(&text).as_ptr() as LPARAM,
+                );
+            }
+            let select = selected.max(0).min(total_rows.saturating_sub(1) as i32);
+            SendMessageW(st.lb_lan_devices, LB_SETCURSEL, select as WPARAM, 0);
+        }
+        ShowScrollBar(st.lb_lan_devices, SB_HORZ, 0);
+    }
+}
+
+pub(super) unsafe fn settings_lan_selected_device(
+    st: &SettingsWndState,
+) -> Option<crate::lan_sync::LanDevice> {
+    if st.lb_lan_devices.is_null() {
+        return None;
+    }
+    let row = SendMessageW(st.lb_lan_devices, LB_GETCURSEL, 0, 0) as i32;
+    if row < 0 {
+        return None;
+    }
+    let row = row as usize;
+    if row < st.lan_pending_cache.len() {
+        return None;
+    }
+    st.lan_discovered_cache
+        .get(row - st.lan_pending_cache.len())
+        .cloned()
+}
+
+pub(super) unsafe fn settings_lan_selected_pair(
+    st: &SettingsWndState,
+) -> Option<crate::lan_sync::LanPairPrompt> {
+    if st.lb_lan_devices.is_null() {
+        return None;
+    }
+    let row = SendMessageW(st.lb_lan_devices, LB_GETCURSEL, 0, 0) as i32;
+    if row < 0 {
+        return None;
+    }
+    st.lan_pending_cache.get(row as usize).cloned()
 }
 
 pub(super) unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {}
@@ -3713,6 +4096,206 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
     st.ui.mark_built(page);
 }
 
+pub(super) unsafe fn settings_create_lan_page(hwnd: HWND, st: &mut SettingsWndState) {
+    let page = SettingsPage::Lan.index();
+    let b = SettingsPageBuilder {
+        hwnd,
+        page,
+        font: st.ui_font,
+    };
+    let sec0 = SettingsFormSectionLayout::new(page, 0, 110);
+    let sec1 = SettingsFormSectionLayout::new(page, 1, 110);
+    let sec2 = SettingsFormSectionLayout::new(page, 2, 110);
+    let line_h = settings_scale(24);
+    let btn_w = settings_scale(120);
+    let small_btn_w = settings_scale(96);
+    let gap = settings_scale(14);
+
+    let (_, toggle) = b.toggle_row(
+        st,
+        "启用局域网同步",
+        IDC_SET_LAN_ENABLE,
+        sec0.left(),
+        sec0.row_y(0),
+        sec0.full_w(),
+    );
+    st.chk_lan_enable = toggle;
+    if !toggle.is_null() {
+        st.ownerdraw_ctrls.push(toggle);
+    }
+    st.lb_lan_status = b.label(
+        st,
+        "局域网同步：关闭",
+        sec0.left(),
+        sec0.label_y(1, line_h),
+        sec0.full_w(),
+        line_h,
+    );
+    b.label(
+        st,
+        "设备名称：",
+        sec0.left(),
+        sec0.label_y(2, line_h),
+        sec0.label_w(),
+        line_h,
+    );
+    st.ed_lan_name = b.edit(
+        st,
+        "",
+        IDC_SET_LAN_NAME,
+        sec0.field_x(),
+        sec0.row_y(2),
+        sec0.field_w(),
+    );
+    b.label(
+        st,
+        "TCP 端口：",
+        sec0.left(),
+        sec0.label_y(3, line_h),
+        sec0.label_w(),
+        line_h,
+    );
+    st.ed_lan_tcp_port = b.edit(
+        st,
+        "",
+        IDC_SET_LAN_TCP_PORT,
+        sec0.field_x(),
+        sec0.row_y(3),
+        settings_scale(150),
+    );
+    b.label(
+        st,
+        "同步方式：",
+        sec0.left(),
+        sec0.label_y(4, line_h),
+        sec0.label_w(),
+        line_h,
+    );
+    st.cb_lan_receive_mode = b.dropdown(
+        st,
+        "只进入记录",
+        IDC_SET_LAN_RECEIVE_MODE,
+        sec0.field_x(),
+        sec0.row_y(4),
+        settings_scale(190),
+    );
+    if !st.cb_lan_receive_mode.is_null() {
+        st.ownerdraw_ctrls.push(st.cb_lan_receive_mode);
+    }
+    b.label(
+        st,
+        "可选择远端内容只入记录，或同步覆盖本机系统剪贴板。",
+        sec0.left(),
+        sec0.label_y(5, line_h),
+        sec0.full_w(),
+        line_h,
+    );
+
+    b.label(
+        st,
+        "手动 IP：",
+        sec1.left(),
+        sec1.label_y(0, line_h),
+        sec1.label_w(),
+        line_h,
+    );
+    st.ed_lan_manual_host = b.edit(
+        st,
+        "",
+        IDC_SET_LAN_MANUAL_HOST,
+        sec1.field_x(),
+        sec1.row_y(0),
+        sec1.field_w(),
+    );
+    st.btn_lan_pair = b.button(
+        st,
+        "配对选中设备",
+        IDC_SET_LAN_PAIR,
+        sec1.left(),
+        sec1.row_y(1),
+        btn_w,
+    );
+    st.btn_lan_refresh = b.button(
+        st,
+        "刷新发现",
+        IDC_SET_LAN_REFRESH,
+        sec1.left() + btn_w + gap,
+        sec1.row_y(1),
+        btn_w,
+    );
+    st.btn_lan_accept_pair = b.button(
+        st,
+        "允许配对",
+        IDC_SET_LAN_ACCEPT_PAIR,
+        sec1.left() + (btn_w + gap) * 2,
+        sec1.row_y(1),
+        btn_w,
+    );
+    st.btn_lan_reject_pair = b.button(
+        st,
+        "拒绝",
+        IDC_SET_LAN_REJECT_PAIR,
+        sec1.left() + (btn_w + gap) * 3,
+        sec1.row_y(1),
+        small_btn_w,
+    );
+    b.label(
+        st,
+        "附近设备 / 待允许请求：选中后点击对应按钮；没有发现时可输入手动 IP。",
+        sec1.left(),
+        sec1.label_y(2, line_h),
+        sec1.full_w(),
+        line_h,
+    );
+    st.lb_lan_devices = b.listbox(
+        st,
+        IDC_SET_LAN_DISCOVERED_LIST,
+        sec1.left(),
+        sec1.row_y(3),
+        sec1.full_w(),
+        settings_scale(190),
+    );
+    st.lb_lan_trusted = b
+        .label_auto(
+            st,
+            "信任设备：暂无。",
+            sec2.left(),
+            sec2.row_y(0),
+            sec2.full_w(),
+            settings_scale(70),
+        )
+        .0;
+    b.label(
+        st,
+        "Android：推送到电脑、拉取到手机、自动同步拉取；iOS：快捷指令使用同一协议。",
+        sec2.left(),
+        sec2.label_y(2, line_h),
+        sec2.full_w(),
+        line_h,
+    );
+    st.btn_lan_docs = b.button(
+        st,
+        "打开说明",
+        IDC_SET_LAN_DOCS,
+        sec2.left(),
+        sec2.row_y(3),
+        btn_w,
+    );
+    for &hh in &[
+        st.btn_lan_pair,
+        st.btn_lan_refresh,
+        st.btn_lan_accept_pair,
+        st.btn_lan_reject_pair,
+        st.btn_lan_docs,
+    ] {
+        if !hh.is_null() {
+            st.ownerdraw_ctrls.push(hh);
+        }
+    }
+
+    st.ui.mark_built(page);
+}
+
 pub(super) unsafe fn settings_create_about_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::About.index();
     let b = SettingsPageBuilder {
@@ -3890,6 +4473,7 @@ pub(super) unsafe fn settings_ensure_page(hwnd: HWND, st: &mut SettingsWndState,
         SettingsPage::Plugin => settings_create_plugin_page(hwnd, st),
         SettingsPage::Group => settings_create_group_page(hwnd, st),
         SettingsPage::Cloud => settings_create_cloud_page(hwnd, st),
+        SettingsPage::Lan => settings_create_lan_page(hwnd, st),
         SettingsPage::About => settings_create_about_page(hwnd, st),
     }
 }
@@ -3912,6 +4496,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
         || cid == IDC_SET_DEDUPE_FILTER
         || cid == IDC_SET_PERSIST_SEARCH
         || cid == IDC_SET_PASTE_SOUND_ENABLE
+        || cid == IDC_SET_SKIP_WINDOW_ENABLE
         || cid == IDC_SET_AUTOHIDE_BLUR
         || cid == IDC_SET_EDGEHIDE
         || cid == IDC_SET_HOVERPREVIEW
@@ -3920,6 +4505,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &SettingsWndState, dis: &DRAW
         || cid == IDC_SET_QUICK_DELETE
         || cid == IDC_SET_GROUP_ENABLE
         || cid == IDC_SET_CLOUD_ENABLE
+        || cid == IDC_SET_LAN_ENABLE
         || cid == 6101
         || cid == 7102
         || cid == 7101
@@ -4011,13 +4597,19 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
     let old_edge_hide = state.settings.edge_auto_hide;
     let mut loaded = load_settings();
     loaded.auto_start = is_autostart_enabled();
+    crate::lan_sync::ensure_device_identity(&mut loaded);
     state.settings = loaded;
     save_settings(&state.settings);
     schedule_cloud_sync(state, false);
+    refresh_lan_latest_from_db(&state.settings);
+    crate::lan_sync::refresh_service(hwnd, &state.settings);
     if state.role == WindowRole::Main {
         sync_main_tray_icon(hwnd, state);
         register_hotkey_for(hwnd, state);
-        update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+        register_plain_paste_hotkey_for(hwnd, state);
+        let _ = update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+        register_clipboard_listener_for(hwnd, state);
+        arm_startup_recovery_if_needed(state);
         if !state.settings.edge_auto_hide {
             position_main_window(hwnd, &state.settings, false);
         } else if IsWindowVisible(hwnd) != 0 {
@@ -4047,6 +4639,11 @@ pub(super) unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
         schedule_cloud_sync(state, false);
         if state.role == WindowRole::Main {
             sync_main_tray_icon(hwnd, state);
+            register_hotkey_for(hwnd, state);
+            register_plain_paste_hotkey_for(hwnd, state);
+            let _ = update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
+            register_clipboard_listener_for(hwnd, state);
+            arm_startup_recovery_if_needed(state);
         }
     }
     reload_state_from_db_persisting(state);

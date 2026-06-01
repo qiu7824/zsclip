@@ -6,7 +6,7 @@ use crate::ui::{
 pub const SCROLL_BAR_W: i32 = 3;
 pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
 pub const SCROLL_BAR_MARGIN: i32 = 3;
-pub const SETTINGS_PAGE_COUNT: usize = 6;
+pub const SETTINGS_PAGE_COUNT: usize = 7;
 
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
 pub const SETTINGS_FORM_ROW_H: i32 = 32;
@@ -38,7 +38,8 @@ pub enum SettingsPage {
     Plugin = 2,
     Group = 3,
     Cloud = 4,
-    About = 5,
+    Lan = 5,
+    About = 6,
 }
 
 impl SettingsPage {
@@ -52,7 +53,8 @@ impl SettingsPage {
             2 => SettingsPage::Plugin,
             3 => SettingsPage::Group,
             4 => SettingsPage::Cloud,
-            5 => SettingsPage::About,
+            5 => SettingsPage::Lan,
+            6 => SettingsPage::About,
             _ => SettingsPage::General,
         }
     }
@@ -89,7 +91,7 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 7,
+        rows: 9,
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -144,6 +146,21 @@ const CLOUD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec {
         rows: 2,
         extra_px: 0,
+    },
+];
+
+const LAN_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
+    SettingsFormCardSpec {
+        rows: 6,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 7,
+        extra_px: 110,
+    },
+    SettingsFormCardSpec {
+        rows: 4,
+        extra_px: 24,
     },
 ];
 
@@ -271,6 +288,11 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
             16,
             ["同步设置", "WebDAV 连接", "同步操作"],
             CLOUD_FORM_SECTIONS,
+        ),
+        SettingsPage::Lan => settings_make_form_cards_dyn(
+            16,
+            &["本机状态", "附近设备 / 配对", "已信任设备 / 手机接入"],
+            &LAN_FORM_SECTIONS,
         ),
         SettingsPage::About => settings_make_form_cards_dyn(16, &["关于"], &ABOUT_FORM_SECTIONS),
     }

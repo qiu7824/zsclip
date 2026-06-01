@@ -6,7 +6,8 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
-        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY,
+        SetBrushOrgEx, SetStretchBltMode, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS, HALFTONE, PAINTSTRUCT, SRCCOPY,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::*,
@@ -15,7 +16,7 @@ use windows_sys::Win32::{
 use crate::{
     app::{ensure_item_image_bytes, post_boxed_message, ClipItem, ClipKind},
     i18n::tr,
-    ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_bgra, Theme},
+    ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_opaque_bgra_on_bg, Theme},
     win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
 };
 
@@ -92,7 +93,7 @@ unsafe extern "system" fn preview_wnd_proc(
                 );
 
                 if let Some((bytes, width, height)) = &data.image {
-                    let bgra = rgba_to_bgra(bytes);
+                    let bgra = rgba_to_opaque_bgra_on_bg(bytes, th.surface);
                     let content = RECT {
                         left: 12,
                         top: 40,
@@ -117,6 +118,8 @@ unsafe extern "system" fn preview_wnd_proc(
                     bmi.bmiHeader.biBitCount = 32;
                     bmi.bmiHeader.biCompression = BI_RGB;
 
+                    SetStretchBltMode(hdc, HALFTONE);
+                    SetBrushOrgEx(hdc, 0, 0, null_mut());
                     StretchDIBits(
                         hdc,
                         dx,
@@ -290,6 +293,12 @@ pub(crate) unsafe fn hide_hover_preview() {
     if !hwnd.is_null() && IsWindow(hwnd) != 0 {
         let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
         if !ptr.is_null() {
+            (*ptr).item_id = 0;
+            (*ptr).header.clear();
+            (*ptr).body.clear();
+            (*ptr).image = None;
+            (*ptr).image_width = 0;
+            (*ptr).image_height = 0;
             (*ptr).loading_item_id = 0;
         }
         ShowWindow(hwnd, SW_HIDE);
