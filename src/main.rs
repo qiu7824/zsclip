@@ -7,6 +7,7 @@ mod gdiplus;
 mod hover_preview;
 #[path = "i18n_runtime.rs"]
 mod i18n;
+mod lan_sync;
 mod mail_merge_native;
 mod settings_model;
 mod settings_render;

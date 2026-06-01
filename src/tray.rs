@@ -13,8 +13,8 @@ use windows_sys::Win32::{
 };
 
 use crate::app::state::{apply_shared_tab_view_state, AppSettings};
-use crate::app::AppState;
-use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
+use crate::app::{get_state_ptr, AppState};
+use crate::app::{IDM_TRAY_EXIT, IDM_TRAY_LAN_TOGGLE, IDM_TRAY_TOGGLE, TRAY_UID, WM_TRAYICON};
 use crate::i18n::{app_title, translate};
 use crate::ui::MainUiLayout;
 use crate::win_system_ui::{
@@ -224,6 +224,21 @@ pub(crate) unsafe fn show_tray_menu_localized(hwnd: HWND) {
         MF_STRING,
         IDM_TRAY_TOGGLE,
         to_wide(translate("显示/隐藏").as_ref()).as_ptr(),
+    );
+    let lan_enabled = {
+        let ptr = get_state_ptr(hwnd);
+        !ptr.is_null() && (*ptr).settings.lan_sync_enabled
+    };
+    let lan_text = if lan_enabled {
+        "局域网同步：开"
+    } else {
+        "局域网同步：关"
+    };
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        IDM_TRAY_LAN_TOGGLE,
+        to_wide(translate(lan_text).as_ref()).as_ptr(),
     );
     AppendMenuW(menu, MF_SEPARATOR, 0, null());
     AppendMenuW(

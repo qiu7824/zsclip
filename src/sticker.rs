@@ -7,8 +7,9 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-        DeleteObject, EndPaint, FillRect, FrameRect, PatBlt, SelectObject, StretchDIBits,
-        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, PAINTSTRUCT, SRCCOPY, WHITE_BRUSH,
+        DeleteObject, EndPaint, FillRect, FrameRect, PatBlt, SelectObject, SetBrushOrgEx,
+        SetStretchBltMode, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        HALFTONE, PAINTSTRUCT, SRCCOPY, WHITE_BRUSH,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -23,7 +24,7 @@ use windows_sys::Win32::{
 use crate::{
     app::{ensure_item_image_bytes, image_input_for_ocr, post_boxed_message, ClipItem},
     i18n::tr,
-    ui::{draw_round_rect, draw_text, draw_text_ex, rgb, Theme},
+    ui::{draw_round_rect, draw_text, draw_text_ex, rgb, rgba_to_opaque_bgra_on_bg, Theme},
     win_system_ui::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide},
 };
 
@@ -568,13 +569,11 @@ unsafe extern "system" fn sticker_wnd_proc(
             if !ptr.is_null() {
                 let data = &mut *ptr;
                 data.loading = false;
-                if let Some((mut bytes, width, height)) = payload.image {
-                    for px in bytes.chunks_exact_mut(4) {
-                        px.swap(0, 2);
-                    }
+                if let Some((bytes, width, height)) = payload.image {
+                    let th = Theme::default();
                     data.width = width as i32;
                     data.height = height as i32;
-                    data.bgra = bytes;
+                    data.bgra = rgba_to_opaque_bgra_on_bg(&bytes, th.surface);
                     sticker_apply_zoom(hwnd, data);
                 }
                 InvalidateRect(hwnd, null(), 0);
@@ -858,6 +857,8 @@ unsafe extern "system" fn sticker_wnd_proc(
                 bmi.bmiHeader.biPlanes = 1;
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = BI_RGB;
+                SetStretchBltMode(memdc, HALFTONE);
+                SetBrushOrgEx(memdc, 0, 0, null_mut());
                 StretchDIBits(
                     memdc,
                     dx,

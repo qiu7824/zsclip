@@ -238,6 +238,18 @@ pub fn settings_dropdown_label_for_max_items(max_items: usize) -> &'static str {
         _ => tr("无限制", "Unlimited"),
     }
 }
+
+pub fn settings_dropdown_max_items_labels() -> [&'static str; 6] {
+    [
+        "100",
+        "200",
+        "500",
+        "1000",
+        "3000",
+        tr("无限制", "Unlimited"),
+    ]
+}
+
 pub fn settings_dropdown_index_for_max_items(max_items: usize) -> usize {
     match max_items {
         100 => 0,
@@ -249,15 +261,20 @@ pub fn settings_dropdown_index_for_max_items(max_items: usize) -> usize {
     }
 }
 
-pub fn settings_dropdown_max_items_from_label(label: &str) -> usize {
+pub fn settings_dropdown_max_items_from_label_opt(label: &str) -> Option<usize> {
     match label.trim() {
-        "100" => 100,
-        "200" => 200,
-        "500" => 500,
-        "1000" => 1000,
-        "3000" => 3000,
-        _ => 0,
+        "100" => Some(100),
+        "200" => Some(200),
+        "500" => Some(500),
+        "1000" => Some(1000),
+        "3000" => Some(3000),
+        value if value == tr("无限制", "Unlimited") => Some(0),
+        _ => None,
     }
+}
+
+pub fn settings_dropdown_max_items_from_label(label: &str) -> usize {
+    settings_dropdown_max_items_from_label_opt(label).unwrap_or(0)
 }
 
 pub fn settings_dropdown_label_for_pos_mode(mode: &str) -> &'static str {

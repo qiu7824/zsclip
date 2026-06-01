@@ -139,6 +139,8 @@ pub(crate) struct AppSettings {
     pub(crate) paste_success_sound_enabled: bool,
     pub(crate) paste_success_sound_kind: String,
     pub(crate) paste_success_sound_path: String,
+    pub(crate) paste_target_skip_enabled: bool,
+    pub(crate) paste_target_skip_class_names: String,
     pub(crate) search_engine: String,
     pub(crate) search_template: String,
     pub(crate) plain_paste_hotkey_enabled: bool,
@@ -154,6 +156,14 @@ pub(crate) struct AppSettings {
     pub(crate) cloud_webdav_pass: String,
     pub(crate) cloud_remote_dir: String,
     pub(crate) cloud_last_sync_status: String,
+    pub(crate) lan_sync_enabled: bool,
+    pub(crate) lan_device_name: String,
+    pub(crate) lan_device_id: String,
+    pub(crate) lan_tcp_port: u16,
+    pub(crate) lan_udp_port: u16,
+    pub(crate) lan_manual_host: String,
+    pub(crate) lan_last_status: String,
+    pub(crate) lan_receive_mode: String,
     pub(crate) image_ocr_provider: String,
     pub(crate) image_ocr_cloud_url: String,
     pub(crate) image_ocr_cloud_token: String,
@@ -196,11 +206,13 @@ impl Default for AppSettings {
             image_preview_enabled: false,
             quick_delete_button: true,
             move_pasted_item_to_top: false,
-            dedupe_filter_enabled: false,
+            dedupe_filter_enabled: true,
             persistent_search_box: false,
             paste_success_sound_enabled: false,
             paste_success_sound_kind: "default".to_string(),
             paste_success_sound_path: String::new(),
+            paste_target_skip_enabled: false,
+            paste_target_skip_class_names: String::new(),
             search_engine: "jzxx".to_string(),
             search_template: search_engine_template("jzxx").to_string(),
             plain_paste_hotkey_enabled: false,
@@ -216,6 +228,14 @@ impl Default for AppSettings {
             cloud_webdav_pass: String::new(),
             cloud_remote_dir: "ZSClip".to_string(),
             cloud_last_sync_status: "未同步".to_string(),
+            lan_sync_enabled: false,
+            lan_device_name: String::new(),
+            lan_device_id: String::new(),
+            lan_tcp_port: 38473,
+            lan_udp_port: 38472,
+            lan_manual_host: String::new(),
+            lan_last_status: "未启动".to_string(),
+            lan_receive_mode: "records_only".to_string(),
             image_ocr_provider: "off".to_string(),
             image_ocr_cloud_url: String::new(),
             image_ocr_cloud_token: String::new(),
@@ -647,6 +667,14 @@ pub(super) fn vv_hook_handle() -> &'static Mutex<isize> {
     VV_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
 
+pub(super) fn vv_hook_registered() -> bool {
+    vv_hook_handle()
+        .lock()
+        .ok()
+        .map(|handle| *handle != 0)
+        .unwrap_or(false)
+}
+
 pub(super) fn quick_escape_keyboard_hook_handle() -> &'static Mutex<isize> {
     QUICK_ESCAPE_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
@@ -744,6 +772,7 @@ impl AppState {
             last_capture_signature: String::new(),
             last_capture_source_app: String::new(),
             recent_capture_signatures: VecDeque::new(),
+            recent_lan_message_keys: VecDeque::new(),
             last_capture_at: None,
             last_clipboard_seq: 0,
             ignore_clipboard_until: None,
@@ -754,6 +783,7 @@ impl AppState {
             tray_icon_registered: false,
             hotkey_registered: false,
             plain_paste_hotkey_registered: false,
+            clipboard_listener_registered: false,
             hotkey_conflict_notified: false,
             startup_recovery_ticks: if role == WindowRole::Main {
                 STARTUP_RECOVERY_TICKS

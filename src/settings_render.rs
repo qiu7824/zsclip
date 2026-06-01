@@ -42,6 +42,17 @@ pub const IDC_SET_CLOUD_SYNC_NOW: isize = 5046;
 pub const IDC_SET_CLOUD_UPLOAD_CFG: isize = 5047;
 pub const IDC_SET_CLOUD_APPLY_CFG: isize = 5048;
 pub const IDC_SET_CLOUD_RESTORE_BACKUP: isize = 5049;
+pub const IDC_SET_LAN_ENABLE: isize = 5080;
+pub const IDC_SET_LAN_NAME: isize = 5081;
+pub const IDC_SET_LAN_TCP_PORT: isize = 5082;
+pub const IDC_SET_LAN_MANUAL_HOST: isize = 5084;
+pub const IDC_SET_LAN_PAIR: isize = 5085;
+pub const IDC_SET_LAN_REFRESH: isize = 5086;
+pub const IDC_SET_LAN_DOCS: isize = 5087;
+pub const IDC_SET_LAN_DISCOVERED_LIST: isize = 5088;
+pub const IDC_SET_LAN_ACCEPT_PAIR: isize = 5090;
+pub const IDC_SET_LAN_REJECT_PAIR: isize = 5091;
+pub const IDC_SET_LAN_RECEIVE_MODE: isize = 5092;
 pub const IDC_SET_PLUGIN_MAILMERGE: isize = 5050;
 pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
 pub const IDC_SET_QUICK_DELETE: isize = 5052;
@@ -74,6 +85,9 @@ pub const IDC_SET_HK_RECORD: isize = 6104;
 pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
 pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
 pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
+pub const IDC_SET_SKIP_WINDOW_ENABLE: isize = 6201;
+pub const IDC_SET_SKIP_WINDOW_CLASSNAMES: isize = 6202;
+pub const IDC_SET_SKIP_WINDOW_CAPTURE: isize = 6203;
 
 unsafe fn draw_settings_card(
     hdc: *mut core::ffi::c_void,

@@ -1,7 +1,19 @@
-﻿# 剪贴板 / ZSClip
+﻿<div align="center">
 
-> 面向本地办公场景的 Windows 剪贴板增强工具。  
-> 把复制记录、常用短语、分组管理、VV 快速粘贴、文件拖出、图片贴图、超级邮件合并放进一个轻量窗口里。
+# 剪贴板 / ZSClip
+
+面向本地办公场景的 Windows 剪贴板增强工具。
+
+把复制记录、常用短语、分组管理、VV 快速粘贴、文件拖出、图片贴图、超级邮件合并放进一个轻量窗口里。
+
+[![Version](https://img.shields.io/github/v/release/qiu7824/zsclip?label=version)](https://github.com/qiu7824/zsclip/releases)
+[![License](https://img.shields.io/github/license/qiu7824/zsclip)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![Rust](https://img.shields.io/badge/core-Rust-orange)
+
+**简体中文** | [English](README.en.md)
+
+</div>
 
 ## 下载
 
@@ -58,6 +70,7 @@
 - 图片贴图悬浮窗
 - AI 清洗文本
 - WebDAV 云同步
+- 局域网剪贴板同步（默认关闭，信任设备后自动双向同步）
 - 贴边自动隐藏
 - 文本、图片、文件支持拖出生成文件
 - 图片记录支持列表内缩略图预览
@@ -85,6 +98,15 @@
 - 全局热键
 - Win32 原生轻量窗口
 - 多显示器与不同缩放环境适配
+
+### 局域网同步
+
+- 独立于 WebDAV 云同步，默认关闭
+- 开启后才启动 UDP 发现和 TCP API，关闭后释放后台线程与 socket
+- Windows 多设备可自动发现，也可手动输入 IP 配对
+- 配对在 `设置 -> 局域网` 内完成：发现设备后点配对，另一端在同一个列表选中 `[待允许]` 后点允许
+- 文本、小于 10MB 的图片和小文件可自动同步；远端内容可选择只进入记录或直接覆盖系统剪贴板
+- iOS 快捷指令和 Android 最小客户端说明见 `docs/lan-sync.md` 与 `docs/ios-shortcuts.md`
 
 ### 多语言
 

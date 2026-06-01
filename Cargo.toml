@@ -32,6 +32,7 @@ image = { version = "0.25", default-features = false, features = ["bmp"] }
 base64 = "0.22"
 qrcodegen = "1.8"
 md5 = "0.7"
+crc32fast = "1"
 
 [build-dependencies]
 embed-resource = "2"
