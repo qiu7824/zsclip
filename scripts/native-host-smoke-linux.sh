@@ -98,7 +98,7 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip GTK row action row_text_translate -> zsclip.row.text_translate" \
     "ZSClip GTK settings control action settings_toggle_clipboard_capture -> zsclip.settings.toggle_control" \
     "ZSClip GTK settings control action settings_toggle_lan_sync -> zsclip.settings.toggle_control" \
-    "ZSClip GTK VV popup requested" \
+    "ZSClip GTK VV trigger requested" \
     "ZSClip GTK VV select 0 -> vv_select_requested" \
     "ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" \
     "ZSClip GTK VV native paste shortcut posted=" \
@@ -181,13 +181,13 @@ if [[ "$CLICK_SMOKE" == "1" ]]; then
       exit 1
     fi
   done
-  if grep -Fq "ZSClip GTK VV popup requested" "$APP_LOG" \
+  if grep -Fq "ZSClip GTK VV trigger requested" "$APP_LOG" \
     && ! grep -Fq "ZSClip GTK VV select 0 -> vv_select_requested" "$APP_LOG"; then
     echo "GTK VV popup opened, but Select 1 did not bridge vv_select_requested." >&2
     cat "$APP_LOG" >&2 || true
     exit 1
   fi
-  if grep -Fq "ZSClip GTK VV popup requested" "$APP_LOG" \
+  if grep -Fq "ZSClip GTK VV trigger requested" "$APP_LOG" \
     && ! grep -Fq "ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" "$APP_LOG"; then
     echo "GTK VV popup opened, but Select 1 did not execute the native VV paste bridge." >&2
     cat "$APP_LOG" >&2 || true
