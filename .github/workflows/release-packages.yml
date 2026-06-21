@@ -45,13 +45,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build macOS release
         env:
+          CARGO_TERM_COLOR: never
           RUSTFLAGS: -A warnings
         run: |
           set +e
           cargo build --release --locked 2>&1 | tee cargo-build-macos.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            message="$(tail -n 120 cargo-build-macos.log)"
+            message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-build-macos.log | tail -n 200)"
+            if [ -z "$message" ]; then
+              message="$(tail -n 160 cargo-build-macos.log)"
+            fi
             message="${message//'%'/'%25'}"
             message="${message//$'\n'/'%0A'}"
             message="${message//$'\r'/'%0D'}"
@@ -88,13 +92,17 @@ jobs:
             pkg-config
       - name: Build Linux release
         env:
+          CARGO_TERM_COLOR: never
           RUSTFLAGS: -A warnings
         run: |
           set +e
           cargo build --release --locked 2>&1 | tee cargo-build-linux.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            message="$(tail -n 120 cargo-build-linux.log)"
+            message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-build-linux.log | tail -n 200)"
+            if [ -z "$message" ]; then
+              message="$(tail -n 160 cargo-build-linux.log)"
+            fi
             message="${message//'%'/'%25'}"
             message="${message//$'\n'/'%0A'}"
             message="${message//$'\r'/'%0D'}"

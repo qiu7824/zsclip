@@ -34,13 +34,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Check AppKit host
         env:
+          CARGO_TERM_COLOR: never
           RUSTFLAGS: -A warnings
         run: |
           set +e
           cargo check --bin zsclip 2>&1 | tee cargo-check-macos.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            message="$(tail -n 120 cargo-check-macos.log)"
+            message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-check-macos.log | tail -n 200)"
+            if [ -z "$message" ]; then
+              message="$(tail -n 160 cargo-check-macos.log)"
+            fi
             message="${message//'%'/'%25'}"
             message="${message//$'\n'/'%0A'}"
             message="${message//$'\r'/'%0D'}"
@@ -83,13 +87,17 @@ jobs:
             xvfb
       - name: Check GTK host
         env:
+          CARGO_TERM_COLOR: never
           RUSTFLAGS: -A warnings
         run: |
           set +e
           cargo check --bin zsclip 2>&1 | tee cargo-check-linux.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
-            message="$(tail -n 120 cargo-check-linux.log)"
+            message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-check-linux.log | tail -n 200)"
+            if [ -z "$message" ]; then
+              message="$(tail -n 160 cargo-check-linux.log)"
+            fi
             message="${message//'%'/'%25'}"
             message="${message//$'\n'/'%0A'}"
             message="${message//$'\r'/'%0D'}"
