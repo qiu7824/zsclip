@@ -2900,13 +2900,10 @@ impl MainUiLayout {
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
         let size = (self.row_h * 16 / 44).max(16);
-        let gap = (self.row_h * 6 / 44).max(6);
-        let left = if let Some(icon) = self.row_icon_rect(visible_idx, filtered_len, scroll_y) {
-            icon.right + gap
-        } else {
-            row.left + (self.row_h * 32 / 44).max(24)
-        };
-        let top = row.top + (self.row_h - size) / 2;
+        let left = row.left + (self.row_h * 32 / 44).clamp(24, 40);
+        let view_top = self.list_y + self.list_pad;
+        let view_bottom = self.list_y + self.list_h - self.list_pad;
+        let top = (row.top + 3).clamp(view_top + 2, view_bottom - size - 2);
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
@@ -2951,13 +2948,6 @@ impl MainUiLayout {
             text_rect.left = text_rect
                 .left
                 .max(icon.right + (self.row_h * 12 / 44).clamp(10, 18));
-        }
-        if input.pinned {
-            if let Some(pin) = row.pin_rect {
-                text_rect.left = text_rect
-                    .left
-                    .max(pin.right + (self.row_h * 8 / 44).clamp(8, 16));
-            }
         }
 
         let delete_rect = input
