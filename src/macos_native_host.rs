@@ -775,7 +775,10 @@ mod appkit {
                     .ivars()
                     .edit_window
                     .get()
-                    .map(|window| Retained::<NSWindow>::as_ptr(window) == sender.as_ptr())
+                    .map(|window| {
+                        Retained::<NSWindow>::as_ptr(window)
+                            == (sender as *const NSWindow).cast_mut()
+                    })
                     .unwrap_or(false)
                 {
                     return self.perform_native_edit_close_request().into();
@@ -821,26 +824,6 @@ mod appkit {
         }
 
         unsafe impl NSTableViewDelegate for Delegate {
-            fn tableView_viewForTableColumn_row(
-                &self,
-                _table_view: &NSTableView,
-                table_column: Option<&NSTableColumn>,
-                row: NSInteger,
-            ) -> Option<Retained<NSView>> {
-                let item = self
-                    .ivars()
-                    .clip_table_items
-                    .borrow()
-                    .get(row.max(0) as usize)?
-                    .clone();
-                let presentation = native_host_clip_row_presentation_for_projection(&item);
-                let width = table_column
-                    .map(|column| column.width())
-                    .unwrap_or(608.0)
-                    .max(320.0);
-                Some(appkit_clip_table_cell_view(self.mtm(), &presentation, width))
-            }
-
             fn tableViewSelectionDidChange(&self, _notification: &NSNotification) {
                 let Some(table_view) = self.ivars().clip_table_view.get() else {
                     return;
