@@ -32,61 +32,116 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist\zsclip-windows-x86_64 | Out-Null
-          Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\zsclip.exe
+          New-Item -ItemType Directory -Force dist\installer-source | Out-Null
+          Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\剪贴板.exe
+          Copy-Item target\release\zsclip.exe dist\installer-source\剪贴板.exe
           @'
-          ZSClip 0.9.9 - Windows
+          剪贴板 0.9.9 - Windows
 
           安装/运行:
           1. 解压此 zip 到任意目录，例如 C:\Users\<你>\AppData\Local\Programs\ZSClip。
-          2. 双击 zsclip.exe 运行。
+          2. 双击 剪贴板.exe 运行。
           3. 如果 Windows SmartScreen 提示未知发布者，选择“更多信息”后继续运行。
 
           说明:
           - 当前包是便携版，不写注册表，不包含安装向导。
           - 开机自启、托盘、热键等功能在应用设置里启用。
           '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
+          Copy-Item dist\zsclip-windows-x86_64\INSTALL.txt dist\installer-source\INSTALL.txt
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           @'
-          #define MyAppName "ZSClip"
+          #define MyAppName "剪贴板"
           #define MyAppVersion "0.9.9"
-          #define MyAppPublisher "ZSClip"
-          #define MyAppExeName "zsclip.exe"
+          #define MyAppPublisher "qiu7824"
+          #define MyAppURL "https://github.com/qiu7824/zsclip"
+          #define MyAppExeName "剪贴板.exe"
+          #define MyAppInstallDirName "剪贴板"
+          #define MyAppAutoStartValueName "ZSClip"
+          #define MySourceDir "dist\installer-source"
+          #define MyOutputDir "dist"
+          #define MySetupIcon "assets\icons\icon.ico"
 
           [Setup]
-          AppId={{6DA14B7D-6465-4B8A-96E5-2D6C86FB0B99}
+          AppId={{8D6C8C7D-1F0A-4E5A-9A24-7F4F5C1E9A11}
           AppName={#MyAppName}
           AppVersion={#MyAppVersion}
+          AppVerName={#MyAppName} {#MyAppVersion}
           AppPublisher={#MyAppPublisher}
-          DefaultDirName={autopf}\ZSClip
-          DefaultGroupName=ZSClip
+          AppPublisherURL={#MyAppURL}
+          AppSupportURL={#MyAppURL}
+          AppUpdatesURL={#MyAppURL}
+          DefaultDirName={code:GetDefaultInstallDir}
+          DefaultGroupName={#MyAppName}
           DisableProgramGroupPage=yes
-          OutputDir=dist
-          OutputBaseFilename=zsclip-windows-x86_64-setup
-          Compression=lzma
+          PrivilegesRequired=admin
+          OutputDir={#MyOutputDir}
+          OutputBaseFilename=zsclip-v{#MyAppVersion}-setup
+          Compression=lzma2/max
           SolidCompression=yes
           WizardStyle=modern
+          UninstallDisplayName={#MyAppName}
+          UninstallDisplayIcon={app}\{#MyAppExeName}
+          SetupLogging=yes
           ArchitecturesAllowed=x64
           ArchitecturesInstallIn64BitMode=x64
+          CloseApplications=yes
+          CloseApplicationsFilter={#MyAppExeName}
+          RestartApplications=no
+          AppMutex=Global\ZSClipSingleInstance
+          VersionInfoVersion={#MyAppVersion}
+          VersionInfoCompany={#MyAppPublisher}
+          VersionInfoProductName={#MyAppName}
+          VersionInfoDescription={#MyAppName}
+          VersionInfoProductVersion={#MyAppVersion}
+          SetupIconFile={#MySetupIcon}
 
-          [Files]
-          Source: "dist\zsclip-windows-x86_64\zsclip.exe"; DestDir: "{app}"; Flags: ignoreversion
-
-          [Icons]
-          Name: "{group}\ZSClip"; Filename: "{app}\{#MyAppExeName}"
-          Name: "{commondesktop}\ZSClip"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+          [Languages]
+          Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
           [Tasks]
-          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+          Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
+          Name: "autostart"; Description: "启用开机自启"; GroupDescription: "启动选项:"; Flags: checkedonce
+
+          [Files]
+          Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\Output\*,\.git\*,\.github\*,\target\*,\__pycache__\*,\build\*,\dist\*,\installer\*,\venv\*,\.venv\*,\node_modules\*,\*.iss,*.pyc,*.pyo"
+
+          [InstallDelete]
+          Type: files; Name: "{autoprograms}\ZSClip.lnk"
+          Type: files; Name: "{autodesktop}\ZSClip.lnk"
+
+          [Icons]
+          Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+          Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Registry]
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppAutoStartValueName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
 
           [Run]
-          Filename: "{app}\{#MyAppExeName}"; Description: "Launch ZSClip"; Flags: nowait postinstall skipifsilent
+          Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+          [UninstallDelete]
+          Type: filesandordirs; Name: "{app}\logs"
+          Type: filesandordirs; Name: "{app}\temp"
+
+          [Code]
+          function GetDefaultInstallDir(Param: string): string;
+          begin
+            if DirExists('D:\') then
+              Result := 'D:\{#MyAppInstallDirName}'
+            else if DirExists('E:\') then
+              Result := 'E:\{#MyAppInstallDirName}'
+            else if DirExists('F:\') then
+              Result := 'F:\{#MyAppInstallDirName}'
+            else
+              Result := ExpandConstant('{autopf}\{#MyAppInstallDirName}');
+          end;
           '@ | Set-Content -Encoding UTF8 installer.iss
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-windows-x86_64-setup.exe
-          path: dist/zsclip-windows-x86_64-setup.exe
+          name: zsclip-v0.9.9-setup.exe
+          path: dist/zsclip-v0.9.9-setup.exe
           if-no-files-found: error
       - name: Upload Windows portable package
         uses: actions/upload-artifact@v7
@@ -323,7 +378,7 @@ jobs:
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-windows-x86_64-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
           - macOS: 下载 `zsclip-macos.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
           - Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb` 后安装；其他发行版可用 `zsclip-linux-x86_64.tar.gz`。
 
@@ -342,7 +397,8 @@ jobs:
             zsclip-windows-x86_64.exe \
             zsclip-windows-x86_64.zip \
             zsclip-windows-x86_64-portable.zip \
-            zsclip-windows-x86_64-setup.exe
+            zsclip-windows-x86_64-setup.exe \
+            zsclip-v0.9.9-setup.exe
           do
             gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
           done
