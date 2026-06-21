@@ -500,20 +500,21 @@ mod appkit {
                 );
                 let target: &AnyObject = self.as_ref();
                 let search_spec = native_host_search_input_specs()[0];
+                let search_bounds = search_spec.bounds();
                 let search_field = NSSearchField::new(mtm);
                 search_field.setFrame(NSRect::new(
-                    NSPoint::new(search_spec.bounds.left as f64, search_spec.bounds.top as f64),
-                    NSSize::new(search_spec.width() as f64, search_spec.height() as f64),
+                    NSPoint::new(search_bounds.left as f64, search_bounds.top as f64),
+                    NSSize::new(search_bounds.width() as f64, search_bounds.height() as f64),
                 ));
                 unsafe { search_field.setTarget(Some(target)) };
                 unsafe { search_field.setAction(Some(sel!(zsclipSearchTextChanged:))) };
-                search_field.setPlaceholderString(ns_string!("Search clipboard"));
+                search_field.setPlaceholderString(Some(ns_string!("Search clipboard")));
                 search_field.setHidden(true);
                 appkit_set_view_alpha(search_field.as_ref(), 0.0);
                 search_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
                 appkit_set_accessibility_label::<NSSearchField>(
                     search_field.as_ref(),
-                    search_spec.label,
+                    search_spec.label(),
                 );
                 let clip_items = crate::macos_app::macos_native_host_projected_clip_items();
                 let clip_row_height = 44.0_f64;
