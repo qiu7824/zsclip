@@ -8,6 +8,8 @@ on:
         required: false
         default: "0.9.9"
   push:
+    branches:
+      - main
     tags:
       - "0.*"
 
@@ -64,7 +66,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            dbus-x11 \
+            libdbus-1-dev \
             libgtk-4-dev \
+            libx11-dev \
+            libxi-dev \
+            libxtst-dev \
             pkg-config
       - name: Build Linux release
         run: cargo build --release --locked

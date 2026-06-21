@@ -1117,16 +1117,10 @@ mod appkit {
 
     fn appkit_apply_button_style_role(button: &NSButton, style_role: NativeButtonStyleRole) {
         match style_role {
-            NativeButtonStyleRole::Plain => {}
+            NativeButtonStyleRole::Plain | NativeButtonStyleRole::Destructive => {}
             NativeButtonStyleRole::Suggested => unsafe {
                 let _: () = msg_send![button, setKeyEquivalent: ns_string!("\r")];
             },
-            NativeButtonStyleRole::Destructive => {
-                let red = NSColor::systemRedColor();
-                unsafe {
-                    let _: () = msg_send![button, setContentTintColor: Some(red.as_ref())];
-                }
-            }
         }
     }
 

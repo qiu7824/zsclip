@@ -60,7 +60,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             dbus-x11 \
+            libdbus-1-dev \
             libgtk-4-dev \
+            libx11-dev \
+            libxi-dev \
+            libxtst-dev \
             pkg-config \
             scrot \
             xvfb
