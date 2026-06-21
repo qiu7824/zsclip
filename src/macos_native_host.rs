@@ -810,17 +810,6 @@ mod appkit {
                 self.ivars().clip_table_items.borrow().len() as NSInteger
             }
 
-            fn tableView_objectValueForTableColumn_row(
-                &self,
-                _table_view: &NSTableView,
-                _table_column: Option<&NSTableColumn>,
-                row: NSInteger,
-            ) -> Option<Retained<AnyObject>> {
-                let items = self.ivars().clip_table_items.borrow();
-                let item = items.get(row.max(0) as usize)?;
-                let presentation = native_host_clip_row_presentation_for_projection(item);
-                Some(NSString::from_str(&presentation.compact_label).into())
-            }
         }
 
         unsafe impl NSTableViewDelegate for Delegate {
