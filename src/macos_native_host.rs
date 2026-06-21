@@ -3180,8 +3180,10 @@ mod appkit {
             if !popup_window.isVisible() {
                 return false;
             }
-            let event_window = event.window(self.mtm()).map(|window| window.as_ptr());
-            if event_window == Some(popup_window.as_ptr()) {
+            let event_window = event
+                .window(self.mtm())
+                .map(|window| Retained::<NSWindow>::as_ptr(&window));
+            if event_window == Some(Retained::<NSWindow>::as_ptr(popup_window)) {
                 return false;
             }
             self.dismiss_native_vv_popup("local_mouse_down")
@@ -3467,7 +3469,7 @@ mod appkit {
             self.ivars()
                 .window
                 .get()
-                .map(|window| window.as_ptr() as usize as u64)
+                .map(|window| Retained::<NSWindow>::as_ptr(window) as usize as u64)
                 .unwrap_or(1)
         }
 
