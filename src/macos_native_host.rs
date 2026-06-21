@@ -20,7 +20,7 @@ mod appkit {
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, ProtocolObject, Sel};
-    use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly, Message};
+    use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
     use objc2_app_kit::{
         NSAccessibility, NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn,
         NSAlertStyle, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
@@ -1353,7 +1353,7 @@ mod appkit {
             if let Some(button) = status_item.button(mtm) {
                 let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     ns_string!("doc.on.clipboard"),
-                    ns_string!("ZSClip"),
+                    Some(ns_string!("ZSClip")),
                 );
                 if let Some(image) = image {
                     image.setTemplate(true);
@@ -1401,7 +1401,7 @@ mod appkit {
             if let Some(symbol_name) = appkit_status_menu_symbol_name(spec.icon_name) {
                 if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str(symbol_name),
-                    &title,
+                    Some(&title),
                 ) {
                     image.setTemplate(true);
                     item.setImage(Some(&image));
@@ -1541,8 +1541,10 @@ mod appkit {
                 None => std::env::remove_var("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"),
             }
             let file_picker_recorded = !file_dialog_host.requests().is_empty();
-            let file_picker_selected =
-                matches!(file_picker_result.as_deref(), Ok(Some(path)) if path == smoke_path);
+            let file_picker_selected = matches!(
+                file_picker_result.as_ref().map(|result| result.as_deref()),
+                Ok(Some(path)) if path == smoke_path
+            );
             eprintln!(
                 "ZSClip AppKit file picker smoke injected=true recorded={} selected={}",
                 file_picker_recorded, file_picker_selected
