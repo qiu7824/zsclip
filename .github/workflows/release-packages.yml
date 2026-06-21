@@ -14,7 +14,7 @@ on:
       - "0.*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -119,3 +119,31 @@ jobs:
           name: zsclip-linux-x86_64
           path: dist/zsclip-linux-x86_64
           if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - windows
+      - macos
+      - linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release packages
+        uses: actions/download-artifact@v7
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Upload packages to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" release-assets/* \
+              --title "ZSClip $TAG_NAME" \
+              --notes "Automated release build for $TAG_NAME."
+          fi
