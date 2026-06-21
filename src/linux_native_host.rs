@@ -39,12 +39,12 @@ mod gtk_host {
         NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
         NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
         NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
-        NativeHostRowAction, NativeHostSettingsAction, NativeHostSettingsControlAction,
-        NativeHostSettingsGroupAction, NativeHostSettingsPlatformAction,
-        NativeHostVvPasteExecution, NativeHostVvTriggerAction, NativeHostVvTriggerInput,
-        NativeHostVvTriggerKey, NativeHostVvTriggerTransition, NativePopupMenuEntry,
-        NativeSettingsPageTabKind, ProductAdapterCommandResult, SettingsControlRole,
-        NATIVE_HOST_CLIP_ROW_CAPACITY,
+        NativeHostRowAction, NativeHostSearchTextAction, NativeHostSettingsAction,
+        NativeHostSettingsControlAction, NativeHostSettingsGroupAction,
+        NativeHostSettingsPlatformAction, NativeHostVvPasteExecution, NativeHostVvTriggerAction,
+        NativeHostVvTriggerInput, NativeHostVvTriggerKey, NativeHostVvTriggerTransition,
+        NativePopupMenuEntry, NativeSettingsPageTabKind, ProductAdapterCommandResult,
+        SettingsControlRole, NATIVE_HOST_CLIP_ROW_CAPACITY,
     };
     use gtk::prelude::*;
     use gtk::{gdk, gio, glib};
