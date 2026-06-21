@@ -1285,8 +1285,8 @@ mod appkit {
         scroller.setDocumentView(Some(&content));
         let content_label = format!("{label} settings page");
         let scroller_label = format!("{label} settings scroll area");
-        appkit_set_accessibility_label(content.as_ref(), &content_label);
-        appkit_set_accessibility_label(scroller.as_ref(), &scroller_label);
+        appkit_set_accessibility_label::<NSView>(content.as_ref(), &content_label);
+        appkit_set_accessibility_label::<NSScrollView>(scroller.as_ref(), &scroller_label);
         let item = unsafe { NSTabViewItem::initWithIdentifier(NSTabViewItem::alloc(), None) };
         let title = NSString::from_str(label);
         item.setLabel(&title);
