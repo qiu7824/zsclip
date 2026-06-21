@@ -33,7 +33,18 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Check AppKit host
-        run: cargo check --bin zsclip
+        run: |
+          set +e
+          cargo check --bin zsclip 2>&1 | tee cargo-check-macos.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 120 cargo-check-macos.log)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\n'/'%0A'}"
+            message="${message//$'\r'/'%0D'}"
+            echo "::error title=macOS cargo check failed::$message"
+            exit "$status"
+          fi
       - name: Check smoke script syntax
         run: bash -n scripts/native-host-smoke-macos.sh
       - name: Run AppKit smoke
@@ -69,7 +80,18 @@ jobs:
             scrot \
             xvfb
       - name: Check GTK host
-        run: cargo check --bin zsclip
+        run: |
+          set +e
+          cargo check --bin zsclip 2>&1 | tee cargo-check-linux.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 120 cargo-check-linux.log)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\n'/'%0A'}"
+            message="${message//$'\r'/'%0D'}"
+            echo "::error title=Linux cargo check failed::$message"
+            exit "$status"
+          fi
       - name: Check smoke script syntax
         run: bash -n scripts/native-host-smoke-linux.sh
       - name: Run GTK smoke under Xvfb
