@@ -28,10 +28,10 @@ mod appkit {
         NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
         NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
         NSFloatingWindowLevel, NSFont, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
-        NSScrollView, NSSearchField, NSStatusBar, NSStatusItem, NSTabView, NSTabViewItem,
-        NSTabViewType, NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate,
-        NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment, NSTextField,
-        NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
+        NSScrollView, NSSearchField, NSStatusBar, NSStatusBarButton, NSStatusItem, NSTabView,
+        NSTabViewItem, NSTabViewType, NSTableColumn, NSTableView, NSTableViewDataSource,
+        NSTableViewDelegate, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment,
+        NSTextField, NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
         NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
         NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
     };
@@ -1287,7 +1287,7 @@ mod appkit {
         let scroller_label = format!("{label} settings scroll area");
         appkit_set_accessibility_label(content.as_ref(), &content_label);
         appkit_set_accessibility_label(scroller.as_ref(), &scroller_label);
-        let item = unsafe { NSTabViewItem::initWithIdentifier(NSTabViewItem::alloc(mtm), None) };
+        let item = unsafe { NSTabViewItem::initWithIdentifier(NSTabViewItem::alloc(), None) };
         let title = NSString::from_str(label);
         item.setLabel(&title);
         item.setView(Some(&scroller));
@@ -1362,7 +1362,10 @@ mod appkit {
                 } else {
                     button.setTitle(ns_string!("ZSClip"));
                 }
-                appkit_set_accessibility_label(button.as_ref(), "ZSClip status menu");
+                appkit_set_accessibility_label::<NSStatusBarButton>(
+                    button.as_ref(),
+                    "ZSClip status menu",
+                );
             }
 
             let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("ZSClip"));
