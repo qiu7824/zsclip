@@ -25,6 +25,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build Windows release
         run: cargo build --release --locked
+      - name: Install Windows packaging tools
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
       - name: Stage Windows binary
         shell: pwsh
         run: |
@@ -42,12 +45,54 @@ jobs:
           - 当前包是便携版，不写注册表，不包含安装向导。
           - 开机自启、托盘、热键等功能在应用设置里启用。
           '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
-          Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64.zip -Force
-      - name: Upload Windows package
+          Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
+          @'
+          #define MyAppName "ZSClip"
+          #define MyAppVersion "0.9.9"
+          #define MyAppPublisher "ZSClip"
+          #define MyAppExeName "zsclip.exe"
+
+          [Setup]
+          AppId={{6DA14B7D-6465-4B8A-96E5-2D6C86FB0B99}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppPublisher={#MyAppPublisher}
+          DefaultDirName={autopf}\ZSClip
+          DefaultGroupName=ZSClip
+          DisableProgramGroupPage=yes
+          OutputDir=dist
+          OutputBaseFilename=zsclip-windows-x86_64-setup
+          Compression=lzma
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesAllowed=x64
+          ArchitecturesInstallIn64BitMode=x64
+
+          [Files]
+          Source: "dist\zsclip-windows-x86_64\zsclip.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\ZSClip"; Filename: "{app}\{#MyAppExeName}"
+          Name: "{commondesktop}\ZSClip"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+
+          [Run]
+          Filename: "{app}\{#MyAppExeName}"; Description: "Launch ZSClip"; Flags: nowait postinstall skipifsilent
+          '@ | Set-Content -Encoding UTF8 installer.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+      - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-windows-x86_64.zip
-          path: dist/zsclip-windows-x86_64.zip
+          name: zsclip-windows-x86_64-setup.exe
+          path: dist/zsclip-windows-x86_64-setup.exe
+          if-no-files-found: error
+      - name: Upload Windows portable package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-windows-x86_64-portable.zip
+          path: dist/zsclip-windows-x86_64-portable.zip
           if-no-files-found: error
 
   macos:
@@ -106,11 +151,14 @@ jobs:
           </dict>
           </plist>
           PLIST
-          cat > dist/INSTALL-macos.txt <<'TXT'
+          mkdir -p dist/dmg-root
+          cp -R dist/ZSClip.app dist/dmg-root/ZSClip.app
+          ln -s /Applications dist/dmg-root/Applications
+          cat > dist/dmg-root/INSTALL.txt <<'TXT'
           ZSClip 0.9.9 - macOS
 
           安装/运行:
-          1. 解压 zip。
+          1. 打开 DMG。
           2. 将 ZSClip.app 拖到 Applications/应用程序。
           3. 首次运行如果提示无法验证开发者，请右键 ZSClip.app 选择“打开”。
 
@@ -118,12 +166,12 @@ jobs:
           - 当前包未签名、未公证。
           - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
           TXT
-          (cd dist && zip -qry zsclip-macos-app.zip ZSClip.app INSTALL-macos.txt)
+          hdiutil create -volname "ZSClip 0.9.9" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos.dmg
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-macos-app.zip
-          path: dist/zsclip-macos-app.zip
+          name: zsclip-macos.dmg
+          path: dist/zsclip-macos.dmg
           if-no-files-found: error
 
   linux:
@@ -193,7 +241,30 @@ jobs:
           - 托盘、全局热键、VV 粘贴在 Wayland/X11 下可能需要对应桌面环境权限或工具支持。
           TXT
           tar -czf dist/zsclip-linux-x86_64.tar.gz -C dist zsclip-linux-x86_64
-      - name: Upload Linux package
+          mkdir -p dist/deb/DEBIAN
+          mkdir -p dist/deb/usr/bin
+          mkdir -p dist/deb/usr/share/applications
+          cp target/release/zsclip dist/deb/usr/bin/zsclip
+          chmod +x dist/deb/usr/bin/zsclip
+          cp dist/zsclip-linux-x86_64/share/applications/zsclip.desktop dist/deb/usr/share/applications/zsclip.desktop
+          cat > dist/deb/DEBIAN/control <<'CONTROL'
+          Package: zsclip
+          Version: 0.9.9
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Depends: libgtk-4-1, libx11-6, libxi6, libxtst6, dbus-x11
+          Maintainer: ZSClip
+          Description: Native clipboard manager with sync features.
+          CONTROL
+          dpkg-deb --build dist/deb dist/zsclip-linux-x86_64.deb
+      - name: Upload Linux deb package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-linux-x86_64.deb
+          path: dist/zsclip-linux-x86_64.deb
+          if-no-files-found: error
+      - name: Upload Linux portable package
         uses: actions/upload-artifact@v7
         with:
           name: zsclip-linux-x86_64.tar.gz
@@ -234,19 +305,26 @@ jobs:
           - 修复 macOS AppKit 绑定、Linux GTK 构建、非 Windows 平台密钥存储编译等问题。
 
           ## 下载与安装
-          - Windows: 下载 `zsclip-windows-x86_64.zip`，解压后运行 `zsclip.exe`。
-          - macOS: 下载 `zsclip-macos-app.zip`，解压后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
-          - Linux: 下载 `zsclip-linux-x86_64.tar.gz`，解压后运行 `./bin/zsclip`。
+          - Windows: 普通用户下载 `zsclip-windows-x86_64-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
+          - macOS: 下载 `zsclip-macos.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
+          - Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb` 后安装；其他发行版可用 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
-          - 当前 Windows 包是便携版，不是安装向导。
+          - Windows 同时提供安装器和便携包。
           - 当前 macOS 包未签名/未公证，系统级快捷键/VV 粘贴可能需要辅助功能或输入监控权限。
-          - 当前 Linux 包是便携 tar.gz，不是 deb/AppImage，GTK4 运行库需要系统已安装。
+          - Linux 当前提供 deb 和便携 tar.gz，暂未提供 AppImage/rpm。
           NOTES
           for stale in \
             zsclip-linux-x86_64 \
+            zsclip-linux-x86_64.tar.gz \
+            zsclip-linux-x86_64.deb \
             zsclip-macos \
-            zsclip-windows-x86_64.exe
+            zsclip-macos-app.zip \
+            zsclip-macos.dmg \
+            zsclip-windows-x86_64.exe \
+            zsclip-windows-x86_64.zip \
+            zsclip-windows-x86_64-portable.zip \
+            zsclip-windows-x86_64-setup.exe
           do
             gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
           done
