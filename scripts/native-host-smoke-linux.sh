@@ -29,16 +29,16 @@ mkdir -p "$ARTIFACT_DIR"
 cd "$ROOT_DIR"
 
 echo "==> Linux GTK native host tests"
-cargo test linux_native_host_launch_plan_targets_real_gtk_entry
-cargo test linux_native_host_actions_enter_product_command_routes
-cargo test linux_native_row_actions_enter_product_command_routes
-cargo test linux_native_status_menu_actions_enter_product_command_routes
-cargo test linux_native_settings_control_actions_enter_product_command_routes
-cargo test linux_native_search_text_enters_product_command_route
-cargo test linux_native_vv_select_enters_product_event_bridge
+cargo test -q linux_native_host_launch_plan_targets_real_gtk_entry
+cargo test -q linux_native_host_actions_enter_product_command_routes
+cargo test -q linux_native_row_actions_enter_product_command_routes
+cargo test -q linux_native_status_menu_actions_enter_product_command_routes
+cargo test -q linux_native_settings_control_actions_enter_product_command_routes
+cargo test -q linux_native_search_text_enters_product_command_route
+cargo test -q linux_native_vv_select_enters_product_event_bridge
 
 echo "==> Linux GTK build"
-cargo build --bin zsclip
+cargo build -q --bin zsclip
 
 echo "==> Launching ZSClip GTK host"
 ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &

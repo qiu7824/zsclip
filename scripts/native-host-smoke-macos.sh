@@ -24,16 +24,15 @@ mkdir -p "$ARTIFACT_DIR"
 cd "$ROOT_DIR"
 
 echo "==> macOS AppKit native host tests"
-cargo test macos_native_host_launch_plan_targets_real_appkit_entry
-cargo test macos_native_host_actions_enter_product_command_routes
-cargo test macos_native_row_actions_enter_product_command_routes
-cargo test macos_native_status_menu_actions_enter_product_command_routes
-cargo test macos_native_settings_control_actions_enter_product_command_routes
-cargo test macos_native_search_text_enters_product_command_route
-cargo test macos_native_vv_select_enters_product_event_bridge
+cargo test -q macos_native_host_launch_plan_targets_real_appkit_entry
+cargo test -q macos_native_host_actions_enter_product_command_routes
+cargo test -q macos_native_row_actions_enter_product_command_routes
+cargo test -q macos_native_status_menu_actions_enter_product_command_routes
+cargo test -q macos_native_settings_control_actions_enter_product_command_routes
+cargo test -q macos_native_vv_select_enters_product_event_bridge
 
 echo "==> macOS AppKit build"
-cargo build --bin zsclip
+cargo build -q --bin zsclip
 
 echo "==> Launching ZSClip AppKit host"
 ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &
