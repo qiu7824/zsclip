@@ -1204,7 +1204,7 @@ mod appkit {
             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
             NSSize::new(spec.width() as f64, spec.height() as f64),
         ));
-        appkit_set_accessibility_label(button.as_ref(), &spec.label);
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
         button
     }
 
@@ -1789,7 +1789,7 @@ mod appkit {
                         if let Some(image) =
                             NSImage::imageWithSystemSymbolName_accessibilityDescription(
                                 &NSString::from_str(symbol_name),
-                                &title,
+                                Some(&title),
                             )
                         {
                             image.setTemplate(true);
