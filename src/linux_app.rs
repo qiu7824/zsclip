@@ -1118,9 +1118,17 @@ fn linux_native_lan_runtime_context() -> crate::lan_sync_core::LanRuntimePlatfor
     crate::lan_sync_core::LanRuntimePlatformContext::new(
         linux_native_data_dir(),
         crate::lan_sync_core::LanRuntimeEventSink::None,
-        crate::platform::secret_store::encrypt_secret_for_storage,
-        crate::platform::secret_store::decrypt_secret_from_storage,
+        linux_native_encrypt_secret_for_storage,
+        linux_native_decrypt_secret_from_storage,
     )
+}
+
+fn linux_native_encrypt_secret_for_storage(secret: &str) -> Option<String> {
+    Some(secret.to_string())
+}
+
+fn linux_native_decrypt_secret_from_storage(encoded: &str) -> Option<String> {
+    Some(encoded.to_string())
 }
 
 fn linux_native_latest_lan_clip_envelope(
@@ -1307,12 +1315,12 @@ pub(crate) fn dispatch_linux_native_settings_lan_device_book_action(
     let data_dir = linux_native_data_dir();
     let trusted_devices = crate::lan_sync_core::load_lan_devices_from_store(
         crate::lan_sync_core::lan_device_book_path(&data_dir),
-        crate::platform::secret_store::decrypt_secret_from_storage,
+        linux_native_decrypt_secret_from_storage,
         crate::lan_sync_core::normalize_lan_capabilities,
     );
     let discovered_devices = crate::lan_sync_core::load_lan_discovered_devices_from_store(
         crate::lan_sync_core::lan_discovered_device_cache_path(&data_dir),
-        crate::platform::secret_store::decrypt_secret_from_storage,
+        linux_native_decrypt_secret_from_storage,
         crate::lan_sync_core::normalize_lan_capabilities,
     );
     if runtime_settings.lan_sync_enabled {
@@ -1371,8 +1379,8 @@ fn linux_native_save_lan_accepted_device(
     crate::lan_sync_core::upsert_lan_device_in_store(
         linux_native_data_dir(),
         new_device,
-        crate::platform::secret_store::decrypt_secret_from_storage,
-        crate::platform::secret_store::encrypt_secret_for_storage,
+        linux_native_decrypt_secret_from_storage,
+        linux_native_encrypt_secret_for_storage,
         crate::lan_sync_core::normalize_lan_capabilities,
     )
 }
@@ -1395,8 +1403,8 @@ pub(crate) fn dispatch_linux_native_settings_lan_pair_approval_action(
         None,
         accept,
         linux_native_now_ms(),
-        crate::platform::secret_store::decrypt_secret_from_storage,
-        crate::platform::secret_store::encrypt_secret_for_storage,
+        linux_native_decrypt_secret_from_storage,
+        linux_native_encrypt_secret_for_storage,
         crate::lan_sync_core::normalize_lan_capabilities,
     ) {
         Ok(Some(decision)) => ProductAdapterCommandResult {

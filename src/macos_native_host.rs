@@ -1701,7 +1701,7 @@ mod appkit {
                     NSSize::new(rect.width() as f64, rect.height() as f64),
                 ));
                 label.setFont(Some(&appkit_vv_popup_text_font(command.role, command.size)));
-                appkit_set_accessibility_label(label.as_ref(), &command.text);
+                appkit_set_accessibility_label::<NSTextField>(label.as_ref(), &command.text);
                 unsafe { view.addSubview(&label) };
             }
             #[cfg(feature = "vv-paste")]
@@ -1722,7 +1722,7 @@ mod appkit {
                         NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
                         NSSize::new(spec.width() as f64, spec.height() as f64),
                     ));
-                    appkit_set_accessibility_label(button.as_ref(), &spec.label);
+                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
                     button.setTag(action.index as _);
                     unsafe { view.addSubview(&button) };
                 }
