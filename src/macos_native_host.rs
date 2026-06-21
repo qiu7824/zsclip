@@ -1186,7 +1186,7 @@ mod appkit {
             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
             NSSize::new(spec.width() as f64, spec.height() as f64),
         ));
-        appkit_set_accessibility_label(button.as_ref(), &spec.label);
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
         button
     }
 
@@ -1210,7 +1210,7 @@ mod appkit {
 
     fn appkit_set_accessibility_label<T>(element: &T, label: &str)
     where
-        T: NSAccessibility,
+        T: NSAccessibility + Message,
     {
         let label = NSString::from_str(label);
         element.setAccessibilityLabel(Some(&label));
