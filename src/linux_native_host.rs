@@ -1178,15 +1178,16 @@ searchentry {
         let gesture = GestureClick::new();
         gesture.set_button(3);
         let row = row.clone();
+        let gesture_row = row.clone();
         let clip_list = clip_list.clone();
         let row_menu = row_menu.clone();
         gesture.connect_pressed(move |_, _, x, y| {
-            let item_id = row.widget_name().parse::<i64>().unwrap_or_default();
+            let item_id = gesture_row.widget_name().parse::<i64>().unwrap_or_default();
             if item_id <= 0 {
                 return;
             }
             selected_item_id.set(item_id);
-            clip_list.select_row(Some(&row));
+            clip_list.select_row(Some(&gesture_row));
             let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
             replace_popup_menu_entries(
                 &row_menu,
@@ -1312,18 +1313,19 @@ searchentry {
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> gio::Menu {
         let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let entries = native_host_full_row_popup_menu_entries_for_groups(
+            &groups,
+            native_host_row_popup_menu_input_for_projection(
+                &clip_items.borrow(),
+                selected_item_id.get(),
+                true,
+            ),
+            |label| label.to_string(),
+        );
         install_popup_menu(
             app,
             status,
-            native_host_full_row_popup_menu_entries_for_groups(
-                &groups,
-                native_host_row_popup_menu_input_for_projection(
-                    &clip_items.borrow(),
-                    selected_item_id.get(),
-                    true,
-                ),
-                |label| label.to_string(),
-            ),
+            entries,
             selected_item_id,
             current_group_filter,
             clip_rows,
@@ -1432,7 +1434,7 @@ searchentry {
         }
         let simple_action = gio::SimpleAction::new(&action_name, None);
         let status = status.clone();
-        let app = app.clone();
+        let action_app = app.clone();
         simple_action.connect_activate(move |_, _| {
             let result = crate::linux_app::dispatch_linux_native_menu_command_id(menu_id);
             eprintln!(
@@ -1466,7 +1468,7 @@ searchentry {
                 }
                 if let Some(plan) = native_edit_plan(&clip_items.borrow(), selected_item_id.get()) {
                     present_edit_text_window(
-                        &app,
+                        &action_app,
                         plan,
                         false,
                         Some(EditRefreshTarget {
