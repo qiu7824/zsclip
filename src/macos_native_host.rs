@@ -2734,7 +2734,7 @@ mod appkit {
                 result.result_name
             );
             if result.accepted && matches!(action, NativeHostRowAction::Paste) {
-                let posted = appkit_post_native_paste_shortcut();
+                let posted = Self::appkit_post_native_paste_shortcut();
                 eprintln!("ZSClip AppKit row paste shortcut posted={}", posted);
             }
             if result.accepted
@@ -3421,14 +3421,14 @@ mod appkit {
                 .map(|characters| characters.to_string())
                 .unwrap_or_default();
             let target_token =
-                appkit_vv_target_token_for_event(event, self.native_window_target_token());
+                Self::appkit_vv_target_token_for_event(event, self.native_window_target_token());
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
-                key: appkit_vv_trigger_key_from_event(&key_text, event.keyCode()),
+                key: Self::appkit_vv_trigger_key_from_event(&key_text, event.keyCode()),
                 target_token,
                 target_ready: true,
-                command_modifier: appkit_vv_has_command_modifier(event.modifierFlags()),
+                command_modifier: Self::appkit_vv_has_command_modifier(event.modifierFlags()),
                 popup_menu_active: false,
-                now_ms: appkit_vv_now_ms(),
+                now_ms: Self::appkit_vv_now_ms(),
             })
         }
 
@@ -3441,23 +3441,25 @@ mod appkit {
                 .map(|characters| characters.to_string())
                 .unwrap_or_default();
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
-                key: appkit_vv_trigger_key_from_event(&key_text, event.keyCode()),
-                target_token: appkit_vv_target_token_for_event(event, 2),
+                key: Self::appkit_vv_trigger_key_from_event(&key_text, event.keyCode()),
+                target_token: Self::appkit_vv_target_token_for_event(event, 2),
                 target_ready: true,
-                command_modifier: appkit_vv_has_command_modifier(event.modifierFlags()),
+                command_modifier: Self::appkit_vv_has_command_modifier(event.modifierFlags()),
                 popup_menu_active: false,
-                now_ms: appkit_vv_now_ms(),
+                now_ms: Self::appkit_vv_now_ms(),
             })
         }
 
         fn perform_native_vv_cg_event(&self, event: &CGEvent) -> NativeHostVvTriggerTransition {
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
-                key: appkit_vv_trigger_key_from_cg_event(event),
-                target_token: appkit_vv_target_token_for_cg_event(event),
+                key: Self::appkit_vv_trigger_key_from_cg_event(event),
+                target_token: Self::appkit_vv_target_token_for_cg_event(event),
                 target_ready: true,
-                command_modifier: appkit_vv_has_cg_command_modifier(CGEvent::flags(Some(event))),
+                command_modifier: Self::appkit_vv_has_cg_command_modifier(CGEvent::flags(Some(
+                    event,
+                ))),
                 popup_menu_active: false,
-                now_ms: appkit_vv_now_ms(),
+                now_ms: Self::appkit_vv_now_ms(),
             })
         }
 
@@ -3486,7 +3488,7 @@ mod appkit {
             target_token: u64,
             now_ms: u64,
         ) -> NativeHostVvTriggerTransition {
-            let key = appkit_vv_trigger_key_from_text(key_text);
+            let key = Self::appkit_vv_trigger_key_from_text(key_text);
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
                 key,
                 target_token,
@@ -3539,7 +3541,7 @@ mod appkit {
             match key_code {
                 51 => NativeHostVvTriggerKey::Backspace,
                 53 => NativeHostVvTriggerKey::Escape,
-                _ => appkit_vv_trigger_key_from_text(key_text),
+                _ => Self::appkit_vv_trigger_key_from_text(key_text),
             }
         }
 
@@ -3592,7 +3594,7 @@ mod appkit {
             let key_code =
                 CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventKeycode)
                     as u16;
-            appkit_vv_trigger_key_from_event(&key_text, key_code)
+            Self::appkit_vv_trigger_key_from_event(&key_text, key_code)
         }
 
         fn appkit_post_native_key_event(virtual_key: u16, flags: CGEventFlags) -> bool {
