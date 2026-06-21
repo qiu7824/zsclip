@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">剪贴板同步</string>
+    <string name="tile_auto_sync">多端自动同步</string>
+    <string name="tile_pull_to_phone">拉取到手机</string>
+    <string name="tile_push_to_computer">推送到电脑</string>
+    <string name="media_history_title">剪贴板记录</string>
+    <string name="image_preview_title">图片预览</string>
+</resources>

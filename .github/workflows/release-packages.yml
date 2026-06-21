@@ -1,0 +1,80 @@
+name: Release Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to build"
+        required: false
+        default: "0.9.9"
+  push:
+    tags:
+      - "0.*"
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows release package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows release
+        run: cargo build --release --locked
+      - name: Stage Windows binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64.exe
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-windows-x86_64
+          path: dist/zsclip-windows-x86_64.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS release package
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build macOS release
+        run: cargo build --release --locked
+      - name: Stage macOS binary
+        run: |
+          mkdir -p dist
+          cp target/release/zsclip dist/zsclip-macos
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-macos
+          path: dist/zsclip-macos
+          if-no-files-found: error
+
+  linux:
+    name: Linux release package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            pkg-config
+      - name: Build Linux release
+        run: cargo build --release --locked
+      - name: Stage Linux binary
+        run: |
+          mkdir -p dist
+          cp target/release/zsclip dist/zsclip-linux-x86_64
+      - name: Upload Linux package
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-linux-x86_64
+          path: dist/zsclip-linux-x86_64
+          if-no-files-found: error

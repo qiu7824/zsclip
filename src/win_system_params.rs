@@ -1,54 +1,100 @@
-use windows_sys::Win32::Foundation::POINT;
-
 pub use crate::settings_model::{
     SettingsFormSectionLayout, SCROLL_BAR_MARGIN, SCROLL_BAR_W, SCROLL_BAR_W_ACTIVE,
 };
-pub use crate::settings_render::{
-    IDC_SET_AUTOHIDE_BLUR, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_BTN_OPENDATA,
-    IDC_SET_BTN_OPENDB, IDC_SET_CLICK_HIDE, IDC_SET_CLOSE, IDC_SET_CLOSETRAY,
-    IDC_SET_CLOUD_APPLY_CFG, IDC_SET_CLOUD_DIR, IDC_SET_CLOUD_ENABLE, IDC_SET_CLOUD_INTERVAL,
-    IDC_SET_CLOUD_PASS, IDC_SET_CLOUD_RESTORE_BACKUP, IDC_SET_CLOUD_SYNC_NOW,
-    IDC_SET_CLOUD_UPLOAD_CFG, IDC_SET_CLOUD_URL, IDC_SET_CLOUD_USER, IDC_SET_DEDUPE_FILTER,
-    IDC_SET_DX, IDC_SET_DY, IDC_SET_EDGEHIDE, IDC_SET_FX, IDC_SET_FY, IDC_SET_GROUP_ADD,
-    IDC_SET_GROUP_DELETE, IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST,
-    IDC_SET_GROUP_RENAME, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES, IDC_SET_GROUP_VIEW_RECORDS,
-    IDC_SET_HK_RECORD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_LAN_ACCEPT_PAIR,
-    IDC_SET_LAN_DISCOVERED_LIST, IDC_SET_LAN_DOCS, IDC_SET_LAN_ENABLE, IDC_SET_LAN_MANUAL_HOST,
-    IDC_SET_LAN_NAME, IDC_SET_LAN_PAIR, IDC_SET_LAN_RECEIVE_MODE, IDC_SET_LAN_REFRESH,
-    IDC_SET_LAN_REJECT_PAIR, IDC_SET_LAN_TCP_PORT, IDC_SET_MAX, IDC_SET_OCR_CLOUD_TOKEN,
-    IDC_SET_OCR_CLOUD_URL, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_OPEN_SOURCE,
-    IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PASTE_SOUND_ENABLE,
-    IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH,
-    IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_DOWNLOADS,
-    IDC_SET_PLUGIN_MAILMERGE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_SAVE,
-    IDC_SET_SILENTSTART, IDC_SET_SKIP_WINDOW_CAPTURE, IDC_SET_SKIP_WINDOW_CLASSNAMES,
-    IDC_SET_SKIP_WINDOW_ENABLE, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET,
-    IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE, SETTINGS_CLASS,
-};
 
-pub(crate) const GMEM_MOVEABLE: u32 = 0x0002;
-pub(crate) const GMEM_ZEROINIT: u32 = 0x0040;
-pub(crate) const MK_LBUTTON_FLAG: u32 = 0x0001;
-pub(crate) const S_OK_HR: i32 = 0;
-pub(crate) const E_NOINTERFACE_HR: i32 = 0x80004002u32 as i32;
-pub(crate) const E_POINTER_HR: i32 = 0x80004003u32 as i32;
-pub(crate) const DRAGDROP_S_DROP_HR: i32 = 0x00040100;
-pub(crate) const DRAGDROP_S_CANCEL_HR: i32 = 0x00040101;
-pub(crate) const DRAGDROP_S_USEDEFAULTCURSORS_HR: i32 = 0x00040102;
-pub(crate) const RPC_E_CHANGED_MODE_HR: i32 = 0x80010106u32 as i32;
-pub(crate) const CF_HDROP: u32 = 15;
-
-pub(crate) const IID_IUNKNOWN_RAW: windows_sys::core::GUID =
-    windows_sys::core::GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
-pub(crate) const IID_IDROPSOURCE_RAW: windows_sys::core::GUID =
-    windows_sys::core::GUID::from_u128(0x00000121_0000_0000_c000_000000000046);
-pub(crate) const IID_IDATAOBJECT_RAW: windows_sys::core::GUID =
-    windows_sys::core::GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
-
-#[repr(C)]
-pub(crate) struct DropFiles {
-    pub(crate) p_files: u32,
-    pub(crate) pt: POINT,
-    pub(crate) f_nc: i32,
-    pub(crate) f_wide: i32,
-}
+pub const SETTINGS_CLASS: &str = "ZsClipSettings";
+pub const IDC_SET_SAVE: isize = 5003;
+pub const IDC_SET_CLOSE: isize = 5004;
+pub const IDC_SET_AUTOSTART: isize = 5010;
+pub const IDC_SET_CLOSETRAY: isize = 5011;
+pub const IDC_SET_CLICK_HIDE: isize = 5038;
+pub const IDC_SET_EDGEHIDE: isize = 5013;
+pub const IDC_SET_HOVERPREVIEW: isize = 5014;
+pub const IDC_SET_MAX: isize = 5015;
+pub const IDC_SET_POSMODE: isize = 5016;
+pub const IDC_SET_DX: isize = 5017;
+pub const IDC_SET_DY: isize = 5018;
+pub const IDC_SET_FX: isize = 5019;
+pub const IDC_SET_FY: isize = 5020;
+pub const IDC_SET_BTN_OPENCFG: isize = 5021;
+pub const IDC_SET_GROUP_ENABLE: isize = 5030;
+pub const IDC_SET_GROUP_LIST: isize = 5032;
+pub const IDC_SET_GROUP_ADD: isize = 5033;
+pub const IDC_SET_GROUP_RENAME: isize = 5034;
+pub const IDC_SET_GROUP_DELETE: isize = 5035;
+pub const IDC_SET_GROUP_UP: isize = 5036;
+pub const IDC_SET_GROUP_DOWN: isize = 5037;
+pub const IDC_SET_CLOUD_ENABLE: isize = 5040;
+pub const IDC_SET_CLOUD_INTERVAL: isize = 5041;
+pub const IDC_SET_CLOUD_URL: isize = 5042;
+pub const IDC_SET_CLOUD_USER: isize = 5043;
+pub const IDC_SET_CLOUD_PASS: isize = 5044;
+pub const IDC_SET_CLOUD_DIR: isize = 5045;
+pub const IDC_SET_CLOUD_SYNC_NOW: isize = 5046;
+pub const IDC_SET_CLOUD_UPLOAD_CFG: isize = 5047;
+pub const IDC_SET_CLOUD_APPLY_CFG: isize = 5048;
+pub const IDC_SET_CLOUD_RESTORE_BACKUP: isize = 5049;
+pub const IDC_SET_MULTI_SYNC_MODE: isize = 5073;
+pub const IDC_SET_LAN_ENABLE: isize = 5080;
+pub const IDC_SET_LAN_NAME: isize = 5081;
+pub const IDC_SET_LAN_TCP_PORT: isize = 5082;
+pub const IDC_SET_LAN_MANUAL_HOST: isize = 5084;
+pub const IDC_SET_LAN_PAIR: isize = 5085;
+pub const IDC_SET_LAN_REFRESH: isize = 5086;
+pub const IDC_SET_LAN_DOCS: isize = 5087;
+pub const IDC_SET_LAN_DISCOVERED_LIST: isize = 5088;
+pub const IDC_SET_LAN_QR_ANDROID: isize = 5089;
+pub const IDC_SET_LAN_ACCEPT_PAIR: isize = 5090;
+pub const IDC_SET_LAN_REJECT_PAIR: isize = 5091;
+pub const IDC_SET_LAN_RECEIVE_MODE: isize = 5092;
+pub const IDC_SET_LAN_QR_IOS: isize = 5093;
+pub const IDC_SET_LAN_COPY_PAIR: isize = 5094;
+pub const IDC_SET_LAN_COPY_SETUP: isize = 5095;
+pub const IDC_SET_PLUGIN_MAILMERGE: isize = 5050;
+pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
+pub const IDC_SET_QUICK_DELETE: isize = 5052;
+pub const IDC_SET_OPEN_SOURCE: isize = 5053;
+pub const IDC_SET_VV_MODE: isize = 5054;
+pub const IDC_SET_VV_GROUP: isize = 5055;
+pub const IDC_SET_VV_SOURCE: isize = 5056;
+pub const IDC_SET_GROUP_VIEW_RECORDS: isize = 5057;
+pub const IDC_SET_GROUP_VIEW_PHRASES: isize = 5058;
+pub const IDC_SET_SILENTSTART: isize = 5059;
+pub const IDC_SET_TRAYICON: isize = 5060;
+pub const IDC_SET_AUTOHIDE_BLUR: isize = 5061;
+pub const IDC_SET_OPEN_UPDATE: isize = 5062;
+pub const IDC_SET_PASTE_MOVE_TOP: isize = 5063;
+pub const IDC_SET_DEDUPE_FILTER: isize = 5064;
+pub const IDC_SET_OCR_PROVIDER: isize = 5065;
+pub const IDC_SET_OCR_CLOUD_URL: isize = 5066;
+pub const IDC_SET_OCR_CLOUD_TOKEN: isize = 5067;
+pub const IDC_SET_PERSIST_SEARCH: isize = 5069;
+pub const IDC_SET_PASTE_SOUND_ENABLE: isize = 5070;
+pub const IDC_SET_PASTE_SOUND_KIND: isize = 5071;
+pub const IDC_SET_PASTE_SOUND_PICK: isize = 5072;
+pub const IDC_SET_OCR_WECHAT_DETECT: isize = 5074;
+pub const IDC_SET_TRANSLATE_PROVIDER: isize = 5075;
+pub const IDC_SET_TRANSLATE_APP_ID: isize = 5076;
+pub const IDC_SET_TRANSLATE_SECRET: isize = 5077;
+pub const IDC_SET_TRANSLATE_TARGET: isize = 5078;
+pub const IDC_SET_WPS_TASKPANE_DOCS: isize = 5079;
+pub const IDC_SET_HK_RECORD: isize = 6104;
+pub const IDC_SET_HOTKEY_ENABLE: isize = 6101;
+pub const IDC_SET_HOTKEY_MOD: isize = 6102;
+pub const IDC_SET_HOTKEY_KEY: isize = 6103;
+pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
+pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
+pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
+pub const IDC_SET_CLIPBOARD_HISTORY_DISABLE: isize = 6111;
+pub const IDC_SET_CLIPBOARD_HISTORY_ENABLE: isize = 6112;
+pub const IDC_SET_RESTART_EXPLORER: isize = 6113;
+pub const IDC_SET_SKIP_WINDOW_ENABLE: isize = 6201;
+pub const IDC_SET_SKIP_WINDOW_CLASSNAMES: isize = 6202;
+pub const IDC_SET_SKIP_WINDOW_CAPTURE: isize = 6203;
+pub const IDC_SET_PLUGIN_SEARCH: isize = 7101;
+pub const IDC_SET_PLUGIN_AI_CLEAN: isize = 7102;
+pub const IDC_SET_PLUGIN_QR_QUICK: isize = 7103;
+pub const IDC_SET_PLUGIN_WPS_TASKPANE: isize = 7104;
+pub const IDC_SET_PLUGIN_SUPER_MAIL_MERGE: isize = 7106;
+pub const IDC_SET_SEARCH_ENGINE: isize = 7201;
+pub const IDC_SET_SEARCH_ENGINE_RESET: isize = 7203;

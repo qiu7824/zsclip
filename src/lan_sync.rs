@@ -1,16 +1,31 @@
 use crate::app::state::AppSettings;
-use crate::app::{
-    data_dir, decrypt_secret_from_storage, encrypt_secret_for_storage, save_settings,
-    WM_LAN_SYNC_READY,
-};
+use crate::app::{data_dir, save_settings, WM_LAN_SYNC_READY};
 use crate::db_runtime::with_db;
+pub(crate) use crate::lan_sync_core::{
+    header_value, http_request, lan_desktop_capabilities, lan_device_can_receive_clip,
+    lan_file_content_hasher, lan_file_session_key, lan_hash_string, lan_http_route_for,
+    lan_pair_status_response_value, lan_tcp_bind_candidates, make_lan_pair_code, make_lan_token,
+    mobile_item_file_path_parts, mobile_item_image_path_id, normalize_lan_capabilities,
+    normalize_lan_host, push_lan_file_payload_to_device, query_param, query_param_decoded,
+    read_http_request, remember_lan_seen_message_key, safe_lan_file_name, url_encode_component,
+    write_http_bytes, write_http_file, write_http_json, DiscoveryPacket, HttpRequest,
+    LanClipEnvelope, LanDevice, LanFileMeta, LanHttpRoute, LanHttpRoutePolicy, LanIncomingClip,
+    LanPairPrompt, LanPendingPair, LanRuntimeConfig, LanRuntimeEventSink,
+    LanRuntimePlatformContext, LanRuntimeSettings, LanServiceLifecyclePlan, LanServiceRuntimeState,
+    PairRequestBody, DISCOVERY_INTERVAL_MS, LAN_DISCOVERY_PORT_DEFAULT, LAN_FILE_AUTO_MAX_BYTES,
+    LAN_FILE_CHUNK_BYTES, LAN_FILE_MAX_BYTES, LAN_IMAGE_MAX_BYTES, LAN_MAGIC,
+    LAN_PAIR_REQUEST_TTL_MS, LAN_PROTOCOL, LAN_TCP_PORT_DEFAULT, MOBILE_IMAGE_LIST_LIMIT,
+    MOBILE_ITEM_LIST_LIMIT_DEFAULT, MOBILE_ITEM_LIST_LIMIT_MAX, WPS_TASKPANE_ITEM_LIMIT,
+};
+use crate::platform::secret_store::{decrypt_secret_from_storage, encrypt_secret_for_storage};
+use crate::platform::window as platform_window;
 use base64::{engine::general_purpose, Engine as _};
 use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -21,155 +36,25 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::HWND;
-use windows_sys::Win32::UI::WindowsAndMessaging::PostMessageW;
 
-pub(crate) const LAN_DISCOVERY_PORT_DEFAULT: u16 = 38472;
-pub(crate) const LAN_TCP_PORT_DEFAULT: u16 = 38473;
-pub(crate) const LAN_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
-pub(crate) const LAN_FILE_AUTO_MAX_BYTES: u64 = 50 * 1024 * 1024;
-
-const LAN_MAGIC: &str = "ZSCLIP_LAN_V1";
-const LAN_PROTOCOL: u32 = 1;
-const HTTP_MAX_BODY: usize = 12 * 1024 * 1024;
-const DISCOVERY_INTERVAL_MS: u64 = 5000;
-const LAN_FILE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
-const LAN_FILE_CHUNK_BYTES: usize = 512 * 1024;
 const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
-const MOBILE_IMAGE_LIST_LIMIT: i64 = 50;
 
 static SERVICE: OnceLock<Mutex<Option<LanServiceHandle>>> = OnceLock::new();
 static DISCOVERED: OnceLock<Mutex<Vec<LanDevice>>> = OnceLock::new();
 static INCOMING_CLIPS: OnceLock<Mutex<VecDeque<LanIncomingClip>>> = OnceLock::new();
 static PAIR_PROMPTS: OnceLock<Mutex<VecDeque<LanPairPrompt>>> = OnceLock::new();
-static PENDING_PAIRS: OnceLock<Mutex<Vec<PendingPair>>> = OnceLock::new();
+static PENDING_PAIRS: OnceLock<Mutex<Vec<LanPendingPair>>> = OnceLock::new();
 static SEEN_MESSAGES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static STATUS_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 static LATEST_CLIP: OnceLock<Mutex<Option<LanClipEnvelope>>> = OnceLock::new();
 static FILE_SESSIONS: OnceLock<Mutex<HashMap<String, FileSession>>> = OnceLock::new();
+static LOCAL_LAN_HOST_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static ORIGIN_SEQ: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct LanDevice {
-    pub(crate) device_id: String,
-    pub(crate) name: String,
-    pub(crate) addr: String,
-    pub(crate) tcp_port: u16,
-    pub(crate) token: String,
-    pub(crate) last_seen_ms: u64,
-    pub(crate) trusted: bool,
-    #[serde(default)]
-    pub(crate) capabilities: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct LanFileMeta {
-    pub(crate) name: String,
-    pub(crate) size: u64,
-    pub(crate) relative_path: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct LanClipEnvelope {
-    pub(crate) message_id: String,
-    pub(crate) origin_device_id: String,
-    pub(crate) origin_seq: u64,
-    pub(crate) kind: String,
-    pub(crate) hash: String,
-    pub(crate) created_at_ms: u64,
-    pub(crate) preview: String,
-    pub(crate) text: Option<String>,
-    pub(crate) image_png_base64: Option<String>,
-    #[serde(default)]
-    pub(crate) file_meta: Vec<LanFileMeta>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LanIncomingClip {
-    pub(crate) envelope: LanClipEnvelope,
-    pub(crate) source_device_name: String,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct LanPairPrompt {
-    pub(crate) pair_id: String,
-    pub(crate) code: String,
-    pub(crate) device_name: String,
-    pub(crate) addr: String,
-    pub(crate) created_at_ms: u64,
-}
 
 struct LanServiceHandle {
     stop: Arc<AtomicBool>,
-    device_id: String,
-    tcp_port: u16,
-    udp_port: u16,
+    state: LanServiceRuntimeState,
     workers: Vec<JoinHandle<()>>,
-}
-
-#[derive(Clone)]
-struct LanRuntimeConfig {
-    hwnd: isize,
-    device_id: String,
-    device_name: String,
-    tcp_port: u16,
-    udp_port: u16,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct DiscoveryPacket {
-    magic: String,
-    protocol: u32,
-    device_id: String,
-    name: String,
-    tcp_port: u16,
-    capabilities: Vec<String>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct PairRequestBody {
-    device_id: String,
-    name: String,
-    tcp_port: u16,
-    #[serde(default)]
-    capabilities: Vec<String>,
-}
-
-#[derive(Clone)]
-struct PendingPair {
-    prompt: LanPairPrompt,
-    requester_device_id: String,
-    requester_tcp_port: u16,
-    requester_capabilities: Vec<String>,
-    token: String,
-    accepted: bool,
-    rejected: bool,
-    created_at_ms: u64,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct StoredDeviceBook {
-    devices: Vec<StoredLanDevice>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct StoredLanDevice {
-    device_id: String,
-    name: String,
-    addr: String,
-    tcp_port: u16,
-    token_encrypted: String,
-    last_seen_ms: u64,
-    trusted: bool,
-    #[serde(default)]
-    capabilities: Vec<String>,
-}
-
-struct HttpRequest {
-    method: String,
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-    peer: SocketAddr,
 }
 
 struct FileSession {
@@ -195,10 +80,45 @@ struct MobileImageListItem {
     height: i64,
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct MobileItemListFile {
+    index: usize,
+    name: String,
+    size: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MobileItemListItem {
+    id: i64,
+    kind: String,
+    preview: String,
+    text: String,
+    source_app: String,
+    created_at: String,
+    size: u64,
+    width: Option<i64>,
+    height: Option<i64>,
+    files: Vec<MobileItemListFile>,
+}
+
+#[derive(Serialize)]
+struct WpsTaskPaneItem {
+    id: i64,
+    category: String,
+    kind: String,
+    preview: String,
+    text: String,
+    source_app: String,
+    created_at: String,
+    image_url: String,
+    image_width: i64,
+    image_height: i64,
+}
+
 pub(crate) fn ensure_device_identity(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     if settings.lan_device_id.trim().is_empty() {
-        settings.lan_device_id = format!("zsclip-{}", make_token(16));
+        settings.lan_device_id = format!("zsclip-{}", make_lan_token(16, now_ms()));
         changed = true;
     }
     if settings.lan_device_name.trim().is_empty() {
@@ -220,45 +140,32 @@ pub(crate) fn ensure_device_identity(settings: &mut AppSettings) -> bool {
     changed
 }
 
+fn lan_runtime_settings_from_app(settings: &AppSettings) -> LanRuntimeSettings {
+    LanRuntimeSettings {
+        lan_sync_enabled: settings.lan_sync_enabled,
+        wps_taskpane_enabled: settings.wps_taskpane_enabled,
+        device_id: settings.lan_device_id.clone(),
+        device_name: settings.lan_device_name.clone(),
+        tcp_port: settings.lan_tcp_port,
+        udp_port: settings.lan_udp_port,
+    }
+}
+
+fn windows_lan_runtime_context(event_sink: LanRuntimeEventSink) -> LanRuntimePlatformContext {
+    LanRuntimePlatformContext::new(
+        data_dir(),
+        event_sink,
+        encrypt_secret_for_storage,
+        decrypt_secret_from_storage,
+    )
+}
+
 pub(crate) fn next_origin_seq() -> u64 {
     ORIGIN_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
 pub(crate) fn now_ms_public() -> u64 {
     now_ms()
-}
-
-fn windows_capabilities() -> Vec<String> {
-    ["text", "image", "latest", "manual_file", "receive_clip"]
-        .iter()
-        .map(|value| value.to_string())
-        .collect()
-}
-
-fn normalize_capabilities(mut capabilities: Vec<String>, tcp_port: u16) -> Vec<String> {
-    capabilities = capabilities
-        .into_iter()
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .collect();
-    capabilities.sort_unstable();
-    capabilities.dedup();
-    if !capabilities.is_empty() {
-        return capabilities;
-    }
-    if tcp_port == 0 {
-        vec!["client_only".to_string(), "pull_only".to_string()]
-    } else {
-        windows_capabilities()
-    }
-}
-
-fn device_can_receive_clip(device: &LanDevice) -> bool {
-    device.trusted
-        && device.tcp_port > 0
-        && !device.capabilities.iter().any(|cap| {
-            cap.eq_ignore_ascii_case("client_only") || cap.eq_ignore_ascii_case("pull_only")
-        })
 }
 
 pub(crate) fn set_latest_clip(clip: Option<LanClipEnvelope>) {
@@ -275,10 +182,7 @@ pub(crate) fn set_latest_clip(clip: Option<LanClipEnvelope>) {
 
 fn remember_seen_message_key(key: String) -> bool {
     if let Ok(mut seen) = seen_slot().lock() {
-        if seen.len() > 4096 {
-            seen.clear();
-        }
-        if !seen.insert(key) {
+        if !remember_lan_seen_message_key(&mut seen, key) {
             return false;
         }
     }
@@ -286,52 +190,56 @@ fn remember_seen_message_key(key: String) -> bool {
 }
 
 pub(crate) fn refresh_service(hwnd: HWND, settings: &AppSettings) {
-    if !settings.lan_sync_enabled {
+    let runtime_settings = lan_runtime_settings_from_app(settings);
+    if !runtime_settings.runtime_enabled() {
         stop_service();
+        clear_lan_host_cache();
+        release_idle_memory();
         set_status_if_initialized("未启动");
         return;
     }
 
-    let device_id = settings.lan_device_id.trim().to_string();
-    if device_id.is_empty() {
+    let core_config = runtime_settings.core_config();
+    if core_config.lan_enabled && core_config.device_id.is_empty() {
         set_status("未生成设备 ID，请保存设置后重试");
         return;
     }
-    let desired_tcp = settings.lan_tcp_port.max(1);
-    let desired_udp = settings.lan_udp_port.max(1);
     let mut guard = service_slot().lock().unwrap();
     let should_restart = guard
         .as_ref()
-        .map(|handle| {
-            handle.device_id != device_id
-                || handle.tcp_port != desired_tcp
-                || handle.udp_port != desired_udp
-        })
+        .map(|handle| handle.state.requires_restart_for(&core_config))
         .unwrap_or(true);
     if !should_restart {
         return;
     }
     if let Some(handle) = guard.take() {
         stop_handle(handle);
+        clear_lan_host_cache();
     }
-    let config = LanRuntimeConfig {
-        hwnd: hwnd as isize,
-        device_id,
-        device_name: settings.lan_device_name.clone(),
-        tcp_port: desired_tcp,
-        udp_port: desired_udp,
-    };
+    let config = LanRuntimeConfig::from_core_config(
+        windows_lan_runtime_context(LanRuntimeEventSink::platform_main_window(hwnd as isize)),
+        core_config,
+    );
     match start_handle(config) {
         Ok(handle) => {
-            let firewall_note = ensure_firewall_rules(handle.tcp_port, handle.udp_port)
-                .err()
-                .map(|err| format!("；防火墙自动放行失败：{err}"));
-            set_status(&format!(
-                "已启动：UDP {} / TCP {}{}",
-                handle.udp_port,
-                handle.tcp_port,
-                firewall_note.unwrap_or_default()
-            ));
+            if handle.state.lan_enabled {
+                refresh_lan_host_cache_in_background();
+                let firewall_note =
+                    ensure_firewall_rules(handle.state.tcp_port, handle.state.udp_port)
+                        .err()
+                        .map(|err| format!("；防火墙自动放行失败：{err}"));
+                set_status(&format!(
+                    "已启动：UDP {} / TCP {}{}",
+                    handle.state.udp_port,
+                    handle.state.tcp_port,
+                    firewall_note.unwrap_or_default()
+                ));
+            } else {
+                set_status(&format!(
+                    "WPS task pane: http://127.0.0.1:{}/office/wps/taskpane",
+                    handle.state.tcp_port
+                ));
+            }
             *guard = Some(handle);
         }
         Err(err) => {
@@ -347,6 +255,55 @@ pub(crate) fn stop_service() {
             stop_handle(handle);
         }
     }
+    clear_lan_host_cache();
+}
+
+pub(crate) fn release_idle_memory() {
+    if SERVICE
+        .get()
+        .and_then(|slot| slot.lock().ok())
+        .and_then(|guard| guard.as_ref().map(|_| ()))
+        .is_some()
+    {
+        return;
+    }
+    if let Some(slot) = DISCOVERED.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
+    if let Some(slot) = INCOMING_CLIPS.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
+    if let Some(slot) = PAIR_PROMPTS.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
+    if let Some(slot) = PENDING_PAIRS.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
+    if let Some(slot) = SEEN_MESSAGES.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
+    set_latest_clip(None);
+    if let Some(slot) = FILE_SESSIONS.get() {
+        if let Ok(mut items) = slot.lock() {
+            items.clear();
+            items.shrink_to_fit();
+        }
+    }
 }
 
 pub(crate) fn trigger_discovery(settings: &AppSettings) {
@@ -354,22 +311,102 @@ pub(crate) fn trigger_discovery(settings: &AppSettings) {
     if ensure_device_identity(&mut s) {
         save_settings(&s);
     }
-    send_discovery_once(&LanRuntimeConfig {
-        hwnd: 0,
-        device_id: s.lan_device_id,
-        device_name: s.lan_device_name,
-        tcp_port: s.lan_tcp_port,
-        udp_port: s.lan_udp_port,
+    let mut runtime_settings = lan_runtime_settings_from_app(&s);
+    runtime_settings.lan_sync_enabled = true;
+    let config = LanRuntimeConfig::from_core_config(
+        windows_lan_runtime_context(LanRuntimeEventSink::None),
+        runtime_settings.core_config(),
+    );
+    send_discovery_once(&config);
+}
+
+pub(crate) fn mobile_setup_url(settings: &AppSettings) -> Option<String> {
+    let runtime_settings = lan_runtime_settings_from_app(settings);
+    if !runtime_settings.lan_sync_enabled {
+        return None;
+    }
+    let port = service_slot()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|handle| handle.state.tcp_port))
+        .unwrap_or(runtime_settings.normalized_tcp_port());
+    Some(format!("http://{}:{port}/mobile/setup", local_lan_host()))
+}
+
+pub(crate) fn mobile_pair_url(settings: &AppSettings) -> Option<String> {
+    let setup_url = mobile_setup_url(settings)?;
+    let host = setup_url
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://")
+        .trim_end_matches("/mobile/setup");
+    Some(format!("zsclip://pair?host={}", url_encode_component(host)))
+}
+
+pub(crate) fn lan_service_ready() -> bool {
+    service_slot()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.as_ref().map(|handle| handle.state.lan_enabled))
+        .unwrap_or(false)
+}
+
+fn lan_host_cache_slot() -> &'static Mutex<Option<String>> {
+    LOCAL_LAN_HOST_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn clear_lan_host_cache() {
+    if let Some(slot) = LOCAL_LAN_HOST_CACHE.get() {
+        if let Ok(mut host) = slot.lock() {
+            *host = None;
+        }
+    }
+}
+
+fn refresh_lan_host_cache_in_background() {
+    thread::spawn(|| {
+        let host = probe_local_lan_host();
+        if let Ok(mut cached) = lan_host_cache_slot().lock() {
+            *cached = Some(host);
+        }
     });
 }
 
+fn probe_local_lan_host() -> String {
+    UdpSocket::bind("0.0.0.0:0")
+        .and_then(|sock| {
+            let _ = sock.connect("8.8.8.8:80");
+            sock.local_addr()
+        })
+        .ok()
+        .and_then(|addr| match addr.ip() {
+            IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip.to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
+fn local_lan_host() -> String {
+    if let Ok(cached) = lan_host_cache_slot().lock() {
+        if let Some(host) = cached.as_ref().filter(|host| !host.trim().is_empty()) {
+            return host.clone();
+        }
+    }
+    let host = probe_local_lan_host();
+    if let Ok(mut cached) = lan_host_cache_slot().lock() {
+        *cached = Some(host.clone());
+    }
+    host
+}
+
 pub(crate) fn broadcast_clip(settings: &AppSettings, envelope: LanClipEnvelope) {
-    if !settings.lan_sync_enabled {
+    let runtime_settings = lan_runtime_settings_from_app(settings);
+    if !runtime_settings.lan_sync_enabled {
         return;
     }
-    let token_device_id = settings.lan_device_id.clone();
+    let token_device_id = runtime_settings.device_id;
     let devices = load_devices();
-    for device in devices.into_iter().filter(device_can_receive_clip) {
+    for device in devices.into_iter().filter(lan_device_can_receive_clip) {
         if device.addr.trim().is_empty() || device.token.trim().is_empty() {
             continue;
         }
@@ -424,19 +461,20 @@ pub(crate) fn push_small_files_to_trusted(settings: &AppSettings, paths: Vec<Str
 }
 
 fn push_files_to_trusted_inner(settings: &AppSettings, paths: Vec<String>, limit: u64, auto: bool) {
-    if !settings.lan_sync_enabled {
+    let runtime_settings = lan_runtime_settings_from_app(settings);
+    if !runtime_settings.lan_sync_enabled {
         set_status("局域网同步未开启，无法推送文件");
         return;
     }
     let devices: Vec<LanDevice> = trusted_devices()
         .into_iter()
-        .filter(device_can_receive_clip)
+        .filter(lan_device_can_receive_clip)
         .collect();
     if devices.is_empty() {
         set_status("没有可接收推送的信任设备，无法推送文件");
         return;
     }
-    let sender_id = settings.lan_device_id.clone();
+    let sender_id = runtime_settings.device_id;
     let mut total_size = 0u64;
     let mut skipped = 0usize;
     let mut files = Vec::new();
@@ -519,11 +557,7 @@ pub(crate) fn pending_pair_requests() -> Vec<LanPairPrompt> {
         .map(|pairs| {
             pairs
                 .iter()
-                .filter(|pair| {
-                    !pair.accepted
-                        && !pair.rejected
-                        && now.saturating_sub(pair.created_at_ms) < 10 * 60 * 1000
-                })
+                .filter(|pair| pair.is_active(now))
                 .map(|pair| pair.prompt.clone())
                 .collect()
         })
@@ -535,22 +569,8 @@ pub(crate) fn accept_pair_request(pair_id: &str) -> bool {
     let Some(pair) = pairs.iter_mut().find(|pair| pair.prompt.pair_id == pair_id) else {
         return false;
     };
-    pair.accepted = true;
-    pair.rejected = false;
-    let device = LanDevice {
-        device_id: pair.requester_device_id.clone(),
-        name: pair.prompt.device_name.clone(),
-        addr: pair.prompt.addr.clone(),
-        tcp_port: pair.requester_tcp_port,
-        token: pair.token.clone(),
-        last_seen_ms: now_ms(),
-        trusted: true,
-        capabilities: normalize_capabilities(
-            pair.requester_capabilities.clone(),
-            pair.requester_tcp_port,
-        ),
-    };
-    upsert_device(device);
+    pair.mark_accepted();
+    upsert_device(pair.to_trusted_device(now_ms()));
     set_status("已允许局域网设备配对");
     true
 }
@@ -558,29 +578,25 @@ pub(crate) fn accept_pair_request(pair_id: &str) -> bool {
 pub(crate) fn reject_pair_request(pair_id: &str) {
     if let Ok(mut pairs) = pending_pair_slot().lock() {
         if let Some(pair) = pairs.iter_mut().find(|pair| pair.prompt.pair_id == pair_id) {
-            pair.rejected = true;
-            pair.accepted = false;
+            pair.mark_rejected();
         }
     }
     set_status("已拒绝局域网设备配对");
 }
 
 pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: String) {
-    let host = normalize_host(&host, settings.lan_tcp_port);
+    let runtime_settings = lan_runtime_settings_from_app(&settings);
+    let host = normalize_lan_host(&host, runtime_settings.normalized_tcp_port());
     if host.is_empty() {
         set_status("请输入局域网设备 IP 或 IP:端口");
         return;
     }
     set_status("正在请求配对...");
-    let hwnd_value = hwnd as isize;
+    let event_sink = LanRuntimeEventSink::platform_main_window(hwnd as isize);
     thread::spawn(move || {
-        let body = serde_json::to_vec(&PairRequestBody {
-            device_id: settings.lan_device_id.clone(),
-            name: settings.lan_device_name.clone(),
-            tcp_port: settings.lan_tcp_port,
-            capabilities: windows_capabilities(),
-        })
-        .unwrap_or_default();
+        let body =
+            serde_json::to_vec(&runtime_settings.pair_request_body(lan_desktop_capabilities()))
+                .unwrap_or_default();
         let Ok(resp) = http_request(
             "POST",
             &host,
@@ -590,12 +606,12 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
             Duration::from_secs(5),
         ) else {
             set_status("配对请求失败：无法连接设备");
-            post_ready(hwnd_value);
+            post_ready(&event_sink);
             return;
         };
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&resp) else {
             set_status("配对请求失败：设备返回异常");
-            post_ready(hwnd_value);
+            post_ready(&event_sink);
             return;
         };
         let pair_id = value
@@ -610,11 +626,11 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
             .to_string();
         if pair_id.is_empty() || code.is_empty() {
             set_status("配对请求失败：对方没有返回配对会话");
-            post_ready(hwnd_value);
+            post_ready(&event_sink);
             return;
         }
         set_status("配对请求已发送，请在对方设备的局域网设置页点击允许");
-        post_ready(hwnd_value);
+        post_ready(&event_sink);
         for _ in 0..90 {
             thread::sleep(Duration::from_secs(1));
             let path = format!("/v1/pair/status?id={pair_id}");
@@ -646,7 +662,7 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
                         .get("tcp_port")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as u16)
-                        .unwrap_or(settings.lan_tcp_port);
+                        .unwrap_or(runtime_settings.normalized_tcp_port());
                     if !token.is_empty() && !device_id.is_empty() {
                         let addr = host.split(':').next().unwrap_or("").to_string();
                         upsert_device(LanDevice {
@@ -657,7 +673,7 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
                             token,
                             last_seen_ms: now_ms(),
                             trusted: true,
-                            capabilities: normalize_capabilities(
+                            capabilities: normalize_lan_capabilities(
                                 status
                                     .get("capabilities")
                                     .and_then(|v| v.as_array())
@@ -673,25 +689,25 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
                             ),
                         });
                         set_status("配对成功，已保存信任设备");
-                        post_ready(hwnd_value);
+                        post_ready(&event_sink);
                         return;
                     }
                 }
                 "rejected" => {
                     set_status("配对已被对方拒绝");
-                    post_ready(hwnd_value);
+                    post_ready(&event_sink);
                     return;
                 }
                 _ => {}
             }
         }
         set_status("配对超时");
-        post_ready(hwnd_value);
+        post_ready(&event_sink);
     });
 }
 
 pub(crate) fn status_summary(settings: &AppSettings) -> String {
-    if !settings.lan_sync_enabled {
+    if !lan_runtime_settings_from_app(settings).lan_sync_enabled {
         return "局域网同步：关闭".to_string();
     }
     status_slot()
@@ -716,7 +732,7 @@ pub(crate) fn trusted_summary() -> String {
         let is_mobile_client = device.capabilities.iter().any(|cap| {
             cap.eq_ignore_ascii_case("client_only") || cap.eq_ignore_ascii_case("pull_only")
         });
-        let mode = if device_can_receive_clip(device) {
+        let mode = if lan_device_can_receive_clip(device) {
             "自动同步"
         } else if is_mobile_client {
             "手机客户端：可推送/可拉取"
@@ -735,24 +751,25 @@ pub(crate) fn trusted_summary() -> String {
 
 fn start_handle(config: LanRuntimeConfig) -> std::io::Result<LanServiceHandle> {
     let stop = Arc::new(AtomicBool::new(false));
-    let listener = bind_tcp_listener(config.tcp_port)?;
+    let lifecycle = LanServiceLifecyclePlan::for_config(&config.core_config());
+    let listener = bind_tcp_listener(lifecycle.tcp_port, lifecycle.bind_loopback_only)?;
     let actual_tcp_port = listener.local_addr()?.port();
     listener.set_nonblocking(true)?;
     let mut tcp_config = config.clone();
     tcp_config.tcp_port = actual_tcp_port;
 
     let mut workers = Vec::new();
-    {
+    if lifecycle.start_tcp_server {
         let stop = stop.clone();
         let cfg = tcp_config.clone();
         workers.push(thread::spawn(move || tcp_server_loop(listener, cfg, stop)));
     }
-    {
+    if lifecycle.start_udp_listener {
         let stop = stop.clone();
         let cfg = tcp_config.clone();
         workers.push(thread::spawn(move || udp_discovery_listener(cfg, stop)));
     }
-    {
+    if lifecycle.start_udp_sender {
         let stop = stop.clone();
         let cfg = tcp_config.clone();
         workers.push(thread::spawn(move || udp_discovery_sender(cfg, stop)));
@@ -760,32 +777,32 @@ fn start_handle(config: LanRuntimeConfig) -> std::io::Result<LanServiceHandle> {
 
     Ok(LanServiceHandle {
         stop,
-        device_id: tcp_config.device_id,
-        tcp_port: actual_tcp_port,
-        udp_port: tcp_config.udp_port,
+        state: LanServiceRuntimeState::from_core_config(&tcp_config.core_config(), actual_tcp_port),
         workers,
     })
 }
 
 fn stop_handle(mut handle: LanServiceHandle) {
     handle.stop.store(true, Ordering::Relaxed);
-    let _ = TcpStream::connect(("127.0.0.1", handle.tcp_port));
-    let _ = UdpSocket::bind("0.0.0.0:0").and_then(|sock| {
-        sock.set_broadcast(true)?;
-        let addr = format!("255.255.255.255:{}", handle.udp_port);
-        let _ = sock.send_to(b"stop", addr);
-        Ok(())
-    });
+    let _ = TcpStream::connect(("127.0.0.1", handle.state.tcp_port));
+    let lifecycle = LanServiceLifecyclePlan::for_state(&handle.state);
+    if lifecycle.wake_udp_on_stop {
+        let _ = UdpSocket::bind("0.0.0.0:0").and_then(|sock| {
+            sock.set_broadcast(true)?;
+            let addr = format!("255.255.255.255:{}", handle.state.udp_port);
+            let _ = sock.send_to(b"stop", addr);
+            Ok(())
+        });
+    }
     for worker in handle.workers.drain(..) {
         let _ = worker.join();
     }
 }
 
-fn bind_tcp_listener(base: u16) -> std::io::Result<TcpListener> {
+fn bind_tcp_listener(base: u16, loopback_only: bool) -> std::io::Result<TcpListener> {
     let mut last_err = None;
-    for offset in 0..20 {
-        let port = base.saturating_add(offset);
-        match TcpListener::bind(("0.0.0.0", port)) {
+    for addr in lan_tcp_bind_candidates(base, loopback_only) {
+        match TcpListener::bind(addr) {
             Ok(listener) => return Ok(listener),
             Err(err) => last_err = Some(err),
         }
@@ -798,7 +815,7 @@ fn ensure_firewall_rules(tcp_port: u16, udp_port: u16) -> Result<(), String> {
         .map_err(|err| format!("读取程序路径失败 {err}"))?
         .to_string_lossy()
         .to_string();
-    let exe_key = hash_string(&exe).chars().take(8).collect::<String>();
+    let exe_key = lan_hash_string(&exe).chars().take(8).collect::<String>();
     ensure_firewall_rule(
         &format!("ZSClip LAN Sync TCP {tcp_port} {exe_key}"),
         "TCP",
@@ -928,10 +945,19 @@ fn handle_http_stream(mut stream: TcpStream, peer: SocketAddr, config: LanRuntim
     }
 }
 
+fn route_available_for_config(config: &LanRuntimeConfig, route: LanHttpRoute) -> bool {
+    LanHttpRoutePolicy::for_config(&config.core_config()).route_available_for_route(route)
+}
+
 fn route_http_request(stream: &mut TcpStream, req: HttpRequest, config: LanRuntimeConfig) {
-    let path = req.path.split('?').next().unwrap_or(req.path.as_str());
-    match (req.method.as_str(), path) {
-        ("GET", "/v1/info") => {
+    let path = req.path_without_query();
+    let route = lan_http_route_for(req.method.as_str(), path);
+    if !route_available_for_config(&config, route) {
+        let _ = write_http_json(stream, 404, &json!({"error":"not_found"}));
+        return;
+    }
+    match route {
+        LanHttpRoute::Info => {
             let _ = write_http_json(
                 stream,
                 200,
@@ -941,20 +967,30 @@ fn route_http_request(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
                     "device_id": config.device_id,
                     "name": config.device_name,
                     "tcp_port": config.tcp_port,
-                    "capabilities": windows_capabilities()
+                    "capabilities": lan_desktop_capabilities()
                 }),
             );
         }
-        ("POST", "/v1/pair/request") => handle_pair_request(stream, req, config),
-        ("GET", "/v1/pair/status") => handle_pair_status(stream, req, config),
-        ("POST", "/v1/clip") => handle_clip_post(stream, req, config),
-        ("GET", "/v1/latest") => handle_latest(stream, req),
-        ("GET", "/mobile/images") => handle_mobile_images(stream, req),
-        ("GET", "/mobile/image") => handle_mobile_image_download(stream, req),
-        ("POST", "/v1/file/start") => handle_file_start(stream, req, config),
-        ("POST", "/v1/file/chunk") => handle_file_chunk(stream, req, config),
-        ("POST", "/v1/file/finish") => handle_file_finish(stream, req, config),
-        _ => {
+        LanHttpRoute::PairRequest => handle_pair_request(stream, req, config),
+        LanHttpRoute::PairStatus => handle_pair_status(stream, req, config),
+        LanHttpRoute::Clip => handle_clip_post(stream, req, config),
+        LanHttpRoute::Latest => handle_latest(stream, req),
+        LanHttpRoute::WpsTaskpane => handle_wps_taskpane(stream, req),
+        LanHttpRoute::WpsItems => handle_wps_taskpane_items(stream, req),
+        LanHttpRoute::WpsImage => handle_wps_taskpane_image(stream, req),
+        LanHttpRoute::WpsEvents => handle_wps_taskpane_events(stream, req),
+        LanHttpRoute::MobileSetup => handle_mobile_setup(stream, req),
+        LanHttpRoute::MobileImages => handle_mobile_images(stream, req),
+        LanHttpRoute::MobileImage => handle_mobile_image_download(stream, req),
+        LanHttpRoute::MobileItems => handle_mobile_items(stream, req),
+        LanHttpRoute::MobileItemImage => handle_mobile_item_image(stream, req),
+        LanHttpRoute::MobileItemFile => handle_mobile_item_file(stream, req),
+        LanHttpRoute::MultiSyncManifest => handle_multi_sync_manifest(stream, req),
+        LanHttpRoute::FileStart => handle_file_start(stream, req, config),
+        LanHttpRoute::FileChunk => handle_file_chunk(stream, req, config),
+        LanHttpRoute::FileFinish => handle_file_finish(stream, req, config),
+        LanHttpRoute::MultiSyncFile => handle_multi_sync_file(stream, req),
+        LanHttpRoute::NotFound => {
             let _ = write_http_json(stream, 404, &json!({"error":"not_found"}));
         }
     }
@@ -969,9 +1005,9 @@ fn handle_pair_request(stream: &mut TcpStream, req: HttpRequest, config: LanRunt
         let _ = write_http_json(stream, 400, &json!({"error":"invalid_device"}));
         return;
     }
-    let pair_id = make_token(12);
-    let code = make_pair_code(&config.device_id, &body.device_id);
-    let token = make_token(32);
+    let pair_id = make_lan_token(12, now_ms());
+    let code = make_lan_pair_code(&config.device_id, &body.device_id, now_ms());
+    let token = make_lan_token(32, now_ms());
     let addr = match req.peer.ip() {
         IpAddr::V4(ip) => ip.to_string(),
         IpAddr::V6(ip) => ip.to_string(),
@@ -983,25 +1019,25 @@ fn handle_pair_request(stream: &mut TcpStream, req: HttpRequest, config: LanRunt
         addr,
         created_at_ms: now_ms(),
     };
-    let pending = PendingPair {
+    let pending = LanPendingPair {
         prompt: prompt.clone(),
         requester_device_id: body.device_id,
         requester_tcp_port: body.tcp_port,
-        requester_capabilities: normalize_capabilities(body.capabilities, body.tcp_port),
+        requester_capabilities: normalize_lan_capabilities(body.capabilities, body.tcp_port),
         token,
         accepted: false,
         rejected: false,
         created_at_ms: now_ms(),
     };
     if let Ok(mut pairs) = pending_pair_slot().lock() {
-        pairs.retain(|pair| now_ms().saturating_sub(pair.created_at_ms) < 10 * 60 * 1000);
+        pairs.retain(|pair| now_ms().saturating_sub(pair.created_at_ms) < LAN_PAIR_REQUEST_TTL_MS);
         pairs.push(pending);
     }
     if let Ok(mut q) = pair_prompt_slot().lock() {
         q.push_back(prompt);
     }
     set_status("收到配对请求，请在局域网设置页选择请求并点击允许");
-    post_ready(config.hwnd);
+    post_ready(&config.platform.event_sink);
     let _ = write_http_json(
         stream,
         200,
@@ -1012,30 +1048,11 @@ fn handle_pair_request(stream: &mut TcpStream, req: HttpRequest, config: LanRunt
 fn handle_pair_status(stream: &mut TcpStream, req: HttpRequest, config: LanRuntimeConfig) {
     let pair_id = query_param(&req.path, "id");
     let pairs = pending_pair_slot().lock().unwrap();
-    let Some(pair) = pairs.iter().find(|pair| pair.prompt.pair_id == pair_id) else {
-        let _ = write_http_json(stream, 404, &json!({"status":"missing"}));
-        return;
-    };
-    if pair.rejected {
-        let _ = write_http_json(stream, 200, &json!({"status":"rejected"}));
-        return;
-    }
-    if pair.accepted {
-        let _ = write_http_json(
-            stream,
-            200,
-            &json!({
-                "status":"accepted",
-                "token": pair.token,
-                "device_id": config.device_id,
-                "name": config.device_name,
-                "tcp_port": config.tcp_port,
-                "capabilities": windows_capabilities()
-            }),
-        );
-        return;
-    }
-    let _ = write_http_json(stream, 200, &json!({"status":"pending"}));
+    let pair = pairs.iter().find(|pair| pair.prompt.pair_id == pair_id);
+    let status = if pair.is_some() { 200 } else { 404 };
+    let value =
+        lan_pair_status_response_value(pair, &config.core_config(), lan_desktop_capabilities());
+    let _ = write_http_json(stream, status, &value);
 }
 
 fn handle_clip_post(stream: &mut TcpStream, req: HttpRequest, config: LanRuntimeConfig) {
@@ -1079,7 +1096,7 @@ fn handle_clip_post(stream: &mut TcpStream, req: HttpRequest, config: LanRuntime
     updated.addr = req.peer.ip().to_string();
     updated.last_seen_ms = now_ms();
     upsert_device(updated);
-    post_ready(config.hwnd);
+    post_ready(&config.platform.event_sink);
     let _ = write_http_json(stream, 200, &json!({"ok":true}));
 }
 
@@ -1093,6 +1110,90 @@ fn handle_latest(stream: &mut TcpStream, req: HttpRequest) {
         .ok()
         .and_then(|latest| latest.clone());
     let _ = write_http_json(stream, 200, &json!({"clip": latest}));
+}
+
+fn handle_wps_taskpane(stream: &mut TcpStream, req: HttpRequest) {
+    if !office_request_allowed(&req) {
+        let _ = write_http_json(stream, 403, &json!({"error":"loopback_required"}));
+        return;
+    }
+    let html = render_wps_taskpane_page();
+    let _ = write_http_bytes(
+        stream,
+        200,
+        "text/html; charset=utf-8",
+        html.as_bytes(),
+        &[],
+    );
+}
+
+fn handle_wps_taskpane_items(stream: &mut TcpStream, req: HttpRequest) {
+    if !office_request_allowed(&req) {
+        let _ = write_http_json(stream, 403, &json!({"error":"loopback_required"}));
+        return;
+    }
+    let limit = query_param(&req.path, "limit")
+        .parse::<i64>()
+        .unwrap_or(WPS_TASKPANE_ITEM_LIMIT)
+        .clamp(1, WPS_TASKPANE_ITEM_LIMIT);
+    let query = query_param_decoded(&req.path, "q");
+    let category = wps_taskpane_category(&query_param(&req.path, "category"));
+    let items = load_wps_taskpane_items(limit, &query, category).unwrap_or_default();
+    let _ = write_http_json(stream, 200, &json!({ "items": items }));
+}
+
+fn handle_wps_taskpane_image(stream: &mut TcpStream, req: HttpRequest) {
+    if !office_request_allowed(&req) {
+        let _ = write_http_json(stream, 403, &json!({"error":"loopback_required"}));
+        return;
+    }
+    let id = query_param(&req.path, "id").parse::<i64>().unwrap_or(0);
+    if id <= 0 {
+        let _ = write_http_json(stream, 400, &json!({"error":"invalid_image_id"}));
+        return;
+    }
+    let Ok(Some((png_bytes, preview))) = load_mobile_image_png(id) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"image_not_found"}));
+        return;
+    };
+    if png_bytes.len() > LAN_IMAGE_MAX_BYTES {
+        let _ = write_http_json(stream, 413, &json!({"error":"image_too_large"}));
+        return;
+    }
+    let filename = mobile_image_download_name(id, &preview);
+    let _ = write_http_bytes(
+        stream,
+        200,
+        "image/png",
+        &png_bytes,
+        &[(
+            "Content-Disposition",
+            format!("inline; filename=\"{filename}\""),
+        )],
+    );
+}
+
+fn handle_wps_taskpane_events(stream: &mut TcpStream, req: HttpRequest) {
+    if !office_request_allowed(&req) {
+        let _ = write_http_json(stream, 403, &json!({"error":"loopback_required"}));
+        return;
+    }
+    let _ = write_wps_taskpane_events(stream);
+}
+
+fn handle_mobile_setup(stream: &mut TcpStream, req: HttpRequest) {
+    let host = header_value(&req, "host")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("127.0.0.1:{LAN_TCP_PORT_DEFAULT}"));
+    let html = render_mobile_setup_page(&host);
+    let _ = write_http_bytes(
+        stream,
+        200,
+        "text/html; charset=utf-8",
+        html.as_bytes(),
+        &[],
+    );
 }
 
 fn handle_mobile_images(stream: &mut TcpStream, req: HttpRequest) {
@@ -1129,6 +1230,153 @@ fn handle_mobile_image_download(stream: &mut TcpStream, req: HttpRequest) {
     }
     let Ok(Some((png_bytes, preview))) = load_mobile_image_png(id) else {
         let _ = write_http_json(stream, 404, &json!({"error":"image_not_found"}));
+        return;
+    };
+    if png_bytes.len() > LAN_IMAGE_MAX_BYTES {
+        let _ = write_http_json(stream, 413, &json!({"error":"image_too_large"}));
+        return;
+    }
+    let filename = mobile_image_download_name(id, &preview);
+    let _ = write_http_bytes(
+        stream,
+        200,
+        "image/png",
+        &png_bytes,
+        &[(
+            "Content-Disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )],
+    );
+}
+
+fn handle_mobile_items(stream: &mut TcpStream, req: HttpRequest) {
+    let Some(device) = authenticated_device(&req) else {
+        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+        return;
+    };
+    let limit = query_param(&req.path, "limit")
+        .parse::<i64>()
+        .unwrap_or(MOBILE_ITEM_LIST_LIMIT_DEFAULT)
+        .clamp(1, MOBILE_ITEM_LIST_LIMIT_MAX);
+    let items = load_mobile_item_list(limit).unwrap_or_default();
+    let _ = write_http_json(
+        stream,
+        200,
+        &json!({
+            "items": items,
+            "device": {
+                "id": device.device_id,
+                "name": device.name,
+            }
+        }),
+    );
+}
+
+fn handle_mobile_item_image(stream: &mut TcpStream, req: HttpRequest) {
+    if authenticated_device(&req).is_none() {
+        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+        return;
+    }
+    let Some(id) = mobile_item_image_path_id(req.path_without_query()) else {
+        let _ = write_http_json(stream, 400, &json!({"error":"invalid_image_id"}));
+        return;
+    };
+    let Ok(Some((png_bytes, preview))) = load_mobile_item_image_png(id) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"image_not_found"}));
+        return;
+    };
+    if png_bytes.len() > LAN_IMAGE_MAX_BYTES {
+        let _ = write_http_json(stream, 413, &json!({"error":"image_too_large"}));
+        return;
+    }
+    let filename = mobile_image_download_name(id, &preview);
+    let _ = write_http_bytes(
+        stream,
+        200,
+        "image/png",
+        &png_bytes,
+        &[(
+            "Content-Disposition",
+            format!("inline; filename=\"{filename}\""),
+        )],
+    );
+}
+
+fn handle_mobile_item_file(stream: &mut TcpStream, req: HttpRequest) {
+    if authenticated_device(&req).is_none() {
+        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+        return;
+    }
+    let Some((id, index)) = mobile_item_file_path_parts(req.path_without_query()) else {
+        let _ = write_http_json(stream, 400, &json!({"error":"invalid_file_id"}));
+        return;
+    };
+    let Ok(Some(path)) = load_mobile_item_file_path(id, index) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"file_not_found"}));
+        return;
+    };
+    let Ok(meta) = fs::metadata(&path) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"file_not_found"}));
+        return;
+    };
+    if !meta.is_file() || meta.len() == 0 || meta.len() > LAN_FILE_MAX_BYTES {
+        let _ = write_http_json(stream, 400, &json!({"error":"invalid_file"}));
+        return;
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(safe_lan_file_name)
+        .unwrap_or_else(|| "file.bin".to_string());
+    let _ = write_http_file(
+        stream,
+        200,
+        "application/octet-stream",
+        &path,
+        meta.len(),
+        &[(
+            "Content-Disposition",
+            format!("attachment; filename=\"{filename}\""),
+        )],
+    );
+}
+
+fn handle_multi_sync_manifest(stream: &mut TcpStream, req: HttpRequest) {
+    let Some(device) = authenticated_mobile_query(&req) else {
+        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+        return;
+    };
+    let manifest = crate::multi_sync::latest_manifest("lan").ok();
+    let clip = manifest.as_ref().and_then(|manifest| manifest.clip.clone());
+    let _ = write_http_json(
+        stream,
+        200,
+        &json!({
+            "protocol": crate::multi_sync::MULTI_SYNC_PROTOCOL,
+            "version": crate::multi_sync::MULTI_SYNC_VERSION,
+            "transport": "lan",
+            "device": {
+                "id": device.device_id,
+                "name": device.name,
+            },
+            "clip": clip,
+        }),
+    );
+}
+
+fn handle_multi_sync_file(stream: &mut TcpStream, req: HttpRequest) {
+    if authenticated_mobile_query(&req).is_none() {
+        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+        return;
+    }
+    let path = req.path_without_query();
+    let name = path.trim_start_matches("/file/");
+    let Some(id) = crate::multi_sync::image_id_from_data_name(name) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"file_not_found"}));
+        return;
+    };
+    let Ok(Some((png_bytes, preview))) = load_mobile_image_png(id) else {
+        let _ = write_http_json(stream, 404, &json!({"error":"file_not_found"}));
         return;
     };
     if png_bytes.len() > LAN_IMAGE_MAX_BYTES {
@@ -1200,6 +1448,178 @@ fn load_mobile_image_list(limit: i64) -> rusqlite::Result<Vec<MobileImageListIte
     })
 }
 
+fn load_mobile_item_list(limit: i64) -> rusqlite::Result<Vec<MobileItemListItem>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, preview, COALESCE(source_app, ''), \
+             CASE WHEN kind='text' THEN COALESCE(text_data, '') ELSE COALESCE(file_paths, '') END, \
+             COALESCE(image_path, ''), COALESCE(length(image_data), 0), image_width, image_height, \
+             COALESCE(created_at, '') \
+             FROM items WHERE category=0 AND kind IN ('text', 'image', 'files') ORDER BY id DESC LIMIT ?",
+        )?;
+        let rows = stmt.query_map(params![limit.max(1)], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, String>(9)?,
+            ))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (
+                id,
+                kind,
+                preview,
+                source_app,
+                payload_blob,
+                image_path,
+                image_data_len,
+                width,
+                height,
+                created_at,
+            ) = row?;
+            if kind == "text" {
+                let text = payload_blob;
+                let size = text.as_bytes().len() as u64;
+                items.push(MobileItemListItem {
+                    id,
+                    kind,
+                    preview,
+                    text,
+                    source_app,
+                    created_at,
+                    size,
+                    width: None,
+                    height: None,
+                    files: Vec::new(),
+                });
+                continue;
+            }
+            if kind == "image" {
+                if let Some(size) = readable_mobile_image_size(&image_path, image_data_len) {
+                    items.push(MobileItemListItem {
+                        id,
+                        kind,
+                        preview,
+                        text: String::new(),
+                        source_app,
+                        created_at,
+                        size,
+                        width: (width > 0).then_some(width),
+                        height: (height > 0).then_some(height),
+                        files: Vec::new(),
+                    });
+                }
+                continue;
+            }
+            let files = mobile_file_list_from_blob(&payload_blob);
+            if !files.is_empty() {
+                let size = files.iter().map(|file| file.size).sum();
+                items.push(MobileItemListItem {
+                    id,
+                    kind,
+                    preview,
+                    text: String::new(),
+                    source_app,
+                    created_at,
+                    size,
+                    width: None,
+                    height: None,
+                    files,
+                });
+            }
+        }
+        Ok(items)
+    })
+}
+
+fn load_mobile_item_image_png(id: i64) -> rusqlite::Result<Option<(Vec<u8>, String)>> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT image_data, COALESCE(image_path, ''), preview \
+             FROM items WHERE category=0 AND kind='image' AND id=?",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<Vec<u8>>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map(|row| {
+            row.and_then(|(image_data, image_path, preview)| {
+                if let Some(bytes) = image_data {
+                    return Some((bytes, preview));
+                }
+                let image_path = image_path.trim();
+                if image_path.is_empty() {
+                    return None;
+                }
+                fs::read(image_path).ok().map(|bytes| (bytes, preview))
+            })
+        })
+    })
+}
+
+fn load_mobile_item_file_path(id: i64, index: usize) -> rusqlite::Result<Option<PathBuf>> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(file_paths, text_data, '') \
+             FROM items WHERE category=0 AND kind='files' AND id=?",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map(|blob| {
+            blob.and_then(|blob| {
+                mobile_paths_from_blob(&blob)
+                    .into_iter()
+                    .nth(index)
+                    .filter(|path| path.is_file())
+            })
+        })
+    })
+}
+
+fn mobile_file_list_from_blob(blob: &str) -> Vec<MobileItemListFile> {
+    mobile_paths_from_blob(blob)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, path)| {
+            let meta = fs::metadata(&path).ok()?;
+            if !meta.is_file() || meta.len() == 0 || meta.len() > LAN_FILE_MAX_BYTES {
+                return None;
+            }
+            Some(MobileItemListFile {
+                index,
+                name: path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(safe_lan_file_name)
+                    .unwrap_or_else(|| "file.bin".to_string()),
+                size: meta.len(),
+            })
+        })
+        .collect()
+}
+
+fn mobile_paths_from_blob(blob: &str) -> Vec<PathBuf> {
+    blob.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 fn readable_mobile_image_size(image_path: &str, image_data_len: i64) -> Option<u64> {
     let image_path = image_path.trim();
     if !image_path.is_empty() {
@@ -1213,6 +1633,165 @@ fn readable_mobile_image_size(image_path: &str, image_data_len: i64) -> Option<u
         return Some(image_data_len as u64);
     }
     None
+}
+
+fn office_request_allowed(req: &HttpRequest) -> bool {
+    req.peer.ip().is_loopback()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WpsTaskPaneCategory {
+    Records,
+    Phrases,
+}
+
+fn wps_taskpane_category(value: &str) -> WpsTaskPaneCategory {
+    if value.trim().eq_ignore_ascii_case("phrases") {
+        WpsTaskPaneCategory::Phrases
+    } else {
+        WpsTaskPaneCategory::Records
+    }
+}
+
+fn load_wps_taskpane_items(
+    limit: i64,
+    query: &str,
+    category: WpsTaskPaneCategory,
+) -> rusqlite::Result<Vec<WpsTaskPaneItem>> {
+    let query = query.trim().to_lowercase();
+    let category_id = match category {
+        WpsTaskPaneCategory::Records => 0,
+        WpsTaskPaneCategory::Phrases => 1,
+    };
+    let category_name = match category {
+        WpsTaskPaneCategory::Records => "records",
+        WpsTaskPaneCategory::Phrases => "phrases",
+    };
+    let kind_filter = match category {
+        WpsTaskPaneCategory::Records => "('text', 'image')",
+        WpsTaskPaneCategory::Phrases => "('text', 'phrase')",
+    };
+    let sql = format!(
+        "SELECT id, kind, COALESCE(preview, ''), COALESCE(text_data, ''), \
+         COALESCE(source_app, ''), COALESCE(created_at, ''), \
+         COALESCE(image_path, ''), COALESCE(length(image_data), 0), image_width, image_height \
+         FROM items WHERE category=? AND kind IN {kind_filter} \
+         ORDER BY pinned DESC, id DESC LIMIT ?"
+    );
+    with_db(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![category_id, limit.max(1)], |row| {
+            let id = row.get::<_, i64>(0)?;
+            let kind = row.get::<_, String>(1)?;
+            Ok((
+                id,
+                kind,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, i64>(9)?,
+            ))
+        })?;
+        let mut items = Vec::new();
+        for row in rows {
+            let (
+                id,
+                kind,
+                preview,
+                text,
+                source_app,
+                created_at,
+                image_path,
+                image_data_len,
+                image_width,
+                image_height,
+            ) = row?;
+            if kind == "image" && readable_mobile_image_size(&image_path, image_data_len).is_none()
+            {
+                continue;
+            }
+            if kind != "image" && text.trim().is_empty() {
+                continue;
+            }
+            if !query.is_empty() {
+                let haystack = format!(
+                    "{}\n{}\n{}",
+                    preview.to_lowercase(),
+                    text.to_lowercase(),
+                    source_app.to_lowercase()
+                );
+                if !haystack.contains(&query) {
+                    continue;
+                }
+            }
+            items.push(WpsTaskPaneItem {
+                id,
+                category: category_name.to_string(),
+                kind: kind.clone(),
+                preview,
+                text,
+                source_app,
+                created_at,
+                image_url: if kind == "image" {
+                    format!("/office/wps/image?id={id}")
+                } else {
+                    String::new()
+                },
+                image_width,
+                image_height,
+            });
+        }
+        Ok(items)
+    })
+}
+
+fn wps_taskpane_fingerprint() -> rusqlite::Result<String> {
+    with_db(|conn| {
+        let records: (i64, i64, String) = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0), COUNT(*), COALESCE(MAX(created_at), '') \
+             FROM items WHERE category=0 AND kind IN ('text', 'image')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let phrases: (i64, i64, String) = conn.query_row(
+            "SELECT COALESCE(MAX(id), 0), COUNT(*), COALESCE(MAX(created_at), '') \
+             FROM items WHERE category=1 AND kind IN ('text', 'phrase')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        Ok(format!(
+            "{}:{}:{}|{}:{}:{}",
+            records.0, records.1, records.2, phrases.0, phrases.1, phrases.2
+        ))
+    })
+}
+
+fn write_wps_taskpane_events(stream: &mut TcpStream) -> std::io::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n"
+    )?;
+    stream.write_all(b"event: ready\ndata: {}\n\n")?;
+    stream.flush()?;
+    let mut last = wps_taskpane_fingerprint().unwrap_or_default();
+    for _ in 0..240 {
+        thread::sleep(Duration::from_millis(500));
+        let next = wps_taskpane_fingerprint().unwrap_or_default();
+        if next != last {
+            last = next;
+            stream.write_all(b"event: changed\ndata: {}\n\n")?;
+        } else {
+            stream.write_all(b": keepalive\n\n")?;
+        }
+        if stream.flush().is_err() {
+            break;
+        }
+    }
+    Ok(())
 }
 
 fn load_mobile_image_png(id: i64) -> rusqlite::Result<Option<(Vec<u8>, String)>> {
@@ -1314,6 +1893,320 @@ fn render_mobile_images_page(
     html
 }
 
+fn render_wps_taskpane_page() -> &'static str {
+    r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>剪贴板</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;background:#f5f6f8;color:#202124;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{padding:12px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+.tab{border:1px solid #c8d0dc;border-radius:7px;background:#fff;color:#374151;padding:8px 6px;font-size:13px;cursor:pointer}
+.tab.active{background:#2563eb;border-color:#2563eb;color:#fff;font-weight:650}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+input{flex:1;min-width:0;border:1px solid #d7dbe2;border-radius:6px;padding:8px 9px;font-size:13px;background:#fff;color:#202124}
+button{border:1px solid #c8d0dc;border-radius:6px;background:#fff;color:#1f2937;padding:8px 10px;font-size:13px;cursor:pointer}
+button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+.status{font-size:12px;color:#667085;margin:7px 0 10px;min-height:18px}
+.item{background:#fff;border:1px solid #e3e7ee;border-radius:7px;padding:10px;margin:8px 0}
+.preview{font-size:13px;font-weight:650;color:#111827;line-height:1.35;word-break:break-word}
+.text{font-size:12px;color:#4b5563;line-height:1.45;white-space:pre-wrap;word-break:break-word;max-height:72px;overflow:hidden;margin-top:5px}
+.meta{font-size:11px;color:#7b8494;margin-top:7px;display:flex;gap:8px;flex-wrap:wrap}
+.actions{display:flex;gap:8px;margin-top:9px}
+.imageBox{height:76px;border:1px solid #e5e7eb;border-radius:6px;background:#f8fafc;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:12px;margin-top:7px}
+.empty{border:1px dashed #c8d0dc;border-radius:7px;color:#667085;padding:14px;background:#fff;font-size:13px;line-height:1.45}
+</style>
+</head>
+<body>
+<main>
+<div class="tabs">
+  <button class="tab active" data-category="records">复制记录</button>
+  <button class="tab" data-category="phrases">常用短语</button>
+</div>
+<div class="bar">
+  <input id="q" type="search" placeholder="搜索剪贴板">
+  <button id="refresh" title="刷新">刷新</button>
+</div>
+<div id="status" class="status">正在加载...</div>
+<div id="list"></div>
+</main>
+<script>
+const state = { items: [], category: 'records', polling: 0, eventSource: null };
+const IMAGE_ENDPOINT = '/office/wps/image';
+const statusEl = document.getElementById('status');
+const listEl = document.getElementById('list');
+const queryEl = document.getElementById('q');
+const refreshEl = document.getElementById('refresh');
+const tabEls = Array.from(document.querySelectorAll('.tab'));
+
+function escapeText(value) {
+  return String(value || '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function wpsApp() {
+  if (window.wps && typeof window.wps.WpsApplication === 'function') {
+    return window.wps.WpsApplication();
+  }
+  if (window.Application) {
+    return window.Application;
+  }
+  return null;
+}
+
+function insertTextIntoWps(text) {
+  const app = wpsApp();
+  if (app && app.Selection && typeof app.Selection.TypeText === 'function') {
+    app.Selection.TypeText(text);
+    return true;
+  }
+  if (window.Selection && typeof window.Selection.TypeText === 'function') {
+    window.Selection.TypeText(text);
+    return true;
+  }
+  return false;
+}
+
+function absoluteUrl(path) {
+  return new URL(path, window.location.href).href;
+}
+
+function insertImageIntoWps(item) {
+  const app = wpsApp();
+  if (!app || !item.id) return false;
+  const imageUrl = absoluteUrl(item.image_url || `${IMAGE_ENDPOINT}?id=${item.id}`);
+  try {
+    const doc = typeof app.ActiveDocument === 'function' ? app.ActiveDocument() : app.ActiveDocument;
+    const selection = app.Selection || window.Selection || null;
+    const range = selection && selection.Range ? selection.Range : undefined;
+    if (doc && doc.InlineShapes && typeof doc.InlineShapes.AddPicture === 'function') {
+      doc.InlineShapes.AddPicture({
+        FileName: imageUrl,
+        LinkToFile: false,
+        SaveWithDocument: true,
+        Range: range
+      });
+      return true;
+    }
+    if (doc && doc.InlineShapes && doc.InlineShapes.AddPicture) {
+      doc.InlineShapes.AddPicture(imageUrl, false, true, range);
+      return true;
+    }
+  } catch (_) {}
+  try {
+    const selection = app.Selection || window.Selection || null;
+    if (selection && selection.InlineShapes && typeof selection.InlineShapes.AddPicture === 'function') {
+      selection.InlineShapes.AddPicture(imageUrl, false, true);
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+async function copyFallback(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+  return false;
+}
+
+async function useItem(id) {
+  const item = state.items.find(entry => entry.id === id);
+  if (!item) return;
+  if (item.kind === 'image') {
+    if (insertImageIntoWps(item)) {
+      statusEl.textContent = '图片已插入到 WPS 文档。';
+    } else {
+      statusEl.textContent = '图片插入失败。';
+    }
+    return;
+  }
+  if (insertTextIntoWps(item.text)) {
+    statusEl.textContent = '已插入到 WPS 文档。';
+    return;
+  }
+  try {
+    if (await copyFallback(item.text)) {
+      statusEl.textContent = '无法调用 WPS API，已改为复制文本。';
+    } else {
+      statusEl.textContent = '无法调用 WPS API，请手动选择并复制文本。';
+    }
+  } catch (_) {
+    statusEl.textContent = '无法调用 WPS API，请手动选择并复制文本。';
+  }
+}
+
+function render() {
+  if (!state.items.length) {
+    const text = state.category === 'phrases'
+      ? '暂无常用短语。'
+      : '暂无复制记录。请先在 Windows 复制文本或图片。';
+    listEl.innerHTML = `<div class="empty">${text}</div>`;
+    return;
+  }
+  listEl.innerHTML = state.items.map(item => {
+    const preview = item.preview || (item.text || '').slice(0, 80) || `Clip ${item.id}`;
+    const source = item.source_app ? `<span>${escapeText(item.source_app)}</span>` : '';
+    const created = item.created_at ? `<span>${escapeText(item.created_at)}</span>` : '';
+    const isImage = item.kind === 'image';
+    const body = isImage
+      ? `<div class="imageBox">图片 ${item.image_width || ''}${item.image_height ? ` x ${item.image_height}` : ''}</div>`
+      : `<div class="text">${escapeText(item.text)}</div>`;
+    const action = isImage ? '插入图片' : '插入';
+    return `<section class="item">
+      <div class="preview">${escapeText(preview)}</div>
+      ${body}
+      <div class="meta">${source}${created}</div>
+      <div class="actions">
+        <button class="primary" data-insert="${item.id}">${action}</button>
+      </div>
+    </section>`;
+  }).join('');
+  listEl.querySelectorAll('[data-insert]').forEach(button => {
+    button.addEventListener('click', () => useItem(Number(button.dataset.insert)));
+  });
+}
+
+async function loadItems() {
+  statusEl.textContent = '正在加载...';
+  const params = new URLSearchParams({ limit: '80', category: state.category });
+  const q = queryEl.value.trim();
+  if (q) params.set('q', q);
+  const res = await fetch(`/office/wps/items?${params}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  state.items = Array.isArray(data.items) ? data.items : [];
+  statusEl.textContent = `${state.items.length} 条${state.category === 'phrases' ? '常用短语' : '复制记录'}`;
+  render();
+}
+
+function setCategory(category) {
+  state.category = category;
+  tabEls.forEach(tab => tab.classList.toggle('active', tab.dataset.category === category));
+  loadItems().catch(err => statusEl.textContent = `加载失败: ${err.message}`);
+}
+
+function startPolling() {
+  if (state.polling) return;
+  state.polling = window.setInterval(() => {
+    loadItems().catch(err => statusEl.textContent = `加载失败: ${err.message}`);
+  }, 3000);
+}
+
+function startEvents() {
+  if (!window.EventSource) {
+    startPolling();
+    return;
+  }
+  try {
+    const es = new EventSource('/office/wps/events');
+    state.eventSource = es;
+    es.addEventListener('changed', () => {
+      loadItems().catch(err => statusEl.textContent = `加载失败: ${err.message}`);
+    });
+    es.onerror = () => {
+      if (state.eventSource) {
+        state.eventSource.close();
+        state.eventSource = null;
+      }
+      startPolling();
+    };
+  } catch (_) {
+    startPolling();
+  }
+}
+
+refreshEl.addEventListener('click', () => loadItems().catch(err => {
+  statusEl.textContent = `加载失败: ${err.message}`;
+}));
+queryEl.addEventListener('input', () => {
+  clearTimeout(window.__zsclipSearchTimer);
+  window.__zsclipSearchTimer = setTimeout(() => {
+    loadItems().catch(err => statusEl.textContent = `加载失败: ${err.message}`);
+  }, 180);
+});
+tabEls.forEach(tab => tab.addEventListener('click', () => setCategory(tab.dataset.category)));
+loadItems().catch(err => {
+  statusEl.textContent = `加载失败: ${err.message}`;
+  listEl.innerHTML = '<div class="empty">请先启动剪贴板，并在插件页启用 WPS 任务窗格。</div>';
+});
+startEvents();
+</script>
+</body>
+</html>"#
+}
+
+fn render_mobile_setup_page(host: &str) -> String {
+    let safe_host = host
+        .trim()
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    let pair_link = format!("zsclip://pair?host={}", url_encode_component(safe_host));
+    let setup_url = format!("http://{safe_host}/mobile/setup");
+    let manifest_hint = format!(
+        "http://{safe_host}/{}?device=<device_id>&token=<token>",
+        crate::multi_sync::MULTI_SYNC_MANIFEST_FILE_NAME
+    );
+    let images_hint = format!("http://{safe_host}/mobile/images?device=<device_id>&token=<token>");
+    let mut html = String::new();
+    html.push_str("<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">");
+    html.push_str("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+    html.push_str("<title>ZSClip 移动端连接</title><style>");
+    html.push_str("body{margin:0;background:#f6f7f9;color:#202124;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}");
+    html.push_str("main{max-width:760px;margin:0 auto;padding:18px}h1{font-size:24px;margin:8px 0 10px}.card{background:#fff;border:1px solid #e3e6ea;border-radius:8px;padding:14px;margin:10px 0}.btn{display:inline-block;margin-top:10px;padding:10px 13px;background:#0a84ff;color:#fff;border-radius:7px;text-decoration:none;font-weight:600}.meta{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;word-break:break-all;color:#3c4043;background:#f1f3f4;border-radius:6px;padding:8px}.muted{color:#69717c;line-height:1.5}.qrgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:12px}.qrbox{border:1px solid #e6e8ec;border-radius:8px;padding:12px;background:#fbfcfd}.qrbox strong{display:block;margin-bottom:8px}.qr svg{width:168px;height:168px;display:block;background:#fff;border-radius:6px}</style></head><body><main>");
+    html.push_str("<h1>ZSClip 移动端连接</h1>");
+    html.push_str("<section class=\"card\"><strong>Android</strong><p class=\"muted\">扫描二维码或打开下面链接后，App 会填入 Windows 地址，再按现有流程请求配对；Windows 仍需要点击允许。</p><a class=\"btn\" href=\"");
+    html.push_str(&html_escape(&pair_link));
+    html.push_str("\">打开 Android 配对</a><p class=\"meta\">");
+    html.push_str(&html_escape(&pair_link));
+    html.push_str("</p></section>");
+    html.push_str("<section class=\"card\"><strong>扫码连接</strong><p class=\"muted\">Android 扫左侧二维码发起配对；iOS 扫右侧二维码打开移动端连接页。</p><div class=\"qrgrid\"><div class=\"qrbox\"><strong>Android 配对</strong><div class=\"qr\">");
+    html.push_str(&render_qr_svg(&pair_link));
+    html.push_str(
+        "</div></div><div class=\"qrbox\"><strong>iOS / 浏览器</strong><div class=\"qr\">",
+    );
+    html.push_str(&render_qr_svg(&setup_url));
+    html.push_str("</div></div></div></section>");
+    html.push_str("<section class=\"card\"><strong>iOS 快捷指令</strong><p class=\"muted\">iOS 不需要安装原生 App。先按文档保存 host、device_id、token，再使用图片列表或清单 URL。</p><p class=\"meta\">");
+    html.push_str(&html_escape(&setup_url));
+    html.push_str("</p></section>");
+    html.push_str("<section class=\"card\"><strong>多端同步入口</strong><p class=\"muted\">文本放在清单里，图片通过 dataName 按需下载。</p><p class=\"meta\">");
+    html.push_str(&html_escape(&manifest_hint));
+    html.push_str("</p><p class=\"meta\">");
+    html.push_str(&html_escape(&images_hint));
+    html.push_str("</p></section>");
+    html.push_str("</main></body></html>");
+    html
+}
+
+fn render_qr_svg(payload: &str) -> String {
+    use qrcodegen::{QrCode, QrCodeEcc};
+
+    let Ok(qr) = QrCode::encode_text(payload, QrCodeEcc::Medium) else {
+        return "<span>二维码生成失败</span>".to_string();
+    };
+    let border = 4;
+    let size = qr.size();
+    let view = size + border * 2;
+    let mut path = String::new();
+    for y in 0..size {
+        for x in 0..size {
+            if qr.get_module(x, y) {
+                path.push_str(&format!("M{} {}h1v1h-1z", x + border, y + border));
+            }
+        }
+    }
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {view} {view}\" role=\"img\" aria-label=\"ZSClip QR\"><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><path fill=\"#111\" d=\"{path}\"/></svg>"
+    )
+}
+
 fn unauthorized_mobile_html() -> String {
     "<!doctype html><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>未授权</title><body style=\"font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px;background:#f6f7f9;color:#202124\"><h1>未授权</h1><p>请先完成 ZSClip 局域网配对，再从手机端打开图片下载页。</p></body>".to_string()
 }
@@ -1362,18 +2255,6 @@ fn png_dimensions_from_bytes(bytes: &[u8]) -> Option<(usize, usize)> {
     Some((info.width as usize, info.height as usize))
 }
 
-fn file_session_key(source_device_id: &str, transfer_id: &str) -> String {
-    format!("{}:{}", source_device_id.trim(), transfer_id.trim())
-}
-
-fn file_content_hasher(total_size: u64) -> crc32fast::Hasher {
-    let mut hasher = crc32fast::Hasher::new();
-    hasher.update(&(b"file".len() as u64).to_le_bytes());
-    hasher.update(b"file");
-    hasher.update(&total_size.to_le_bytes());
-    hasher
-}
-
 fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRuntimeConfig) {
     let Some(device) = authenticated_device(&req) else {
         let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
@@ -1388,7 +2269,7 @@ fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let file_name = safe_file_name(
+    let file_name = safe_lan_file_name(
         value
             .get("file_name")
             .and_then(|v| v.as_str())
@@ -1403,7 +2284,7 @@ fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         return;
     }
     let rel_dir = PathBuf::from("lan_received")
-        .join(safe_file_name(&device.device_id))
+        .join(safe_lan_file_name(&device.device_id))
         .join((now_ms() / 86_400_000).to_string());
     let dir = data_dir().join(&rel_dir);
     if fs::create_dir_all(&dir).is_err() {
@@ -1427,9 +2308,9 @@ fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         file_name,
         total_size,
         received: 0,
-        content_crc: file_content_hasher(total_size),
+        content_crc: lan_file_content_hasher(total_size),
     };
-    let key = file_session_key(&device.device_id, &transfer_id);
+    let key = lan_file_session_key(&device.device_id, &transfer_id);
     if let Ok(mut sessions) = file_session_slot().lock() {
         if let Some(old) = sessions.insert(key, session) {
             let _ = fs::remove_file(old.part_path);
@@ -1464,7 +2345,7 @@ fn handle_file_chunk(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         let _ = write_http_json(stream, 413, &json!({"error":"chunk_too_large"}));
         return;
     }
-    let key = file_session_key(&device.device_id, transfer_id);
+    let key = lan_file_session_key(&device.device_id, transfer_id);
     let mut sessions = file_session_slot().lock().unwrap();
     let Some(session) = sessions.get_mut(&key) else {
         let _ = write_http_json(stream, 404, &json!({"error":"missing_session"}));
@@ -1505,7 +2386,7 @@ fn handle_file_finish(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
         .get("transfer_id")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
-    let key = file_session_key(&device.device_id, transfer_id);
+    let key = lan_file_session_key(&device.device_id, transfer_id);
     let Some(session) = file_session_slot().lock().unwrap().remove(&key) else {
         let _ = write_http_json(stream, 404, &json!({"error":"missing_session"}));
         return;
@@ -1551,7 +2432,7 @@ fn handle_file_finish(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
             source_device_name: session.source_device_name,
         });
     }
-    post_ready(config.hwnd);
+    post_ready(&config.platform.event_sink);
     let _ = write_http_json(stream, 200, &json!({"ok":true}));
 }
 
@@ -1579,20 +2460,16 @@ fn send_discovery_once(config: &LanRuntimeConfig) {
         return;
     };
     let _ = sock.set_broadcast(true);
-    let packet = DiscoveryPacket {
-        magic: LAN_MAGIC.to_string(),
-        protocol: LAN_PROTOCOL,
-        device_id: config.device_id.clone(),
-        name: config.device_name.clone(),
-        tcp_port: config.tcp_port,
-        capabilities: vec![
+    let packet = DiscoveryPacket::new(
+        &config.core_config(),
+        vec![
             "text".to_string(),
             "image".to_string(),
             "latest".to_string(),
             "manual_file".to_string(),
             "receive_clip".to_string(),
         ],
-    };
+    );
     let body = serde_json::to_vec(&packet).unwrap_or_default();
     let _ = sock.send_to(
         &body,
@@ -1614,7 +2491,7 @@ fn udp_discovery_listener(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
         let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..len]) else {
             continue;
         };
-        if packet.magic != LAN_MAGIC || packet.protocol != LAN_PROTOCOL {
+        if !packet.uses_current_protocol() {
             continue;
         }
         if packet.device_id == config.device_id {
@@ -1628,7 +2505,7 @@ fn udp_discovery_listener(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
             token: String::new(),
             last_seen_ms: now_ms(),
             trusted: false,
-            capabilities: normalize_capabilities(packet.capabilities, packet.tcp_port),
+            capabilities: normalize_lan_capabilities(packet.capabilities, packet.tcp_port),
         };
         if let Some(trusted) = load_devices()
             .into_iter()
@@ -1639,296 +2516,12 @@ fn udp_discovery_listener(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
             upsert_device(device.clone());
         }
         upsert_discovered(device);
-        post_ready(config.hwnd);
+        post_ready(&config.platform.event_sink);
     }
-}
-
-fn read_http_request(stream: &mut TcpStream, peer: SocketAddr) -> std::io::Result<HttpRequest> {
-    let mut buf = Vec::with_capacity(8192);
-    let mut tmp = [0u8; 4096];
-    let mut header_end = None;
-    while header_end.is_none() && buf.len() < 64 * 1024 {
-        let n = stream.read(&mut tmp)?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&tmp[..n]);
-        header_end = find_header_end(&buf);
-    }
-    let Some(header_end) = header_end else {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
-    };
-    let header_text = String::from_utf8_lossy(&buf[..header_end]);
-    let mut lines = header_text.lines();
-    let request_line = lines.next().unwrap_or_default();
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or("/").to_string();
-    let mut headers = Vec::new();
-    let mut content_len = 0usize;
-    for line in lines {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        let name = name.trim().to_string();
-        let value = value.trim().to_string();
-        if name.eq_ignore_ascii_case("content-length") {
-            content_len = value.parse::<usize>().unwrap_or(0);
-        }
-        headers.push((name, value));
-    }
-    if content_len > HTTP_MAX_BODY {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidData));
-    }
-    let body_start = header_end + 4;
-    let mut body = buf.get(body_start..).unwrap_or_default().to_vec();
-    while body.len() < content_len {
-        let n = stream.read(&mut tmp)?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&tmp[..n]);
-    }
-    body.truncate(content_len);
-    Ok(HttpRequest {
-        method,
-        path,
-        headers,
-        body,
-        peer,
-    })
-}
-
-fn write_http_json(
-    stream: &mut TcpStream,
-    status: u16,
-    value: &serde_json::Value,
-) -> std::io::Result<()> {
-    let body = serde_json::to_vec(value).unwrap_or_else(|_| b"{}".to_vec());
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        413 => "Payload Too Large",
-        501 => "Not Implemented",
-        _ => "OK",
-    };
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        status,
-        reason,
-        body.len()
-    )?;
-    stream.write_all(&body)
-}
-
-fn write_http_bytes(
-    stream: &mut TcpStream,
-    status: u16,
-    content_type: &str,
-    body: &[u8],
-    extra_headers: &[(&str, String)],
-) -> std::io::Result<()> {
-    write!(
-        stream,
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
-        status,
-        http_reason(status),
-        content_type,
-        body.len()
-    )?;
-    for (name, value) in extra_headers {
-        write!(stream, "{name}: {value}\r\n")?;
-    }
-    stream.write_all(b"\r\n")?;
-    stream.write_all(body)
-}
-
-fn http_reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        413 => "Payload Too Large",
-        501 => "Not Implemented",
-        _ => "OK",
-    }
-}
-
-fn http_request(
-    method: &str,
-    host: &str,
-    path: &str,
-    headers: &[(&str, &str)],
-    body: Option<&[u8]>,
-    timeout: Duration,
-) -> std::io::Result<Vec<u8>> {
-    let mut stream = TcpStream::connect(host)?;
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    let body = body.unwrap_or_default();
-    write!(
-        stream,
-        "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
-        method,
-        path,
-        host,
-        body.len()
-    )?;
-    for (name, value) in headers {
-        write!(stream, "{name}: {value}\r\n")?;
-    }
-    stream.write_all(b"\r\n")?;
-    stream.write_all(body)?;
-    let mut resp = Vec::new();
-    stream.read_to_end(&mut resp)?;
-    let Some(header_end) = find_header_end(&resp) else {
-        return Ok(resp);
-    };
-    Ok(resp.get(header_end + 4..).unwrap_or_default().to_vec())
 }
 
 fn push_one_file(sender_id: &str, device: &LanDevice, path: &PathBuf) -> std::io::Result<()> {
-    let metadata = fs::metadata(path)?;
-    let total_size = metadata.len();
-    if total_size == 0 || total_size > LAN_FILE_MAX_BYTES {
-        return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
-    }
-    let file_name = path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("file.bin")
-        .to_string();
-    let transfer_id = make_token(12);
-    let addr = format!("{}:{}", device.addr, device.tcp_port);
-    let auth_headers = [
-        ("Content-Type", "application/json"),
-        ("X-ZSClip-Device", sender_id),
-        ("X-ZSClip-Token", device.token.as_str()),
-    ];
-    let start = json!({
-        "transfer_id": &transfer_id,
-        "file_name": &file_name,
-        "total_size": total_size
-    });
-    let start_body = serde_json::to_vec(&start).unwrap_or_default();
-    http_request(
-        "POST",
-        &addr,
-        "/v1/file/start",
-        &auth_headers,
-        Some(&start_body),
-        Duration::from_secs(10),
-    )?;
-    let mut file = fs::File::open(path)?;
-    let mut offset = 0u64;
-    let mut buf = vec![0u8; LAN_FILE_CHUNK_BYTES];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        let chunk = json!({
-            "transfer_id": &transfer_id,
-            "offset": offset,
-            "data_base64": general_purpose::STANDARD.encode(&buf[..n])
-        });
-        let body = serde_json::to_vec(&chunk).unwrap_or_default();
-        http_request(
-            "POST",
-            &addr,
-            "/v1/file/chunk",
-            &auth_headers,
-            Some(&body),
-            Duration::from_secs(20),
-        )?;
-        offset += n as u64;
-    }
-    let finish = json!({"transfer_id": &transfer_id});
-    let finish_body = serde_json::to_vec(&finish).unwrap_or_default();
-    http_request(
-        "POST",
-        &addr,
-        "/v1/file/finish",
-        &auth_headers,
-        Some(&finish_body),
-        Duration::from_secs(10),
-    )?;
-    Ok(())
-}
-
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n")
-}
-
-fn header_value<'a>(req: &'a HttpRequest, name: &str) -> Option<&'a str> {
-    req.headers
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str())
-}
-
-fn query_param(path: &str, key: &str) -> String {
-    let Some((_, query)) = path.split_once('?') else {
-        return String::new();
-    };
-    for part in query.split('&') {
-        let Some((k, v)) = part.split_once('=') else {
-            continue;
-        };
-        if k == key {
-            return v.to_string();
-        }
-    }
-    String::new()
-}
-
-fn query_param_decoded(path: &str, key: &str) -> String {
-    percent_decode(&query_param(path, key))
-}
-
-fn percent_decode(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_value(bytes[i + 1]), hex_value(bytes[i + 2])) {
-                out.push((hi << 4) | lo);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
-        i += 1;
-    }
-    String::from_utf8(out).unwrap_or_default()
-}
-
-fn hex_value(ch: u8) -> Option<u8> {
-    match ch {
-        b'0'..=b'9' => Some(ch - b'0'),
-        b'a'..=b'f' => Some(ch - b'a' + 10),
-        b'A'..=b'F' => Some(ch - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn url_encode_component(value: &str) -> String {
-    let mut out = String::new();
-    for byte in value.as_bytes() {
-        match *byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
+    push_lan_file_payload_to_device(sender_id, device, path, Duration::from_secs(20))
 }
 
 fn html_escape(value: &str) -> String {
@@ -1956,77 +2549,13 @@ fn format_file_size(bytes: u64) -> String {
     }
 }
 
-fn normalize_host(raw: &str, default_port: u16) -> String {
-    let mut s = raw.trim().to_string();
-    if let Some(rest) = s.strip_prefix("http://") {
-        s = rest.to_string();
-    }
-    if let Some(rest) = s.strip_prefix("https://") {
-        s = rest.to_string();
-    }
-    if let Some((host, _path)) = s.split_once('/') {
-        s = host.to_string();
-    }
-    if s.is_empty() {
-        return String::new();
-    }
-    if s.contains(':') {
-        s
-    } else {
-        format!("{s}:{default_port}")
-    }
-}
-
 fn load_devices() -> Vec<LanDevice> {
-    let text = fs::read_to_string(device_book_path()).unwrap_or_default();
-    let Ok(book) = serde_json::from_str::<StoredDeviceBook>(&text) else {
-        return Vec::new();
-    };
-    book.devices
-        .into_iter()
-        .filter_map(|stored| {
-            let token = decrypt_secret_from_storage(&stored.token_encrypted)?;
-            Some(LanDevice {
-                device_id: stored.device_id,
-                name: stored.name,
-                addr: stored.addr,
-                tcp_port: stored.tcp_port,
-                token,
-                last_seen_ms: stored.last_seen_ms,
-                trusted: stored.trusted,
-                capabilities: normalize_capabilities(stored.capabilities, stored.tcp_port),
-            })
-        })
-        .collect()
+    windows_lan_runtime_context(LanRuntimeEventSink::None).load_devices(normalize_lan_capabilities)
 }
 
 fn save_devices(devices: &[LanDevice]) {
-    let _ = fs::create_dir_all(data_dir());
-    let stored = StoredDeviceBook {
-        devices: devices
-            .iter()
-            .filter(|device| device.trusted)
-            .filter_map(|device| {
-                let token_encrypted = encrypt_secret_for_storage(&device.token)?;
-                Some(StoredLanDevice {
-                    device_id: device.device_id.clone(),
-                    name: device.name.clone(),
-                    addr: device.addr.clone(),
-                    tcp_port: device.tcp_port,
-                    token_encrypted,
-                    last_seen_ms: device.last_seen_ms,
-                    trusted: device.trusted,
-                    capabilities: normalize_capabilities(
-                        device.capabilities.clone(),
-                        device.tcp_port,
-                    ),
-                })
-            })
-            .collect(),
-    };
-    if let Ok(text) = serde_json::to_string_pretty(&stored) {
-        let _ = fs::write(device_book_path(), text);
-    }
+    let _ = windows_lan_runtime_context(LanRuntimeEventSink::None)
+        .save_devices(devices, normalize_lan_capabilities);
 }
 
 fn upsert_device(device: LanDevice) {
@@ -2056,59 +2585,6 @@ fn upsert_discovered(device: LanDevice) {
     }
 }
 
-fn device_book_path() -> PathBuf {
-    data_dir().join("lan_devices.json")
-}
-
-fn safe_file_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|ch| match ch {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            ch if ch.is_control() => '_',
-            ch => ch,
-        })
-        .collect();
-    let trimmed = cleaned.trim().trim_matches('.').trim();
-    if trimmed.is_empty() {
-        "file.bin".to_string()
-    } else {
-        trimmed.chars().take(120).collect()
-    }
-}
-
-fn hash_string(text: &str) -> String {
-    format!("{:x}", md5::compute(text.as_bytes()))
-}
-
-fn make_pair_code(a: &str, b: &str) -> String {
-    let seed = format!("{}:{}:{}", a, b, now_ms() / 60_000);
-    let digest = md5::compute(seed.as_bytes());
-    let value = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]) % 1_000_000;
-    format!("{value:06}")
-}
-
-fn make_token(bytes: usize) -> String {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let mut out = String::new();
-    while out.len() < bytes * 2 {
-        let seed = format!(
-            "{}:{}:{}",
-            now_ms(),
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let digest = md5::compute(seed.as_bytes());
-        for byte in digest.0 {
-            out.push_str(&format!("{byte:02x}"));
-            if out.len() >= bytes * 2 {
-                break;
-            }
-        }
-    }
-    out
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2116,13 +2592,11 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-fn post_ready(hwnd: isize) {
-    if hwnd == 0 {
+fn post_ready(event_sink: &LanRuntimeEventSink) {
+    let Some(hwnd) = event_sink.raw_platform_main_window_handle() else {
         return;
-    }
-    unsafe {
-        let _ = PostMessageW(hwnd as HWND, WM_LAN_SYNC_READY, 0, 0);
-    }
+    };
+    platform_window::post_message(hwnd, WM_LAN_SYNC_READY, 0, 0);
 }
 
 fn set_status(text: &str) {
@@ -2155,7 +2629,7 @@ fn pair_prompt_slot() -> &'static Mutex<VecDeque<LanPairPrompt>> {
     PAIR_PROMPTS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-fn pending_pair_slot() -> &'static Mutex<Vec<PendingPair>> {
+fn pending_pair_slot() -> &'static Mutex<Vec<LanPendingPair>> {
     PENDING_PAIRS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
@@ -2179,6 +2653,13 @@ fn file_session_slot() -> &'static Mutex<HashMap<String, FileSession>> {
 mod tests {
     use super::*;
 
+    fn lan_host_cache_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("LAN host cache test lock poisoned")
+    }
+
     fn test_device(capabilities: Vec<&str>, tcp_port: u16) -> LanDevice {
         LanDevice {
             device_id: "dev".to_string(),
@@ -2200,15 +2681,15 @@ mod tests {
         // Given Android declares itself as client_only/pull_only.
         // When Windows chooses LAN push targets.
         // Then the Android device is skipped.
-        assert!(!device_can_receive_clip(&test_device(
+        assert!(!lan_device_can_receive_clip(&test_device(
             vec!["text", "latest", "client_only", "pull_only"],
             0,
         )));
-        assert!(!device_can_receive_clip(&test_device(
+        assert!(!lan_device_can_receive_clip(&test_device(
             vec!["pull_only"],
             38473
         )));
-        assert!(device_can_receive_clip(&test_device(
+        assert!(lan_device_can_receive_clip(&test_device(
             vec!["text", "image", "receive_clip"],
             38473,
         )));
@@ -2217,10 +2698,10 @@ mod tests {
     #[test]
     fn bdd_capabilities_fallback_marks_zero_port_as_pull_only() {
         assert_eq!(
-            normalize_capabilities(Vec::new(), 0),
+            normalize_lan_capabilities(Vec::new(), 0),
             vec!["client_only".to_string(), "pull_only".to_string()]
         );
-        assert!(normalize_capabilities(Vec::new(), 38473)
+        assert!(normalize_lan_capabilities(Vec::new(), 38473)
             .iter()
             .any(|cap| cap == "receive_clip"));
     }
@@ -2228,20 +2709,20 @@ mod tests {
     #[test]
     fn bdd_file_session_key_is_scoped_by_source_device() {
         assert_eq!(
-            file_session_key("android-a", "transfer-1"),
+            lan_file_session_key("android-a", "transfer-1"),
             "android-a:transfer-1"
         );
         assert_ne!(
-            file_session_key("android-a", "transfer-1"),
-            file_session_key("android-b", "transfer-1")
+            lan_file_session_key("android-a", "transfer-1"),
+            lan_file_session_key("android-b", "transfer-1")
         );
     }
 
     #[test]
     fn bdd_file_content_crc_is_stable_for_retried_transfer() {
-        let mut first = file_content_hasher(3);
+        let mut first = lan_file_content_hasher(3);
         first.update(b"abc");
-        let mut second = file_content_hasher(3);
+        let mut second = lan_file_content_hasher(3);
         second.update(b"abc");
 
         assert_eq!(first.finalize(), second.finalize());
@@ -2289,6 +2770,82 @@ mod tests {
     }
 
     #[test]
+    fn bdd_mobile_query_params_support_android_urlencoder_plus_spaces() {
+        let path = "/zsSyncClipboard.json?device=android+phone&token=tok%2Ben";
+
+        assert_eq!(query_param_decoded(path, "device"), "android phone");
+        assert_eq!(query_param_decoded(path, "token"), "tok+en");
+    }
+
+    #[test]
+    fn bdd_mobile_item_api_paths_accept_only_ids_and_indices() {
+        assert_eq!(
+            mobile_item_image_path_id("/v1/mobile/items/42/image"),
+            Some(42)
+        );
+        assert_eq!(
+            mobile_item_file_path_parts("/v1/mobile/items/42/file/3"),
+            Some((42, 3))
+        );
+        assert_eq!(mobile_item_image_path_id("/v1/mobile/items/0/image"), None);
+        assert_eq!(
+            mobile_item_image_path_id("/v1/mobile/items/42/file/0"),
+            None
+        );
+        assert_eq!(
+            mobile_item_file_path_parts("/v1/mobile/items/42/file/../secret"),
+            None
+        );
+        assert_eq!(
+            mobile_item_file_path_parts("/v1/mobile/items/not-id/file/0"),
+            None
+        );
+    }
+
+    #[test]
+    fn bdd_mobile_file_list_uses_database_indices_and_filters_invalid_paths() {
+        let dir = std::env::temp_dir().join(format!("zsclip-lan-file-list-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("first.txt");
+        let empty = dir.join("empty.txt");
+        let second = dir.join("second.txt");
+        fs::write(&first, b"abc").unwrap();
+        fs::write(&empty, b"").unwrap();
+        fs::write(&second, b"defg").unwrap();
+
+        let blob = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            first.display(),
+            empty.display(),
+            dir.display(),
+            dir.join("missing.txt").display(),
+            second.display()
+        );
+        let files = mobile_file_list_from_blob(&blob);
+
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].index, 0);
+        assert_eq!(files[0].name, "first.txt");
+        assert_eq!(files[1].index, 4);
+        assert_eq!(files[1].name, "second.txt");
+        assert_eq!(files[1].size, 4);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bdd_multi_sync_manifest_route_accepts_new_and_legacy_names() {
+        assert!(crate::lan_sync_core::is_multi_sync_manifest_path(
+            "/zsSyncClipboard.json"
+        ));
+        assert!(crate::lan_sync_core::is_multi_sync_manifest_path(
+            "/SyncClipboard.json"
+        ));
+        assert!(!crate::lan_sync_core::is_multi_sync_manifest_path(
+            "/manifest.json"
+        ));
+    }
+
+    #[test]
     fn bdd_mobile_download_name_is_safe_png() {
         assert_eq!(
             mobile_image_download_name(3, "截图: 合同/报价"),
@@ -2303,8 +2860,244 @@ mod tests {
         assert!(encode_rgba_png_bytes(&[0, 0, 0], 1, 1).is_none());
     }
 
+    #[test]
+    fn bdd_mobile_item_list_returns_text_images_and_files_newest_first() {
+        let dir = std::env::temp_dir().join(format!("zsclip-mobile-items-{}", now_ms()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("doc.txt");
+        fs::write(&file, b"hello").unwrap();
+        let file_blob = file.to_string_lossy().to_string();
+
+        crate::db_runtime::with_test_db(|| {
+            with_db(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, source_app, pinned, group_id)
+                     VALUES(0, 'text', 'ignore text', 't1', 'body', '', 'notepad', 0, 0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, image_data, image_width, image_height, source_app, pinned, group_id)
+                     VALUES(0, 'image', 'screen image', 'i1', ?, 2, 3, 'snip', 0, 0)",
+                    params![vec![1u8, 2, 3, 4]],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, file_paths, source_app, pinned, group_id)
+                     VALUES(0, 'files', 'one file', 'f1', ?, 'explorer', 0, 0)",
+                    params![file_blob],
+                )?;
+                Ok(())
+            })?;
+
+            let items = load_mobile_item_list(10)?;
+            assert_eq!(items.len(), 3);
+            assert_eq!(items[0].kind, "files");
+            assert_eq!(items[0].files.len(), 1);
+            assert_eq!(items[0].files[0].name, "doc.txt");
+            assert_eq!(items[1].kind, "image");
+            assert_eq!(items[1].preview, "screen image");
+            assert_eq!(items[2].kind, "text");
+            assert_eq!(items[2].preview, "ignore text");
+            assert_eq!(items[2].text, "body");
+            let file_path = load_mobile_item_file_path(items[0].id, items[0].files[0].index)?
+                .expect("file path should resolve");
+            assert_eq!(file_path, file);
+            Ok(())
+        })
+        .unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bdd_mobile_setup_page_contains_safe_android_pair_link() {
+        let html = render_mobile_setup_page("192.168.1.2:38473");
+
+        assert!(html.contains("ZSClip 移动端连接"));
+        assert!(html.contains("zsclip://pair?host=192.168.1.2%3A38473"));
+        assert!(html.contains("Android 配对"));
+        assert!(html.contains("iOS / 浏览器"));
+        assert!(html.contains("iOS 快捷指令"));
+        assert!(html.contains("多端同步入口"));
+        assert!(html.matches("<svg").count() >= 2);
+        assert!(
+            html.contains("/zsSyncClipboard.json?device=&lt;device_id&gt;&amp;token=&lt;token&gt;")
+        );
+        assert!(html.contains("/mobile/images?device=&lt;device_id&gt;&amp;token=&lt;token&gt;"));
+        assert!(!html.contains("<script>"));
+    }
+
+    #[test]
+    fn bdd_mobile_pair_and_setup_urls_feed_settings_qr_codes() {
+        let _guard = lan_host_cache_test_guard();
+        clear_lan_host_cache();
+        let mut settings = AppSettings::default();
+        settings.lan_sync_enabled = true;
+        settings.lan_tcp_port = 38473;
+
+        let pair = mobile_pair_url(&settings).unwrap();
+        let setup = mobile_setup_url(&settings).unwrap();
+
+        assert!(pair.starts_with("zsclip://pair?host="));
+        assert!(pair.contains("%3A38473"));
+        assert!(setup.ends_with(":38473/mobile/setup"));
+    }
+
+    #[test]
+    fn bdd_mobile_urls_reuse_cached_lan_host_for_fast_settings_actions() {
+        let _guard = lan_host_cache_test_guard();
+        clear_lan_host_cache();
+        {
+            let mut cached = lan_host_cache_slot().lock().unwrap();
+            *cached = Some("192.168.66.7".to_string());
+        }
+        let mut settings = AppSettings::default();
+        settings.lan_sync_enabled = true;
+        settings.lan_tcp_port = 38473;
+
+        let setup = mobile_setup_url(&settings).unwrap();
+        let pair = mobile_pair_url(&settings).unwrap();
+
+        assert_eq!(setup, "http://192.168.66.7:38473/mobile/setup");
+        assert_eq!(pair, "zsclip://pair?host=192.168.66.7%3A38473");
+        clear_lan_host_cache();
+    }
+
+    #[test]
+    fn bdd_mobile_setup_qr_svg_encodes_payload_without_script_markup() {
+        let svg = render_qr_svg("zsclip://pair?host=192.168.1.2%3A38473");
+
+        assert!(svg.contains("<svg"));
+        assert!(svg.contains("<path"));
+        assert!(!svg.contains("<script"));
+    }
+
+    #[test]
+    fn bdd_wps_taskpane_page_uses_local_office_api_and_items_endpoint() {
+        let html = render_wps_taskpane_page();
+
+        assert!(html.contains("/office/wps/items"));
+        assert!(html.contains("/office/wps/image"));
+        assert!(html.contains("/office/wps/events"));
+        assert!(html.contains("Selection.TypeText"));
+        assert!(html.contains("复制记录"));
+        assert!(html.contains("常用短语"));
+        assert!(html.contains("搜索剪贴板"));
+        assert!(!html.contains("搜索 ZSClip 文本记录"));
+    }
+
+    #[test]
+    fn bdd_wps_taskpane_http_requires_loopback_peer() {
+        let local = HttpRequest {
+            method: "GET".to_string(),
+            path: "/office/wps/taskpane".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            peer: "127.0.0.1:50000".parse().unwrap(),
+        };
+        let remote = HttpRequest {
+            method: "GET".to_string(),
+            path: "/office/wps/taskpane".to_string(),
+            headers: Vec::new(),
+            body: Vec::new(),
+            peer: "192.168.1.8:50000".parse().unwrap(),
+        };
+
+        assert!(office_request_allowed(&local));
+        assert!(!office_request_allowed(&remote));
+    }
+
+    #[test]
+    fn bdd_wps_taskpane_items_split_records_and_phrases() {
+        crate::db_runtime::with_test_db(|| {
+            with_db(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned, group_id)
+                     VALUES(0, 'text', 'record text', 'r1', 'record body', 'app', 0, 0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned, group_id)
+                     VALUES(1, 'phrase', 'phrase text', 'p1', 'phrase body', 'app', 0, 0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, image_data, image_width, image_height, source_app, pinned, group_id)
+                     VALUES(0, 'image', 'record image', 'i1', ?, 1, 1, 'app', 0, 0)",
+                    params![vec![255u8, 0, 0, 255]],
+                )?;
+                Ok(())
+            })?;
+
+            let records = load_wps_taskpane_items(10, "", WpsTaskPaneCategory::Records)?;
+            let phrases = load_wps_taskpane_items(10, "", WpsTaskPaneCategory::Phrases)?;
+
+            assert!(records.iter().any(|item| item.preview == "record text"));
+            assert!(records.iter().any(|item| item.kind == "image"));
+            assert!(!records.iter().any(|item| item.preview == "phrase text"));
+            assert!(phrases.iter().any(|item| item.preview == "phrase text"));
+            assert!(!phrases.iter().any(|item| item.preview == "record text"));
+            assert!(!phrases.iter().any(|item| item.kind == "image"));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bdd_wps_taskpane_fingerprint_changes_when_items_change() {
+        crate::db_runtime::with_test_db(|| {
+            let before = wps_taskpane_fingerprint()?;
+            with_db(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned, group_id)
+                     VALUES(0, 'text', 'record text', 'r-fp', 'record body', 'app', 0, 0)",
+                    [],
+                )?;
+                Ok(())
+            })?;
+            let after = wps_taskpane_fingerprint()?;
+            assert_ne!(before, after);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn bdd_wps_routes_are_independent_from_lan_routes() {
+        let mut config = LanRuntimeConfig {
+            platform: windows_lan_runtime_context(LanRuntimeEventSink::None),
+            device_id: String::new(),
+            device_name: "ZSClip".to_string(),
+            tcp_port: LAN_TCP_PORT_DEFAULT,
+            udp_port: LAN_DISCOVERY_PORT_DEFAULT,
+            lan_enabled: false,
+            wps_taskpane_enabled: true,
+        };
+
+        assert!(route_available_for_config(
+            &config,
+            LanHttpRoute::WpsTaskpane
+        ));
+        assert!(route_available_for_config(&config, LanHttpRoute::WpsItems));
+        assert!(route_available_for_config(&config, LanHttpRoute::WpsImage));
+        assert!(route_available_for_config(&config, LanHttpRoute::WpsEvents));
+        assert!(!route_available_for_config(&config, LanHttpRoute::Info));
+
+        config.wps_taskpane_enabled = false;
+        assert!(!route_available_for_config(
+            &config,
+            LanHttpRoute::WpsTaskpane
+        ));
+
+        config.lan_enabled = true;
+        assert!(route_available_for_config(&config, LanHttpRoute::Info));
+        assert!(!route_available_for_config(
+            &config,
+            LanHttpRoute::WpsTaskpane
+        ));
+    }
+
     fn file_content_crc_for_test(total_size: u64, bytes: &[u8]) -> u32 {
-        let mut hasher = file_content_hasher(total_size);
+        let mut hasher = lan_file_content_hasher(total_size);
         hasher.update(bytes);
         hasher.finalize()
     }

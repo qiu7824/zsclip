@@ -1,23 +1,23 @@
-use std::mem::{size_of, zeroed};
+use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::Gdi::{
-        BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, InvalidateRect,
-        SetBrushOrgEx, SetStretchBltMode, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        DIB_RGB_COLORS, HALFTONE, PAINTSTRUCT, SRCCOPY,
-    },
-    System::LibraryLoader::GetModuleHandleW,
+    Graphics::Gdi::PAINTSTRUCT,
     UI::WindowsAndMessaging::*,
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, post_boxed_message, ClipItem, ClipKind},
+    app::{ensure_item_image_bytes, ClipItem, ClipKind},
     i18n::tr,
-    ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_opaque_bgra_on_bg, Theme},
-    win_system_ui::{apply_window_corner_preference, nearest_monitor_work_rect_for_point, to_wide},
+    platform::{
+        appearance as platform_appearance, gdi as platform_gdi, monitor as platform_monitor,
+        string::to_wide,
+        window::{self as platform_window, post_boxed_message},
+    },
+    ui::{draw_round_rect, draw_text_block, draw_text_ex, rgba_to_opaque_bgra_on_bg},
+    win_native_style::Theme,
 };
 
 const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";
@@ -57,22 +57,21 @@ unsafe extern "system" fn preview_wnd_proc(
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
-            apply_window_corner_preference(hwnd);
+            platform_window::set_user_data(hwnd, cs.lpCreateParams as isize);
+            platform_appearance::set_rounded_corners(hwnd);
             1
         }
         WM_PAINT => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
             let mut ps: PAINTSTRUCT = zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
+            let hdc = platform_gdi::begin_paint(hwnd, &mut ps);
             if !hdc.is_null() && !ptr.is_null() {
                 let th = Theme::default();
                 let data = &*ptr;
-                let mut rc: RECT = zeroed();
-                GetClientRect(hwnd, &mut rc);
-                let bg = CreateSolidBrush(th.surface);
-                FillRect(hdc, &rc, bg);
-                DeleteObject(bg as _);
+                let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
+                let bg = platform_gdi::create_solid_brush(th.surface);
+                platform_gdi::fill_rect(hdc, &rc, bg);
+                platform_gdi::delete_object(bg as _);
                 draw_round_rect(hdc as _, &rc, th.surface, th.stroke, 10);
 
                 let header_rc = RECT {
@@ -110,30 +109,15 @@ unsafe extern "system" fn preview_wnd_proc(
                     let dx = content.left + (avail_w - dw) / 2;
                     let dy = content.top + (avail_h - dh) / 2;
 
-                    let mut bmi: BITMAPINFO = zeroed();
-                    bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-                    bmi.bmiHeader.biWidth = *width as i32;
-                    bmi.bmiHeader.biHeight = -(*height as i32);
-                    bmi.bmiHeader.biPlanes = 1;
-                    bmi.bmiHeader.biBitCount = 32;
-                    bmi.bmiHeader.biCompression = BI_RGB;
-
-                    SetStretchBltMode(hdc, HALFTONE);
-                    SetBrushOrgEx(hdc, 0, 0, null_mut());
-                    StretchDIBits(
+                    platform_gdi::stretch_top_down_32bpp(
                         hdc,
                         dx,
                         dy,
                         dw,
                         dh,
-                        0,
-                        0,
                         *width as i32,
                         *height as i32,
-                        bgra.as_ptr() as _,
-                        &bmi,
-                        DIB_RGB_COLORS,
-                        SRCCOPY,
+                        &bgra,
                     );
                 } else if !data.body.is_empty() {
                     let body_rc = RECT {
@@ -160,7 +144,7 @@ unsafe extern "system" fn preview_wnd_proc(
                     );
                 }
             }
-            EndPaint(hwnd, &ps);
+            platform_gdi::end_paint(hwnd, &ps);
             0
         }
         WM_NCHITTEST => HTTRANSPARENT as LRESULT,
@@ -170,45 +154,45 @@ unsafe extern "system" fn preview_wnd_proc(
                 return 0;
             }
             let payload = Box::from_raw(payload_ptr);
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
             if !ptr.is_null() {
                 let data = &mut *ptr;
                 if data.item_id == payload.item_id {
                     data.image = payload.image;
                     data.loading_item_id = 0;
-                    InvalidateRect(hwnd, null(), 0);
+                    platform_gdi::invalidate_rect(hwnd, null(), 0);
                 }
             }
             0
         }
         WM_NCDESTROY => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+            let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
             if !ptr.is_null() {
                 drop(Box::from_raw(ptr));
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                platform_window::set_user_data(hwnd, 0);
             }
             0
         }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => platform_window::default_window_proc(hwnd, msg, wparam, lparam),
     }
 }
 
 unsafe fn ensure_preview_class() {
-    let hinstance = GetModuleHandleW(null());
+    let hinstance = platform_window::module_handle();
     let cname = to_wide(HOVER_PREVIEW_CLASS);
     let mut wc: WNDCLASSEXW = zeroed();
     wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
     wc.lpfnWndProc = Some(preview_wnd_proc);
     wc.hInstance = hinstance;
-    wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+    wc.hCursor = platform_window::arrow_cursor();
     wc.hbrBackground = null_mut();
     wc.lpszClassName = cname.as_ptr();
-    RegisterClassExW(&wc);
+    platform_window::register_class_ex(&wc);
 }
 
 unsafe fn create_preview_window() -> HWND {
     ensure_preview_class();
-    CreateWindowExW(
+    platform_window::create_window_ex(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         to_wide(HOVER_PREVIEW_CLASS).as_ptr(),
         to_wide("").as_ptr(),
@@ -219,7 +203,7 @@ unsafe fn create_preview_window() -> HWND {
         PREVIEW_H_TEXT,
         null_mut(),
         null_mut(),
-        GetModuleHandleW(null()),
+        platform_window::module_handle(),
         Box::into_raw(Box::new(HoverPreviewData {
             item_id: -1,
             header: String::new(),
@@ -290,18 +274,20 @@ fn limit_file_preview(paths: &[String], max_items: usize) -> String {
 
 pub(crate) unsafe fn hide_hover_preview() {
     let hwnd = preview_hwnd();
-    if !hwnd.is_null() && IsWindow(hwnd) != 0 {
-        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+    if platform_window::exists(hwnd) {
+        let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
         if !ptr.is_null() {
             (*ptr).item_id = 0;
             (*ptr).header.clear();
+            (*ptr).header.shrink_to_fit();
             (*ptr).body.clear();
+            (*ptr).body.shrink_to_fit();
             (*ptr).image = None;
             (*ptr).image_width = 0;
             (*ptr).image_height = 0;
             (*ptr).loading_item_id = 0;
         }
-        ShowWindow(hwnd, SW_HIDE);
+        platform_window::hide(hwnd);
     }
 }
 
@@ -313,17 +299,17 @@ fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) {
             image: ensure_item_image_bytes(&item),
         });
         unsafe {
-            let _ = post_boxed_message(hwnd_raw as HWND, WM_HOVER_IMAGE_READY, 0, payload);
+            let _ = post_boxed_message(hwnd_raw, WM_HOVER_IMAGE_READY, 0, payload);
         }
     });
 }
 
 pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y: i32) {
     let hwnd = preview_hwnd();
-    if hwnd.is_null() || IsWindow(hwnd) == 0 {
+    if !platform_window::exists(hwnd) {
         return;
     }
-    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut HoverPreviewData;
+    let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
     if ptr.is_null() {
         return;
     }
@@ -358,7 +344,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     } else {
         (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
     };
-    let wa = nearest_monitor_work_rect_for_point(POINT {
+    let wa = platform_monitor::nearest_work_rect_for_point(POINT {
         x: cursor_x,
         y: cursor_y,
     });
@@ -379,7 +365,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         data.item_id == item.id && data.header == header && data.body == body && same_image_shape;
     let same_geometry =
         data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
-    let visible = IsWindowVisible(hwnd) != 0;
+    let visible = platform_window::is_visible(hwnd);
 
     if visible && same_content && same_geometry {
         return;
@@ -390,7 +376,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         data.last_y = y;
         data.last_w = w;
         data.last_h = h;
-        SetWindowPos(
+        platform_window::set_pos(
             hwnd,
             HWND_TOPMOST,
             x,
@@ -428,7 +414,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     data.last_w = w;
     data.last_h = h;
 
-    SetWindowPos(
+    platform_window::set_pos(
         hwnd,
         HWND_TOPMOST,
         x,
@@ -438,6 +424,6 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     if !same_content {
-        InvalidateRect(hwnd, null(), 0);
+        platform_gdi::invalidate_rect(hwnd, null(), 0);
     }
 }

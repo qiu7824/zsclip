@@ -1,0 +1,82 @@
+name: Native Hosts
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/native-hosts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "scripts/native-host-smoke-linux.sh"
+      - "scripts/native-host-smoke-macos.sh"
+      - "src/**"
+      - "docs/native-host-verification.md"
+      - "docs/ui-host-porting.md"
+      - "docs/macos-ui.md"
+  pull_request:
+    paths:
+      - ".github/workflows/native-hosts.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "scripts/native-host-smoke-linux.sh"
+      - "scripts/native-host-smoke-macos.sh"
+      - "src/**"
+      - "docs/native-host-verification.md"
+      - "docs/ui-host-porting.md"
+      - "docs/macos-ui.md"
+
+jobs:
+  macos-appkit:
+    name: macOS AppKit host
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check AppKit host
+        run: cargo check --bin zsclip
+      - name: Check smoke script syntax
+        run: bash -n scripts/native-host-smoke-macos.sh
+      - name: Run AppKit smoke
+        env:
+          NATIVE_HOST_SMOKE_WAIT: "5"
+          ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
+        run: bash scripts/native-host-smoke-macos.sh
+      - name: Upload AppKit smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-host-smoke-macos
+          path: target/native-host-smoke/macos/
+          if-no-files-found: warn
+
+  linux-gtk:
+    name: Linux GTK host
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install GTK smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            dbus-x11 \
+            libgtk-4-dev \
+            pkg-config \
+            scrot \
+            xvfb
+      - name: Check GTK host
+        run: cargo check --bin zsclip
+      - name: Check smoke script syntax
+        run: bash -n scripts/native-host-smoke-linux.sh
+      - name: Run GTK smoke under Xvfb
+        env:
+          NATIVE_HOST_SMOKE_WAIT: "5"
+          ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
+        run: xvfb-run -a bash scripts/native-host-smoke-linux.sh
+      - name: Upload GTK smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-host-smoke-linux
+          path: target/native-host-smoke/linux/
+          if-no-files-found: warn

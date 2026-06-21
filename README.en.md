@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # Clipboard / ZSClip
 
@@ -17,7 +17,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.9.1>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9>
 - Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
 - Password: `7dvb`
 
@@ -69,8 +69,10 @@ Typical use cases:
 - Hover preview
 - Image sticker window
 - AI text cleanup
-- WebDAV cloud sync
+- WPS task pane MVP: search local text clips from the WPS side pane and insert them into the active document. See [docs/wps-taskpane.md](docs/wps-taskpane.md)
+- Multi-device sync entry with an exclusive WebDAV-or-LAN transport choice and LAN QR pairing
 - LAN clipboard sync, disabled by default
+- Multi-device sync design: [docs/multi-sync.md](docs/multi-sync.md)
 - Edge auto-hide
 - Drag out text, images, and files to generate real files
 - Inline thumbnail preview for image records
@@ -106,12 +108,16 @@ Typical use cases:
 - Native lightweight Win32 windows
 - Multi-monitor and mixed DPI support
 
-### LAN Sync
+### Multi-Device / LAN Sync
 
-- Independent from WebDAV cloud sync and disabled by default
+- `Settings -> Multi-device Sync` uses one `Sync Method` choice: `Off`, `WebDAV`, or `LAN`. WebDAV and LAN are not enabled at the same time.
+- WebDAV sync reads the remote `zsSyncClipboard.json` before snapshot upload and imports new remote text or image clips into local history; images are downloaded by `dataName` from the cloud `file/` directory.
+- The Android client follows the chosen sync method: WebDAV reads/writes the cloud `zsSyncClipboard.json`; LAN connects to the paired Windows device, with selected-text and quick-settings push entrypoints plus in-app image/file history.
+- LAN transport is disabled by default and is configured inside `Settings -> Multi-device Sync`; selecting LAN starts discovery and TCP APIs, while selecting WebDAV or Off stops them.
 - UDP discovery and TCP API start only after LAN sync is enabled
 - Windows devices can be discovered automatically, or paired by manually entering an IP
-- Pairing is handled in `Settings -> LAN`: request pairing on one device, then approve the `[Pending]` request on the other device
+- Pairing is handled in `Settings -> Multi-device Sync`: request pairing on one device, then approve the `[Pending]` request on the other device
+- `Settings -> Multi-device Sync -> Open Pairing QR Page` opens a page with an Android pairing QR code and an iOS/browser entry QR code
 - Text, images under 10 MB, and small files can sync automatically
 - Remote content can be configured to enter history only or also overwrite the local system clipboard
 - iOS Shortcuts and the minimal Android client use the same protocol; see `docs/lan-sync.md` and `docs/ios-shortcuts.md`

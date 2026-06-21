@@ -1,0 +1,19 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="zsclipAddinTab" label="剪贴板">
+        <group id="zsclipTaskPaneGroup" label="剪贴板">
+          <button
+            id="btnOpenZsclipTaskPane"
+            label="打开剪贴板"
+            size="large"
+            onAction="OnAction"
+            imageMso="Paste"
+            visible="true"
+            screentip="打开剪贴板"
+            supertip="搜索本机剪贴板记录和常用短语，并插入到当前 WPS 文档。" />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

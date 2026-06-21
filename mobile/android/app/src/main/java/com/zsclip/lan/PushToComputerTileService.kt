@@ -1,19 +1,22 @@
 package com.zsclip.lan
 
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
-import kotlin.concurrent.thread
 
 class PushToComputerTileService : TileService() {
+    private val main = Handler(Looper.getMainLooper())
+
     override fun onStartListening() {
         super.onStartListening()
         qsTile?.apply {
             label = "推送到电脑"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                subtitle = LanProtocol.tileStateLabel(
-                    LanPrefs.pairedHost(this@PushToComputerTileService),
-                    LanPrefs.token(this@PushToComputerTileService),
+                subtitle = LanProtocol.multiPushStateLabel(
+                    LanPrefs.hasPairing(this@PushToComputerTileService),
+                    LanPrefs.hasWebDavConfig(this@PushToComputerTileService),
                     false
                 )
             }
@@ -24,38 +27,28 @@ class PushToComputerTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        if (!LanPrefs.hasPairing(this)) {
-            LanUi.openMainFromTile(this, "请先完成配对后再使用“推送到电脑”")
+        if (!LanPrefs.hasPairing(this) && !LanPrefs.hasWebDavConfig(this)) {
+            LanUi.openMainFromTile(this, "请先完成配对或配置 WebDAV 后再使用“推送到电脑”")
             return
         }
         qsTile?.apply {
             state = Tile.STATE_ACTIVE
             updateTile()
         }
-        thread(name = "zsclip-push-to-computer") {
-            val message = try {
-                LanClient.pushClipboardTextToComputer(this)
-            } catch (e: Exception) {
-                "推送到电脑失败：${e.message}".also {
-                    LanPrefs.saveSyncStatus(this, false, it)
-                }
-            }
-            if (message.startsWith("推送到电脑失败")) {
-                LanUi.openMainFromTile(this, message)
-            } else {
-                LanUi.showToast(this, message)
-            }
-            try {
-                qsTile?.apply {
-                    label = "推送到电脑"
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        subtitle = message.take(40)
-                    }
-                    state = Tile.STATE_INACTIVE
-                    updateTile()
-                }
-            } catch (_: Exception) {
-            }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            qsTile?.subtitle = "正在读取剪贴板"
         }
+        qsTile?.updateTile()
+        LanUi.openClipboardSyncFromTile(this)
+        main.postDelayed({
+            qsTile?.apply {
+                label = "推送到电脑"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    subtitle = "点击推送当前剪贴板"
+                }
+                state = Tile.STATE_INACTIVE
+                updateTile()
+            }
+        }, 3000)
     }
 }

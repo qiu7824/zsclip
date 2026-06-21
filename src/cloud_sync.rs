@@ -1,13 +1,19 @@
 use crate::i18n::tr;
 use crate::time_utils::utc_secs_to_local_parts;
 use serde::{Deserialize, Serialize};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zip::write::FileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
+const WEBDAV_DOWNLOAD_ATTEMPTS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloudSyncAction {
@@ -43,6 +49,8 @@ pub struct CloudSyncOutcome {
 struct RemoteLayout {
     settings_url: String,
     manifest_url: String,
+    sync_clipboard_url: String,
+    sync_file_dir_url: String,
     backup_dir_url: String,
     backup_url: String,
 }
@@ -72,11 +80,16 @@ impl RemoteLayout {
         let base_url = append_url_path(base, remote_dir);
         let settings_url = append_url_path(&base_url, "settings.json");
         let manifest_url = append_url_path(&base_url, "manifest.json");
+        let sync_clipboard_url =
+            append_url_path(&base_url, crate::multi_sync::MULTI_SYNC_MANIFEST_FILE_NAME);
+        let sync_file_dir_url = append_url_path(&base_url, "file");
         let backup_dir_url = append_url_path(&base_url, "backups");
         let backup_url = append_url_path(&backup_dir_url, BACKUP_FILE_NAME);
         Ok(Self {
             settings_url,
             manifest_url,
+            sync_clipboard_url,
+            sync_file_dir_url,
             backup_dir_url,
             backup_url,
         })
@@ -85,12 +98,12 @@ impl RemoteLayout {
 
 pub fn cloud_sync_interval(label: &str) -> Duration {
     match label.trim() {
-        "15分钟" | "15鍒嗛挓" | "15 min" | "15m" | "15min" => Duration::from_secs(15 * 60),
-        "30分钟" | "30鍒嗛挓" | "30 min" | "30m" | "30min" => Duration::from_secs(30 * 60),
-        "1小时" | "1灏忔椂" | "1 hour" | "1h" => Duration::from_secs(60 * 60),
-        "6小时" | "6灏忔椂" | "6 hours" | "6h" => Duration::from_secs(6 * 60 * 60),
-        "12小时" | "12灏忔椂" | "12 hours" | "12h" => Duration::from_secs(12 * 60 * 60),
-        "24小时" | "24灏忔椂" | "24 hours" | "24h" | "1d" => Duration::from_secs(24 * 60 * 60),
+        "15分钟" | "15 min" | "15m" | "15min" => Duration::from_secs(15 * 60),
+        "30分钟" | "30 min" | "30m" | "30min" => Duration::from_secs(30 * 60),
+        "1小时" | "1 hour" | "1h" => Duration::from_secs(60 * 60),
+        "6小时" | "6 hours" | "6h" => Duration::from_secs(6 * 60 * 60),
+        "12小时" | "12 hours" | "12h" => Duration::from_secs(12 * 60 * 60),
+        "24小时" | "24 hours" | "24h" | "1d" => Duration::from_secs(24 * 60 * 60),
         _ => Duration::from_secs(60 * 60),
     }
 }
@@ -115,6 +128,8 @@ fn sync_snapshot(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
+    let imported_light_clip = import_remote_syncclipboard_clip(config, remote)?;
+    crate::db_runtime::checkpoint_db().map_err(|err| err.to_string())?;
     let local_stamp = local_state_stamp(paths);
     let local_hash = local_state_hash(paths)?;
     let remote_manifest = download_remote_manifest(config, remote)?;
@@ -185,12 +200,26 @@ fn sync_snapshot(
     };
     let manifest_path = write_temp_json_file("manifest", &manifest)?;
     upload_file(config, &manifest_path, &remote.manifest_url)?;
+    upload_syncclipboard_manifest(config, remote)?;
     let _ = fs::remove_file(&archive_path);
     let _ = fs::remove_file(&manifest_path);
+    let imported_note = if imported_light_clip {
+        tr(
+            " 已导入云端最新轻量清单。",
+            " Imported latest cloud lightweight manifest.",
+        )
+    } else {
+        ""
+    };
     Ok(CloudSyncOutcome {
-        status_text: format!("云同步完成，已上传本地快照（{}）。", format_unix_ts(stamp)),
+        status_text: format!(
+            "{}{}{}",
+            format!("云同步完成，已上传本地快照（{}）。", format_unix_ts(stamp)),
+            imported_note,
+            ""
+        ),
         reload_settings: false,
-        reload_data: false,
+        reload_data: imported_light_clip,
     })
 }
 
@@ -287,7 +316,87 @@ fn ensure_remote_layout(config: &CloudSyncConfig, remote: &RemoteLayout) -> Resu
         webdav_mkcol(config, &current)?;
     }
     webdav_mkcol(config, &remote.backup_dir_url)?;
+    webdav_mkcol(config, &remote.sync_file_dir_url)?;
     Ok(())
+}
+
+fn upload_syncclipboard_manifest(
+    config: &CloudSyncConfig,
+    remote: &RemoteLayout,
+) -> Result<(), String> {
+    let manifest = crate::multi_sync::latest_manifest("webdav").map_err(|err| err.to_string())?;
+    let data_name = manifest
+        .clip
+        .as_ref()
+        .and_then(|clip| clip.data_name.as_deref())
+        .map(|value| value.to_string());
+    let manifest_path = write_temp_json_file("SyncClipboard", &manifest)?;
+    upload_file(config, &manifest_path, &remote.sync_clipboard_url)?;
+    let _ = fs::remove_file(&manifest_path);
+
+    let Some(data_name) = data_name else {
+        return Ok(());
+    };
+    let Some(id) = crate::multi_sync::image_id_from_data_name(&data_name) else {
+        return Ok(());
+    };
+    let Some(bytes) = crate::multi_sync::load_image_png(id).map_err(|err| err.to_string())? else {
+        return Ok(());
+    };
+    let data_path = temp_file_path("syncclipboard-image", "png");
+    fs::write(&data_path, bytes).map_err(|err| err.to_string())?;
+    let remote_data_url = append_url_path(&remote.sync_file_dir_url, &data_name);
+    let upload_result = upload_file(config, &data_path, &remote_data_url);
+    let _ = fs::remove_file(&data_path);
+    upload_result
+}
+
+fn import_remote_syncclipboard_clip(
+    config: &CloudSyncConfig,
+    remote: &RemoteLayout,
+) -> Result<bool, String> {
+    let temp_path = temp_file_path("SyncClipboard-download", "json");
+    let found = download_optional_file(config, &remote.sync_clipboard_url, &temp_path)?;
+    if !found {
+        return Ok(false);
+    }
+    let raw = fs::read_to_string(&temp_path).map_err(|err| err.to_string())?;
+    let _ = fs::remove_file(&temp_path);
+    if raw.trim().is_empty() {
+        return Ok(false);
+    }
+    let manifest = serde_json::from_str::<crate::multi_sync::MultiSyncManifest>(&raw)
+        .map_err(|err| err.to_string())?;
+    if let Some(outcome) =
+        crate::multi_sync::import_remote_text_clip(&manifest).map_err(|err| err.to_string())?
+    {
+        return Ok(outcome.imported);
+    }
+    let Some(data_name) = manifest
+        .clip
+        .as_ref()
+        .filter(|clip| clip.kind == "image")
+        .and_then(|clip| clip.data_name.as_deref())
+    else {
+        return Ok(false);
+    };
+    if crate::multi_sync::image_id_from_data_name(data_name).is_none() {
+        return Ok(false);
+    }
+    let data_url = append_url_path(&remote.sync_file_dir_url, data_name);
+    let image_path = temp_file_path("SyncClipboard-image-download", "png");
+    let found = download_file(config, &data_url, &image_path)?;
+    if !found {
+        return Ok(false);
+    }
+    let png_bytes = fs::read(&image_path).map_err(|err| err.to_string())?;
+    let _ = fs::remove_file(&image_path);
+    Ok(
+        crate::multi_sync::import_remote_image_clip(&manifest, &png_bytes)
+            .map_err(|err| err.to_string())?
+            .map(|outcome| outcome.imported)
+            .unwrap_or(false),
+    )
 }
 
 fn download_remote_manifest(
@@ -308,7 +417,7 @@ fn download_remote_manifest(
     Ok(Some(manifest))
 }
 
-fn create_snapshot_archive(paths: &CloudSyncPaths, stamp: u64) -> Result<PathBuf, String> {
+fn create_snapshot_archive(paths: &CloudSyncPaths, _stamp: u64) -> Result<PathBuf, String> {
     let staging_root = temp_dir_path("snapshot-staging");
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);
@@ -329,7 +438,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, stamp: u64) -> Result<PathBuf
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
     }
 
-    let archive_path = std::env::temp_dir().join(format!("zsclip-cloud-{stamp}.zip"));
+    let archive_path = temp_unique_path("cloud", "zip");
     compress_archive(&payload_dir, &archive_path)?;
     let _ = fs::remove_dir_all(staging_root);
     Ok(archive_path)
@@ -536,30 +645,114 @@ fn compress_archive(source_dir: &Path, archive_path: &Path) -> Result<(), String
     if let Some(parent) = archive_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath '{archive}') {{ Remove-Item -LiteralPath '{archive}' -Force }}
-Compress-Archive -LiteralPath '{source}' -DestinationPath '{archive}' -Force
-"#,
-        source = ps_quote(&source_dir.to_string_lossy()),
-        archive = ps_quote(&archive_path.to_string_lossy()),
-    );
-    run_powershell(&script).map(|_| ())
+    let file = File::create(archive_path).map_err(|err| err.to_string())?;
+    let mut writer = ZipWriter::new(file);
+    let options = FileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .unix_permissions(0o644);
+    zip_dir_entries(&mut writer, source_dir, source_dir, options)?;
+    writer.finish().map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 fn expand_archive(archive_path: &Path, dest_dir: &Path) -> Result<(), String> {
-    let script = format!(
-        r#"
-$ErrorActionPreference = 'Stop'
-if (Test-Path -LiteralPath '{dest}') {{ Remove-Item -LiteralPath '{dest}' -Recurse -Force }}
-New-Item -ItemType Directory -Path '{dest}' | Out-Null
-Expand-Archive -LiteralPath '{archive}' -DestinationPath '{dest}' -Force
-"#,
-        archive = ps_quote(&archive_path.to_string_lossy()),
-        dest = ps_quote(&dest_dir.to_string_lossy()),
-    );
-    run_powershell(&script).map(|_| ())
+    if dest_dir.exists() {
+        fs::remove_dir_all(dest_dir).map_err(|err| err.to_string())?;
+    }
+    fs::create_dir_all(dest_dir).map_err(|err| err.to_string())?;
+    let file = File::open(archive_path).map_err(|err| err.to_string())?;
+    let mut archive = ZipArchive::new(file).map_err(|err| err.to_string())?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|err| err.to_string())?;
+        let Some(relative_path) = safe_zip_entry_path(entry.name()) else {
+            return Err(format!(
+                "{}{}",
+                tr(
+                    "云同步归档包含不安全路径：",
+                    "Cloud sync archive contains an unsafe path: "
+                ),
+                entry.name()
+            ));
+        };
+        let output_path = dest_dir.join(relative_path);
+        if entry.is_dir() {
+            fs::create_dir_all(&output_path).map_err(|err| err.to_string())?;
+            continue;
+        }
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
+        let mut output = File::create(&output_path).map_err(|err| err.to_string())?;
+        std::io::copy(&mut entry, &mut output).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn zip_dir_entries(
+    writer: &mut ZipWriter<File>,
+    root: &Path,
+    dir: &Path,
+    options: FileOptions,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|err| err.to_string())?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_string());
+    for entry in entries {
+        let path = entry.path();
+        let rel_name = zip_relative_name(root, &path)?;
+        if path.is_dir() {
+            writer
+                .add_directory(format!("{rel_name}/"), options)
+                .map_err(|err| err.to_string())?;
+            zip_dir_entries(writer, root, &path, options)?;
+        } else {
+            writer
+                .start_file(rel_name, options)
+                .map_err(|err| err.to_string())?;
+            let mut input = File::open(&path).map_err(|err| err.to_string())?;
+            let mut buffer = Vec::new();
+            input
+                .read_to_end(&mut buffer)
+                .map_err(|err| err.to_string())?;
+            writer.write_all(&buffer).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn zip_relative_name(root: &Path, path: &Path) -> Result<String, String> {
+    let relative = path.strip_prefix(root).map_err(|err| err.to_string())?;
+    let name = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    if name.is_empty() {
+        Err("empty zip entry name".to_string())
+    } else {
+        Ok(name)
+    }
+}
+
+fn safe_zip_entry_path(name: &str) -> Option<PathBuf> {
+    let mut path = PathBuf::new();
+    for component in Path::new(name).components() {
+        match component {
+            Component::Normal(part) => path.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 fn upload_file(
@@ -608,37 +801,83 @@ fn download_file(
     remote_url: &str,
     local_path: &Path,
 ) -> Result<bool, String> {
+    download_file_inner(config, remote_url, local_path, false)
+}
+
+fn download_optional_file(
+    config: &CloudSyncConfig,
+    remote_url: &str,
+    local_path: &Path,
+) -> Result<bool, String> {
+    download_file_inner(config, remote_url, local_path, true)
+}
+
+fn download_file_inner(
+    config: &CloudSyncConfig,
+    remote_url: &str,
+    local_path: &Path,
+    allow_empty_success: bool,
+) -> Result<bool, String> {
     if let Some(parent) = local_path.parent() {
         let _ = fs::create_dir_all(parent);
     }
 
-    let status = run_webdav_curl_status(
-        config,
-        &[
-            "-L".to_string(),
-            "-o".to_string(),
-            local_path.to_string_lossy().to_string(),
-            "-w".to_string(),
-            "%{http_code}".to_string(),
-            remote_url.to_string(),
-        ],
-    )?;
-
-    match status.as_str() {
-        "200" | "206" => Ok(true),
-        "404" => {
+    let mut empty_success = false;
+    for attempt in 0..WEBDAV_DOWNLOAD_ATTEMPTS {
+        if attempt > 0 {
             let _ = fs::remove_file(local_path);
-            Ok(false)
+            std::thread::sleep(Duration::from_millis(150));
         }
-        _ => Err(format!(
-            "{}{}",
-            tr(
-                "下载失败，HTTP 状态码：",
-                "Download failed with HTTP status: "
-            ),
-            status
-        )),
+
+        let status = run_webdav_curl_status(
+            config,
+            &[
+                "-L".to_string(),
+                "-o".to_string(),
+                local_path.to_string_lossy().to_string(),
+                "-w".to_string(),
+                "%{http_code}".to_string(),
+                remote_url.to_string(),
+            ],
+        )?;
+
+        match status.as_str() {
+            "200" | "206" => {
+                let size = fs::metadata(local_path).map(|meta| meta.len()).unwrap_or(0);
+                if size > 0 {
+                    return Ok(true);
+                }
+                empty_success = true;
+            }
+            "404" => {
+                let _ = fs::remove_file(local_path);
+                return Ok(false);
+            }
+            _ => {
+                return Err(format!(
+                    "{}{}",
+                    tr(
+                        "下载失败，HTTP 状态码：",
+                        "Download failed with HTTP status: "
+                    ),
+                    status
+                ));
+            }
+        }
     }
+
+    if empty_success {
+        if allow_empty_success {
+            return Ok(true);
+        }
+        let _ = fs::remove_file(local_path);
+        return Err(tr(
+            "下载失败，远端返回了空文件。",
+            "Download failed because the remote file was empty.",
+        )
+        .to_string());
+    }
+    Ok(false)
 }
 
 fn webdav_mkcol(config: &CloudSyncConfig, remote_url: &str) -> Result<(), String> {
@@ -701,16 +940,23 @@ fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<
     } else {
         None
     };
-    let result = run_curl_status(args);
+    let mut result = run_curl_status(&args);
+    for _ in 0..5 {
+        if !matches!(&result, Err(err) if is_transient_curl_recv_error(err)) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+        result = run_curl_status(&args);
+    }
     if let Some(path) = config_path {
         let _ = fs::remove_file(path);
     }
     result
 }
 
-fn run_curl_status(args: Vec<String>) -> Result<String, String> {
+fn run_curl_status(args: &[String]) -> Result<String, String> {
     let output = hidden_curl()
-        .args(&args)
+        .args(args)
         .output()
         .map_err(|err| err.to_string())?;
 
@@ -724,6 +970,16 @@ fn run_curl_status(args: Vec<String>) -> Result<String, String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn is_transient_curl_recv_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("curl: (56)")
+        || lower.contains("curl: (52)")
+        || lower.contains("empty reply from server")
+        || lower.contains("recv failure")
+        || lower.contains("connection was reset")
+        || lower.contains("connection was aborted")
 }
 
 fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
@@ -756,80 +1012,14 @@ fn curl_config_quote(value: &str) -> String {
     out
 }
 
-fn run_powershell(script: &str) -> Result<String, String> {
-    let encoded = encode_powershell(script);
-    let output = hidden_powershell()
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-EncodedCommand",
-            &encoded,
-        ])
-        .output()
-        .map_err(|err| err.to_string())?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.is_empty() {
-            Err("PowerShell 执行失败。".to_string())
-        } else {
-            Err(stderr)
-        }
-    }
-}
-
-fn encode_powershell(script: &str) -> String {
-    let mut bytes = Vec::with_capacity(script.len() * 2);
-    for unit in script.encode_utf16() {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    base64_encode(&bytes)
-}
-
-fn hidden_powershell() -> Command {
-    let mut cmd = Command::new("powershell");
-    cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
-    cmd
-}
-
 fn hidden_curl() -> Command {
+    #[cfg(windows)]
     let mut cmd = Command::new("curl.exe");
+    #[cfg(not(windows))]
+    let mut cmd = Command::new("curl");
+    #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW_FLAG);
     cmd
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    let mut i = 0;
-    while i < bytes.len() {
-        let b0 = bytes[i];
-        let b1 = *bytes.get(i + 1).unwrap_or(&0);
-        let b2 = *bytes.get(i + 2).unwrap_or(&0);
-        let pad = match bytes.len() - i {
-            1 => 2,
-            2 => 1,
-            _ => 0,
-        };
-        let triple = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
-        out.push(TABLE[((triple >> 18) & 0x3f) as usize] as char);
-        out.push(TABLE[((triple >> 12) & 0x3f) as usize] as char);
-        out.push(if pad >= 2 {
-            '='
-        } else {
-            TABLE[((triple >> 6) & 0x3f) as usize] as char
-        });
-        out.push(if pad >= 1 {
-            '='
-        } else {
-            TABLE[(triple & 0x3f) as usize] as char
-        });
-        i += 3;
-    }
-    out
 }
 
 fn append_url_path(base: &str, part: &str) -> String {
@@ -859,11 +1049,15 @@ fn percent_encode(value: &str) -> String {
 }
 
 fn temp_dir_path(prefix: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("zsclip-{prefix}-{}", unix_now()))
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    std::env::temp_dir().join(format!("zsclip-{prefix}-{}-{ts}", std::process::id()))
 }
 
 fn temp_file_path(prefix: &str, ext: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("zsclip-{prefix}-{}.{}", unix_now(), ext))
+    temp_unique_path(prefix, ext)
 }
 
 fn write_temp_json_file<T: Serialize>(prefix: &str, value: &T) -> Result<PathBuf, String> {
@@ -871,10 +1065,6 @@ fn write_temp_json_file<T: Serialize>(prefix: &str, value: &T) -> Result<PathBuf
     let raw = serde_json::to_vec_pretty(value).map_err(|err| err.to_string())?;
     fs::write(&path, raw).map_err(|err| err.to_string())?;
     Ok(path)
-}
-
-fn ps_quote(value: &str) -> String {
-    value.replace('\'', "''")
 }
 
 fn unix_now() -> u64 {
@@ -920,5 +1110,702 @@ fn shm_file_for(path: &Path) -> PathBuf {
 fn remove_optional_file(path: &Path) {
     if path.exists() {
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard, OnceLock,
+    };
+    use std::thread;
+    use std::time::Duration;
+
+    #[derive(Clone, Debug)]
+    struct RecordedRequest {
+        method: String,
+        path: String,
+        body: Vec<u8>,
+    }
+
+    fn cloud_sync_e2e_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("cloud sync e2e test lock poisoned")
+    }
+
+    #[test]
+    fn bdd_webdav_layout_exposes_syncclipboard_contract() {
+        let config = CloudSyncConfig {
+            webdav_url: "https://dav.example.com/root/".to_string(),
+            webdav_user: String::new(),
+            webdav_pass: String::new(),
+            remote_dir: "ZS Clip".to_string(),
+        };
+
+        let layout = RemoteLayout::from_config(&config).unwrap();
+
+        assert_eq!(
+            layout.sync_clipboard_url,
+            "https://dav.example.com/root/ZS%20Clip/zsSyncClipboard.json"
+        );
+        assert_eq!(
+            layout.sync_file_dir_url,
+            "https://dav.example.com/root/ZS%20Clip/file"
+        );
+    }
+
+    #[test]
+    fn bdd_cloud_sync_interval_accepts_utf8_chinese_and_ascii_aliases() {
+        assert_eq!(cloud_sync_interval("15分钟"), Duration::from_secs(15 * 60));
+        assert_eq!(cloud_sync_interval("30min"), Duration::from_secs(30 * 60));
+        assert_eq!(cloud_sync_interval("1小时"), Duration::from_secs(60 * 60));
+        assert_eq!(cloud_sync_interval("6h"), Duration::from_secs(6 * 60 * 60));
+        assert_eq!(
+            cloud_sync_interval("12 hours"),
+            Duration::from_secs(12 * 60 * 60)
+        );
+        assert_eq!(cloud_sync_interval("1d"), Duration::from_secs(24 * 60 * 60));
+        assert_eq!(cloud_sync_interval("bad"), Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn bdd_sync_now_imports_android_syncclipboard_and_uploads_local_manifest() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-e2e-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            let server = FakeWebDavServer::start();
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(outcome.reload_data);
+
+            let imported: (String, String, String) = crate::db_runtime::with_db(|conn| {
+                conn.query_row(
+                    "SELECT text_data, source_app, signature FROM items LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+            })?;
+            assert_eq!(imported.0, "hello from android");
+            assert_eq!(imported.1, "WebDAV: Android");
+            assert_eq!(
+                imported.2,
+                "multi:webdav:android:text:android-1:42:md5:a26920b53db734ce40db2d17a2ceb8c3:18"
+            );
+
+            let requests = server.requests();
+            assert!(requests.iter().any(|req| {
+                req.method == "GET" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json"
+            }));
+            assert!(requests.iter().any(|req| {
+                req.method == "PUT" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json"
+            }));
+            let uploaded_manifest = requests
+                .iter()
+                .rev()
+                .find(|req| {
+                    req.method == "PUT" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json"
+                })
+                .unwrap();
+            let uploaded_json: serde_json::Value =
+                serde_json::from_slice(&uploaded_manifest.body).unwrap();
+            assert_eq!(
+                uploaded_json["protocol"],
+                crate::multi_sync::MULTI_SYNC_PROTOCOL
+            );
+            assert_eq!(uploaded_json["clip"]["content"], "hello from android");
+
+            let backup_upload = requests
+                .iter()
+                .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/backups/latest.zip")
+                .unwrap();
+            assert_backup_contains_android_text(&backup_upload.body);
+
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn bdd_sync_now_uploads_image_data_named_by_syncclipboard_manifest() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-image-data-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            crate::db_runtime::with_db(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, image_data, image_width, image_height, source_app, pinned, group_id)
+                     VALUES(0, 'image', 'webdav shot', 'img-sig', ?, 1, 1, 'test', 0, 0)",
+                    [vec![255u8, 0, 0, 255]],
+                )?;
+                Ok(())
+            })?;
+            let server = FakeWebDavServer::start_without_remote_syncclipboard();
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(!outcome.reload_data);
+
+            let requests = server.requests();
+            let uploaded_manifest = requests
+                .iter()
+                .rev()
+                .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json")
+                .unwrap();
+            let uploaded_json: serde_json::Value =
+                serde_json::from_slice(&uploaded_manifest.body).unwrap();
+            assert_eq!(uploaded_json["clip"]["type"], "image");
+            assert_eq!(uploaded_json["clip"]["dataName"], "zsclip_image_1.png");
+
+            let image_upload = requests
+                .iter()
+                .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/file/zsclip_image_1.png")
+                .unwrap();
+            assert!(image_upload.body.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn bdd_sync_now_imports_android_webdav_image_into_windows_history() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-remote-image-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            let server = FakeWebDavServer::start_with_remote_syncclipboard(Some(
+                android_image_syncclipboard_json(),
+            ));
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(outcome.reload_data);
+
+            let imported: (String, String, i64, i64, String) =
+                crate::db_runtime::with_db(|conn| {
+                    conn.query_row(
+                        "SELECT kind, preview, image_width, image_height, source_app FROM items LIMIT 1",
+                        [],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    )
+                })?;
+            assert_eq!(imported.0, "image");
+            assert_eq!(imported.1, "android shot");
+            assert_eq!((imported.2, imported.3), (1, 1));
+            assert_eq!(imported.4, "WebDAV: Android");
+
+            let requests = server.requests();
+            assert!(requests.iter().any(|req| {
+                req.method == "GET" && req.path == "/root/ZS%20Clip/file/zsclip_image_99.png"
+            }));
+            let uploaded_manifest = requests
+                .iter()
+                .rev()
+                .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json")
+                .unwrap();
+            let uploaded_json: serde_json::Value =
+                serde_json::from_slice(&uploaded_manifest.body).unwrap();
+            assert_eq!(uploaded_json["clip"]["type"], "image");
+            assert_eq!(uploaded_json["clip"]["dataName"], "zsclip_image_1.png");
+            assert!(requests.iter().any(|req| {
+                req.method == "PUT"
+                    && req.path == "/root/ZS%20Clip/file/zsclip_image_1.png"
+                    && req.body.starts_with(b"\x89PNG\r\n\x1a\n")
+            }));
+
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn bdd_sync_now_skips_remote_image_manifest_when_payload_is_missing() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-missing-remote-image-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            let server = FakeWebDavServer::start_with_missing_remote_image(Some(
+                android_image_syncclipboard_json(),
+            ));
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(!outcome.reload_data);
+
+            let item_count: i64 = crate::db_runtime::with_db(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            })?;
+            assert_eq!(item_count, 0);
+
+            let requests = server.requests();
+            assert!(requests.iter().any(|req| {
+                req.method == "GET" && req.path == "/root/ZS%20Clip/file/zsclip_image_99.png"
+            }));
+
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn bdd_syncclipboard_download_retries_empty_success_body() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-empty-syncclipboard-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            let server =
+                FakeWebDavServer::start_with_empty_syncclipboard_once(android_syncclipboard_json());
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(outcome.reload_data);
+
+            let preview: String = crate::db_runtime::with_db(|conn| {
+                conn.query_row("SELECT preview FROM items LIMIT 1", [], |row| row.get(0))
+            })?;
+            assert_eq!(preview, "hello from android");
+
+            let requests = server.requests();
+            assert!(
+                requests
+                    .iter()
+                    .filter(|req| req.method == "GET"
+                        && req.path == "/root/ZS%20Clip/zsSyncClipboard.json")
+                    .count()
+                    >= 2
+            );
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn bdd_sync_now_treats_empty_remote_syncclipboard_as_no_lightweight_record() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("cloud-sync-empty-remote-syncclipboard-test");
+        if data_dir.exists() {
+            let _ = fs::remove_dir_all(&data_dir);
+        }
+        fs::create_dir_all(&data_dir).unwrap();
+        let settings_file = data_dir.join("settings.json");
+        let db_file = data_dir.join("clipboard.db");
+        fs::write(&settings_file, "{}").unwrap();
+
+        crate::db_runtime::with_test_db_path(&db_file, || {
+            let server = FakeWebDavServer::start_with_remote_syncclipboard(Some(""));
+            let paths = CloudSyncPaths {
+                data_dir: data_dir.clone(),
+                settings_file: settings_file.clone(),
+                db_file: db_file.clone(),
+            };
+            let config = CloudSyncConfig {
+                webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(),
+                webdav_pass: String::new(),
+                remote_dir: "ZS Clip".to_string(),
+            };
+
+            let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(!outcome.reload_data);
+
+            let item_count: i64 = crate::db_runtime::with_db(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+            })?;
+            assert_eq!(item_count, 0);
+
+            let requests = server.requests();
+            assert!(requests.iter().any(|req| {
+                req.method == "GET" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json"
+            }));
+            assert!(requests.iter().any(|req| {
+                req.method == "PUT" && req.path == "/root/ZS%20Clip/zsSyncClipboard.json"
+            }));
+
+            server.stop();
+            Ok(())
+        })
+        .unwrap();
+        let _ = fs::remove_dir_all(data_dir);
+    }
+
+    struct FakeWebDavServer {
+        port: u16,
+        running: Arc<AtomicBool>,
+        requests: Arc<Mutex<Vec<RecordedRequest>>>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl FakeWebDavServer {
+        fn start() -> Self {
+            Self::start_with_remote_syncclipboard(Some(android_syncclipboard_json()))
+        }
+
+        fn start_without_remote_syncclipboard() -> Self {
+            Self::start_with_remote_syncclipboard(None)
+        }
+
+        fn start_with_remote_syncclipboard(remote_syncclipboard: Option<&'static str>) -> Self {
+            Self::start_with_remote_syncclipboard_empty_first(remote_syncclipboard, 0)
+        }
+
+        fn start_with_missing_remote_image(remote_syncclipboard: Option<&'static str>) -> Self {
+            Self::start_with_remote_syncclipboard_options(remote_syncclipboard, 0, false)
+        }
+
+        fn start_with_empty_syncclipboard_once(remote_syncclipboard: &'static str) -> Self {
+            Self::start_with_remote_syncclipboard_empty_first(Some(remote_syncclipboard), 1)
+        }
+
+        fn start_with_remote_syncclipboard_empty_first(
+            remote_syncclipboard: Option<&'static str>,
+            empty_syncclipboard_count: usize,
+        ) -> Self {
+            Self::start_with_remote_syncclipboard_options(
+                remote_syncclipboard,
+                empty_syncclipboard_count,
+                true,
+            )
+        }
+
+        fn start_with_remote_syncclipboard_options(
+            remote_syncclipboard: Option<&'static str>,
+            empty_syncclipboard_count: usize,
+            serve_remote_image: bool,
+        ) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let running = Arc::new(AtomicBool::new(true));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let empty_syncclipboard_count = Arc::new(AtomicUsize::new(empty_syncclipboard_count));
+            let running_thread = running.clone();
+            let requests_thread = requests.clone();
+            let empty_syncclipboard_count_thread = empty_syncclipboard_count.clone();
+            let handle = thread::spawn(move || {
+                while running_thread.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => handle_request(
+                            stream,
+                            &requests_thread,
+                            remote_syncclipboard,
+                            &empty_syncclipboard_count_thread,
+                            serve_remote_image,
+                        ),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                port,
+                running,
+                requests,
+                handle: Some(handle),
+            }
+        }
+
+        fn requests(&self) -> Vec<RecordedRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+
+        fn stop(mut self) {
+            self.running.store(false, Ordering::SeqCst);
+            let _ = TcpStream::connect(("127.0.0.1", self.port));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    impl Drop for FakeWebDavServer {
+        fn drop(&mut self) {
+            self.running.store(false, Ordering::SeqCst);
+            let _ = TcpStream::connect(("127.0.0.1", self.port));
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_request(
+        mut stream: TcpStream,
+        requests: &Arc<Mutex<Vec<RecordedRequest>>>,
+        remote_syncclipboard: Option<&'static str>,
+        empty_syncclipboard_count: &Arc<AtomicUsize>,
+        serve_remote_image: bool,
+    ) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut request_line = String::new();
+        let mut headers = Vec::new();
+        let mut body = Vec::new();
+        {
+            let mut reader = BufReader::new(&mut stream);
+            if reader.read_line(&mut request_line).is_err() || request_line.trim().is_empty() {
+                return;
+            }
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() || line == "\r\n" || line == "\n" {
+                    break;
+                }
+                headers.push(line);
+            }
+            let content_len = headers
+                .iter()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let expects_continue = headers.iter().any(|line| {
+                line.split_once(':')
+                    .map(|(name, value)| {
+                        name.eq_ignore_ascii_case("expect")
+                            && value.trim().eq_ignore_ascii_case("100-continue")
+                    })
+                    .unwrap_or(false)
+            });
+            if expects_continue {
+                let _ = reader.get_mut().write_all(b"HTTP/1.1 100 Continue\r\n\r\n");
+                let _ = reader.get_mut().flush();
+            }
+            if content_len > 0 {
+                body.resize(content_len, 0);
+                let _ = reader.read_exact(&mut body);
+            }
+        }
+        let mut parts = request_line.split_whitespace();
+        let method = parts.next().unwrap_or("").to_string();
+        let path = parts.next().unwrap_or("").to_string();
+        requests.lock().unwrap().push(RecordedRequest {
+            method: method.clone(),
+            path: path.clone(),
+            body: body.clone(),
+        });
+
+        let (status, response_body) = if method == "GET" && path.ends_with("/zsSyncClipboard.json")
+        {
+            if let Some(body) = remote_syncclipboard {
+                if empty_syncclipboard_count
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                        count.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    (200, Vec::new())
+                } else {
+                    (200, body.as_bytes().to_vec())
+                }
+            } else {
+                (404, Vec::new())
+            }
+        } else if method == "GET"
+            && path.ends_with("/file/zsclip_image_99.png")
+            && serve_remote_image
+        {
+            (200, remote_android_image_png())
+        } else if method == "GET" && path.ends_with("/manifest.json") {
+            (404, Vec::new())
+        } else if method == "MKCOL" || method == "PUT" {
+            (201, Vec::new())
+        } else {
+            (404, Vec::new())
+        };
+        let response = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            response_body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.write_all(&response_body);
+        let _ = stream.flush();
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    fn android_syncclipboard_json() -> &'static str {
+        r#"{
+          "protocol": "ZSCLIP_MULTI_SYNC_V1",
+          "version": 1,
+          "transport": "webdav",
+          "clip": {
+            "id": "android:text:android-1:42",
+            "type": "text",
+            "hash": "md5:a26920b53db734ce40db2d17a2ceb8c3",
+            "preview": "hello from android",
+            "content": "hello from android",
+            "hasData": false,
+            "size": 18,
+            "source_app": "Android",
+            "created_at": "42"
+          }
+        }"#
+    }
+
+    fn android_image_syncclipboard_json() -> &'static str {
+        r#"{
+          "protocol": "ZSCLIP_MULTI_SYNC_V1",
+          "version": 1,
+          "transport": "webdav",
+          "clip": {
+            "id": "android:image:android-1:99",
+            "type": "image",
+            "hash": "md5:png",
+            "preview": "android shot",
+            "content": null,
+            "hasData": true,
+            "dataName": "zsclip_image_99.png",
+            "size": 70,
+            "source_app": "Android",
+            "created_at": "99"
+          }
+        }"#
+    }
+
+    fn remote_android_image_png() -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut out, 1, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[255, 0, 0, 255]).unwrap();
+        }
+        out
+    }
+
+    fn assert_backup_contains_android_text(zip_bytes: &[u8]) {
+        let archive_path = temp_unique_path("cloud-sync-e2e-backup", "zip");
+        fs::write(&archive_path, zip_bytes).unwrap();
+        let extract_root = temp_dir_path("cloud-sync-e2e-extract");
+        if extract_root.exists() {
+            let _ = fs::remove_dir_all(&extract_root);
+        }
+        expand_archive(&archive_path, &extract_root).unwrap();
+        let db_path = {
+            let nested = extract_root.join("payload").join("clipboard.db");
+            if nested.exists() {
+                nested
+            } else {
+                extract_root.join("clipboard.db")
+            }
+        };
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let text: String = conn
+            .query_row(
+                "SELECT text_data FROM items WHERE source_app='WebDAV: Android' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(text, "hello from android");
+        let _ = fs::remove_file(archive_path);
+        let _ = fs::remove_dir_all(extract_root);
     }
 }

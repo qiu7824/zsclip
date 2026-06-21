@@ -1,93 +1,28 @@
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::{c_void, CStr, CString, OsStr};
+use std::ffi::{CStr, CString, OsStr};
 use std::io::Write;
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::ptr::null_mut;
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use base64::Engine;
-use windows_sys::Win32::{
-    System::LibraryLoader::{GetProcAddress, LoadLibraryW},
-    UI::{
-        Shell::ShellExecuteW,
-        WindowsAndMessaging::{CreateIconFromResourceEx, LR_DEFAULTCOLOR, SW_SHOWNORMAL},
-    },
-};
-
-use crate::app::{ClipItem, ClipKind, Icons};
+use crate::app::{ClipItem, Icons};
+use crate::app_core::{NativeFileDialogHost, NativeFileDialogRequest, NativeShellOpenHost};
 use crate::i18n::tr;
-use crate::win_system_ui::to_wide;
+use crate::platform::file_dialog as platform_file_dialog;
+use crate::platform::library::DynamicLibrary;
+use crate::platform::registry as platform_registry;
+use crate::platform::shell as platform_shell;
+use crate::platform::sound as platform_sound;
+use crate::platform::string::to_wide;
+use base64::Engine;
 
 const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
-const HKEY_CURRENT_USER_VAL: isize = -2147483647i32 as isize;
-const KEY_READ_VAL: u32 = 0x20019;
-const KEY_SET_VALUE_VAL: u32 = 0x0002;
-const KEY_CREATE_SUB_KEY_VAL: u32 = 0x0004;
-const REG_SZ_VAL: u32 = 1;
-const REG_DWORD_VAL: u32 = 4;
-const ERROR_FILE_NOT_FOUND: i32 = 2;
 const DISABLED_HOTKEYS_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
 const DISABLED_HOTKEYS_VALUE: &str = "DisabledHotkeys";
 const CLIPBOARD_SETTINGS_KEY: &str = r"Software\Microsoft\Clipboard";
 const CLIPBOARD_HISTORY_VALUE: &str = "EnableClipboardHistory";
-#[link(name = "advapi32")]
-unsafe extern "system" {
-    fn RegOpenKeyExW(
-        hkey: isize,
-        lpsubkey: *const u16,
-        uloptions: u32,
-        samdesired: u32,
-        phkresult: *mut isize,
-    ) -> i32;
-    fn RegQueryValueExW(
-        hkey: isize,
-        lpvaluename: *const u16,
-        lpreserved: *mut u32,
-        lptype: *mut u32,
-        lpdata: *mut u8,
-        lpcbdata: *mut u32,
-    ) -> i32;
-    fn RegSetValueExW(
-        hkey: isize,
-        lpvaluename: *const u16,
-        reserved: u32,
-        dwtype: u32,
-        lpdata: *const u8,
-        cbdata: u32,
-    ) -> i32;
-    fn RegCreateKeyExW(
-        hkey: isize,
-        lpsubkey: *const u16,
-        reserved: u32,
-        lpclass: *mut u16,
-        dwoptions: u32,
-        samdesired: u32,
-        lpsecurityattributes: *const core::ffi::c_void,
-        phkresult: *mut isize,
-        lpdwdisposition: *mut u32,
-    ) -> i32;
-    fn RegDeleteValueW(hkey: isize, lpvaluename: *const u16) -> i32;
-    fn RegCloseKey(hkey: isize) -> i32;
-}
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn FreeLibrary(hlibmodule: *mut c_void) -> i32;
-}
-
-#[link(name = "winmm")]
-unsafe extern "system" {
-    fn PlaySoundW(pszsound: *const u16, hmod: isize, fdwsound: u32) -> i32;
-}
-
-const SND_ASYNC: u32 = 0x0001;
-const SND_FILENAME: u32 = 0x00020000;
-const SND_NODEFAULT: u32 = 0x0002;
-const SND_MEMORY: u32 = 0x0004;
 
 #[derive(Default, Clone)]
 pub(crate) struct UpdateCheckState {
@@ -216,16 +151,7 @@ pub(crate) unsafe fn open_path_with_shell(path: &str) {
             return;
         }
     }
-    let op = to_wide("open");
-    let wp = to_wide(path);
-    ShellExecuteW(
-        std::ptr::null_mut(),
-        op.as_ptr(),
-        wp.as_ptr(),
-        std::ptr::null(),
-        std::ptr::null(),
-        SW_SHOWNORMAL,
-    );
+    platform_shell::WindowsShellOpenHost::new().open_path(path);
 }
 
 pub(crate) unsafe fn open_parent_folder(path: &str) {
@@ -536,113 +462,6 @@ fn find_wechat_runtime_dir() -> Option<PathBuf> {
     });
     candidates.dedup();
     candidates.into_iter().next()
-}
-
-pub(crate) fn image_ocr_status_text(
-    provider: &str,
-    primary: &str,
-    secondary: &str,
-    wechat_dir: &str,
-) -> String {
-    match provider {
-        "baidu" => {
-            if primary.trim().is_empty() || secondary.trim().is_empty() {
-                tr(
-                    "百度 OCR：未配置 API Key / Secret Key",
-                    "Baidu OCR: API Key / Secret Key not configured",
-                )
-                .to_string()
-            } else {
-                tr("百度 OCR：已配置", "Baidu OCR: configured").to_string()
-            }
-        }
-        "winocr" => {
-            let wrapper = find_wcocr_wrapper_path();
-            let ocr_bin = find_wechat_ocr_binary_path();
-            let runtime = resolve_wechat_runtime_dir(wechat_dir);
-            match (wrapper, ocr_bin, runtime) {
-                (Some(wrapper), Some(ocr_bin), Some(runtime)) => format!(
-                    "{} {} / {} / {}",
-                    tr("WinOCR：已就绪", "WinOCR: ready"),
-                    wrapper
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("wcocr.dll"),
-                    ocr_bin
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("wxocr.dll"),
-                    runtime
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("Weixin")
-                ),
-                (None, Some(_), _) => tr(
-                    "WinOCR：已找到 wxocr.dll，但缺少兼容的 wcocr.dll 桥接层",
-                    "WinOCR: wxocr.dll found, but compatible wcocr.dll bridge is missing",
-                )
-                .to_string(),
-                (None, _, _) => tr(
-                    "WinOCR：未找到兼容的 wcocr.dll",
-                    "WinOCR: compatible wcocr.dll not found",
-                )
-                .to_string(),
-                (_, None, _) => tr(
-                    "WinOCR：未找到微信 OCR 插件",
-                    "WinOCR: WeChat OCR plugin not found",
-                )
-                .to_string(),
-                (_, _, None) => tr(
-                    "WinOCR：未找到微信运行时目录",
-                    "WinOCR: WeChat runtime directory not found",
-                )
-                .to_string(),
-            }
-        }
-        _ => tr(
-            "\u{56fe}\u{7247} OCR\u{ff1a}\u{5df2}\u{5173}\u{95ed}",
-            "Image OCR: disabled",
-        )
-        .to_string(),
-    }
-}
-
-fn baidu_translate_target_name(key: &str) -> &'static str {
-    match key {
-        "en" => tr("英语", "English"),
-        "jp" => tr("日语", "Japanese"),
-        "kor" => tr("韩语", "Korean"),
-        _ => tr("简体中文", "Simplified Chinese"),
-    }
-}
-
-pub(crate) fn text_translate_status_text(
-    provider: &str,
-    app_id: &str,
-    secret: &str,
-    target_lang: &str,
-) -> String {
-    match provider {
-        "baidu" => {
-            if app_id.trim().is_empty() || secret.trim().is_empty() {
-                tr(
-                    "百度翻译：请配置 APP ID / 密钥",
-                    "Baidu Translate: please configure APP ID / Secret",
-                )
-                .to_string()
-            } else {
-                format!(
-                    "{} {}",
-                    tr(
-                        "百度翻译：已就绪，目标语言：",
-                        "Baidu Translate: ready, target language: "
-                    ),
-                    baidu_translate_target_name(target_lang),
-                )
-            }
-        }
-        _ => tr("文本翻译：已关闭", "Text translation: disabled").to_string(),
-    }
 }
 
 fn url_encode_form_component(input: &str) -> String {
@@ -1092,16 +911,6 @@ type WeChatOcrFn =
     unsafe extern "C" fn(*const u16, *const u16, *const i8, extern "C" fn(*const i8)) -> bool;
 type WeChatStopOcrFn = unsafe extern "C" fn() -> i32;
 
-unsafe fn winocr_get_proc<T: Sized>(module: *mut c_void, names: &[&[u8]]) -> Option<T> {
-    for name in names {
-        let ptr = GetProcAddress(module, name.as_ptr());
-        if let Some(proc) = ptr {
-            return Some(std::mem::transmute_copy(&proc));
-        }
-    }
-    None
-}
-
 extern "C" fn wechat_ocr_callback(ptr: *const i8) {
     if ptr.is_null() {
         return;
@@ -1201,19 +1010,16 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
         )
         .to_string());
     }
-    let wrapper_wide = to_wide(&wrapper_path.to_string_lossy());
     let ocr_bin_wide = to_wide(&ocr_bin.to_string_lossy());
     let image_c =
         CString::new(image_path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
     unsafe {
-        let module = LoadLibraryW(wrapper_wide.as_ptr());
-        if module.is_null() {
+        let Some(module) = DynamicLibrary::load(&wrapper_path) else {
             return Err(tr("WinOCR DLL 加载失败", "Failed to load WinOCR DLL").to_string());
-        }
-        let wechat_ocr: WeChatOcrFn = match winocr_get_proc(module, &[b"wechat_ocr\0"]) {
+        };
+        let wechat_ocr: WeChatOcrFn = match module.symbol(&[b"wechat_ocr\0"]) {
             Some(func) => func,
             None => {
-                FreeLibrary(module);
                 return Err(tr(
                     "WinOCR DLL 未导出可用的 OCR 接口",
                     "WinOCR DLL does not export a supported OCR entry point",
@@ -1221,7 +1027,7 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
                 .to_string());
             }
         };
-        let stop_ocr: Option<WeChatStopOcrFn> = winocr_get_proc(module, &[b"stop_ocr\0"]);
+        let stop_ocr: Option<WeChatStopOcrFn> = module.symbol(&[b"stop_ocr\0"]);
         let (lock, cvar) = wechat_ocr_callback_state();
         if let Ok(mut slot) = lock.lock() {
             *slot = None;
@@ -1260,7 +1066,6 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
                     if let Some(stop) = stop_ocr {
                         let _ = stop();
                     }
-                    FreeLibrary(module);
                     return parse_wechat_ocr_json(&payload);
                 }
                 (None, true) => {
@@ -1274,7 +1079,6 @@ fn run_wechat_wcocr_with_runtime(image_path: &Path, wechat_dir: &str) -> Result<
         if let Some(stop) = stop_ocr {
             let _ = stop();
         }
-        FreeLibrary(module);
         if last_timeout {
             Err(tr("WinOCR 识别超时", "WinOCR recognition timed out").to_string())
         } else if let Some((rc, runtime_dir)) = last_rc {
@@ -1468,145 +1272,49 @@ where
 }
 
 fn read_disabled_hotkeys_registry() -> Option<String> {
-    unsafe {
-        let mut key = 0isize;
-        let subkey = to_wide(DISABLED_HOTKEYS_KEY);
-        let value = to_wide(DISABLED_HOTKEYS_VALUE);
-        let open = RegOpenKeyExW(
-            HKEY_CURRENT_USER_VAL,
-            subkey.as_ptr(),
-            0,
-            KEY_READ_VAL,
-            &mut key,
-        );
-        if open != 0 {
-            return Some(String::new());
-        }
-
-        let mut ty = 0u32;
-        let mut size = 0u32;
-        let query_size = RegQueryValueExW(
-            key,
-            value.as_ptr(),
-            null_mut(),
-            &mut ty,
-            null_mut(),
-            &mut size,
-        );
-        if query_size != 0 || size == 0 {
-            RegCloseKey(key);
-            return Some(String::new());
-        }
-
-        let mut buf = vec![0u8; size as usize];
-        let query = RegQueryValueExW(
-            key,
-            value.as_ptr(),
-            null_mut(),
-            &mut ty,
-            buf.as_mut_ptr(),
-            &mut size,
-        );
-        RegCloseKey(key);
-        if query != 0 || ty != REG_SZ_VAL {
-            return Some(String::new());
-        }
-
-        let wide_len = (size as usize / 2).saturating_sub(1);
-        let wide = std::slice::from_raw_parts(buf.as_ptr() as *const u16, wide_len);
-        Some(String::from_utf16_lossy(wide))
-    }
+    let key = platform_registry::RegistryKey::open_current_user(
+        DISABLED_HOTKEYS_KEY,
+        platform_registry::KEY_READ,
+    )
+    .ok()?;
+    key.query_string(DISABLED_HOTKEYS_VALUE)
+        .ok()
+        .flatten()
+        .or_else(|| Some(String::new()))
 }
 
 fn set_disabled_hotkeys_registry(txt: &str) -> Result<(), String> {
-    unsafe {
-        let mut key = 0isize;
-        let subkey = to_wide(DISABLED_HOTKEYS_KEY);
-        let value = to_wide(DISABLED_HOTKEYS_VALUE);
-        let open = RegOpenKeyExW(
-            HKEY_CURRENT_USER_VAL,
-            subkey.as_ptr(),
-            0,
-            KEY_SET_VALUE_VAL | KEY_READ_VAL,
-            &mut key,
-        );
-        if open != 0 {
-            return Err(format!(
-                "\u{6253}\u{5f00}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {open}"
-            ));
-        }
+    let key = platform_registry::RegistryKey::open_current_user(
+        DISABLED_HOTKEYS_KEY,
+        platform_registry::KEY_SET_VALUE | platform_registry::KEY_READ,
+    )
+    .map_err(|open| format!("\u{6253}\u{5f00}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {open}"))?;
 
-        if txt.trim().is_empty() {
-            let delete = RegDeleteValueW(key, value.as_ptr());
-            RegCloseKey(key);
-            if delete == 0 || delete == ERROR_FILE_NOT_FOUND {
-                return Ok(());
-            }
-            return Err(format!(
-                "\u{5220}\u{9664}\u{6ce8}\u{518c}\u{8868}\u{503c}\u{5931}\u{8d25}: {delete}"
-            ));
-        }
-
-        let mut wide = to_wide(txt);
-        if *wide.last().unwrap_or(&0) != 0 {
-            wide.push(0);
-        }
-        let set = RegSetValueExW(
-            key,
-            value.as_ptr(),
-            0,
-            REG_SZ_VAL,
-            wide.as_ptr() as *const u8,
-            (wide.len() * 2) as u32,
-        );
-        RegCloseKey(key);
-        if set == 0 {
-            Ok(())
-        } else {
-            Err(format!(
-                "\u{5199}\u{5165}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {set}"
-            ))
-        }
+    if txt.trim().is_empty() {
+        return match key.delete_value(DISABLED_HOTKEYS_VALUE) {
+            Ok(()) => Ok(()),
+            Err(code) if code == platform_registry::ERROR_FILE_NOT_FOUND => Ok(()),
+            Err(code) => Err(format!(
+                "\u{5220}\u{9664}\u{6ce8}\u{518c}\u{8868}\u{503c}\u{5931}\u{8d25}: {code}"
+            )),
+        };
     }
+
+    key.set_string(DISABLED_HOTKEYS_VALUE, txt)
+        .map_err(|set| format!("\u{5199}\u{5165}\u{6ce8}\u{518c}\u{8868}\u{5931}\u{8d25}: {set}"))
 }
 
 fn set_clipboard_history_enabled_registry(enabled: bool) -> Result<(), String> {
-    unsafe {
-        let mut key = 0isize;
-        let mut disposition = 0u32;
-        let subkey = to_wide(CLIPBOARD_SETTINGS_KEY);
-        let value = to_wide(CLIPBOARD_HISTORY_VALUE);
-        let open = RegCreateKeyExW(
-            HKEY_CURRENT_USER_VAL,
-            subkey.as_ptr(),
-            0,
-            null_mut(),
-            0,
-            KEY_READ_VAL | KEY_SET_VALUE_VAL | KEY_CREATE_SUB_KEY_VAL,
-            core::ptr::null(),
-            &mut key,
-            &mut disposition,
-        );
-        if open != 0 {
-            return Err(format!("打开剪贴板设置失败: {open}"));
-        }
-
-        let data: u32 = if enabled { 1 } else { 0 };
-        let set = RegSetValueExW(
-            key,
-            value.as_ptr(),
-            0,
-            REG_DWORD_VAL,
-            &data as *const u32 as *const u8,
-            core::mem::size_of::<u32>() as u32,
-        );
-        RegCloseKey(key);
-        if set == 0 {
-            Ok(())
-        } else {
-            Err(format!("写入剪贴板历史设置失败: {set}"))
-        }
-    }
+    let key = platform_registry::RegistryKey::create_current_user(
+        CLIPBOARD_SETTINGS_KEY,
+        platform_registry::KEY_READ
+            | platform_registry::KEY_SET_VALUE
+            | platform_registry::KEY_CREATE_SUB_KEY,
+    )
+    .map_err(|open| format!("打开剪贴板设置失败: {open}"))?;
+    let data: u32 = if enabled { 1 } else { 0 };
+    key.set_dword(CLIPBOARD_HISTORY_VALUE, data)
+        .map_err(|set| format!("写入剪贴板历史设置失败: {set}"))
 }
 
 pub(crate) fn toggle_disabled_hotkey_char(ch: char, disable: bool) -> Result<(), String> {
@@ -1654,79 +1362,20 @@ fn releases_url() -> String {
     }
 }
 
-fn encode_powershell_script(script: &str) -> String {
-    let utf16: Vec<u16> = OsStr::new(script).encode_wide().collect();
-    let bytes = unsafe { std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2) };
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn run_hidden_powershell_encoded(script: &str, args: &[&str]) -> Result<String, String> {
-    let encoded = encode_powershell_script(script);
-    let out = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW_FLAG)
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-EncodedCommand")
-        .arg(encoded)
-        .args(args)
-        .output()
-        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        Err(if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            "PowerShell 执行失败".to_string()
-        })
-    }
-}
-
 pub(crate) fn pick_paste_sound_file(current: &str) -> Result<Option<String>, String> {
-    let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$dlg = New-Object System.Windows.Forms.OpenFileDialog
-$dlg.Filter = 'Wave Files|*.wav|All Files|*.*'
-$dlg.Title = '选择提示音文件'
-$dlg.Multiselect = $false
-if ($args.Count -gt 0 -and -not [string]::IsNullOrWhiteSpace($args[0])) {
-  $current = $args[0]
-  if (Test-Path $current) {
-    $dlg.FileName = $current
-    $parent = Split-Path -Parent $current
-    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
-  } else {
-    $parent = Split-Path -Parent $current
-    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
-  }
-}
-if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  Write-Output $dlg.FileName
-}
-"#;
-    let out = run_hidden_powershell_encoded(script, &[current])?;
-    if out.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(out))
-    }
+    platform_file_dialog::WindowsFileDialogHost::new().pick_file(NativeFileDialogRequest {
+        title: "选择提示音文件",
+        filter_name: "Wave Files",
+        filter_pattern: "*.wav",
+        current_path: current,
+    })
 }
 
-pub(crate) unsafe fn play_paste_success_sound(kind: &str, custom_path: &str) {
+pub(crate) fn play_paste_success_sound(kind: &str, custom_path: &str) {
     if kind.trim() == "custom" {
         let path = custom_path.trim();
-        if !path.is_empty() && Path::new(path).is_file() {
-            let wide = to_wide(path);
-            if PlaySoundW(wide.as_ptr(), 0, SND_ASYNC | SND_FILENAME | SND_NODEFAULT) != 0 {
-                return;
-            }
+        if !path.is_empty() && platform_sound::play_wav_file(Path::new(path)) {
+            return;
         }
     }
     let bytes = match kind.trim() {
@@ -1734,15 +1383,7 @@ pub(crate) unsafe fn play_paste_success_sound(kind: &str, custom_path: &str) {
         "bright" => PASTE_SOUND_BRIGHT,
         _ => PASTE_SOUND_DEFAULT,
     };
-    let _ = PlaySoundW(
-        bytes.as_ptr() as *const u16,
-        0,
-        SND_ASYNC | SND_MEMORY | SND_NODEFAULT,
-    );
-}
-
-pub(crate) fn plugin_downloads_url() -> String {
-    releases_url()
+    let _ = platform_sound::play_wav_memory(bytes);
 }
 
 fn parse_version_parts(value: &str) -> Vec<u32> {
@@ -1769,26 +1410,6 @@ pub(crate) fn is_directory_item(item: &ClipItem) -> bool {
         .and_then(|v| v.first())
         .map(|p| Path::new(p).is_dir())
         .unwrap_or(false)
-}
-
-pub(crate) unsafe fn item_icon_handle(item: &ClipItem, target_px: i32) -> isize {
-    match item.kind {
-        ClipKind::Text | ClipKind::Phrase => icon_handle_for(IconAssetKind::Text, target_px),
-        ClipKind::Image => icon_handle_for(IconAssetKind::Image, target_px),
-        ClipKind::Files => {
-            if item
-                .file_paths
-                .as_ref()
-                .and_then(|v| v.first())
-                .map(|p| Path::new(p).is_dir())
-                .unwrap_or(false)
-            {
-                icon_handle_for(IconAssetKind::Folder, target_px)
-            } else {
-                icon_handle_for(IconAssetKind::File, target_px)
-            }
-        }
-    }
 }
 
 pub(crate) fn load_icons() -> Icons {
@@ -1958,18 +1579,5 @@ unsafe fn try_create_icon(data: &[u8], base: usize, w: i32, h: i32) -> Option<is
         return None;
     }
     let slice = &data[offset..offset + size];
-    let handle = CreateIconFromResourceEx(
-        slice.as_ptr(),
-        slice.len() as u32,
-        1,
-        0x00030000,
-        w,
-        h,
-        LR_DEFAULTCOLOR,
-    );
-    if !handle.is_null() {
-        Some(handle as isize)
-    } else {
-        None
-    }
+    platform_shell::create_icon_from_resource(slice, w, h)
 }

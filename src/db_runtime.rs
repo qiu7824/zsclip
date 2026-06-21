@@ -1,3 +1,5 @@
+#![cfg_attr(windows, allow(dead_code))]
+
 use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -86,6 +88,14 @@ fn validate_schema_column_definition(
         ("items", "created_at", "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP") => {
             Ok("created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP")
         }
+        ("items", "lan_origin_message_id", "lan_origin_message_id TEXT") => {
+            Ok("lan_origin_message_id TEXT")
+        }
+        ("items", "lan_origin_device_id", "lan_origin_device_id TEXT") => {
+            Ok("lan_origin_device_id TEXT")
+        }
+        ("items", "lan_origin_seq", "lan_origin_seq INTEGER") => Ok("lan_origin_seq INTEGER"),
+        ("items", "lan_origin_hash", "lan_origin_hash TEXT") => Ok("lan_origin_hash TEXT"),
         ("clip_groups", "category", "category INTEGER NOT NULL DEFAULT 0") => {
             Ok("category INTEGER NOT NULL DEFAULT 0")
         }
@@ -173,6 +183,20 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
         "created_at",
         "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
     )?;
+    ensure_table_column(
+        conn,
+        "items",
+        "lan_origin_message_id",
+        "lan_origin_message_id TEXT",
+    )?;
+    ensure_table_column(
+        conn,
+        "items",
+        "lan_origin_device_id",
+        "lan_origin_device_id TEXT",
+    )?;
+    ensure_table_column(conn, "items", "lan_origin_seq", "lan_origin_seq INTEGER")?;
+    ensure_table_column(conn, "items", "lan_origin_hash", "lan_origin_hash TEXT")?;
     Ok(())
 }
 
@@ -272,10 +296,30 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn runtime_db_file() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        crate::app::runtime::db_file()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let data_dir = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|dir| dir.join("data")))
+            .unwrap_or_else(|| std::path::PathBuf::from("data"));
+        data_dir.join("clipboard.db")
+    }
+}
+
 fn ensure_connection(cell: &RefCell<Option<Connection>>) -> rusqlite::Result<()> {
     let mut slot = cell.borrow_mut();
     if slot.is_none() {
-        let conn = Connection::open(crate::app::db_file())?;
+        let db_file = runtime_db_file();
+        if let Some(parent) = db_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let conn = Connection::open(db_file)?;
         configure_db_connection(&conn)?;
         *slot = Some(conn);
     }
@@ -316,6 +360,327 @@ where
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn item_text(item_id: i64) -> rusqlite::Result<Option<String>> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(text_data,'') FROM items WHERE id=?",
+            [item_id],
+            |row| row.get(0),
+        )
+        .optional()
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn update_item_text(item_id: i64, new_text: &str) -> rusqlite::Result<bool> {
+    let preview: String = new_text.chars().take(120).collect();
+    with_db_mut(|conn| {
+        let affected = conn.execute(
+            "UPDATE items SET text_data=?, preview=? WHERE id=?",
+            rusqlite::params![new_text, preview, item_id],
+        )?;
+        Ok(affected > 0)
+    })
+}
+
+fn normalized_native_item_ids(ids: &[i64]) -> Vec<i64> {
+    let mut ids = ids.iter().copied().filter(|id| *id > 0).collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+fn sql_placeholders(count: usize) -> String {
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub(crate) fn update_native_clip_items_pinned(
+    ids: &[i64],
+    pinned: bool,
+) -> rusqlite::Result<usize> {
+    let ids = normalized_native_item_ids(ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    with_db_mut(|conn| {
+        let sql = format!(
+            "UPDATE items SET pinned=? WHERE id IN ({})",
+            sql_placeholders(ids.len())
+        );
+        let params = std::iter::once(if pinned { 1_i64 } else { 0_i64 }).chain(ids);
+        conn.execute(&sql, rusqlite::params_from_iter(params))
+    })
+}
+
+pub(crate) fn delete_native_clip_items(ids: &[i64]) -> rusqlite::Result<usize> {
+    let ids = normalized_native_item_ids(ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    with_db_mut(|conn| {
+        let sql = format!(
+            "DELETE FROM items WHERE id IN ({})",
+            sql_placeholders(ids.len())
+        );
+        conn.execute(&sql, rusqlite::params_from_iter(ids))
+    })
+}
+
+fn split_native_paths_blob(value: Option<String>) -> Option<Vec<String>> {
+    let paths = value
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    (!paths.is_empty()).then_some(paths)
+}
+
+fn native_clip_kind(kind: &str) -> crate::app_core::ClipKind {
+    match kind {
+        "image" => crate::app_core::ClipKind::Image,
+        "files" => crate::app_core::ClipKind::Files,
+        "phrase" => crate::app_core::ClipKind::Phrase,
+        _ => crate::app_core::ClipKind::Text,
+    }
+}
+
+pub(crate) fn native_clip_item(
+    item_id: i64,
+) -> rusqlite::Result<Option<crate::app_core::ClipItem>> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT id, kind, COALESCE(preview, ''), text_data, COALESCE(source_app, ''), \
+             file_paths, image_data, COALESCE(image_path, ''), image_width, image_height, \
+             pinned, group_id, COALESCE(created_at, '') FROM items WHERE id=?",
+            [item_id],
+            |row| {
+                let kind_raw: String = row.get(1)?;
+                let kind = native_clip_kind(&kind_raw);
+                let text: Option<String> = row.get(3)?;
+                let file_paths_raw: Option<String> = row.get(5)?;
+                let file_paths = if kind == crate::app_core::ClipKind::Files {
+                    split_native_paths_blob(file_paths_raw.or_else(|| text.clone()))
+                } else {
+                    split_native_paths_blob(file_paths_raw)
+                };
+                let image_path: String = row.get(7)?;
+                Ok(crate::app_core::ClipItem {
+                    id: row.get(0)?,
+                    kind,
+                    preview: row.get(2)?,
+                    text,
+                    source_app: row.get(4)?,
+                    file_paths,
+                    image_bytes: row.get(6)?,
+                    image_path: (!image_path.trim().is_empty()).then_some(image_path),
+                    image_width: row.get::<_, i64>(8)?.max(0) as usize,
+                    image_height: row.get::<_, i64>(9)?.max(0) as usize,
+                    pinned: row.get::<_, i64>(10)? == 1,
+                    group_id: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+    })
+}
+
+pub(crate) fn native_clip_list_items(
+    category: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    native_clip_list_items_for_group(category, 0, limit)
+}
+
+pub(crate) fn native_clip_list_items_for_group(
+    category: i64,
+    group_id: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    with_db(|conn| {
+        let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned \
+             FROM items WHERE category=?"
+            .to_string();
+        let mut values = vec![rusqlite::types::Value::from(category)];
+        if group_id > 0 {
+            sql.push_str(" AND group_id=?");
+            values.push(rusqlite::types::Value::from(group_id));
+        }
+        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
+        values.push(rusqlite::types::Value::from(limit.max(1) as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
+            let id: i64 = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let preview: String = row.get(2)?;
+            let source_app: String = row.get(3)?;
+            let pinned = row.get::<_, i64>(4)? == 1;
+            let title = native_clip_list_title(&kind, &source_app);
+            Ok(
+                crate::app_core::NativeHostClipListItemProjection::with_metadata(
+                    id,
+                    title,
+                    preview,
+                    native_clip_kind(&kind),
+                    pinned,
+                ),
+            )
+        })?;
+        rows.collect()
+    })
+}
+
+fn native_clip_list_title(kind: &str, source_app: &str) -> String {
+    let source_app = source_app.trim();
+    if !source_app.is_empty() {
+        return source_app.to_string();
+    }
+    match kind {
+        "image" => "Image".to_string(),
+        "files" => "Files".to_string(),
+        "phrase" => "Phrase".to_string(),
+        _ => "Text".to_string(),
+    }
+}
+
+pub(crate) fn native_clip_groups(
+    category: i64,
+) -> rusqlite::Result<Vec<crate::app_core::ClipGroup>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, category, name FROM clip_groups WHERE category=? ORDER BY sort_order ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([category], |row| {
+            Ok(crate::app_core::ClipGroup {
+                id: row.get(0)?,
+                category: row.get(1)?,
+                name: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    })
+}
+
+pub(crate) fn create_native_clip_group(
+    category: i64,
+    name: &str,
+) -> rusqlite::Result<crate::app_core::ClipGroup> {
+    with_db_mut(|conn| {
+        let next_sort: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM clip_groups WHERE category=?",
+                [category],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+        conn.execute(
+            "INSERT INTO clip_groups(category, name, sort_order) VALUES(?, ?, ?)",
+            rusqlite::params![category, name, next_sort],
+        )?;
+        Ok(crate::app_core::ClipGroup {
+            id: conn.last_insert_rowid(),
+            category,
+            name: name.to_string(),
+        })
+    })
+}
+
+pub(crate) fn rename_native_clip_group(
+    category: i64,
+    group_id: i64,
+    new_name: &str,
+) -> rusqlite::Result<bool> {
+    with_db_mut(|conn| {
+        let affected = conn.execute(
+            "UPDATE clip_groups SET name=? WHERE id=? AND category=?",
+            rusqlite::params![new_name, group_id, category],
+        )?;
+        Ok(affected > 0)
+    })
+}
+
+pub(crate) fn delete_native_clip_group(group_id: i64) -> rusqlite::Result<bool> {
+    with_db_mut(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE items SET group_id=0 WHERE group_id=?",
+            rusqlite::params![group_id],
+        )?;
+        let affected = tx.execute(
+            "DELETE FROM clip_groups WHERE id=?",
+            rusqlite::params![group_id],
+        )?;
+        tx.commit()?;
+        Ok(affected > 0)
+    })
+}
+
+pub(crate) fn set_native_clip_groups_order(
+    category: i64,
+    group_ids: &[i64],
+) -> rusqlite::Result<usize> {
+    with_db_mut(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let mut affected = 0;
+        for (idx, gid) in group_ids.iter().enumerate() {
+            affected += tx.execute(
+                "UPDATE clip_groups SET sort_order=? WHERE id=? AND category=?",
+                rusqlite::params![idx as i64 + 1, *gid, category],
+            )?;
+        }
+        tx.commit()?;
+        Ok(affected)
+    })
+}
+
+pub(crate) fn move_native_clip_group(
+    category: i64,
+    group_id: i64,
+    step: i32,
+) -> rusqlite::Result<bool> {
+    let groups = native_clip_groups(category)?;
+    let Some(index) = groups.iter().position(|group| group.id == group_id) else {
+        return Ok(false);
+    };
+    let next_index = index as i32 + step;
+    if next_index < 0 || next_index >= groups.len() as i32 {
+        return Ok(false);
+    }
+    let mut ids = groups.iter().map(|group| group.id).collect::<Vec<_>>();
+    ids.swap(index, next_index as usize);
+    set_native_clip_groups_order(category, &ids)?;
+    Ok(true)
+}
+
+pub(crate) fn assign_native_clip_group(item_ids: &[i64], group_id: i64) -> rusqlite::Result<usize> {
+    with_db_mut(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let mut affected = 0;
+        for item_id in item_ids.iter().copied().filter(|item_id| *item_id > 0) {
+            affected += tx.execute(
+                "UPDATE items SET group_id=? WHERE id=?",
+                rusqlite::params![group_id, item_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(affected)
+    })
+}
+
+pub(crate) fn checkpoint_db() -> rusqlite::Result<()> {
+    with_db(|conn| {
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    })
+}
+
 pub(crate) fn close_db() {
     DB_CONN.with(|cell| {
         let mut slot = cell.borrow_mut();
@@ -324,4 +689,200 @@ pub(crate) fn close_db() {
         }
         *slot = None;
     });
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_db<T, F>(f: F) -> rusqlite::Result<T>
+where
+    F: FnOnce() -> rusqlite::Result<T>,
+{
+    DB_CONN.with(|cell| {
+        let previous = cell.borrow_mut().take();
+        let conn = Connection::open_in_memory()?;
+        configure_db_connection(&conn)?;
+        migrate_db(&conn)?;
+        *cell.borrow_mut() = Some(conn);
+        let result = f();
+        *cell.borrow_mut() = previous;
+        result
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_db_path<T, F>(path: &std::path::Path, f: F) -> rusqlite::Result<T>
+where
+    F: FnOnce() -> rusqlite::Result<T>,
+{
+    DB_CONN.with(|cell| {
+        let previous = cell.borrow_mut().take();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let conn = Connection::open(path)?;
+        configure_db_connection(&conn)?;
+        migrate_db(&conn)?;
+        *cell.borrow_mut() = Some(conn);
+        let result = f();
+        *cell.borrow_mut() = previous;
+        result
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_text_update_reports_affected_row_and_updates_preview() {
+        with_test_db(|| {
+            let item_id = with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'old', 'sig', 'old', 'test')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+
+            assert_eq!(item_text(item_id)?, Some("old".to_string()));
+            assert!(update_item_text(item_id, "new clipboard text")?);
+            assert_eq!(item_text(item_id)?, Some("new clipboard text".to_string()));
+            let preview: String = with_db(|conn| {
+                conn.query_row("SELECT preview FROM items WHERE id=?", [item_id], |row| {
+                    row.get(0)
+                })
+            })?;
+            assert_eq!(preview, "new clipboard text");
+            assert!(!update_item_text(item_id + 10_000, "missing")?);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_clip_list_items_projects_recent_database_rows() {
+        with_test_db(|| {
+            with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned) VALUES(0, 'text', 'older text', 'old', 'older text', 'Notes', 0)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned) VALUES(0, 'files', 'report.xlsx', 'file', NULL, '', 1)",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned) VALUES(1, 'phrase', 'phrase row', 'phrase', 'phrase row', '', 0)",
+                    [],
+                )?;
+                Ok(())
+            })?;
+
+            let items = native_clip_list_items(0, 10)?;
+            assert_eq!(items.len(), 2);
+            assert_eq!(items[0].title, "Files");
+            assert_eq!(items[0].preview, "report.xlsx");
+            assert_eq!(items[0].kind, crate::app_core::ClipKind::Files);
+            assert!(items[0].pinned);
+            assert_eq!(items[1].title, "Notes");
+            assert_eq!(items[1].preview, "older text");
+            assert_eq!(items[1].kind, crate::app_core::ClipKind::Text);
+            assert!(!items[1].pinned);
+
+            let phrases = native_clip_list_items(1, 10)?;
+            assert_eq!(phrases.len(), 1);
+            assert_eq!(phrases[0].title, "Phrase");
+            assert_eq!(phrases[0].kind, crate::app_core::ClipKind::Phrase);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_clip_item_loads_full_payload_for_native_hosts() {
+        with_test_db(|| {
+            let (text_id, file_id, image_id) = with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'hello', 'text', 'hello native', 'Notes')",
+                    [],
+                )?;
+                let text_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, file_paths, source_app) VALUES(0, 'files', 'files', 'files', '/tmp/a.txt\n/tmp/b.txt', '')",
+                    [],
+                )?;
+                let file_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, image_data, image_width, image_height, source_app) VALUES(0, 'image', 'image', 'image', x'FF0000FF', 1, 1, '')",
+                    [],
+                )?;
+                let image_id = conn.last_insert_rowid();
+                Ok((text_id, file_id, image_id))
+            })?;
+
+            let text = native_clip_item(text_id)?.unwrap();
+            assert_eq!(text.kind, crate::app_core::ClipKind::Text);
+            assert_eq!(text.text.as_deref(), Some("hello native"));
+            assert_eq!(text.source_app, "Notes");
+
+            let files = native_clip_item(file_id)?.unwrap();
+            assert_eq!(files.kind, crate::app_core::ClipKind::Files);
+            assert_eq!(
+                files.file_paths,
+                Some(vec!["/tmp/a.txt".to_string(), "/tmp/b.txt".to_string()])
+            );
+
+            let image = native_clip_item(image_id)?.unwrap();
+            assert_eq!(image.kind, crate::app_core::ClipKind::Image);
+            assert_eq!(image.image_bytes, Some(vec![255, 0, 0, 255]));
+            assert_eq!((image.image_width, image.image_height), (1, 1));
+            assert!(native_clip_item(image_id + 10_000)?.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_clip_groups_create_rename_order_delete_and_assign_items() {
+        with_test_db(|| {
+            let item_id = with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'clip', 'group-clip', 'clip', 'test')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+
+            let first = create_native_clip_group(0, "First")?;
+            let second = create_native_clip_group(0, "Second")?;
+            assert_eq!(
+                native_clip_groups(0)?
+                    .iter()
+                    .map(|group| group.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["First", "Second"]
+            );
+
+            assert!(rename_native_clip_group(0, first.id, "Renamed")?);
+            assert_eq!(native_clip_groups(0)?[0].name, "Renamed");
+            assert_eq!(set_native_clip_groups_order(0, &[second.id, first.id])?, 2);
+            assert_eq!(native_clip_groups(0)?[0].id, second.id);
+            assert!(move_native_clip_group(0, first.id, -1)?);
+            assert_eq!(native_clip_groups(0)?[0].id, first.id);
+
+            assert_eq!(assign_native_clip_group(&[item_id], second.id)?, 1);
+            let grouped = native_clip_list_items_for_group(0, second.id, 10)?;
+            assert_eq!(grouped.len(), 1);
+            assert_eq!(grouped[0].id, item_id);
+
+            assert!(delete_native_clip_group(second.id)?);
+            let group_id: i64 = with_db(|conn| {
+                conn.query_row("SELECT group_id FROM items WHERE id=?", [item_id], |row| {
+                    row.get(0)
+                })
+            })?;
+            assert_eq!(group_id, 0);
+            Ok(())
+        })
+        .unwrap();
+    }
 }

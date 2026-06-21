@@ -12,32 +12,43 @@ class AutoSyncTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        if (LanAutoSyncService.isRunning(this)) {
+        if (LanAutoSyncService.isEnabled(this)) {
             LanAutoSyncService.stop(this)
-            LanUi.showToast(this, "局域网自动同步已关闭")
+            LanUi.showToast(this, "多端自动同步已关闭")
         } else {
-            if (!LanPrefs.hasPairing(this)) {
-                LanUi.openMainFromTile(this, "请先完成配对后再开启局域网自动同步")
+            if (!LanPrefs.hasPairing(this) && !LanPrefs.hasWebDavConfig(this)) {
+                LanUi.openMainFromTile(this, "请先完成配对或配置 WebDAV 后再开启多端自动同步")
                 updateTile()
                 return
             }
-            LanAutoSyncService.start(this)
-            LanUi.showToast(this, "局域网自动同步已开启")
+            val error = LanAutoSyncService.start(this)
+            if (error == null) {
+                LanUi.showToast(this, "多端自动同步正在启动")
+            } else {
+                LanUi.openMainFromTile(this, error)
+            }
         }
         updateTile()
     }
 
     private fun updateTile() {
         qsTile?.apply {
-            label = "局域网自动同步"
+            label = "多端自动同步"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                subtitle = LanProtocol.tileStateLabel(
-                    LanPrefs.pairedHost(this@AutoSyncTileService),
-                    LanPrefs.token(this@AutoSyncTileService),
-                    LanAutoSyncService.isRunning(this@AutoSyncTileService)
-                )
+                subtitle = if (
+                    LanAutoSyncService.isEnabled(this@AutoSyncTileService) &&
+                    !LanAutoSyncService.isRunning(this@AutoSyncTileService)
+                ) {
+                    "后台同步中"
+                } else {
+                    LanProtocol.multiAutoSyncStateLabel(
+                        LanPrefs.hasPairing(this@AutoSyncTileService),
+                        LanPrefs.hasWebDavConfig(this@AutoSyncTileService),
+                        LanAutoSyncService.isRunning(this@AutoSyncTileService)
+                    )
+                }
             }
-            state = if (LanAutoSyncService.isRunning(this@AutoSyncTileService)) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
+            state = if (LanAutoSyncService.isEnabled(this@AutoSyncTileService)) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
             updateTile()
         }
     }

@@ -1,4 +1,5 @@
-use super::*;
+use super::prelude::*;
+use crate::platform::gdi as platform_gdi;
 
 struct DbItem {
     id: i64,
@@ -14,6 +15,14 @@ struct DbItem {
     pinned: i64,
     group_id: i64,
     created_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct LanOriginMetadata {
+    pub(super) message_id: String,
+    pub(super) origin_device_id: String,
+    pub(super) origin_seq: u64,
+    pub(super) hash: String,
 }
 
 fn split_paths_blob(value: Option<String>) -> Option<Vec<String>> {
@@ -187,13 +196,361 @@ pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
     }
 }
 
-fn current_local_day_value() -> i64 {
+pub(super) fn build_preview(text: &str) -> String {
+    let one_line = text.replace(['\r', '\n'], " ").trim().to_string();
+    if one_line.chars().count() > 72 {
+        let mut s = String::new();
+        for (idx, ch) in one_line.chars().enumerate() {
+            if idx >= 72 {
+                break;
+            }
+            s.push(ch);
+        }
+        s.push_str(" ...");
+        s
+    } else {
+        one_line
+    }
+}
+
+pub(super) fn build_files_preview(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = paths
+        .iter()
+        .map(|path| {
+            let parsed = Path::new(path);
+            parsed
+                .file_name()
+                .and_then(|value| value.to_str())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(path)
+                .to_string()
+        })
+        .collect();
+    match names.len() {
+        0 => String::new(),
+        1 => names[0].clone(),
+        2 => format!("{} + {}", names[0], names[1]),
+        _ => format!("{} + {} 等 {} 项", names[0], names[1], names.len()),
+    }
+}
+
+pub(super) fn text_content_signature(text: &str) -> String {
+    let normalized = normalize_captured_text(text);
+    if normalized.is_empty() {
+        String::new()
+    } else {
+        crc32_signature([b"text".as_slice(), normalized.as_bytes()])
+    }
+}
+
+pub(super) fn image_content_signature(bytes: &[u8], width: usize, height: usize) -> String {
+    if bytes.is_empty() || width == 0 || height == 0 {
+        String::new()
+    } else {
+        let width = (width as u64).to_le_bytes();
+        let height = (height as u64).to_le_bytes();
+        crc32_signature([b"image".as_slice(), &width, &height, bytes])
+    }
+}
+
+fn normalized_file_paths_for_signature(paths: &[String]) -> Vec<String> {
+    let mut normalized: Vec<String> = paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            let mut value = path.replace('/', "\\");
+            while value.ends_with('\\') && value.len() > 3 {
+                value.pop();
+            }
+            value.to_lowercase()
+        })
+        .collect();
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
+}
+
+pub(super) fn file_paths_signature(paths: &[String]) -> String {
+    let normalized = normalized_file_paths_for_signature(paths);
+    if normalized.is_empty() {
+        String::new()
+    } else {
+        let joined = normalized.join("\n");
+        crc32_signature([b"files".as_slice(), joined.as_bytes()])
+    }
+}
+
+fn crc32_signature<const N: usize>(parts: [&[u8]; N]) -> String {
+    let mut hasher = crc32fast::Hasher::new();
+    for part in parts {
+        hasher.update(&(part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    format!("crc:{:08x}", hasher.finalize())
+}
+
+pub(super) fn dedupe_signature_for_item(item: &ClipItem, fallback_signature: &str) -> String {
+    let computed = match item.kind {
+        ClipKind::Text | ClipKind::Phrase => item
+            .text
+            .as_deref()
+            .map(text_content_signature)
+            .unwrap_or_default(),
+        ClipKind::Files => item
+            .file_paths
+            .as_deref()
+            .map(|paths| {
+                let fallback = fallback_signature.trim();
+                if item.source_app.starts_with("LAN:")
+                    && fallback.len() == 12
+                    && fallback.starts_with("crc:")
+                    && fallback[4..].chars().all(|ch| ch.is_ascii_hexdigit())
+                {
+                    fallback.to_string()
+                } else {
+                    file_paths_signature(paths)
+                }
+            })
+            .or_else(|| item.text.as_deref().map(text_content_signature))
+            .unwrap_or_default(),
+        ClipKind::Image => {
+            if let Some(bytes) = item.image_bytes.as_ref() {
+                image_content_signature(bytes, item.image_width, item.image_height)
+            } else if let Some(path) = item.image_path.as_deref() {
+                load_image_bytes_from_path(path)
+                    .map(|(bytes, width, height)| image_content_signature(&bytes, width, height))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            }
+        }
+    };
+    if computed.is_empty() {
+        fallback_signature.trim().to_string()
+    } else {
+        computed
+    }
+}
+
+pub(super) fn build_qr_clip_item(text: &str) -> Option<(ClipItem, String)> {
+    use qrcodegen::{QrCode, QrCodeEcc};
+
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).ok()?;
+    let module_count = qr.size().max(1) as usize;
+    let border = 4usize;
+    let total_modules = module_count + border * 2;
+    let scale = (512usize / total_modules).clamp(4, 16);
+    let side = total_modules * scale;
+    let mut bytes = vec![255u8; side * side * 4];
+    for y in 0..side {
+        for x in 0..side {
+            let mx = x / scale;
+            let my = y / scale;
+            let dark = mx >= border
+                && my >= border
+                && mx < border + module_count
+                && my < border + module_count
+                && qr.get_module((mx - border) as i32, (my - border) as i32);
+            if dark {
+                let idx = (y * side + x) * 4;
+                bytes[idx] = 0;
+                bytes[idx + 1] = 0;
+                bytes[idx + 2] = 0;
+                bytes[idx + 3] = 255;
+            }
+        }
+    }
+    let preview_text: String = text.chars().take(32).collect();
+    let sig = image_content_signature(&bytes, side, side);
+    Some((
+        ClipItem {
+            id: 0,
+            kind: ClipKind::Image,
+            preview: format!("{} {}", tr("二维码", "QR"), preview_text),
+            text: None,
+            source_app: String::new(),
+            file_paths: None,
+            image_bytes: Some(bytes),
+            image_path: None,
+            image_width: side,
+            image_height: side,
+            pinned: false,
+            group_id: 0,
+            created_at: now_utc_sqlite(),
+        },
+        sig,
+    ))
+}
+
+pub(super) fn output_image_path() -> PathBuf {
+    let base = data_dir().join("images");
+    let _ = fs::create_dir_all(&base);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base.join(format!("zsclip_{}.png", ts))
+}
+
+pub(super) fn write_image_bytes_to_path(
+    out: &Path,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<PathBuf> {
+    use std::fs::File;
+    use std::io::BufWriter;
+
+    let file = File::create(out).ok()?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder.write_header().ok()?;
+    png_writer.write_image_data(bytes).ok()?;
+    Some(out.to_path_buf())
+}
+
+pub(super) fn write_image_bytes_to_output_path(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<PathBuf> {
+    let out = output_image_path();
+    write_image_bytes_to_path(&out, bytes, width, height)
+}
+
+pub(super) fn load_image_bytes_from_path(path: &str) -> Option<(Vec<u8>, usize, usize)> {
+    let bytes = fs::read(path).ok()?;
+    let image = image::load_from_memory(&bytes).ok()?;
+    let rgba = image.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    Some((rgba.into_raw(), width as usize, height as usize))
+}
+
+pub(super) fn save_image_item(item: &ClipItem) -> Option<PathBuf> {
+    if let Some(path) = item.image_path.as_ref() {
+        let src = PathBuf::from(path);
+        if src.exists() {
+            return Some(src);
+        }
+    }
+    let (bytes, width, height) = ensure_item_image_bytes(item)?;
+    write_image_bytes_to_output_path(&bytes, width as u32, height as u32)
+}
+
+pub(crate) fn ensure_item_image_bytes(item: &ClipItem) -> Option<(Vec<u8>, usize, usize)> {
+    if let Some(bytes) = &item.image_bytes {
+        return Some((bytes.clone(), item.image_width, item.image_height));
+    }
+    if let Some(path) = item.image_path.as_ref() {
+        if let Some(loaded) = load_image_bytes_from_path(path) {
+            return Some(loaded);
+        }
+    }
+    if item.kind != ClipKind::Image || item.id <= 0 {
+        return None;
+    }
+    let full = db_load_item_full(item.id)?;
+    if let Some(bytes) = full.image_bytes {
+        return Some((bytes, full.image_width, full.image_height));
+    }
+    full.image_path
+        .as_deref()
+        .and_then(load_image_bytes_from_path)
+}
+
+fn build_image_thumbnail_rgba(
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    max_side: usize,
+) -> Option<ImageThumbnail> {
+    if bytes.len() < 4 || width == 0 || height == 0 || max_side == 0 {
+        return None;
+    }
+    if width <= max_side && height <= max_side {
+        return Some(ImageThumbnail {
+            bytes: bytes.to_vec(),
+            width,
+            height,
+        });
+    }
+    let scale = (max_side as f32 / width as f32).min(max_side as f32 / height as f32);
+    let out_w = ((width as f32 * scale).round() as usize).max(1);
+    let out_h = ((height as f32 * scale).round() as usize).max(1);
+    let mut out = vec![0u8; out_w * out_h * 4];
+    for y in 0..out_h {
+        let src_y = y * height / out_h;
+        for x in 0..out_w {
+            let src_x = x * width / out_w;
+            let src_idx = (src_y * width + src_x) * 4;
+            let dst_idx = (y * out_w + x) * 4;
+            out[dst_idx..dst_idx + 4].copy_from_slice(&bytes[src_idx..src_idx + 4]);
+        }
+    }
+    Some(ImageThumbnail {
+        bytes: out,
+        width: out_w,
+        height: out_h,
+    })
+}
+
+fn spawn_image_thumbnail_load(hwnd: HWND, item_id: i64, path: String, max_side: usize) {
+    let hwnd_raw = hwnd as isize;
+    std::thread::spawn(move || {
+        let image = load_image_bytes_from_path(&path).and_then(|(bytes, width, height)| {
+            build_image_thumbnail_rgba(&bytes, width, height, max_side)
+        });
+        let payload = Box::new(ImageThumbReadyResult { item_id, image });
+        unsafe {
+            let _ = post_boxed_message(hwnd_raw, WM_IMAGE_THUMB_READY, 0, payload);
+        }
+    });
+}
+
+pub(super) fn ensure_item_thumbnail_bytes(
+    state: &mut AppState,
+    item: &ClipItem,
+    max_side: usize,
+) -> Option<(Vec<u8>, usize, usize)> {
+    if item.id > 0 {
+        if let Some(image) = state.image_thumb_cache.get(item.id) {
+            return Some((image.bytes, image.width, image.height));
+        }
+    }
+    let (bytes, width, height) = if let Some(bytes) = &item.image_bytes {
+        (bytes.clone(), item.image_width, item.image_height)
+    } else if let Some(path) = item.image_path.as_ref() {
+        if item.id > 0 && state.image_thumb_loading.insert(item.id) {
+            spawn_image_thumbnail_load(state.hwnd, item.id, path.clone(), max_side);
+        }
+        return None;
+    } else {
+        return None;
+    };
+    let thumb = build_image_thumbnail_rgba(&bytes, width, height, max_side)?;
+    if item.id > 0 {
+        state.image_thumb_cache.put(item.id, thumb.clone());
+    }
+    Some((thumb.bytes, thumb.width, thumb.height))
+}
+
+fn current_search_date_context() -> SearchDateContext {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0);
     let (year, month, day, _, _, _) = utc_secs_to_local_parts(now_secs);
-    gregorian_to_days(year, month, day)
+    SearchDateContext::from_date(year, month, day)
 }
 
 pub(super) fn db_load_items_page(
@@ -201,7 +558,9 @@ pub(super) fn db_load_items_page(
     cursor: Option<ItemsCursor>,
     limit: usize,
 ) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
-    let (search_terms, time_filter, app_filter) = parse_search_query(query.search_text.trim());
+    let date_context = current_search_date_context();
+    let (search_terms, time_filter, app_filter) =
+        parse_search_query_with_context(query.search_text.trim(), date_context);
     with_db(|conn| {
         let mut sql = String::from(
             "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, \
@@ -240,7 +599,7 @@ pub(super) fn db_load_items_page(
                 bind_values.push(SqlValue::from(days_to_sqlite_date(day)));
             }
             Some(SearchTimeFilter::RecentDays(days)) => {
-                let end_day = current_local_day_value();
+                let end_day = date_context.current_day;
                 let start_day = end_day - (days.max(1) - 1);
                 sql.push_str(
                     " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
@@ -342,14 +701,21 @@ pub(super) fn spawn_items_page_load(
             },
         };
 
-        unsafe {
-            let still_alive = hwnd_value != 0 && IsWindow(hwnd_value as HWND) != 0;
-            if still_alive {
-                if let Ok(mut queue) = page_load_results().lock() {
-                    queue.push_back(result);
-                }
-                let _ = PostMessageW(hwnd_value as HWND, WM_ITEMS_PAGE_READY, 0, 0);
+        if platform_window::is_window_alive(hwnd_value) {
+            if let Ok(mut queue) = page_load_results().lock() {
+                queue.push_back(result);
             }
+            platform_window::post_message(hwnd_value, WM_ITEMS_PAGE_READY, 0, 0);
+        }
+    });
+}
+
+pub(super) fn spawn_startup_data_reconcile(hwnd: HWND, keep_duplicates: bool) {
+    let hwnd_value = hwnd as isize;
+    std::thread::spawn(move || {
+        let deleted = db_reconcile_dedupe_signatures(0, keep_duplicates).unwrap_or(0);
+        if platform_window::is_window_alive(hwnd_value) {
+            platform_window::post_message(hwnd_value, WM_STARTUP_DATA_RECONCILED, deleted, 0);
         }
     });
 }
@@ -368,7 +734,7 @@ pub(super) unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
         *queue = pending;
     }
     if changed {
-        InvalidateRect(hwnd, null(), 1);
+        platform_gdi::invalidate_rect(hwnd, null(), 1);
     }
 }
 
@@ -429,6 +795,69 @@ pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipI
         )
     })
     .ok()
+}
+
+pub(super) fn db_latest_item_id(category: i64) -> Option<i64> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT id FROM items WHERE category=? ORDER BY id DESC LIMIT 1",
+            params![category],
+            |row| row.get::<_, i64>(0),
+        )
+    })
+    .ok()
+}
+
+pub(super) fn db_load_lan_origin_metadata(item_id: i64) -> Option<LanOriginMetadata> {
+    if item_id <= 0 {
+        return None;
+    }
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(lan_origin_message_id, ''), COALESCE(lan_origin_device_id, ''), \
+             COALESCE(lan_origin_seq, 0), COALESCE(lan_origin_hash, '') \
+             FROM items WHERE id=?",
+            params![item_id],
+            |row| {
+                let origin_seq_i64: i64 = row.get(2)?;
+                Ok(LanOriginMetadata {
+                    message_id: row.get(0)?,
+                    origin_device_id: row.get(1)?,
+                    origin_seq: origin_seq_i64.max(0) as u64,
+                    hash: row.get(3)?,
+                })
+            },
+        )
+    })
+    .ok()
+    .filter(|meta| {
+        !meta.message_id.trim().is_empty()
+            && !meta.origin_device_id.trim().is_empty()
+            && meta.origin_seq > 0
+            && !meta.hash.trim().is_empty()
+    })
+}
+
+pub(super) fn db_save_lan_origin_metadata(
+    item_id: i64,
+    metadata: &LanOriginMetadata,
+) -> rusqlite::Result<()> {
+    if item_id <= 0 {
+        return Ok(());
+    }
+    with_db_mut(|conn| {
+        conn.execute(
+            "UPDATE items SET lan_origin_message_id=?, lan_origin_device_id=?, lan_origin_seq=?, lan_origin_hash=? WHERE id=?",
+            params![
+                metadata.message_id.trim(),
+                metadata.origin_device_id.trim(),
+                metadata.origin_seq as i64,
+                metadata.hash.trim(),
+                item_id,
+            ],
+        )?;
+        Ok(())
+    })
 }
 
 pub(super) fn db_insert_item(
@@ -559,7 +988,13 @@ pub(super) fn db_reconcile_dedupe_signatures(
 ) -> rusqlite::Result<usize> {
     let rows = with_db(|conn| {
         let mut stmt = conn.prepare(
-            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, \
+            "SELECT id, kind, preview, \
+             CASE WHEN COALESCE(signature, '')='' THEN text_data ELSE NULL END as text_data, \
+             COALESCE(source_app, '') as source_app, \
+             CASE WHEN COALESCE(signature, '')='' THEN file_paths ELSE NULL END as file_paths, \
+             CASE WHEN COALESCE(signature, '')='' THEN image_data ELSE NULL END as image_data, \
+             CASE WHEN COALESCE(signature, '')='' THEN image_path ELSE NULL END as image_path, \
+             image_width, image_height, pinned, group_id, \
              COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
              FROM items WHERE category=? ORDER BY id DESC",
         )?;
@@ -879,6 +1314,16 @@ pub(super) fn db_update_item_text(item_id: i64, new_text: &str) -> rusqlite::Res
             params![new_text, preview, item_id],
         )?;
         Ok(())
+    })
+}
+
+pub(super) fn db_item_text(item_id: i64) -> rusqlite::Result<String> {
+    with_db(|conn| {
+        conn.query_row(
+            "SELECT COALESCE(text_data,'') FROM items WHERE id=?",
+            [item_id],
+            |row| row.get(0),
+        )
     })
 }
 
