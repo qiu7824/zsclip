@@ -297,12 +297,30 @@ jobs:
           cat > release-notes.md <<'NOTES'
           # ZSClip 0.9.9
 
-          ## 更新内容
-          - 版本更新到 0.9.9。
+          ## 从 0.9.0 到 0.9.9 的主要更新
+
+          ### 多端同步与移动端
+          - 完善局域网同步链路，补齐设备发现、配对审批、信任设备保存、后台同步和能力协商。
+          - 扩展移动端/Android 同步流程，支持手机文本、图片、分享入口和 WebDAV/局域网两类同步路径。
+          - 修复 LAN 同步、密钥存储、移动端清单和桌面同步设置相关问题。
+
+          ### 原生多平台 UI
+          - Windows 继续作为完整主线版本保留。
+          - 新增并打通 macOS AppKit 原生 host 的构建和 smoke 验证。
+          - 新增并打通 Linux GTK4 原生 host 的构建和 smoke 验证。
+          - macOS/Linux 已覆盖原生剪贴板列表、行操作、设置控制、托盘/状态菜单、VV 粘贴路由等核心路径的 CI 冒烟验证。
+
+          ### UI 框架与复用边界
+          - 继续整理 `app_core`、产品适配器和 native host 的边界，减少平台 host 直接复制 Windows 业务逻辑。
+          - 补齐 ZSUI/native adapter manifest、产品适配器 manifest、跨平台 host contract 和 smoke 入口。
+          - 针对 macOS AppKit、Linux GTK 的真实绑定修复大量编译和 objc2/GTK 适配问题。
+
+          ### 打包与发布
           - GitHub Actions 接入 Windows、macOS、Linux 三平台自动打包。
-          - macOS AppKit 原生 host 和 Linux GTK 原生 host 已通过 CI 编译与 smoke 验证。
-          - 补齐原生 host 里的剪贴板列表、行操作、设置控制、托盘/状态菜单、VV 粘贴路由等跨平台冒烟验证。
-          - 修复 macOS AppKit 绑定、Linux GTK 构建、非 Windows 平台密钥存储编译等问题。
+          - Windows 提供安装器和便携包。
+          - macOS 提供 DMG，打开后可将 `ZSClip.app` 拖入 Applications。
+          - Linux 提供 Debian/Ubuntu `.deb` 包和通用便携 `tar.gz` 包。
+          - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-windows-x86_64-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
@@ -332,7 +350,7 @@ jobs:
             gh release upload "$TAG_NAME" release-assets/* --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
-              gh release edit "$TAG_NAME" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
+              gh release edit "$TAG_NAME" --target "$GITHUB_SHA" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
               status=${PIPESTATUS[0]}
             fi
           else
