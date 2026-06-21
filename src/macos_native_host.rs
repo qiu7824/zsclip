@@ -19,7 +19,7 @@ mod appkit {
 
     use block2::RcBlock;
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, ProtocolObject, Sel};
+    use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
     use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
     use objc2_app_kit::{
         NSAccessibility, NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn,
@@ -769,27 +769,28 @@ mod appkit {
 
         unsafe impl NSWindowDelegate for Delegate {
             #[unsafe(method(windowShouldClose:))]
-            fn window_should_close(&self, sender: &NSWindow) -> bool {
+            fn window_should_close(&self, sender: &NSWindow) -> Bool {
                 if self
                     .ivars()
                     .edit_window
                     .get()
-                    .map(|window| window.as_ptr() == sender.as_ptr())
+                    .map(|window| Retained::<NSWindow>::as_ptr(window) == sender.as_ptr())
                     .unwrap_or(false)
                 {
-                    return self.perform_native_edit_close_request();
+                    return self.perform_native_edit_close_request().into();
                 }
-                true
+                true.into()
             }
 
             #[unsafe(method(windowWillClose:))]
             fn window_will_close(&self, notification: &NSNotification) {
-                let object = unsafe { notification.object() }.map(|object| object.as_ptr());
+                let object =
+                    unsafe { notification.object() }.map(|object| Retained::as_ptr(&object));
                 if self
                     .ivars()
                     .edit_window
                     .get()
-                    .map(|window| Some(window.as_ptr()) == object)
+                    .map(|window| Some(Retained::<NSWindow>::as_ptr(window)) == object)
                     .unwrap_or(false)
                 {
                     return;
@@ -814,7 +815,7 @@ mod appkit {
                 let items = self.ivars().clip_table_items.borrow();
                 let item = items.get(row.max(0) as usize)?;
                 let presentation = native_host_clip_row_presentation_for_projection(item);
-                Some(NSString::from_str(&presentation.compact_label).into_super())
+                Some(NSString::from_str(&presentation.compact_label).into())
             }
         }
 
