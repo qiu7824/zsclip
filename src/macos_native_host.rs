@@ -789,7 +789,8 @@ mod appkit {
             #[unsafe(method(windowWillClose:))]
             fn window_will_close(&self, notification: &NSNotification) {
                 let object =
-                    unsafe { notification.object() }.map(|object| Retained::as_ptr(&object));
+                    unsafe { notification.object() }
+                        .map(|object| Retained::as_ptr(&object).cast::<NSWindow>());
                 if self
                     .ivars()
                     .edit_window
@@ -806,6 +807,7 @@ mod appkit {
         unsafe impl NSControlTextEditingDelegate for Delegate {}
 
         unsafe impl NSTableViewDataSource for Delegate {
+            #[unsafe(method(numberOfRowsInTableView:))]
             fn numberOfRowsInTableView(&self, _table_view: &NSTableView) -> NSInteger {
                 self.ivars().clip_table_items.borrow().len() as NSInteger
             }
@@ -813,6 +815,7 @@ mod appkit {
         }
 
         unsafe impl NSTableViewDelegate for Delegate {
+            #[unsafe(method(tableViewSelectionDidChange:))]
             fn tableViewSelectionDidChange(&self, _notification: &NSNotification) {
                 let Some(table_view) = self.ivars().clip_table_view.get() else {
                     return;
@@ -1204,7 +1207,8 @@ mod appkit {
 
     fn appkit_is_dark_appearance(app: &NSApplication) -> bool {
         let name = app.effectiveAppearance().name();
-        <Retained<NSString> as AsRef<NSString>>::as_ref(&name) == NSAppearanceNameDarkAqua
+        <Retained<NSString> as AsRef<NSString>>::as_ref(&name)
+            == unsafe { NSAppearanceNameDarkAqua }
     }
 
     fn appkit_position_window_near_cursor(window: &NSWindow) {

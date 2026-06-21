@@ -1697,6 +1697,7 @@ fn native_dialog_response_name(response: NativeDialogResponse) -> &'static str {
 #[cfg(target_os = "linux")]
 fn open_linux_url_or_file(target: String) -> Result<(), String> {
     use gtk4::gio::{AppInfo, File};
+    use gtk4::prelude::*;
 
     if target.trim().is_empty() {
         return Err("empty target".to_string());
