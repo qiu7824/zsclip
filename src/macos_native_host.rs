@@ -2123,7 +2123,7 @@ mod appkit {
                 );
                 unsafe { view.addSubview(&field) };
             }
-            for (index, control) in control_summaries
+            for (index, (control, options)) in control_summaries
                 .iter()
                 .filter(|control| {
                     control.kind == crate::settings_model::SettingsNativeControlKind::Dropdown
@@ -2185,7 +2185,7 @@ mod appkit {
                 unsafe { view.addSubview(&row_label) };
                 unsafe { view.addSubview(&popup) };
             }
-            for (index, control) in control_summaries
+            for (index, (control, route_name, action_name)) in control_summaries
                 .iter()
                 .filter(|control| {
                     control.kind == crate::settings_model::SettingsNativeControlKind::Button
@@ -3313,7 +3313,7 @@ mod appkit {
                     CGEventTapPlacement::HeadInsertEventTap,
                     CGEventTapOptions::Default,
                     event_mask,
-                    Some(appkit_vv_cg_event_tap_callback),
+                    Some(Self::appkit_vv_cg_event_tap_callback),
                     user_info,
                 )
             }) else {
