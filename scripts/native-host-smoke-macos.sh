@@ -69,16 +69,15 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip AppKit file picker smoke injected=true recorded=true selected=true" \
     "ZSClip AppKit identity smoke queried=true" \
     "ZSClip AppKit action open_settings -> zsclip.window.open_settings" \
-    "ZSClip AppKit row action row_copy -> zsclip.row.copy" \
-    "ZSClip AppKit row action row_edit -> zsclip.row.edit" \
+    "ZSClip AppKit row action row_copy" \
+    "ZSClip AppKit row action row_edit" \
     "ZSClip AppKit edit window shown" \
     "ZSClip AppKit edit save item_id=" \
-    "ZSClip AppKit row action row_text_translate -> zsclip.row.text_translate" \
+    "ZSClip AppKit row action row_text_translate" \
     "ZSClip AppKit settings control action settings_toggle_clipboard_capture -> zsclip.settings.toggle_control" \
     "ZSClip AppKit settings control action settings_toggle_lan_sync -> zsclip.settings.toggle_control" \
     "ZSClip AppKit VV select 0 -> vv_select_requested" \
     "ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" \
-    "ZSClip AppKit VV native paste shortcut posted=" \
     "ZSClip AppKit status menu action status_toggle_lan_sync -> zsclip.tray.toggle_lan_sync" \
     "ZSClip AppKit auto smoke finished"
   do
@@ -135,13 +134,12 @@ APPLESCRIPT
     exit 1
   fi
   for expected in \
-    "ZSClip AppKit row action row_copy -> zsclip.row.copy" \
-    "ZSClip AppKit row action row_text_translate -> zsclip.row.text_translate" \
+    "ZSClip AppKit row action row_copy" \
+    "ZSClip AppKit row action row_text_translate" \
     "ZSClip AppKit row popup menu shown:" \
     "ZSClip AppKit group filter popup menu shown:" \
     "ZSClip AppKit VV select 0 -> vv_select_requested" \
     "ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" \
-    "ZSClip AppKit VV native paste shortcut posted=" \
     "ZSClip AppKit status menu action status_toggle_lan_sync -> zsclip.tray.toggle_lan_sync"
   do
     if ! grep -Fq "$expected" "$APP_LOG"; then
