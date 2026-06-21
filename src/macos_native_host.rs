@@ -3611,13 +3611,13 @@ mod appkit {
         }
 
         fn appkit_post_native_paste_shortcut() -> bool {
-            appkit_post_native_key_event(9, CGEventFlags::MaskCommand)
+            Self::appkit_post_native_key_event(9, CGEventFlags::MaskCommand)
         }
 
         fn appkit_post_native_delete_backspaces(backspaces: u8) -> u8 {
             let mut posted = 0;
             for _ in 0..backspaces {
-                if appkit_post_native_key_event(51, CGEventFlags::empty()) {
+                if Self::appkit_post_native_key_event(51, CGEventFlags::empty()) {
                     posted += 1;
                 }
             }
@@ -3678,14 +3678,14 @@ mod appkit {
                 paste.clipboard_kind.unwrap_or("none")
             );
             if paste.accepted && paste.backspaces > 0 {
-                let deleted = appkit_post_native_delete_backspaces(paste.backspaces);
+                let deleted = Self::appkit_post_native_delete_backspaces(paste.backspaces);
                 eprintln!(
                     "ZSClip AppKit VV delete backspaces requested={} posted={}",
                     paste.backspaces, deleted
                 );
             }
             if paste.accepted && paste.paste_shortcut_sent {
-                let posted = appkit_post_native_paste_shortcut();
+                let posted = Self::appkit_post_native_paste_shortcut();
                 eprintln!("ZSClip AppKit VV native paste shortcut posted={}", posted);
             }
             if let Some(window) = self.ivars().vv_popup_window.get() {
