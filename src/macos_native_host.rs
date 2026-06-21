@@ -494,7 +494,10 @@ mod appkit {
                     );
                     text_field
                 };
-                appkit_set_accessibility_label(text_field.as_ref(), "ZSClip app title");
+                appkit_set_accessibility_label::<NSTextField>(
+                    text_field.as_ref(),
+                    "ZSClip app title",
+                );
                 let target: &AnyObject = self.as_ref();
                 let search_spec = native_host_search_input_specs()[0];
                 let search_field = NSSearchField::new(mtm);
@@ -508,7 +511,10 @@ mod appkit {
                 search_field.setHidden(true);
                 appkit_set_view_alpha(search_field.as_ref(), 0.0);
                 search_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-                appkit_set_accessibility_label(search_field.as_ref(), search_spec.label);
+                appkit_set_accessibility_label::<NSSearchField>(
+                    search_field.as_ref(),
+                    search_spec.label,
+                );
                 let clip_items = crate::macos_app::macos_native_host_projected_clip_items();
                 let clip_row_height = 44.0_f64;
                 let clip_list_width = 608.0_f64;
@@ -564,7 +570,10 @@ mod appkit {
                 clip_table_view
                     .setSelectionHighlightStyle(NSTableViewSelectionHighlightStyle::Regular);
                 clip_table_view.setStyle(NSTableViewStyle::Plain);
-                appkit_set_accessibility_label(clip_table_view.as_ref(), "Clipboard history list");
+                appkit_set_accessibility_label::<NSTableView>(
+                    clip_table_view.as_ref(),
+                    "Clipboard history list",
+                );
                 unsafe { clip_table_view.setTarget(Some(target)) };
                 unsafe { clip_table_view.setDoubleAction(Some(sel!(zsclipActivateClipTableRow:))) };
                 unsafe {
@@ -587,7 +596,7 @@ mod appkit {
                         | NSAutoresizingMaskOptions::ViewHeightSizable,
                 );
                 clip_scroll_view.setDocumentView(Some(&clip_table_view));
-                appkit_set_accessibility_label(
+                appkit_set_accessibility_label::<NSScrollView>(
                     clip_scroll_view.as_ref(),
                     "Clipboard history scroll area",
                 );
@@ -607,7 +616,7 @@ mod appkit {
                             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
                             NSSize::new(spec.width() as f64, spec.height() as f64),
                         ));
-                        appkit_set_accessibility_label(button.as_ref(), spec.label);
+                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
                         button
                     })
                     .collect();
@@ -630,7 +639,7 @@ mod appkit {
                             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
                             NSSize::new(spec.width() as f64, spec.height() as f64),
                         ));
-                        appkit_set_accessibility_label(button.as_ref(), spec.label);
+                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
                         button
                     })
                     .collect();
@@ -650,7 +659,7 @@ mod appkit {
                             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
                             NSSize::new(spec.width() as f64, spec.height() as f64),
                         ));
-                        appkit_set_accessibility_label(button.as_ref(), spec.label);
+                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
                         button
                     })
                     .collect();
@@ -693,7 +702,10 @@ mod appkit {
                     NSAutoresizingMaskOptions::ViewWidthSizable
                         | NSAutoresizingMaskOptions::ViewHeightSizable,
                 );
-                appkit_set_accessibility_label(view.as_ref(), "ZSClip main window content");
+                appkit_set_accessibility_label::<NSVisualEffectView>(
+                    view.as_ref(),
+                    "ZSClip main window content",
+                );
                 appkit_enable_rounded_layer(view.as_ref(), 12.0);
                 window.setContentView(Some(&view));
                 unsafe { view.addSubview(&text_field) };
@@ -861,7 +873,7 @@ mod appkit {
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, row_height)),
         );
         cell.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        appkit_set_accessibility_label(cell.as_ref(), &presentation.accessibility_label);
+        appkit_set_accessibility_label::<NSView>(cell.as_ref(), &presentation.accessibility_label);
 
         let kind_label = appkit_clip_table_label(
             mtm,
@@ -934,7 +946,7 @@ mod appkit {
         label.setUsesSingleLineMode(true);
         label.setMaximumNumberOfLines(1);
         label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        appkit_set_accessibility_label(label.as_ref(), text);
+        appkit_set_accessibility_label::<NSTextField>(label.as_ref(), text);
         label
     }
 
@@ -1110,7 +1122,7 @@ mod appkit {
             NSPoint::new(bounds.left as f64, bounds.top as f64),
             NSSize::new(bounds.width() as f64, bounds.height() as f64),
         ));
-        appkit_set_accessibility_label(button.as_ref(), spec.label());
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label());
         appkit_apply_button_style_role(button.as_ref(), spec.style_role());
         button
     }
@@ -1168,7 +1180,7 @@ mod appkit {
             let _: () = msg_send![&*popup, setTarget: target];
             let _: () = msg_send![&*popup, setAction: selector];
         }
-        appkit_set_accessibility_label(popup.as_ref(), spec.label);
+        appkit_set_accessibility_label::<NSPopUpButton>(popup.as_ref(), spec.label);
         popup
     }
 
