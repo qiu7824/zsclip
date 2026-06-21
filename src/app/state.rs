@@ -1,111 +1,15 @@
-use super::*;
-
-pub(super) const HOTKEY_MOD_OPTIONS: [&str; 8] = [
-    "Win",
-    "Ctrl",
-    "Alt",
-    "Shift",
-    "Ctrl+Alt",
-    "Ctrl+Shift",
-    "Alt+Shift",
-    "Ctrl+Alt+Shift",
-];
-
-pub(super) const HOTKEY_KEY_OPTIONS: [&str; 51] = [
-    "A",
-    "B",
-    "C",
-    "D",
-    "E",
-    "F",
-    "G",
-    "H",
-    "I",
-    "J",
-    "K",
-    "L",
-    "M",
-    "N",
-    "O",
-    "P",
-    "Q",
-    "R",
-    "S",
-    "T",
-    "U",
-    "V",
-    "W",
-    "X",
-    "Y",
-    "Z",
-    "0",
-    "1",
-    "2",
-    "3",
-    "4",
-    "5",
-    "6",
-    "7",
-    "8",
-    "9",
-    "Space",
-    "Enter",
-    "Tab",
-    "Esc",
-    "Backspace",
-    "Delete",
-    "Insert",
-    "Up",
-    "Down",
-    "Left",
-    "Right",
-    "Home",
-    "End",
-    "PageUp",
-    "PageDown",
-];
-
-pub(super) const SEARCH_ENGINE_PRESETS: [(&str, &str, &str); 12] = [
-    (
-        "jzxx",
-        "筑森搜索（jzxx.vip）",
-        "https://jzxx.vip/search/more.html?type=11&key={q}&se=2",
-    ),
-    ("bing", "必应", "https://www.bing.com/search?q={q}"),
-    ("baidu", "百度", "https://www.baidu.com/s?wd={q}"),
-    ("google", "Google", "https://www.google.com/search?q={q}"),
-    ("sogou", "搜狗", "https://www.sogou.com/web?query={q}"),
-    ("360", "360搜索", "https://www.so.com/s?q={q}"),
-    ("quark", "夸克", "https://quark.sm.cn/s?q={q}"),
-    ("sm", "神马", "https://m.sm.cn/s?q={q}"),
-    ("ddg", "DuckDuckGo", "https://duckduckgo.com/?q={q}"),
-    ("yahoo", "Yahoo", "https://search.yahoo.com/search?p={q}"),
-    ("yandex", "Yandex", "https://yandex.com/search/?text={q}"),
-    ("custom", "自定义", "https://example.com/search?q={q}"),
-];
-
-pub(super) const IMAGE_OCR_PROVIDER_OPTIONS: [(&str, &str); 3] = [
-    ("off", "关闭"),
-    ("baidu", "百度 OCR"),
-    ("winocr", "WinOCR（微信 OCR）"),
-];
-
-pub(super) const TEXT_TRANSLATE_PROVIDER_OPTIONS: [(&str, &str); 2] =
-    [("off", "关闭"), ("baidu", "百度翻译")];
-
-pub(super) const TEXT_TRANSLATE_TARGET_OPTIONS: [(&str, &str); 4] = [
-    ("zh", "简体中文"),
-    ("en", "英语"),
-    ("jp", "日语"),
-    ("kor", "韩语"),
-];
-
-pub(super) const PASTE_SOUND_OPTIONS: [(&str, &str); 4] = [
-    ("default", "默认"),
-    ("soft", "柔和"),
-    ("bright", "清脆"),
-    ("custom", "自定义文件"),
-];
+use super::prelude::*;
+pub(super) use crate::settings_model::{
+    hotkey_preview_text, image_ocr_provider_display, image_ocr_provider_key_from_display,
+    normalize_hotkey_key, normalize_hotkey_mod, normalize_source_tab, paste_sound_display,
+    paste_sound_file_button_text, paste_sound_key_from_display, search_engine_display,
+    search_engine_key_from_display, search_engine_template, source_tab_all_label,
+    source_tab_category, source_tab_label, text_translate_provider_display,
+    text_translate_provider_key_from_display, text_translate_target_display,
+    text_translate_target_key_from_display, HOTKEY_KEY_OPTIONS, HOTKEY_MOD_OPTIONS,
+    IMAGE_OCR_PROVIDER_OPTIONS, PASTE_SOUND_OPTIONS, SEARCH_ENGINE_PRESETS,
+    TEXT_TRANSLATE_PROVIDER_OPTIONS, TEXT_TRANSLATE_TARGET_OPTIONS,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -118,6 +22,7 @@ pub(crate) struct AppSettings {
     pub(crate) click_hide: bool,
     pub(crate) auto_hide_on_blur: bool,
     pub(crate) edge_auto_hide: bool,
+    pub(crate) clipboard_capture_enabled: bool,
     pub(crate) hover_preview: bool,
     pub(crate) auto_start: bool,
     pub(crate) close_without_exit: bool,
@@ -148,6 +53,7 @@ pub(crate) struct AppSettings {
     pub(crate) plain_paste_hotkey_key: String,
     pub(crate) ai_clean_enabled: bool,
     pub(crate) super_mail_merge_enabled: bool,
+    pub(crate) wps_taskpane_enabled: bool,
     pub(crate) grouping_enabled: bool,
     pub(crate) cloud_sync_enabled: bool,
     pub(crate) cloud_sync_interval: String,
@@ -190,6 +96,7 @@ impl Default for AppSettings {
             click_hide: false,
             auto_hide_on_blur: false,
             edge_auto_hide: false,
+            clipboard_capture_enabled: true,
             hover_preview: false,
             auto_start: false,
             close_without_exit: true,
@@ -220,6 +127,7 @@ impl Default for AppSettings {
             plain_paste_hotkey_key: "V".to_string(),
             ai_clean_enabled: false,
             super_mail_merge_enabled: false,
+            wps_taskpane_enabled: false,
             grouping_enabled: true,
             cloud_sync_enabled: false,
             cloud_sync_interval: "1小时".to_string(),
@@ -253,174 +161,15 @@ impl Default for AppSettings {
     }
 }
 
-pub(super) fn search_engine_template(key: &str) -> &'static str {
-    SEARCH_ENGINE_PRESETS
-        .iter()
-        .find(|(k, _, _)| *k == key)
-        .map(|(_, _, tpl)| *tpl)
-        .unwrap_or(SEARCH_ENGINE_PRESETS[0].2)
-}
-
-pub(super) fn search_engine_display(key: &str) -> String {
-    SEARCH_ENGINE_PRESETS
-        .iter()
-        .find(|(k, _, _)| *k == key)
-        .map(|(_, name, _)| translate(name).into_owned())
-        .unwrap_or_else(|| translate(SEARCH_ENGINE_PRESETS[0].1).into_owned())
-}
-
-pub(super) fn search_engine_key_from_display(label: &str) -> &'static str {
-    SEARCH_ENGINE_PRESETS
-        .iter()
-        .find(|(_, name, _)| *name == label || translate(name).as_ref() == label)
-        .map(|(k, _, _)| *k)
-        .unwrap_or("jzxx")
-}
-
-pub(super) fn image_ocr_provider_display(key: &str) -> String {
-    IMAGE_OCR_PROVIDER_OPTIONS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, name)| translate(name).into_owned())
-        .unwrap_or_else(|| translate(IMAGE_OCR_PROVIDER_OPTIONS[0].1).into_owned())
-}
-
-pub(super) fn image_ocr_provider_key_from_display(label: &str) -> &'static str {
-    IMAGE_OCR_PROVIDER_OPTIONS
-        .iter()
-        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
-        .map(|(k, _)| *k)
-        .unwrap_or("off")
-}
-
-pub(super) fn text_translate_provider_display(key: &str) -> String {
-    TEXT_TRANSLATE_PROVIDER_OPTIONS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, name)| translate(name).into_owned())
-        .unwrap_or_else(|| translate(TEXT_TRANSLATE_PROVIDER_OPTIONS[0].1).into_owned())
-}
-
-pub(super) fn text_translate_provider_key_from_display(label: &str) -> &'static str {
-    TEXT_TRANSLATE_PROVIDER_OPTIONS
-        .iter()
-        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
-        .map(|(k, _)| *k)
-        .unwrap_or("off")
-}
-
-pub(super) fn text_translate_target_display(key: &str) -> String {
-    TEXT_TRANSLATE_TARGET_OPTIONS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, name)| translate(name).into_owned())
-        .unwrap_or_else(|| translate(TEXT_TRANSLATE_TARGET_OPTIONS[0].1).into_owned())
-}
-
-pub(super) fn text_translate_target_key_from_display(label: &str) -> &'static str {
-    TEXT_TRANSLATE_TARGET_OPTIONS
-        .iter()
-        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
-        .map(|(k, _)| *k)
-        .unwrap_or("zh")
-}
-
-pub(super) fn paste_sound_display(key: &str) -> String {
-    PASTE_SOUND_OPTIONS
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map(|(_, name)| translate(name).into_owned())
-        .unwrap_or_else(|| translate(PASTE_SOUND_OPTIONS[0].1).into_owned())
-}
-
-pub(super) fn paste_sound_key_from_display(label: &str) -> &'static str {
-    PASTE_SOUND_OPTIONS
-        .iter()
-        .find(|(_, name)| *name == label || translate(name).as_ref() == label)
-        .map(|(k, _)| *k)
-        .unwrap_or("default")
-}
-
-pub(super) fn paste_sound_file_button_text(path: &str) -> String {
-    let trimmed = path.trim();
-    if trimmed.is_empty() {
-        return tr("选择文件", "Choose file").to_string();
-    }
-    std::path::Path::new(trimmed)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .map(|name| name.to_string())
-        .unwrap_or_else(|| trimmed.to_string())
-}
-
 pub(super) fn group_name_for_display(
     groups: &[ClipGroup],
     group_id: i64,
     all_label: &str,
 ) -> String {
-    if group_id == 0 {
-        return all_label.to_string();
-    }
-    groups
-        .iter()
-        .find(|g| g.id == group_id)
-        .map(|g| g.name.clone())
-        .unwrap_or_else(|| all_label.to_string())
-}
-
-pub(super) fn normalize_source_tab(tab: usize) -> usize {
-    if tab == 1 {
-        1
-    } else {
-        0
-    }
-}
-
-pub(super) fn source_tab_category(tab: usize) -> i64 {
-    normalize_source_tab(tab) as i64
-}
-
-pub(super) fn source_tab_all_label(tab: usize) -> &'static str {
-    if normalize_source_tab(tab) == 1 {
-        tr("全部短语", "All Phrases")
-    } else {
-        tr("全部记录", "All Records")
-    }
-}
-
-pub(super) fn source_tab_label(tab: usize) -> &'static str {
-    if normalize_source_tab(tab) == 1 {
-        tr("常用短语", "Phrases")
-    } else {
-        tr("复制记录", "Clipboard Records")
-    }
-}
-
-pub(super) fn normalize_hotkey_mod(value: &str) -> String {
-    let trimmed = value.trim();
-    if HOTKEY_MOD_OPTIONS.contains(&trimmed) {
-        trimmed.to_string()
-    } else {
-        "Win".to_string()
-    }
-}
-
-pub(super) fn normalize_hotkey_key(value: &str) -> String {
-    let trimmed = value.trim();
-    if HOTKEY_KEY_OPTIONS.contains(&trimmed) {
-        trimmed.to_string()
-    } else {
-        "V".to_string()
-    }
-}
-
-pub(super) fn hotkey_preview_text(mod_label: &str, key_label: &str) -> String {
-    format!(
-        "{}{} + {}",
-        tr("当前设置：", "Current setting: "),
-        normalize_hotkey_mod(mod_label),
-        normalize_hotkey_key(key_label)
+    crate::settings_model::group_name_for_display_entries(
+        groups.iter().map(|group| (group.id, group.name.as_str())),
+        group_id,
+        all_label,
     )
 }
 
@@ -438,6 +187,176 @@ pub(super) fn close_to_tray_enabled(settings: &AppSettings) -> bool {
 
 pub(super) fn title_button_visible(_settings: &AppSettings, _key: &str) -> bool {
     true
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(isize)]
+pub(crate) enum WindowRole {
+    Main = 1,
+    Quick = 2,
+}
+
+impl WindowRole {
+    pub(super) fn from_create_param(value: isize) -> Self {
+        match value {
+            x if x == WindowRole::Quick as isize => WindowRole::Quick,
+            _ => WindowRole::Main,
+        }
+    }
+
+    pub(super) fn class_name(self) -> &'static str {
+        match self {
+            WindowRole::Main => CLASS_NAME,
+            WindowRole::Quick => QUICK_CLASS_NAME,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Icons {
+    pub(crate) app: isize,
+    pub(crate) search: isize,
+    pub(crate) setting: isize,
+    pub(crate) min: isize,
+    pub(crate) close: isize,
+    pub(crate) text: isize,
+    pub(crate) image: isize,
+    pub(crate) file: isize,
+    pub(crate) folder: isize,
+    pub(crate) pin: isize,
+    pub(crate) del: isize,
+}
+
+impl Icons {
+    pub(super) fn destroy(&mut self) {
+        unsafe {
+            for icon in [
+                &mut self.app,
+                &mut self.search,
+                &mut self.setting,
+                &mut self.min,
+                &mut self.close,
+                &mut self.text,
+                &mut self.image,
+                &mut self.file,
+                &mut self.folder,
+                &mut self.pin,
+                &mut self.del,
+            ] {
+                if *icon != 0 {
+                    DestroyIcon(*icon as _);
+                    *icon = 0;
+                }
+            }
+        }
+    }
+}
+
+pub(crate) struct AppState {
+    pub(crate) role: WindowRole,
+    pub(crate) ui_lifecycle: LifecycleState,
+    pub(crate) ui_commands: CommandQueue,
+    pub(crate) hwnd: HWND,
+    pub(crate) search_hwnd: HWND,
+    pub(crate) ui_dpi: u32,
+    pub(crate) dpi_comp: DpiCompensationState,
+    pub(crate) search_font: *mut core::ffi::c_void,
+    pub(crate) theme: Theme,
+    pub(crate) icons: Icons,
+    pub(crate) records: Vec<ClipItem>,
+    pub(crate) phrases: Vec<ClipItem>,
+    pub(crate) record_groups: Vec<ClipGroup>,
+    pub(crate) phrase_groups: Vec<ClipGroup>,
+    pub(crate) list: ClipListState,
+    pub(crate) hover_btn: &'static str,
+    pub(crate) down_btn: &'static str,
+    pub(crate) down_row: i32,
+    pub(crate) down_x: i32,
+    pub(crate) down_y: i32,
+    pub(crate) hover_tab: i32,
+    pub(crate) last_capture_signature: String,
+    pub(crate) last_capture_source_app: String,
+    pub(crate) recent_capture_signatures: VecDeque<(String, String, Instant)>,
+    pub(crate) recent_lan_message_keys: VecDeque<String>,
+    pub(crate) last_capture_at: Option<Instant>,
+    pub(crate) last_clipboard_seq: u32,
+    pub(crate) ignore_clipboard_until: Option<Instant>,
+    pub(crate) skip_next_clipboard_update_once: bool,
+    pub(crate) recent_programmatic_clipboard_signature: String,
+    pub(crate) recent_programmatic_clipboard_until: Option<Instant>,
+    pub(crate) settings: AppSettings,
+    pub(crate) tray_icon_registered: bool,
+    pub(crate) hotkey_registered: bool,
+    pub(crate) plain_paste_hotkey_registered: bool,
+    pub(crate) clipboard_listener_registered: bool,
+    pub(crate) hotkey_conflict_notified: bool,
+    pub(crate) startup_recovery_ticks: u8,
+    pub(crate) settings_hwnd: HWND,
+    pub(crate) hover_scroll: bool,
+    pub(crate) scroll_fade_alpha: u8,
+    pub(crate) scroll_fade_timer: bool,
+    pub(crate) search_debounce_timer: bool,
+    pub(crate) hidden_reclaim_timer: bool,
+    pub(crate) clipboard_retry_timer: bool,
+    pub(crate) clipboard_retry_sequence: u32,
+    pub(crate) clipboard_retry_attempts: u8,
+    pub(crate) scroll_dragging: bool,
+    pub(crate) scroll_drag_start_y: i32,
+    pub(crate) scroll_drag_start_scroll: i32,
+    pub(crate) hover_to_top: bool,
+    pub(crate) down_to_top: bool,
+    pub(super) tab_loads: [TabLoadState; 2],
+    pub(super) payload_cache: ItemPayloadCache,
+    pub(super) image_thumb_cache: ImageThumbnailCache,
+    pub(super) image_thumb_loading: HashSet<i64>,
+    pub(crate) vv_popup_visible: bool,
+    pub(crate) vv_popup_pending_target: HWND,
+    pub(crate) vv_popup_pending_retries: u8,
+    pub(crate) vv_popup_target: HWND,
+    pub(crate) vv_popup_replaces_ime: bool,
+    pub(crate) vv_popup_group_id: i64,
+    pub(super) vv_popup_items: Vec<VvPopupEntry>,
+    pub(crate) paste_target_override: HWND,
+    pub(crate) paste_backspace_count: u8,
+    pub(crate) hotkey_passthrough_active: bool,
+    pub(crate) hotkey_passthrough_target: HWND,
+    pub(crate) hotkey_passthrough_focus: HWND,
+    pub(crate) hotkey_passthrough_edit: HWND,
+    pub(crate) plain_text_paste_mode: bool,
+    pub(crate) main_window_noactivate: bool,
+    pub(crate) edge_hidden: bool,
+    pub(crate) edge_hidden_side: i32,
+    pub(crate) edge_restore_x: i32,
+    pub(crate) edge_restore_y: i32,
+    pub(crate) edge_docked_left: i32,
+    pub(crate) edge_docked_top: i32,
+    pub(crate) edge_docked_right: i32,
+    pub(crate) edge_docked_bottom: i32,
+    pub(crate) edge_hide_armed: bool,
+    pub(crate) edge_hide_pending_until: Option<Instant>,
+    pub(crate) edge_hide_grace_until: Option<Instant>,
+    pub(crate) edge_restore_wait_leave: bool,
+    pub(crate) edge_anim_from_x: i32,
+    pub(crate) edge_anim_from_y: i32,
+    pub(crate) edge_anim_to_x: i32,
+    pub(crate) edge_anim_to_y: i32,
+    pub(crate) edge_anim_until: Option<Instant>,
+    pub(crate) cloud_sync_in_progress: bool,
+    pub(crate) cloud_sync_next_due: Option<Instant>,
+}
+
+impl Deref for AppState {
+    type Target = ClipListState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.list
+    }
+}
+
+impl DerefMut for AppState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.list
+    }
 }
 
 pub(super) struct VvHookState {
@@ -466,56 +385,6 @@ impl Default for VvHookState {
             popup_target: 0,
             popup_menu_active: false,
             popup_menu_grace_until: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct SharedTabViewState {
-    tab_index: usize,
-    tab_group_filters: [i64; 2],
-}
-
-impl Default for SharedTabViewState {
-    fn default() -> Self {
-        Self {
-            tab_index: 0,
-            tab_group_filters: [0, 0],
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ItemsQuery {
-    pub(super) category: i64,
-    pub(super) group_id: i64,
-    pub(super) search_text: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ItemsCursor {
-    pub(super) pinned: bool,
-    pub(super) id: i64,
-}
-
-pub(super) struct TabLoadState {
-    pub(super) query: Option<ItemsQuery>,
-    pub(super) next_cursor: Option<ItemsCursor>,
-    pub(super) has_more: bool,
-    pub(super) loading: bool,
-    pub(super) request_seq: u64,
-    pub(super) error: Option<String>,
-}
-
-impl Default for TabLoadState {
-    fn default() -> Self {
-        Self {
-            query: None,
-            next_cursor: None,
-            has_more: true,
-            loading: false,
-            request_seq: 0,
-            error: None,
         }
     }
 }
@@ -569,13 +438,6 @@ impl ItemPayloadCache {
         self.order.retain(|cached| *cached != id);
         self.order.push_back(id);
     }
-}
-
-#[derive(Clone)]
-pub(super) struct ImageThumbnail {
-    pub(super) bytes: Vec<u8>,
-    pub(super) width: usize,
-    pub(super) height: usize,
 }
 
 #[derive(Default)]
@@ -745,18 +607,17 @@ impl AppState {
         } else {
             None
         };
+        let theme = Theme::default();
         let mut state = Self {
             role,
+            ui_lifecycle: LifecycleState::new(),
+            ui_commands: CommandQueue::default(),
             hwnd,
             search_hwnd,
-            ui_dpi: unsafe { crate::win_system_ui::layout_dpi_for_window(hwnd) },
-            dpi_comp_base_w: 0,
-            dpi_comp_base_h: 0,
-            dpi_comp_base_monitor_dpi: 0,
-            dpi_comp_last_monitor_dpi: 0,
-            dpi_comp_applying: false,
+            ui_dpi: unsafe { crate::platform::dpi::layout_dpi_for_window(hwnd) },
+            dpi_comp: DpiCompensationState::default(),
             search_font: null_mut(),
-            theme: Theme::default(),
+            theme,
             icons,
             records: Vec::new(),
             phrases: Vec::new(),
@@ -870,6 +731,20 @@ impl AppState {
         self.record_groups.clear();
         self.phrase_groups.clear();
         self.vv_popup_items.clear();
+        self.recent_capture_signatures.clear();
+        self.recent_lan_message_keys.clear();
+        self.last_capture_signature.clear();
+        self.last_capture_source_app.clear();
+        self.hover_btn = "";
+        self.down_btn = "";
+        self.vv_popup_pending_target = null_mut();
+        self.vv_popup_target = null_mut();
+        self.paste_target_override = null_mut();
+        self.paste_backspace_count = 0;
+        self.hotkey_passthrough_active = false;
+        self.hotkey_passthrough_target = null_mut();
+        self.hotkey_passthrough_focus = null_mut();
+        self.hotkey_passthrough_edit = null_mut();
         self.clear_payload_cache();
         self.clear_selection();
         self.scroll_y = 0;
@@ -879,6 +754,12 @@ impl AppState {
         self.records.shrink_to_fit();
         self.phrases.shrink_to_fit();
         self.vv_popup_items.shrink_to_fit();
+        self.recent_capture_signatures.shrink_to_fit();
+        self.recent_lan_message_keys.shrink_to_fit();
+        self.last_capture_signature.shrink_to_fit();
+        self.last_capture_source_app.shrink_to_fit();
+        self.list.search_text.shrink_to_fit();
+        self.list.selected_rows.clear();
         self.payload_cache.shrink_to_fit();
         self.image_thumb_cache.shrink_to_fit();
         self.image_thumb_loading.shrink_to_fit();
@@ -942,16 +823,12 @@ impl AppState {
     }
 
     pub(super) fn desired_query_for_tab(&self, tab: usize) -> ItemsQuery {
-        let group_id = if self.settings.grouping_enabled {
-            self.tab_group_filters.get(tab).copied().unwrap_or(0)
-        } else {
-            0
-        };
-        ItemsQuery {
-            category: tab as i64,
-            group_id,
-            search_text: self.search_text.trim().to_string(),
-        }
+        ItemsQuery::for_tab(
+            tab,
+            self.settings.grouping_enabled,
+            self.tab_group_filters,
+            &self.search_text,
+        )
     }
 
     pub(super) fn invalidate_tab_query(&mut self, tab: usize, clear_items: bool) {
@@ -959,12 +836,7 @@ impl AppState {
             return;
         }
         let load = self.load_state_for_tab_mut(tab);
-        load.request_seq = load.request_seq.wrapping_add(1);
-        load.query = None;
-        load.next_cursor = None;
-        load.has_more = true;
-        load.loading = false;
-        load.error = None;
+        load.invalidate();
         if clear_items {
             self.items_for_tab_mut(tab).clear();
         }
@@ -997,15 +869,7 @@ impl AppState {
 
         let request_seq = {
             let load = self.load_state_for_tab_mut(tab);
-            load.request_seq = load.request_seq.wrapping_add(1);
-            load.query = Some(query.clone());
-            load.loading = true;
-            load.error = None;
-            if reset {
-                load.next_cursor = None;
-                load.has_more = true;
-            }
-            load.request_seq
+            load.begin_request(query.clone(), reset)
         };
 
         if reset {
@@ -1055,7 +919,7 @@ impl AppState {
 
         let should_apply = {
             let load = self.load_state_for_tab(result.tab);
-            load.request_seq == result.request_seq && load.query.as_ref() == Some(&result.query)
+            load.accepts_result(result.request_seq, &result.query)
         };
         if !should_apply {
             return false;
@@ -1063,10 +927,7 @@ impl AppState {
 
         {
             let load = self.load_state_for_tab_mut(result.tab);
-            load.loading = false;
-            load.error = result.error.clone();
-            load.next_cursor = result.next_cursor;
-            load.has_more = result.has_more;
+            load.finish_request(result.error.clone(), result.next_cursor, result.has_more);
         }
 
         if result.error.is_none() {
@@ -1096,10 +957,6 @@ impl AppState {
         self.down_row = -1;
         self.down_x = 0;
         self.down_y = 0;
-    }
-
-    pub(super) fn row_is_selected(&self, visible_idx: i32) -> bool {
-        self.list.row_is_selected(visible_idx)
     }
 
     pub(super) fn selected_source_indices(&self) -> Vec<usize> {

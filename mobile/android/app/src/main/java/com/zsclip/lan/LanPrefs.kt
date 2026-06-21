@@ -16,13 +16,30 @@ object LanPrefs {
     private const val KEY_CANDIDATE_HOST = "candidate_host"
     private const val KEY_CANDIDATE_NAME = "candidate_name"
     private const val KEY_LAST_CLIP = "last_clip_key"
+    private const val KEY_LAST_LOCAL_CLIP_SIGNATURE = "last_local_clip_signature"
+    private const val KEY_LAST_REMOTE_CLIP_SIGNATURE = "last_remote_clip_signature"
+    private const val KEY_LAST_OWN_PUSH_KEY = "last_own_push_key"
+    private const val KEY_LAST_OWN_PUSH_SIGNATURE = "last_own_push_signature"
+    private const val KEY_LAST_OWN_PUSH_AT = "last_own_push_at"
     private const val KEY_AUTO_SYNC = "auto_sync_enabled"
+    private const val KEY_AUTO_SYNC_NOTIFICATION = "auto_sync_notification_enabled"
+    private const val KEY_WEBDAV_URL = "webdav_url"
+    private const val KEY_WEBDAV_USER = "webdav_user"
+    private const val KEY_WEBDAV_PASS = "webdav_pass"
+    private const val KEY_WEBDAV_DIR = "webdav_dir"
 
     data class Pairing(
         val host: String,
         val token: String,
         val deviceId: String,
         val deviceName: String
+    )
+
+    data class WebDavConfig(
+        val url: String,
+        val user: String,
+        val pass: String,
+        val remoteDir: String
     )
 
     fun deviceId(context: Context): String {
@@ -94,7 +111,13 @@ object LanPrefs {
         deviceName: String
     ) {
         val normalized = LanClient.normalizedHost(host)
-        prefs(context)
+        val prefs = prefs(context)
+        val oldIdentity = LanProtocol.lanPairingIdentity(
+            prefs.getString(KEY_PAIRED_HOST, "") ?: "",
+            prefs.getString(KEY_PAIRED_DEVICE_ID, "") ?: ""
+        )
+        val newIdentity = LanProtocol.lanPairingIdentity(normalized, deviceId)
+        val editor = prefs
             .edit()
             .putString(KEY_PAIRED_HOST, normalized)
             .putString(KEY_PAIRED_DEVICE_ID, deviceId)
@@ -103,7 +126,15 @@ object LanPrefs {
             .putString(KEY_CANDIDATE_HOST, normalized)
             .putString(KEY_CANDIDATE_NAME, deviceName)
             .putString(KEY_LEGACY_HOST, normalized)
-            .apply()
+        if (oldIdentity != newIdentity) {
+            editor.remove(KEY_LAST_CLIP)
+                .remove(KEY_LAST_LOCAL_CLIP_SIGNATURE)
+                .remove(KEY_LAST_REMOTE_CLIP_SIGNATURE)
+                .remove(KEY_LAST_OWN_PUSH_KEY)
+                .remove(KEY_LAST_OWN_PUSH_SIGNATURE)
+                .remove(KEY_LAST_OWN_PUSH_AT)
+        }
+        editor.apply()
     }
 
     fun currentPairing(context: Context): Pairing? {
@@ -128,6 +159,11 @@ object LanPrefs {
             .remove(KEY_PAIRED_DEVICE_ID)
             .remove(KEY_PAIRED_DEVICE_NAME)
             .remove(KEY_LAST_CLIP)
+            .remove(KEY_LAST_LOCAL_CLIP_SIGNATURE)
+            .remove(KEY_LAST_REMOTE_CLIP_SIGNATURE)
+            .remove(KEY_LAST_OWN_PUSH_KEY)
+            .remove(KEY_LAST_OWN_PUSH_SIGNATURE)
+            .remove(KEY_LAST_OWN_PUSH_AT)
             .putBoolean(KEY_AUTO_SYNC, false)
             .apply()
     }
@@ -142,6 +178,44 @@ object LanPrefs {
     fun lastClipKey(context: Context): String =
         prefs(context).getString(KEY_LAST_CLIP, "") ?: ""
 
+    fun saveLastLocalClipboardSignature(context: Context, signature: String) {
+        prefs(context)
+            .edit()
+            .putString(KEY_LAST_LOCAL_CLIP_SIGNATURE, signature)
+            .apply()
+    }
+
+    fun lastLocalClipboardSignature(context: Context): String =
+        prefs(context).getString(KEY_LAST_LOCAL_CLIP_SIGNATURE, "") ?: ""
+
+    fun saveLastRemoteClipboardSignature(context: Context, signature: String) {
+        prefs(context)
+            .edit()
+            .putString(KEY_LAST_REMOTE_CLIP_SIGNATURE, signature)
+            .apply()
+    }
+
+    fun lastRemoteClipboardSignature(context: Context): String =
+        prefs(context).getString(KEY_LAST_REMOTE_CLIP_SIGNATURE, "") ?: ""
+
+    fun saveLastOwnPush(context: Context, key: String, signature: String) {
+        prefs(context)
+            .edit()
+            .putString(KEY_LAST_OWN_PUSH_KEY, key)
+            .putString(KEY_LAST_OWN_PUSH_SIGNATURE, signature)
+            .putLong(KEY_LAST_OWN_PUSH_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    fun lastOwnPushKey(context: Context): String =
+        prefs(context).getString(KEY_LAST_OWN_PUSH_KEY, "") ?: ""
+
+    fun lastOwnPushSignature(context: Context): String =
+        prefs(context).getString(KEY_LAST_OWN_PUSH_SIGNATURE, "") ?: ""
+
+    fun lastOwnPushAt(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_OWN_PUSH_AT, 0L)
+
     fun saveAutoSync(context: Context, enabled: Boolean) {
         prefs(context)
             .edit()
@@ -152,9 +226,75 @@ object LanPrefs {
     fun autoSync(context: Context): Boolean =
         prefs(context).getBoolean(KEY_AUTO_SYNC, false)
 
+    fun saveAutoSyncNotification(context: Context, enabled: Boolean) {
+        prefs(context)
+            .edit()
+            .putBoolean(KEY_AUTO_SYNC_NOTIFICATION, enabled)
+            .apply()
+    }
+
+    fun autoSyncNotification(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_AUTO_SYNC_NOTIFICATION, true)
+
+    fun saveWebDavConfig(
+        context: Context,
+        url: String,
+        user: String,
+        pass: String,
+        remoteDir: String
+    ) {
+        val prefs = prefs(context)
+        val oldIdentity = LanProtocol.webDavConfigIdentity(
+            prefs.getString(KEY_WEBDAV_URL, "") ?: "",
+            prefs.getString(KEY_WEBDAV_DIR, "ZS Clip") ?: "ZS Clip"
+        )
+        val newUrl = url.trim()
+        val newDir = remoteDir.trim().ifBlank { "ZS Clip" }
+        val newIdentity = LanProtocol.webDavConfigIdentity(newUrl, newDir)
+        val editor = prefs
+            .edit()
+            .putString(KEY_WEBDAV_URL, newUrl)
+            .putString(KEY_WEBDAV_USER, user.trim())
+            .putString(KEY_WEBDAV_PASS, pass)
+            .putString(KEY_WEBDAV_DIR, newDir)
+        if (oldIdentity != newIdentity) {
+            editor.remove(KEY_LAST_CLIP)
+                .remove(KEY_LAST_LOCAL_CLIP_SIGNATURE)
+                .remove(KEY_LAST_REMOTE_CLIP_SIGNATURE)
+                .remove(KEY_LAST_OWN_PUSH_KEY)
+                .remove(KEY_LAST_OWN_PUSH_SIGNATURE)
+                .remove(KEY_LAST_OWN_PUSH_AT)
+        }
+        editor.apply()
+    }
+
+    fun webDavConfig(context: Context): WebDavConfig {
+        val prefs = prefs(context)
+        return WebDavConfig(
+            url = prefs.getString(KEY_WEBDAV_URL, "") ?: "",
+            user = prefs.getString(KEY_WEBDAV_USER, "") ?: "",
+            pass = prefs.getString(KEY_WEBDAV_PASS, "") ?: "",
+            remoteDir = prefs.getString(KEY_WEBDAV_DIR, "ZS Clip") ?: "ZS Clip"
+        )
+    }
+
+    fun hasWebDavConfig(context: Context): Boolean =
+        webDavConfig(context).url.trim().isNotEmpty()
+
     fun saveSyncStatus(context: Context, success: Boolean, message: String, latestKey: String = "") {
         prefs(context)
             .edit()
+            .putBoolean("last_sync_success", success)
+            .putString("last_sync_message", message)
+            .putString("last_sync_key", latestKey)
+            .putLong("last_sync_at", System.currentTimeMillis())
+            .apply()
+    }
+
+    fun updateSyncStatusMessage(context: Context, success: Boolean, message: String) {
+        val prefs = prefs(context)
+        val latestKey = prefs.getString("last_sync_key", "") ?: ""
+        prefs.edit()
             .putBoolean("last_sync_success", success)
             .putString("last_sync_message", message)
             .putString("last_sync_key", latestKey)

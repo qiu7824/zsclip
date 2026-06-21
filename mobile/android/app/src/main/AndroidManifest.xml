@@ -2,14 +2,17 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
-        android:label="ZSClip LAN"
+        android:label="@string/app_name"
         android:theme="@style/AppTheme">
         <activity
             android:name=".MainActivity"
@@ -34,16 +37,59 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:host="pair"
+                    android:scheme="zsclip" />
+            </intent-filter>
         </activity>
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/app_name" />
+        <activity
+            android:name=".ClipboardSyncActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:noHistory="true"
+            android:theme="@style/TransparentActivityTheme" />
+        <activity
+            android:name=".ClipboardPullActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:finishOnTaskLaunch="true"
+            android:noHistory="true"
+            android:theme="@style/TransparentActivityTheme" />
+        <activity
+            android:name=".MediaActivity"
+            android:exported="false"
+            android:label="@string/media_history_title" />
+        <activity
+            android:name=".ImagePreviewActivity"
+            android:exported="false"
+            android:label="@string/image_preview_title" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <service
             android:name=".LanAutoSyncService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="connectedDevice|dataSync" />
         <service
             android:name=".AutoSyncTileService"
             android:exported="true"
             android:icon="@drawable/ic_sync_tile"
-            android:label="局域网自动同步"
+            android:label="@string/tile_auto_sync"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -56,7 +102,7 @@
             android:name=".PushToPhoneTileService"
             android:exported="true"
             android:icon="@drawable/ic_phone_tile"
-            android:label="拉取到手机"
+            android:label="@string/tile_pull_to_phone"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -66,7 +112,7 @@
             android:name=".PushToComputerTileService"
             android:exported="true"
             android:icon="@drawable/ic_pc_tile"
-            android:label="推送到电脑"
+            android:label="@string/tile_push_to_computer"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />

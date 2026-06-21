@@ -1,32 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[repr(C)]
-struct SystemTimeRaw {
-    year: u16,
-    month: u16,
-    day_of_week: u16,
-    day: u16,
-    hour: u16,
-    minute: u16,
-    second: u16,
-    milliseconds: u16,
-}
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn GetTimeZoneInformation(lptzi: *mut TimeZoneInformationRaw) -> u32;
-    fn SystemTimeToTzSpecificLocalTime(
-        lptimezoneinformation: *const core::ffi::c_void,
-        lpuniversaltime: *const SystemTimeRaw,
-        lplocaltime: *mut SystemTimeRaw,
-    ) -> i32;
-}
-
-#[repr(C)]
-struct TimeZoneInformationRaw {
-    bias: i32,
-    _pad: [u8; 168],
-}
+#[cfg(windows)]
+use crate::platform::time_zone as platform_time_zone;
 
 pub(crate) fn gregorian_to_days(y: i32, m: i32, d: i32) -> i64 {
     let y = y as i64;
@@ -59,10 +34,13 @@ pub(crate) fn days_to_sqlite_date(days: i64) -> String {
 }
 
 fn legacy_local_offset_secs() -> i64 {
-    unsafe {
-        let mut tzi: TimeZoneInformationRaw = core::mem::zeroed();
-        GetTimeZoneInformation(&mut tzi);
-        -(tzi.bias as i64) * 60
+    #[cfg(windows)]
+    {
+        platform_time_zone::local_offset_secs()
+    }
+    #[cfg(not(windows))]
+    {
+        0
     }
 }
 
@@ -101,28 +79,9 @@ pub(crate) fn now_utc_sqlite() -> String {
 
 pub(crate) fn utc_secs_to_local_parts(secs: i64) -> (i32, i32, i32, i32, i32, i32) {
     let (y, m, d, h, min, sec) = unix_secs_to_parts(secs);
-    let utc = SystemTimeRaw {
-        year: y as u16,
-        month: m as u16,
-        day_of_week: 0,
-        day: d as u16,
-        hour: h as u16,
-        minute: min as u16,
-        second: sec as u16,
-        milliseconds: 0,
-    };
-    unsafe {
-        let mut local: SystemTimeRaw = core::mem::zeroed();
-        if SystemTimeToTzSpecificLocalTime(core::ptr::null(), &utc, &mut local) != 0 {
-            return (
-                local.year as i32,
-                local.month as i32,
-                local.day as i32,
-                local.hour as i32,
-                local.minute as i32,
-                local.second as i32,
-            );
-        }
+    #[cfg(windows)]
+    if let Some(local) = platform_time_zone::utc_parts_to_local_parts(y, m, d, h, min, sec) {
+        return local;
     }
 
     let local_secs = secs + legacy_local_offset_secs();

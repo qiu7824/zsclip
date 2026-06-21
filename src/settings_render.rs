@@ -1,213 +1,201 @@
 use windows_sys::Win32::Foundation::RECT;
 
+use crate::platform::gdi as platform_gdi;
 use crate::settings_model::{
-    settings_cards_for_page_vec, settings_page_scrollable, settings_title_rect, SettingsSection,
+    settings_chrome_paint_plan, settings_content_paint_plan, settings_nav_item_paint_plan,
+    settings_scrollbar_paint_plan, settings_viewport_mask_paint_plan, SettingsChromeRenderPlan,
+    SettingsContentRenderPlan, SettingsNavIconKind, SettingsNavItemRender, SettingsPaintCommand,
+    SettingsPaintPlan, SettingsScrollbarRenderPlan, SettingsTextCommand, SettingsTextContent,
+    SettingsTextFontRole, SettingsThemeRole,
 };
-use crate::ui::{
-    draw_round_fill, draw_round_rect, draw_text_ex, rgb, settings_nav_item_rect,
-    settings_nav_w_scaled, settings_scale, Theme, SETTINGS_NAV_GLYPHS, SETTINGS_PAGES,
-};
-
-pub const SETTINGS_CLASS: &str = "ZsClipSettings";
-pub const IDC_SET_SAVE: isize = 5003;
-pub const IDC_SET_CLOSE: isize = 5004;
-pub const IDC_SET_AUTOSTART: isize = 5010;
-pub const IDC_SET_CLOSETRAY: isize = 5011;
-pub const IDC_SET_CLICK_HIDE: isize = 5038;
-pub const IDC_SET_EDGEHIDE: isize = 5013;
-pub const IDC_SET_HOVERPREVIEW: isize = 5014;
-pub const IDC_SET_MAX: isize = 5015;
-pub const IDC_SET_POSMODE: isize = 5016;
-pub const IDC_SET_DX: isize = 5017;
-pub const IDC_SET_DY: isize = 5018;
-pub const IDC_SET_FX: isize = 5019;
-pub const IDC_SET_FY: isize = 5020;
-pub const IDC_SET_BTN_OPENCFG: isize = 5021;
-pub const IDC_SET_BTN_OPENDB: isize = 5022;
-pub const IDC_SET_BTN_OPENDATA: isize = 5023;
-pub const IDC_SET_GROUP_ENABLE: isize = 5030;
-pub const IDC_SET_GROUP_LIST: isize = 5032;
-pub const IDC_SET_GROUP_ADD: isize = 5033;
-pub const IDC_SET_GROUP_RENAME: isize = 5034;
-pub const IDC_SET_GROUP_DELETE: isize = 5035;
-pub const IDC_SET_GROUP_UP: isize = 5036;
-pub const IDC_SET_GROUP_DOWN: isize = 5037;
-pub const IDC_SET_CLOUD_ENABLE: isize = 5040;
-pub const IDC_SET_CLOUD_INTERVAL: isize = 5041;
-pub const IDC_SET_CLOUD_URL: isize = 5042;
-pub const IDC_SET_CLOUD_USER: isize = 5043;
-pub const IDC_SET_CLOUD_PASS: isize = 5044;
-pub const IDC_SET_CLOUD_DIR: isize = 5045;
-pub const IDC_SET_CLOUD_SYNC_NOW: isize = 5046;
-pub const IDC_SET_CLOUD_UPLOAD_CFG: isize = 5047;
-pub const IDC_SET_CLOUD_APPLY_CFG: isize = 5048;
-pub const IDC_SET_CLOUD_RESTORE_BACKUP: isize = 5049;
-pub const IDC_SET_LAN_ENABLE: isize = 5080;
-pub const IDC_SET_LAN_NAME: isize = 5081;
-pub const IDC_SET_LAN_TCP_PORT: isize = 5082;
-pub const IDC_SET_LAN_MANUAL_HOST: isize = 5084;
-pub const IDC_SET_LAN_PAIR: isize = 5085;
-pub const IDC_SET_LAN_REFRESH: isize = 5086;
-pub const IDC_SET_LAN_DOCS: isize = 5087;
-pub const IDC_SET_LAN_DISCOVERED_LIST: isize = 5088;
-pub const IDC_SET_LAN_ACCEPT_PAIR: isize = 5090;
-pub const IDC_SET_LAN_REJECT_PAIR: isize = 5091;
-pub const IDC_SET_LAN_RECEIVE_MODE: isize = 5092;
-pub const IDC_SET_PLUGIN_MAILMERGE: isize = 5050;
-pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
-pub const IDC_SET_QUICK_DELETE: isize = 5052;
-pub const IDC_SET_OPEN_SOURCE: isize = 5053;
-pub const IDC_SET_VV_MODE: isize = 5054;
-pub const IDC_SET_VV_GROUP: isize = 5055;
-pub const IDC_SET_VV_SOURCE: isize = 5056;
-pub const IDC_SET_GROUP_VIEW_RECORDS: isize = 5057;
-pub const IDC_SET_GROUP_VIEW_PHRASES: isize = 5058;
-pub const IDC_SET_SILENTSTART: isize = 5059;
-pub const IDC_SET_TRAYICON: isize = 5060;
-pub const IDC_SET_AUTOHIDE_BLUR: isize = 5061;
-pub const IDC_SET_OPEN_UPDATE: isize = 5062;
-pub const IDC_SET_PASTE_MOVE_TOP: isize = 5063;
-pub const IDC_SET_DEDUPE_FILTER: isize = 5064;
-pub const IDC_SET_OCR_PROVIDER: isize = 5065;
-pub const IDC_SET_OCR_CLOUD_URL: isize = 5066;
-pub const IDC_SET_OCR_CLOUD_TOKEN: isize = 5067;
-pub const IDC_SET_PLUGIN_DOWNLOADS: isize = 5068;
-pub const IDC_SET_PERSIST_SEARCH: isize = 5069;
-pub const IDC_SET_PASTE_SOUND_ENABLE: isize = 5070;
-pub const IDC_SET_PASTE_SOUND_KIND: isize = 5071;
-pub const IDC_SET_PASTE_SOUND_PICK: isize = 5072;
-pub const IDC_SET_OCR_WECHAT_DETECT: isize = 5074;
-pub const IDC_SET_TRANSLATE_PROVIDER: isize = 5075;
-pub const IDC_SET_TRANSLATE_APP_ID: isize = 5076;
-pub const IDC_SET_TRANSLATE_SECRET: isize = 5077;
-pub const IDC_SET_TRANSLATE_TARGET: isize = 5078;
-pub const IDC_SET_HK_RECORD: isize = 6104;
-pub const IDC_SET_PLAIN_HK_ENABLE: isize = 6108;
-pub const IDC_SET_PLAIN_HK_MOD: isize = 6109;
-pub const IDC_SET_PLAIN_HK_KEY: isize = 6110;
-pub const IDC_SET_SKIP_WINDOW_ENABLE: isize = 6201;
-pub const IDC_SET_SKIP_WINDOW_CLASSNAMES: isize = 6202;
-pub const IDC_SET_SKIP_WINDOW_CAPTURE: isize = 6203;
-
-unsafe fn draw_settings_card(
-    hdc: *mut core::ffi::c_void,
-    section: &SettingsSection,
-    scroll_y: i32,
-    th: Theme,
-) {
-    let rc: RECT = section.rect.offset_y(scroll_y).into();
-    draw_round_rect(hdc, &rc, th.surface, th.stroke, settings_scale(8));
-    let trc = RECT {
-        left: rc.left + settings_scale(16),
-        top: rc.top + settings_scale(12),
-        right: rc.right - settings_scale(16),
-        bottom: rc.top + settings_scale(34),
-    };
-    draw_text_ex(
-        hdc,
-        section.title,
-        &trc,
-        th.text_muted,
-        12,
-        true,
-        false,
-        "Segoe UI Variable Text",
-    );
-}
+use crate::ui::{draw_round_fill, draw_round_rect, draw_text_ex};
+use crate::win_native_style::{rgb, Theme};
 
 pub unsafe fn draw_settings_nav_item(
     hdc: *mut core::ffi::c_void,
-    index: usize,
-    selected: bool,
-    hover: bool,
+    item: &SettingsNavItemRender,
     th: Theme,
 ) {
-    let item_rc = settings_nav_item_rect(index);
-    if selected {
-        draw_round_fill(hdc, &item_rc, th.nav_sel_fill, settings_scale(6));
-        let bar_h = settings_scale(16);
-        let bar_cy = (item_rc.top + item_rc.bottom) / 2;
-        let bar = RECT {
-            left: item_rc.left + settings_scale(3),
-            top: bar_cy - bar_h / 2,
-            right: item_rc.left + settings_scale(6),
-            bottom: bar_cy + bar_h / 2,
-        };
-        draw_round_fill(hdc, &bar, th.accent, settings_scale(2));
-    } else if hover {
-        let hover_color = if th.bg == rgb(32, 32, 32) {
-            rgb(60, 60, 60)
-        } else {
-            rgb(237, 237, 237)
-        };
-        draw_round_fill(hdc, &item_rc, hover_color, settings_scale(6));
-    }
-    let icon_rc = RECT {
-        left: item_rc.left + settings_scale(10),
-        top: item_rc.top,
-        right: item_rc.left + settings_scale(38),
-        bottom: item_rc.bottom,
-    };
-    let txt_rc = RECT {
-        left: item_rc.left + settings_scale(40),
-        top: item_rc.top,
-        right: item_rc.right - settings_scale(8),
-        bottom: item_rc.bottom,
-    };
-    let icon_color = if selected {
-        th.accent
-    } else if hover {
-        th.text
-    } else {
-        th.text_muted
-    };
-    draw_text_ex(
-        hdc,
-        SETTINGS_NAV_GLYPHS[index],
-        &icon_rc,
-        icon_color,
-        16,
-        false,
-        false,
-        "Segoe Fluent Icons",
-    );
-    let label_color = if selected || hover {
-        th.text
-    } else {
-        th.text_muted
-    };
-    draw_text_ex(
-        hdc,
-        SETTINGS_PAGES[index],
-        &txt_rc,
-        label_color,
-        14,
-        false,
-        false,
-        "Segoe UI Variable Text",
-    );
+    let plan = settings_nav_item_paint_plan(item);
+    draw_settings_paint_plan(hdc, plan, th);
 }
 
-pub unsafe fn draw_settings_page_cards(
+unsafe fn draw_settings_paint_plan(
     hdc: *mut core::ffi::c_void,
-    page: usize,
-    scroll_y: i32,
+    plan: SettingsPaintPlan,
     th: Theme,
 ) {
-    let effective_scroll = if settings_page_scrollable(page) {
-        scroll_y
-    } else {
-        0
-    };
-    for section in settings_cards_for_page_vec(page) {
-        draw_settings_card(hdc, &section, effective_scroll, th);
+    for command in plan.paint_commands {
+        draw_settings_paint_command(hdc, command, th);
+    }
+    for command in plan.text_commands {
+        draw_settings_text_command(hdc, command, th);
     }
 }
 
-pub fn settings_title_rect_win() -> RECT {
-    settings_title_rect().into()
+unsafe fn draw_settings_paint_command(
+    hdc: *mut core::ffi::c_void,
+    command: SettingsPaintCommand,
+    th: Theme,
+) {
+    match command {
+        SettingsPaintCommand::FillRect { rect, fill } => {
+            let rc: RECT = rect.into();
+            let br = platform_gdi::create_solid_brush(settings_theme_role_color(fill, th));
+            platform_gdi::fill_rect(hdc, &rc, br);
+            platform_gdi::delete_object(br as _);
+        }
+        SettingsPaintCommand::RoundRect {
+            rect,
+            fill,
+            stroke,
+            radius,
+        } => {
+            let rc: RECT = rect.into();
+            draw_round_rect(
+                hdc,
+                &rc,
+                settings_theme_role_color(fill, th),
+                settings_theme_role_color(stroke, th),
+                radius,
+            );
+        }
+        SettingsPaintCommand::RoundFill { rect, fill, radius } => {
+            let rc: RECT = rect.into();
+            draw_round_fill(hdc, &rc, settings_theme_role_color(fill, th), radius);
+        }
+    }
 }
 
-pub fn nav_divider_x() -> i32 {
-    settings_nav_w_scaled()
+unsafe fn draw_settings_text_command(
+    hdc: *mut core::ffi::c_void,
+    command: SettingsTextCommand,
+    th: Theme,
+) {
+    let rc: RECT = command.rect.into();
+    draw_text_ex(
+        hdc,
+        settings_text_content(command.content),
+        &rc,
+        settings_theme_role_color(command.color, th),
+        command.size,
+        command.bold,
+        false,
+        settings_text_font(command.font),
+    );
+}
+
+fn settings_theme_role_color(role: SettingsThemeRole, th: Theme) -> u32 {
+    match role {
+        SettingsThemeRole::Background => th.bg,
+        SettingsThemeRole::NavBackground => th.nav_bg,
+        SettingsThemeRole::NavSelectedFill => th.nav_sel_fill,
+        SettingsThemeRole::NavHoverFill => {
+            if th.bg == rgb(32, 32, 32) {
+                rgb(60, 60, 60)
+            } else {
+                rgb(237, 237, 237)
+            }
+        }
+        SettingsThemeRole::Surface => th.surface,
+        SettingsThemeRole::Accent => th.accent,
+        SettingsThemeRole::Stroke => th.stroke,
+        SettingsThemeRole::ScrollbarTrack => {
+            if th.bg == rgb(32, 32, 32) {
+                rgb(70, 70, 70)
+            } else {
+                rgb(200, 200, 200)
+            }
+        }
+        SettingsThemeRole::ScrollbarThumb => {
+            if th.bg == rgb(32, 32, 32) {
+                rgb(120, 120, 120)
+            } else {
+                rgb(160, 160, 160)
+            }
+        }
+        SettingsThemeRole::ScrollbarThumbDragging => th.accent,
+        SettingsThemeRole::Text => th.text,
+        SettingsThemeRole::TextMuted => th.text_muted,
+        SettingsThemeRole::Danger => rgb(228, 60, 60),
+    }
+}
+
+fn settings_text_content(content: SettingsTextContent) -> &'static str {
+    match content {
+        SettingsTextContent::Label(label) => label,
+        SettingsTextContent::NavIcon(icon) => settings_nav_glyph(icon),
+        SettingsTextContent::ChromeMenuIcon => "",
+    }
+}
+
+fn settings_text_font(font: SettingsTextFontRole) -> &'static str {
+    match font {
+        SettingsTextFontRole::UiText => "Segoe UI Variable Text",
+        SettingsTextFontRole::Display => "Segoe UI Variable Display",
+        SettingsTextFontRole::FluentIcon => "Segoe Fluent Icons",
+    }
+}
+
+pub unsafe fn draw_settings_chrome(
+    hdc: *mut core::ffi::c_void,
+    plan: &SettingsChromeRenderPlan,
+    page_title: &'static str,
+    th: Theme,
+) {
+    let paint_plan = settings_chrome_paint_plan(plan, page_title);
+    draw_settings_paint_plan(hdc, paint_plan, th);
+}
+
+pub unsafe fn draw_settings_viewport_mask(
+    hdc: *mut core::ffi::c_void,
+    plan: &SettingsChromeRenderPlan,
+    th: Theme,
+) {
+    let paint_plan = settings_viewport_mask_paint_plan(plan);
+    draw_settings_paint_plan(hdc, paint_plan, th);
+}
+
+pub unsafe fn draw_settings_scrollbar(
+    hdc: *mut core::ffi::c_void,
+    plan: &SettingsScrollbarRenderPlan,
+    th: Theme,
+) {
+    let paint_plan = settings_scrollbar_paint_plan(plan);
+    draw_settings_paint_plan(hdc, paint_plan, th);
+}
+
+fn settings_nav_glyph(icon: SettingsNavIconKind) -> &'static str {
+    match icon {
+        SettingsNavIconKind::General => "",
+        SettingsNavIconKind::Hotkey => "",
+        SettingsNavIconKind::Plugin => "",
+        SettingsNavIconKind::Group => "",
+        SettingsNavIconKind::Sync => "",
+        SettingsNavIconKind::About => "",
+    }
+}
+
+pub unsafe fn draw_settings_content(
+    hdc: *mut core::ffi::c_void,
+    plan: &SettingsContentRenderPlan,
+    th: Theme,
+) {
+    let paint_plan = settings_content_paint_plan(plan);
+    draw_settings_paint_plan(hdc, paint_plan, th);
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn settings_render_source_keeps_host_control_ids_out() {
+        let source = include_str!("settings_render.rs");
+        let forbidden = [
+            format!("{}{}", "IDC_", "SET_"),
+            format!("{}{}", "SETTINGS_", "CLASS"),
+        ];
+        for token in forbidden {
+            assert!(!source.contains(&token), "{token}");
+        }
+    }
 }

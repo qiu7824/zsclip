@@ -6,32 +6,31 @@ use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::Gdi::{
-        BeginPaint, CreateFontW, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-        GetStockObject, SetBkColor, SetBkMode, SetTextColor, DEFAULT_GUI_FONT, PAINTSTRUCT,
-    },
-    System::LibraryLoader::GetModuleHandleW,
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{DEFAULT_GUI_FONT, PAINTSTRUCT},
     UI::{
         Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
-        Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_CONTROL, VK_SHIFT},
+        Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT},
         WindowsAndMessaging::*,
     },
 };
 
-use crate::i18n::translate;
-use crate::shell::load_icons;
-use crate::ui::{draw_round_rect, draw_text_ex, Theme};
-use crate::win_system_ui::{
-    apply_dark_mode_to_window, apply_window_corner_preference, create_settings_component,
-    draw_settings_button_component, force_foreground_window, get_window_text, send_ctrl_v, to_wide,
-    SettingsComponentKind,
+use crate::app_core::{
+    NativeFileDialogHost, NativeFileDialogRequest, NativeMailMergeWindowHost,
+    NativeMailMergeWindowRequest, NativePasteTargetHost,
 };
-
-unsafe extern "system" {
-    fn EnableWindow(hwnd: HWND, benable: i32) -> i32;
-    fn IsWindowEnabled(hwnd: HWND) -> i32;
-}
+use crate::i18n::translate;
+use crate::platform::{
+    appearance as platform_appearance, file_dialog as platform_file_dialog, gdi as platform_gdi,
+    input as platform_input, paste_target::WindowsPasteTargetHost, string::to_wide,
+    timer as platform_timer, window as platform_window,
+};
+use crate::shell::load_icons;
+use crate::ui::{draw_round_rect, draw_text_ex};
+use crate::win_native_style::{ui_text_font_family, Theme};
+use crate::win_system_ui::{
+    create_settings_component, draw_settings_button_component, SettingsComponentKind,
+};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const CLASS_NAME: &str = "ZsClipMailMergeNative";
@@ -208,19 +207,13 @@ fn parse_proto_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn ps_pick_excel_file() -> Result<Option<String>, String> {
-    let script = r#"Add-Type -AssemblyName System.Windows.Forms
-$dlg = New-Object System.Windows.Forms.OpenFileDialog
-$dlg.Filter = 'Excel Files|*.xlsx;*.xls;*.xlsm;*.csv|All Files|*.*'
-$dlg.Title = '选择 Excel 文件'
-$dlg.Multiselect = $false
-if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dlg.FileName }"#;
-    let out = ps_run(script, &[])?;
-    if out.trim().is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(out))
-    }
+fn pick_excel_file() -> Result<Option<String>, String> {
+    platform_file_dialog::WindowsFileDialogHost::new().pick_file(NativeFileDialogRequest {
+        title: "选择 Excel 文件",
+        filter_name: "Excel Files",
+        filter_pattern: "*.xlsx;*.xls;*.xlsm;*.csv",
+        current_path: "",
+    })
 }
 
 fn ps_guess_header_row(excel: &str, sheet: &str) -> Result<i32, String> {
@@ -509,26 +502,26 @@ for($i=1; $i -le $cols; $i++){
 
 unsafe fn set_font(hwnd: HWND, font: *mut core::ffi::c_void) {
     if !hwnd.is_null() {
-        SendMessageW(hwnd, WM_SETFONT, font as usize, 1);
+        platform_window::send_message(hwnd, WM_SETFONT, font as usize, 1);
     }
 }
 unsafe fn set_status(hwnd: HWND, text: &str) {
-    SetWindowTextW(
-        GetDlgItem(hwnd, IDC_STATUS as i32),
-        to_wide(translate(text).as_ref()).as_ptr(),
+    platform_window::set_text(
+        platform_window::child(hwnd, IDC_STATUS as i32),
+        translate(text).as_ref(),
     );
 }
 unsafe fn set_text(hwnd: HWND, id: isize, text: &str) {
-    SetWindowTextW(
-        GetDlgItem(hwnd, id as i32),
-        to_wide(translate(text).as_ref()).as_ptr(),
+    platform_window::set_text(
+        platform_window::child(hwnd, id as i32),
+        translate(text).as_ref(),
     );
 }
 unsafe fn is_fill_mode(hwnd: HWND) -> bool {
     SendDlgItemMessageW(hwnd, IDC_MODE_FILL as i32, BM_GETCHECK, 0, 0) == BST_CHECKED as isize
 }
 unsafe fn current_data_row(hwnd: HWND) -> i32 {
-    get_window_text(GetDlgItem(hwnd, IDC_DATA_ROW as i32))
+    platform_window::text(platform_window::child(hwnd, IDC_DATA_ROW as i32))
         .parse::<i32>()
         .ok()
         .unwrap_or(1)
@@ -553,7 +546,7 @@ unsafe fn create_ctrl(
     } else {
         text.to_string()
     };
-    let hh = CreateWindowExW(
+    let hh = platform_window::create_window_ex(
         ex_style,
         to_wide(class).as_ptr(),
         to_wide(&caption).as_ptr(),
@@ -564,7 +557,7 @@ unsafe fn create_ctrl(
         h,
         parent,
         id as usize as _,
-        GetModuleHandleW(null()),
+        platform_window::module_handle(),
         null(),
     );
     set_font(hh, font);
@@ -616,14 +609,14 @@ unsafe fn create_accent_btn(
 }
 
 unsafe fn current_combo_text(hwnd: HWND) -> String {
-    let combo = GetDlgItem(hwnd, IDC_SHEET as i32);
-    let idx = SendMessageW(combo, CB_GETCURSEL, 0, 0) as i32;
+    let combo = platform_window::child(hwnd, IDC_SHEET as i32);
+    let idx = platform_window::send_message(combo, CB_GETCURSEL, 0, 0) as i32;
     if idx < 0 {
         return String::new();
     }
-    let len = SendMessageW(combo, CB_GETLBTEXTLEN, idx as usize, 0) as usize;
+    let len = platform_window::send_message(combo, CB_GETLBTEXTLEN, idx as usize, 0) as usize;
     let mut buf = vec![0u16; len + 1];
-    SendMessageW(
+    platform_window::send_message(
         combo,
         CB_GETLBTEXT,
         idx as usize,
@@ -635,17 +628,17 @@ unsafe fn current_combo_text(hwnd: HWND) -> String {
 }
 
 unsafe fn combo_fill(hwnd: HWND, items: &[String], active: &str) {
-    let combo = GetDlgItem(hwnd, IDC_SHEET as i32);
-    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    let combo = platform_window::child(hwnd, IDC_SHEET as i32);
+    platform_window::send_message(combo, CB_RESETCONTENT, 0, 0);
     let mut sel = 0usize;
     for (idx, item) in items.iter().enumerate() {
-        SendMessageW(combo, CB_ADDSTRING, 0, to_wide(item).as_ptr() as LPARAM);
+        platform_window::send_message(combo, CB_ADDSTRING, 0, to_wide(item).as_ptr() as LPARAM);
         if item == active {
             sel = idx;
         }
     }
     if !items.is_empty() {
-        SendMessageW(combo, CB_SETCURSEL, sel, 0);
+        platform_window::send_message(combo, CB_SETCURSEL, sel, 0);
     }
 }
 
@@ -659,29 +652,25 @@ fn button_kind(id: isize) -> SettingsComponentKind {
 }
 
 unsafe fn good_target(hwnd: HWND, self_hwnd: HWND) -> bool {
-    !hwnd.is_null()
-        && hwnd != self_hwnd
-        && IsWindow(hwnd) != 0
-        && IsWindowVisible(hwnd) != 0
-        && IsWindowEnabled(hwnd) != 0
-        && !get_window_text(hwnd).trim().is_empty()
+    hwnd != self_hwnd
+        && platform_window::exists(hwnd)
+        && platform_window::is_visible(hwnd)
+        && platform_window::is_enabled(hwnd)
+        && !platform_window::text(hwnd).trim().is_empty()
 }
 
 unsafe fn send_ctrl_f9() {
-    keybd_event(VK_CONTROL as u8, 0, 0, 0);
-    keybd_event(VK_F9_KEY, 0, 0, 0);
-    keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0);
-    keybd_event(VK_CONTROL as u8, 0, KEYEVENTF_KEYUP, 0);
+    platform_input::key_down(VK_CONTROL as u8);
+    platform_input::tap_key(VK_F9_KEY);
+    platform_input::key_up(VK_CONTROL as u8);
 }
 unsafe fn send_f9() {
-    keybd_event(VK_F9_KEY, 0, 0, 0);
-    keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0);
+    platform_input::tap_key(VK_F9_KEY);
 }
 unsafe fn send_shift_f9() {
-    keybd_event(VK_SHIFT as u8, 0, 0, 0);
-    keybd_event(VK_F9_KEY, 0, 0, 0);
-    keybd_event(VK_F9_KEY, 0, KEYEVENTF_KEYUP, 0);
-    keybd_event(VK_SHIFT as u8, 0, KEYEVENTF_KEYUP, 0);
+    platform_input::key_down(VK_SHIFT as u8);
+    platform_input::tap_key(VK_F9_KEY);
+    platform_input::key_up(VK_SHIFT as u8);
 }
 
 unsafe fn refresh_mode_ui(hwnd: HWND) {
@@ -708,16 +697,16 @@ unsafe fn refresh_mode_ui(hwnd: HWND) {
         IDC_APPLY_ROW,
         IDC_ROW_LABEL,
     ] {
-        let hh = GetDlgItem(hwnd, id as i32);
+        let hh = platform_window::child(hwnd, id as i32);
         if !hh.is_null() {
-            ShowWindow(hh, if fill { SW_SHOW } else { SW_HIDE });
-            EnableWindow(hh, if fill { 1 } else { 0 });
+            platform_window::set_visible(hh, fill);
+            platform_window::set_enabled(hh, fill);
         }
     }
-    let hh = GetDlgItem(hwnd, IDC_OPEN_WORD as i32);
+    let hh = platform_window::child(hwnd, IDC_OPEN_WORD as i32);
     if !hh.is_null() {
-        ShowWindow(hh, if fill { SW_HIDE } else { SW_SHOW });
-        EnableWindow(hh, if fill { 0 } else { 1 });
+        platform_window::set_visible(hh, !fill);
+        platform_window::set_enabled(hh, !fill);
     }
 }
 
@@ -748,15 +737,15 @@ unsafe fn start_clipboard_paste_like_main(
     let target = if good_target(st.last_target_hwnd, hwnd) {
         st.last_target_hwnd
     } else {
-        GetForegroundWindow()
+        platform_window::foreground()
     };
     if !good_target(target, hwnd) {
         return Err("未找到目标窗口，请先点击要录入的外部输入框".to_string());
     }
     st.pending_paste_kind = pending_paste_kind;
-    let _ = force_foreground_window(target);
-    KillTimer(hwnd, ID_TIMER_PASTE);
-    SetTimer(hwnd, ID_TIMER_PASTE, 150, None);
+    let _ = WindowsPasteTargetHost::new().force_paste_target_foreground(target);
+    platform_timer::stop(hwnd, ID_TIMER_PASTE);
+    platform_timer::start(hwnd, ID_TIMER_PASTE, 150);
     Ok(())
 }
 
@@ -781,7 +770,10 @@ unsafe fn paste_merge_field_like_main(
 }
 
 unsafe fn reload_excel(hwnd: HWND, st: &mut MailMergeState) {
-    let excel = normalize_path_like(&get_window_text(GetDlgItem(hwnd, IDC_EXCEL as i32)));
+    let excel = normalize_path_like(&platform_window::text(platform_window::child(
+        hwnd,
+        IDC_EXCEL as i32,
+    )));
     if excel.trim().is_empty() {
         st.headers.clear();
         st.values.clear();
@@ -794,7 +786,7 @@ unsafe fn reload_excel(hwnd: HWND, st: &mut MailMergeState) {
         set_status(hwnd, "请选择 xls/xlsx/xlsm/csv 文件");
         return;
     }
-    let header_row = get_window_text(GetDlgItem(hwnd, IDC_HEADER_ROW as i32))
+    let header_row = platform_window::text(platform_window::child(hwnd, IDC_HEADER_ROW as i32))
         .parse::<i32>()
         .ok()
         .unwrap_or(1)
@@ -945,7 +937,7 @@ unsafe extern "system" fn wnd_proc(
                     initial_excel: String::new(),
                 })
             };
-            let font = CreateFontW(
+            let font = platform_gdi::create_font_w(
                 -16,
                 0,
                 0,
@@ -959,20 +951,20 @@ unsafe extern "system" fn wnd_proc(
                 0,
                 5,
                 0,
-                to_wide(crate::ui::ui_text_font_family()).as_ptr(),
+                to_wide(ui_text_font_family()).as_ptr(),
             );
             let font = if font.is_null() {
-                GetStockObject(DEFAULT_GUI_FONT) as _
+                platform_gdi::get_stock_object(DEFAULT_GUI_FONT) as _
             } else {
                 font
             };
             let th = Theme::default();
             let st = Box::new(MailMergeState {
-                last_target_hwnd: GetForegroundWindow(),
+                last_target_hwnd: platform_window::foreground(),
                 last_target_title: String::new(),
                 font,
-                card_brush: CreateSolidBrush(th.surface) as _,
-                edit_brush: CreateSolidBrush(th.control_bg) as _,
+                card_brush: platform_gdi::create_solid_brush(th.surface) as _,
+                edit_brush: platform_gdi::create_solid_brush(th.control_bg) as _,
                 ..Default::default()
             });
             create_ctrl(
@@ -1133,25 +1125,35 @@ unsafe extern "system" fn wnd_proc(
                 IDC_STATUS,
                 font,
             );
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(st) as isize);
+            platform_window::set_user_data(hwnd, Box::into_raw(st) as isize);
             let icons = load_icons();
             if icons.app != 0 {
-                SendMessageW(hwnd, WM_SETICON, ICON_SMALL as usize, icons.app as LPARAM);
-                SendMessageW(hwnd, WM_SETICON, ICON_BIG as usize, icons.app as LPARAM);
+                platform_window::send_message(
+                    hwnd,
+                    WM_SETICON,
+                    ICON_SMALL as usize,
+                    icons.app as LPARAM,
+                );
+                platform_window::send_message(
+                    hwnd,
+                    WM_SETICON,
+                    ICON_BIG as usize,
+                    icons.app as LPARAM,
+                );
                 SetClassLongPtrW(hwnd, GCLP_HICON, icons.app);
                 SetClassLongPtrW(hwnd, GCLP_HICONSM, icons.app);
             }
-            apply_window_corner_preference(hwnd);
-            apply_dark_mode_to_window(hwnd);
+            platform_appearance::set_rounded_corners(hwnd);
+            platform_appearance::apply_dark_mode_to_window(hwnd);
             refresh_mode_ui(hwnd);
-            SetTimer(hwnd, ID_TIMER_TARGET_TRACK, 200, None);
+            platform_timer::start(hwnd, ID_TIMER_TARGET_TRACK, 200);
             if !args.initial_excel.trim().is_empty() {
-                PostMessageW(hwnd, WM_COMMAND, IDC_LOAD as usize, 0);
+                platform_window::post_hwnd_message(hwnd, WM_COMMAND, IDC_LOAD as usize, 0);
             }
             0
         }
         WM_ACTIVATE => {
-            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             if !st_ptr.is_null() {
                 let st = &mut *st_ptr;
                 let state = (wparam & 0xffff) as u32;
@@ -1159,23 +1161,23 @@ unsafe extern "system" fn wnd_proc(
                     let prev = lparam as HWND;
                     if good_target(prev, hwnd) {
                         st.last_target_hwnd = prev;
-                        st.last_target_title = get_window_text(prev);
+                        st.last_target_title = platform_window::text(prev);
                     }
                 }
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_TIMER => {
             if wparam == ID_TIMER_PASTE {
-                KillTimer(hwnd, ID_TIMER_PASTE);
-                let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+                platform_timer::stop(hwnd, ID_TIMER_PASTE);
+                let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
                 if !st_ptr.is_null() {
                     let st = &mut *st_ptr;
                     match st.pending_paste_kind {
-                        PendingPasteKind::PlainText => send_ctrl_v(),
+                        PendingPasteKind::PlainText => platform_input::send_ctrl_v(),
                         PendingPasteKind::MergeFieldCode => {
                             send_ctrl_f9();
-                            send_ctrl_v();
+                            platform_input::send_ctrl_v();
                             send_f9();
                             send_shift_f9();
                         }
@@ -1185,32 +1187,30 @@ unsafe extern "system" fn wnd_proc(
                 return 0;
             }
             if wparam == ID_TIMER_TARGET_TRACK {
-                let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+                let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
                 if !st_ptr.is_null() {
                     let st = &mut *st_ptr;
-                    let fg = GetForegroundWindow();
+                    let fg = platform_window::foreground();
                     if good_target(fg, hwnd) {
                         st.last_target_hwnd = fg;
-                        st.last_target_title = get_window_text(fg);
+                        st.last_target_title = platform_window::text(fg);
                     }
                 }
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_DRAWITEM => {
-            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             if st_ptr.is_null() {
                 return 0;
             }
             let st = &mut *st_ptr;
             let dis = &*(lparam as *const DRAWITEMSTRUCT);
-            let text = get_window_text(dis.hwndItem);
+            let text = platform_window::text(dis.hwndItem);
             let hover = {
-                let mut pt: POINT = zeroed();
-                GetCursorPos(&mut pt);
-                let mut rc: RECT = zeroed();
-                GetWindowRect(dis.hwndItem, &mut rc);
+                let pt = platform_input::cursor_pos().unwrap_or_else(|| zeroed());
+                let rc = platform_window::window_rect(dis.hwndItem).unwrap_or_else(|| zeroed());
                 pt.x >= rc.left && pt.x < rc.right && pt.y >= rc.top && pt.y < rc.bottom
             };
             draw_settings_button_component(
@@ -1226,24 +1226,24 @@ unsafe extern "system" fn wnd_proc(
             1
         }
         WM_CTLCOLORSTATIC => {
-            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             let hdc = wparam as *mut core::ffi::c_void;
             if !st_ptr.is_null() {
                 let th = Theme::default();
-                SetBkMode(hdc, 1);
-                SetBkColor(hdc, th.surface);
-                SetTextColor(hdc, th.text);
+                platform_gdi::set_bk_mode(hdc, 1);
+                platform_gdi::set_bk_color(hdc, th.surface);
+                platform_gdi::set_text_color(hdc, th.text);
                 return (*st_ptr).card_brush as isize;
             }
             0
         }
         WM_CTLCOLOREDIT | WM_CTLCOLORLISTBOX => {
-            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             let hdc = wparam as *mut core::ffi::c_void;
             if !st_ptr.is_null() {
                 let th = Theme::default();
-                SetBkColor(hdc, th.control_bg);
-                SetTextColor(hdc, th.text);
+                platform_gdi::set_bk_color(hdc, th.control_bg);
+                platform_gdi::set_text_color(hdc, th.text);
                 return (*st_ptr).edit_brush as isize;
             }
             0
@@ -1251,14 +1251,13 @@ unsafe extern "system" fn wnd_proc(
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             let mut ps: PAINTSTRUCT = zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
+            let hdc = platform_gdi::begin_paint(hwnd, &mut ps);
             if !hdc.is_null() {
                 let th = Theme::default();
-                let mut rc: RECT = zeroed();
-                GetClientRect(hwnd, &mut rc);
-                let bg = CreateSolidBrush(th.bg);
-                FillRect(hdc, &rc, bg);
-                DeleteObject(bg as _);
+                let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
+                let bg = platform_gdi::create_solid_brush(th.bg);
+                platform_gdi::fill_rect(hdc, &rc, bg);
+                platform_gdi::delete_object(bg as _);
 
                 let cards = [
                     RECT {
@@ -1331,20 +1330,20 @@ unsafe extern "system" fn wnd_proc(
                     false,
                     "Segoe UI Variable Text",
                 );
-                EndPaint(hwnd, &ps);
+                platform_gdi::end_paint(hwnd, &ps);
             }
             0
         }
         WM_COMMAND => {
             let id = (wparam as u32 & 0xffff) as isize;
             let code = (wparam as u32 >> 16) & 0xffff;
-            let st_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let st_ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             if st_ptr.is_null() {
                 return 0;
             }
             let st = &mut *st_ptr;
             match id {
-                IDC_BROWSE => match ps_pick_excel_file() {
+                IDC_BROWSE => match pick_excel_file() {
                     Ok(Some(path)) => {
                         set_text(hwnd, IDC_EXCEL, &path);
                         reload_excel(hwnd, st);
@@ -1355,8 +1354,9 @@ unsafe extern "system" fn wnd_proc(
                 IDC_LOAD => reload_excel(hwnd, st),
                 IDC_SHEET if code == CBN_SELCHANGE => reload_excel(hwnd, st),
                 IDC_GUESS => {
-                    let excel =
-                        normalize_path_like(&get_window_text(GetDlgItem(hwnd, IDC_EXCEL as i32)));
+                    let excel = normalize_path_like(&platform_window::text(
+                        platform_window::child(hwnd, IDC_EXCEL as i32),
+                    ));
                     if excel.trim().is_empty() {
                         set_status(hwnd, "请先选择 Excel 文件");
                     } else {
@@ -1453,29 +1453,31 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_CLOSE => {
-            DestroyWindow(hwnd);
+            platform_window::destroy(hwnd);
             0
         }
         WM_NCDESTROY => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut MailMergeState;
+            let ptr = platform_window::user_data(hwnd) as *mut MailMergeState;
             if !ptr.is_null() {
                 let st = Box::from_raw(ptr);
-                KillTimer(hwnd, ID_TIMER_PASTE);
-                KillTimer(hwnd, ID_TIMER_TARGET_TRACK);
-                if !st.font.is_null() && !core::ptr::eq(st.font, GetStockObject(DEFAULT_GUI_FONT)) {
-                    DeleteObject(st.font as _);
+                platform_timer::stop(hwnd, ID_TIMER_PASTE);
+                platform_timer::stop(hwnd, ID_TIMER_TARGET_TRACK);
+                if !st.font.is_null()
+                    && !core::ptr::eq(st.font, platform_gdi::get_stock_object(DEFAULT_GUI_FONT))
+                {
+                    platform_gdi::delete_object(st.font as _);
                 }
                 if !st.card_brush.is_null() {
-                    DeleteObject(st.card_brush as _);
+                    platform_gdi::delete_object(st.card_brush as _);
                 }
                 if !st.edit_brush.is_null() {
-                    DeleteObject(st.edit_brush as _);
+                    platform_gdi::delete_object(st.edit_brush as _);
                 }
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                platform_window::set_user_data(hwnd, 0);
             }
             0
         }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => platform_window::default_window_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -1488,29 +1490,22 @@ unsafe fn ensure_class() {
     let mut wc: WNDCLASSEXW = zeroed();
     wc.cbSize = size_of::<WNDCLASSEXW>() as u32;
     wc.lpfnWndProc = Some(wnd_proc);
-    wc.hInstance = GetModuleHandleW(null());
-    wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+    wc.hInstance = platform_window::module_handle();
+    wc.hCursor = platform_window::arrow_cursor();
     wc.lpszClassName = class_name.as_ptr();
-    RegisterClassExW(&wc);
+    platform_window::register_class_ex(&wc);
     let _ = DONE.set(());
 }
 
-pub(crate) unsafe fn launch_mail_merge_window(owner: HWND) {
-    launch_mail_merge_window_with_excel(owner, None);
-}
-
-pub(crate) unsafe fn launch_mail_merge_window_with_excel(owner: HWND, initial_excel: Option<&str>) {
+unsafe fn launch_mail_merge_window_with_excel(owner: HWND, initial_excel: Option<&str>) {
     ensure_class();
     let class_name = to_wide(CLASS_NAME);
     let title = to_wide("超级邮件合并");
-    let mut rc: RECT = zeroed();
-    if !owner.is_null() {
-        GetWindowRect(owner, &mut rc);
-    }
+    let rc = platform_window::window_rect(owner).unwrap_or_else(|| zeroed());
     let args = Box::new(CreateArgs {
         initial_excel: initial_excel.unwrap_or("").to_string(),
     });
-    let hwnd = CreateWindowExW(
+    let hwnd = platform_window::create_window_ex(
         WS_EX_APPWINDOW,
         class_name.as_ptr(),
         title.as_ptr(),
@@ -1529,11 +1524,29 @@ pub(crate) unsafe fn launch_mail_merge_window_with_excel(owner: HWND, initial_ex
         612,
         owner,
         null_mut(),
-        GetModuleHandleW(null()),
+        platform_window::module_handle(),
         Box::into_raw(args) as _,
     );
     if !hwnd.is_null() {
-        ShowWindow(hwnd, SW_SHOW);
-        SetForegroundWindow(hwnd);
+        platform_window::show(hwnd);
+        platform_window::set_foreground(hwnd);
+    }
+}
+
+pub(crate) struct WindowsMailMergeWindowHost;
+
+impl WindowsMailMergeWindowHost {
+    pub(crate) const fn new() -> Self {
+        Self
+    }
+}
+
+impl NativeMailMergeWindowHost for WindowsMailMergeWindowHost {
+    type Owner = HWND;
+
+    fn open_mail_merge(&self, owner: Self::Owner, request: NativeMailMergeWindowRequest<'_>) {
+        unsafe {
+            launch_mail_merge_window_with_excel(owner, request.initial_excel_path);
+        }
     }
 }

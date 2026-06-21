@@ -1,11 +1,32 @@
 [package]
 name = "zsclip"
-version = "0.9.1"
+version = "0.9.9"
 edition = "2021"
 repository = "https://github.com/qiu7824/zsclip/"
 
+[features]
+default = ["vv-paste", "cloud-sync", "lan-sync", "mail-merge", "ai-actions", "sticker"]
+vv-paste = []
+cloud-sync = []
+lan-sync = []
+mail-merge = []
+ai-actions = []
+sticker = []
+
 [dependencies]
 arboard = "3.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.17"
+image = { version = "0.25", default-features = false, features = ["bmp"] }
+base64 = "0.22"
+qrcodegen = "1.8"
+md5 = "0.7"
+crc32fast = "1"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
@@ -24,15 +45,18 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Controls",
 ] }
 
-rusqlite = { version = "0.31", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-png = "0.17"
-image = { version = "0.25", default-features = false, features = ["bmp"] }
-base64 = "0.22"
-qrcodegen = "1.8"
-md5 = "0.7"
-crc32fast = "1"
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSAccessibilityProtocols", "NSAppearance", "NSApplication", "NSEvent", "NSButtonCell", "NSFontDescriptor", "NSPopUpButton", "NSScrollView", "NSTabView", "NSTabViewItem", "NSTableView", "NSTableColumn", "NSTableHeaderView", "NSControl", "NSText", "NSTextView", "NSView", "NSVisualEffectView", "NSResponder", "NSClipView", "block2"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
+objc2-foundation = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk4 = "0.11"
+keytap = { version = "0.4.0", default-features = false }
+ksni = { version = "0.3.5", default-features = false, features = ["blocking"] }
 
 [build-dependencies]
 embed-resource = "2"

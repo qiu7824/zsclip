@@ -1,5 +1,6 @@
 package com.zsclip.lan
 
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -31,6 +32,16 @@ object LanUi {
                 }
             }
 
+    fun clipboardSyncIntent(context: Context): Intent =
+        Intent(context, ClipboardSyncActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+
+    fun clipboardPullIntent(context: Context, auto: Boolean = false): Intent =
+        Intent(context, ClipboardPullActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+            .putExtra(ClipboardPullActivity.EXTRA_AUTO_PULL, auto)
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
     fun openMainFromTile(service: TileService, message: String, sharedText: String? = null) {
         Handler(Looper.getMainLooper()).post {
             Toast.makeText(service.applicationContext, message, Toast.LENGTH_LONG).show()
@@ -39,6 +50,25 @@ object LanUi {
                 val pendingIntent = PendingIntent.getActivity(
                     service,
                     0,
+                    intent,
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                service.startActivityAndCollapse(pendingIntent)
+            } else {
+                @Suppress("DEPRECATION")
+                service.startActivityAndCollapse(intent)
+            }
+        }
+    }
+
+    @SuppressLint("StartActivityAndCollapseDeprecated")
+    fun openClipboardSyncFromTile(service: TileService) {
+        Handler(Looper.getMainLooper()).post {
+            val intent = clipboardSyncIntent(service)
+            if (Build.VERSION.SDK_INT >= 34) {
+                val pendingIntent = PendingIntent.getActivity(
+                    service,
+                    1,
                     intent,
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
                 )

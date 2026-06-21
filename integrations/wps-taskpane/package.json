@@ -1,0 +1,6 @@
+{
+  "name": "zsclip-wps-taskpane",
+  "version": "0.1.0",
+  "private": true,
+  "addonType": "wps"
+}

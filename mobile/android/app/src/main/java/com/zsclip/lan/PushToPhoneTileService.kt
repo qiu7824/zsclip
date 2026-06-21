@@ -11,7 +11,11 @@ class PushToPhoneTileService : TileService() {
         qsTile?.apply {
             label = "拉取到手机"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                subtitle = LanProtocol.tileStateLabel(LanPrefs.pairedHost(this@PushToPhoneTileService), LanPrefs.token(this@PushToPhoneTileService), false)
+                subtitle = LanProtocol.multiPullStateLabel(
+                    LanPrefs.hasPairing(this@PushToPhoneTileService),
+                    LanPrefs.hasWebDavConfig(this@PushToPhoneTileService),
+                    false
+                )
             }
             state = Tile.STATE_INACTIVE
             updateTile()
@@ -20,8 +24,8 @@ class PushToPhoneTileService : TileService() {
 
     override fun onClick() {
         super.onClick()
-        if (!LanPrefs.hasPairing(this)) {
-            LanUi.openMainFromTile(this, "请先完成配对后再使用“拉取到手机”")
+        if (!LanPrefs.hasPairing(this) && !LanPrefs.hasWebDavConfig(this)) {
+            LanUi.openMainFromTile(this, "请先完成配对或配置 WebDAV 后再使用“拉取到手机”")
             return
         }
         qsTile?.apply {
@@ -29,14 +33,18 @@ class PushToPhoneTileService : TileService() {
             updateTile()
         }
         thread(name = "zsclip-push-to-phone") {
+            var failed = false
             val message = try {
-                LanClient.pullLatestToClipboard(this, force = true)
+                LanClient.pullAvailableTransportToClipboard(this, force = true)
             } catch (e: Exception) {
+                failed = true
                 "拉取到手机失败：${e.message}".also {
                     LanPrefs.saveSyncStatus(this, false, it)
                 }
             }
-            LanUi.showToast(this, message)
+            if (failed) {
+                LanUi.showToast(this, message)
+            }
             try {
                 qsTile?.apply {
                     label = "拉取到手机"

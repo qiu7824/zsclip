@@ -1,56 +1,39 @@
 use std::cmp::{max, min};
-use std::mem::{size_of, zeroed};
+use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::Gdi::{
-        BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
-        DeleteObject, EndPaint, FillRect, FrameRect, PatBlt, SelectObject, SetBrushOrgEx,
-        SetStretchBltMode, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
-        HALFTONE, PAINTSTRUCT, SRCCOPY, WHITE_BRUSH,
-    },
-    System::LibraryLoader::GetModuleHandleW,
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{PAINTSTRUCT, WHITE_BRUSH},
     UI::{
         Input::KeyboardAndMouse::{
-            GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_OEM_MINUS,
-            VK_OEM_PLUS, VK_UP,
+            VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_OEM_MINUS, VK_OEM_PLUS, VK_UP,
         },
         WindowsAndMessaging::*,
     },
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, image_input_for_ocr, post_boxed_message, ClipItem},
+    app::{ensure_item_image_bytes, image_input_for_ocr, ClipItem},
+    app_core::{NativeDialogHost, NativeDialogLevel},
     i18n::tr,
-    ui::{draw_round_rect, draw_text, draw_text_ex, rgb, rgba_to_opaque_bgra_on_bg, Theme},
-    win_system_ui::{apply_window_corner_preference, get_x_lparam, get_y_lparam, to_wide},
+    platform::{
+        appearance as platform_appearance, clipboard as platform_clipboard,
+        dialog as platform_dialog, gdi as platform_gdi, input as platform_input,
+        memory as platform_memory,
+        string::to_wide,
+        window::{self as platform_window, post_boxed_message},
+    },
+    ui::{draw_round_rect, draw_text, draw_text_ex, rgba_to_opaque_bgra_on_bg},
+    win_native_style::{rgb, Theme},
+    win_system_ui::{get_x_lparam, get_y_lparam},
 };
-
-#[link(name = "user32")]
-unsafe extern "system" {
-    fn TrackMouseEvent(lpeventtrack: *mut TRACKMOUSEEVENT) -> i32;
-    fn InvalidateRect(hWnd: HWND, lpRect: *const RECT, bErase: i32) -> i32;
-    fn OpenClipboard(hwnd_new_owner: HWND) -> i32;
-    fn CloseClipboard() -> i32;
-    fn EmptyClipboard() -> i32;
-    fn SetClipboardData(u_format: u32, h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-}
-
-#[link(name = "kernel32")]
-unsafe extern "system" {
-    fn GlobalAlloc(u_flags: u32, dw_bytes: usize) -> *mut core::ffi::c_void;
-    fn GlobalFree(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn GlobalLock(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn GlobalUnlock(h_mem: *mut core::ffi::c_void) -> i32;
-}
 
 const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE_FLAG: u32 = 0x0002;
 const DSTINVERT: u32 = 0x00550009;
 
-const TME_LEAVE: u32 = 0x00000002;
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 const STICKER_CLASS: &str = "ZsClipSticker";
 const STICKER_BAR_H: i32 = 36;
@@ -61,14 +44,6 @@ const STICKER_ZOOM_IN_KEY: u32 = VK_OEM_PLUS as u32;
 const STICKER_ZOOM_OUT_KEY: u32 = VK_OEM_MINUS as u32;
 const WM_STICKER_IMAGE_READY: u32 = WM_APP + 52;
 const WM_STICKER_OCR_READY: u32 = WM_APP + 53;
-
-#[repr(C)]
-struct TRACKMOUSEEVENT {
-    cb_size: u32,
-    dw_flags: u32,
-    hwnd_track: HWND,
-    dw_hover_time: u32,
-}
 
 struct StickerImageResult {
     image: Option<(Vec<u8>, usize, usize)>,
@@ -206,10 +181,7 @@ fn get_ocr_copy_text(data: &StickerData) -> String {
 }
 
 fn sticker_btn_rect(hwnd: HWND, index: i32) -> RECT {
-    let mut rc: RECT = unsafe { zeroed() };
-    unsafe {
-        GetClientRect(hwnd, &mut rc);
-    }
+    let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| unsafe { zeroed() });
     let right_pad = 10;
     let top = 6;
     let right = rc.right - right_pad - index * (STICKER_BTN_W + STICKER_BTN_GAP);
@@ -235,7 +207,7 @@ unsafe fn sticker_apply_zoom(hwnd: HWND, data: &StickerData) {
     let zoom = data.zoom_pct.clamp(20, 400);
     let w = max(180, min(960, data.width * zoom / 100 + 24));
     let h = max(120, min(960, data.height * zoom / 100 + STICKER_BAR_H + 24));
-    SetWindowPos(
+    platform_window::set_pos(
         hwnd,
         null_mut(),
         0,
@@ -247,35 +219,29 @@ unsafe fn sticker_apply_zoom(hwnd: HWND, data: &StickerData) {
 }
 
 unsafe fn sticker_track_mouse(hwnd: HWND) {
-    let mut tme = TRACKMOUSEEVENT {
-        cb_size: size_of::<TRACKMOUSEEVENT>() as u32,
-        dw_flags: TME_LEAVE,
-        hwnd_track: hwnd,
-        dw_hover_time: 0,
-    };
-    TrackMouseEvent(&mut tme);
+    platform_input::track_mouse_leave(hwnd);
 }
 
 unsafe fn copy_text_to_clipboard(hwnd: HWND, text: &str) {
     let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
     let byte_len = wide.len() * 2;
-    let hmem = GlobalAlloc(GMEM_MOVEABLE_FLAG, byte_len);
+    let hmem = platform_memory::global_alloc(GMEM_MOVEABLE_FLAG, byte_len);
     if hmem.is_null() {
         return;
     }
-    let ptr = GlobalLock(hmem);
+    let ptr = platform_memory::global_lock(hmem);
     if ptr.is_null() {
-        GlobalFree(hmem);
+        platform_memory::global_free(hmem);
         return;
     }
     std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
-    GlobalUnlock(hmem);
-    if OpenClipboard(hwnd) != 0 {
-        EmptyClipboard();
-        SetClipboardData(CF_UNICODETEXT, hmem);
-        CloseClipboard();
+    platform_memory::global_unlock(hmem);
+    if platform_clipboard::open(hwnd) {
+        platform_clipboard::empty();
+        platform_clipboard::set_data(CF_UNICODETEXT, hmem);
+        platform_clipboard::close();
     } else {
-        GlobalFree(hmem);
+        platform_memory::global_free(hmem);
     }
 }
 
@@ -349,7 +315,7 @@ unsafe fn sticker_spawn_ocr(
             },
         });
         unsafe {
-            let _ = post_boxed_message(hwnd_val as HWND, WM_STICKER_OCR_READY, 0, payload);
+            let _ = post_boxed_message(hwnd_val, WM_STICKER_OCR_READY, 0, payload);
         }
     });
 }
@@ -364,33 +330,32 @@ unsafe extern "system" fn sticker_wnd_proc(
         data.ocr_mouse_selecting = false;
         data.ocr_sel_anchor = -1;
         data.ocr_sel_cursor = -1;
-        if ReleaseCapture() == 0 {
-            let _ = hwnd;
-        }
+        let _ = hwnd;
+        platform_input::release_capture();
         if invalidate {
-            InvalidateRect(hwnd, null(), 0);
+            platform_gdi::invalidate_rect(hwnd, null(), 0);
         }
     }
 
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
-            SetWindowLongPtrW(hwnd, GWLP_USERDATA, cs.lpCreateParams as isize);
-            apply_window_corner_preference(hwnd);
+            platform_window::set_user_data(hwnd, cs.lpCreateParams as isize);
+            platform_appearance::set_rounded_corners(hwnd);
             1
         }
         WM_MOUSELEAVE_MSG => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 (*ptr).hover_btn = 0;
                 (*ptr).down_btn = 0;
                 (*ptr).ocr_hover_line = -1;
-                InvalidateRect(hwnd, null(), 0);
+                platform_gdi::invalidate_rect(hwnd, null(), 0);
             }
             0
         }
         WM_MOUSEMOVE => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 let x = get_x_lparam(lparam);
                 let y = get_y_lparam(lparam);
@@ -402,8 +367,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                 }
                 // Update OCR hover / selection cursor
                 if !(*ptr).ocr_lines.is_empty() {
-                    let mut rc_client: RECT = zeroed();
-                    GetClientRect(hwnd, &mut rc_client);
+                    let rc_client = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
                     if let Some(ims) = ImgToScreen::from_data(&*ptr, &rc_client) {
                         let hit_line = ims.hit_test(&(*ptr).ocr_lines, x, y);
                         if (*ptr).ocr_mouse_selecting {
@@ -418,14 +382,14 @@ unsafe extern "system" fn sticker_wnd_proc(
                     }
                 }
                 if changed {
-                    InvalidateRect(hwnd, null(), 0);
+                    platform_gdi::invalidate_rect(hwnd, null(), 0);
                 }
                 sticker_track_mouse(hwnd);
             }
             0
         }
         WM_LBUTTONDOWN => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             let x = get_x_lparam(lparam);
             let y = get_y_lparam(lparam);
             if !ptr.is_null() {
@@ -438,39 +402,38 @@ unsafe extern "system" fn sticker_wnd_proc(
                 };
                 if active {
                     (*ptr).down_btn = hit;
-                    InvalidateRect(hwnd, null(), 0);
+                    platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
                 }
                 // OCR text selection in image area
                 if !(*ptr).ocr_lines.is_empty() && hit == 0 {
-                    let mut rc_client: RECT = zeroed();
-                    GetClientRect(hwnd, &mut rc_client);
+                    let rc_client = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
                     if let Some(ims) = ImgToScreen::from_data(&*ptr, &rc_client) {
                         let hit_line = ims.hit_test(&(*ptr).ocr_lines, x, y);
                         if hit_line >= 0 {
                             (*ptr).ocr_sel_anchor = hit_line;
                             (*ptr).ocr_sel_cursor = hit_line;
                             (*ptr).ocr_mouse_selecting = true;
-                            SetCapture(hwnd);
-                            InvalidateRect(hwnd, null(), 0);
+                            platform_input::set_capture(hwnd);
+                            platform_gdi::invalidate_rect(hwnd, null(), 0);
                             return 0;
                         } else if (*ptr).ocr_sel_anchor >= 0 {
                             // Click in image but not on a line — clear selection
                             (*ptr).ocr_sel_anchor = -1;
                             (*ptr).ocr_sel_cursor = -1;
-                            InvalidateRect(hwnd, null(), 0);
+                            platform_gdi::invalidate_rect(hwnd, null(), 0);
                         }
                     }
                 }
             }
             if y <= STICKER_BAR_H {
-                SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
+                platform_window::send_message(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as WPARAM, 0);
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_LBUTTONUP => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 // End selection drag
                 if (*ptr).ocr_mouse_selecting {
@@ -485,7 +448,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                 if hit != 0 && hit == down {
                     match hit {
                         1 => {
-                            DestroyWindow(hwnd);
+                            platform_window::destroy(hwnd);
                         }
                         2 => {
                             (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
@@ -503,7 +466,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                                 (*ptr).ocr_error = false;
                                 (*ptr).ocr_sel_anchor = -1;
                                 (*ptr).ocr_sel_cursor = -1;
-                                InvalidateRect(hwnd, null(), 0);
+                                platform_gdi::invalidate_rect(hwnd, null(), 0);
                                 let d = &*ptr;
                                 sticker_spawn_ocr(
                                     hwnd,
@@ -524,20 +487,20 @@ unsafe extern "system" fn sticker_wnd_proc(
                         _ => {}
                     }
                 }
-                InvalidateRect(hwnd, null(), 0);
+                platform_gdi::invalidate_rect(hwnd, null(), 0);
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_CAPTURECHANGED | WM_CANCELMODE => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() && (*ptr).ocr_mouse_selecting {
                 sticker_cancel_ocr_selection(hwnd, &mut *ptr, true);
             }
             0
         }
         WM_MOUSEWHEEL => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 let delta = ((wparam >> 16) & 0xffff) as i16 as i32;
                 if delta > 0 {
@@ -546,17 +509,17 @@ unsafe extern "system" fn sticker_wnd_proc(
                     (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10);
                 }
                 sticker_apply_zoom(hwnd, &*ptr);
-                InvalidateRect(hwnd, null(), 0);
+                platform_gdi::invalidate_rect(hwnd, null(), 0);
                 return 0;
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_RBUTTONUP => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() && (*ptr).ocr_mouse_selecting {
                 sticker_cancel_ocr_selection(hwnd, &mut *ptr, false);
             }
-            DestroyWindow(hwnd);
+            platform_window::destroy(hwnd);
             0
         }
         WM_STICKER_IMAGE_READY => {
@@ -565,7 +528,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                 return 0;
             }
             let payload = Box::from_raw(payload_ptr);
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 let data = &mut *ptr;
                 data.loading = false;
@@ -576,7 +539,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                     data.bgra = rgba_to_opaque_bgra_on_bg(&bytes, th.surface);
                     sticker_apply_zoom(hwnd, data);
                 }
-                InvalidateRect(hwnd, null(), 0);
+                platform_gdi::invalidate_rect(hwnd, null(), 0);
             }
             0
         }
@@ -585,7 +548,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                 return 0;
             }
             let payload = Box::from_raw(lparam as *mut StickerOcrResult);
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 (*ptr).ocr_loading = false;
                 (*ptr).ocr_error = payload.error;
@@ -594,39 +557,39 @@ unsafe extern "system" fn sticker_wnd_proc(
                 (*ptr).ocr_plain_text = payload.plain_text;
                 (*ptr).ocr_sel_anchor = -1;
                 (*ptr).ocr_sel_cursor = -1;
-                InvalidateRect(hwnd, null(), 0);
+                platform_gdi::invalidate_rect(hwnd, null(), 0);
                 if (*ptr).ocr_error && !(*ptr).ocr_error_message.trim().is_empty() {
-                    MessageBoxW(
+                    platform_dialog::WindowsDialogHost::new().show_message(
                         hwnd,
-                        to_wide(&(*ptr).ocr_error_message).as_ptr(),
-                        to_wide(tr("图片转文字", "Image OCR")).as_ptr(),
-                        MB_OK | MB_ICONERROR,
+                        tr("图片转文字", "Image OCR"),
+                        &(*ptr).ocr_error_message,
+                        NativeDialogLevel::Error,
                     );
                 }
             }
             0
         }
         WM_KEYDOWN => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if (wparam as u32) == VK_ESCAPE as u32 {
-                DestroyWindow(hwnd);
+                platform_window::destroy(hwnd);
                 return 0;
             }
             if !ptr.is_null() {
                 if (wparam as u32) == STICKER_ZOOM_IN_KEY || (wparam as u32) == VK_UP as u32 {
                     (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
                     sticker_apply_zoom(hwnd, &*ptr);
-                    InvalidateRect(hwnd, null(), 0);
+                    platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
                 }
                 if (wparam as u32) == STICKER_ZOOM_OUT_KEY || (wparam as u32) == VK_DOWN as u32 {
                     (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10);
                     sticker_apply_zoom(hwnd, &*ptr);
-                    InvalidateRect(hwnd, null(), 0);
+                    platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
                 }
                 // Ctrl+C / Ctrl+A for OCR selection
-                let ctrl = (GetKeyState(VK_CONTROL as i32) as u16) & 0x8000 != 0;
+                let ctrl = platform_input::is_key_state_down(VK_CONTROL as u32);
                 if ctrl {
                     match wparam as u32 {
                         0x43 => {
@@ -642,7 +605,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                             if !(*ptr).ocr_lines.is_empty() {
                                 (*ptr).ocr_sel_anchor = 0;
                                 (*ptr).ocr_sel_cursor = (*ptr).ocr_lines.len() as i32 - 1;
-                                InvalidateRect(hwnd, null(), 0);
+                                platform_gdi::invalidate_rect(hwnd, null(), 0);
                             }
                             return 0;
                         }
@@ -650,13 +613,12 @@ unsafe extern "system" fn sticker_wnd_proc(
                     }
                 }
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_NCHITTEST => {
             let x = get_x_lparam(lparam);
             let y = get_y_lparam(lparam);
-            let mut rc: RECT = zeroed();
-            GetWindowRect(hwnd, &mut rc);
+            let rc = platform_window::window_rect(hwnd).unwrap_or_else(|| zeroed());
             let grip = 8;
             if x >= rc.right - grip && y >= rc.bottom - grip {
                 return HTBOTTOMRIGHT as isize;
@@ -691,22 +653,22 @@ unsafe extern "system" fn sticker_wnd_proc(
         }
         WM_ERASEBKGND => 1,
         WM_PAINT => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if ptr.is_null() {
-                return DefWindowProcW(hwnd, msg, wparam, lparam);
+                return platform_window::default_window_proc(hwnd, msg, wparam, lparam);
             }
             let data = &mut *ptr;
             let mut ps: PAINTSTRUCT = zeroed();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            let mut rc: RECT = zeroed();
-            GetClientRect(hwnd, &mut rc);
+            let hdc = platform_gdi::begin_paint(hwnd, &mut ps);
+            let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
             let th = Theme::default();
-            let memdc = CreateCompatibleDC(hdc);
-            let membmp = CreateCompatibleBitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
-            let oldbmp = SelectObject(memdc, membmp as _);
-            let bg = CreateSolidBrush(th.bg);
-            FillRect(memdc, &rc, bg);
-            DeleteObject(bg as _);
+            let memdc = platform_gdi::create_compatible_dc(hdc);
+            let membmp =
+                platform_gdi::create_compatible_bitmap(hdc, rc.right - rc.left, rc.bottom - rc.top);
+            let oldbmp = platform_gdi::select_object(memdc, membmp as _);
+            let bg = platform_gdi::create_solid_brush(th.bg);
+            platform_gdi::fill_rect(memdc, &rc, bg);
+            platform_gdi::delete_object(bg as _);
             draw_round_rect(memdc as _, &rc, th.surface, th.stroke, 8);
             let bar = RECT {
                 left: 1,
@@ -850,29 +812,15 @@ unsafe extern "system" fn sticker_wnd_proc(
                 let dh = max(1, (ih as f32 * scale).round() as i32);
                 let dx = content.left + (avail_w - dw) / 2;
                 let dy = content.top + (avail_h - dh) / 2;
-                let mut bmi: BITMAPINFO = zeroed();
-                bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-                bmi.bmiHeader.biWidth = data.width;
-                bmi.bmiHeader.biHeight = -data.height;
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-                bmi.bmiHeader.biCompression = BI_RGB;
-                SetStretchBltMode(memdc, HALFTONE);
-                SetBrushOrgEx(memdc, 0, 0, null_mut());
-                StretchDIBits(
+                platform_gdi::stretch_top_down_32bpp(
                     memdc,
                     dx,
                     dy,
                     dw,
                     dh,
-                    0,
-                    0,
                     data.width,
                     data.height,
-                    data.bgra.as_ptr() as _,
-                    &bmi,
-                    DIB_RGB_COLORS,
-                    SRCCOPY,
+                    &data.bgra,
                 );
 
                 // Draw OCR text region overlays
@@ -888,7 +836,7 @@ unsafe extern "system" fn sticker_wnd_proc(
                             let hovering = hover_line == i as i32 && !selected;
                             if selected {
                                 // Invert pixels to indicate selection
-                                PatBlt(
+                                platform_gdi::pat_blt(
                                     memdc,
                                     lrc.left,
                                     lrc.top,
@@ -898,15 +846,16 @@ unsafe extern "system" fn sticker_wnd_proc(
                                 );
                             } else if hovering {
                                 // Blue border for hover hint
-                                let border_brush = CreateSolidBrush(rgb(80, 140, 255));
-                                FrameRect(memdc, &lrc, border_brush);
-                                DeleteObject(border_brush as _);
+                                let border_brush =
+                                    platform_gdi::create_solid_brush(rgb(80, 140, 255));
+                                platform_gdi::frame_rect(memdc, &lrc, border_brush);
+                                platform_gdi::delete_object(border_brush as _);
                             }
                         }
                     }
                 }
             }
-            BitBlt(
+            platform_gdi::copy_bits(
                 hdc,
                 0,
                 0,
@@ -915,26 +864,25 @@ unsafe extern "system" fn sticker_wnd_proc(
                 memdc,
                 0,
                 0,
-                SRCCOPY,
             );
-            SelectObject(memdc, oldbmp);
-            DeleteObject(membmp as _);
-            DeleteDC(memdc);
-            EndPaint(hwnd, &ps);
+            platform_gdi::select_object(memdc, oldbmp);
+            platform_gdi::delete_object(membmp as _);
+            platform_gdi::delete_dc(memdc);
+            platform_gdi::end_paint(hwnd, &ps);
             0
         }
         WM_NCDESTROY => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut StickerData;
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
                 if (*ptr).ocr_mouse_selecting {
                     sticker_cancel_ocr_selection(hwnd, &mut *ptr, false);
                 }
                 drop(Box::from_raw(ptr));
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                platform_window::set_user_data(hwnd, 0);
             }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
+            platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
-        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        _ => platform_window::default_window_proc(hwnd, msg, wparam, lparam),
     }
 }
 
@@ -943,15 +891,15 @@ unsafe fn ensure_sticker_class() {
     if DONE.get().is_some() {
         return;
     }
-    let hinstance = GetModuleHandleW(null());
+    let hinstance = platform_window::module_handle();
     let class_name = to_wide(STICKER_CLASS);
     let mut wc: WNDCLASSW = zeroed();
     wc.lpfnWndProc = Some(sticker_wnd_proc);
     wc.hInstance = hinstance;
     wc.lpszClassName = class_name.as_ptr();
-    wc.hCursor = LoadCursorW(null_mut(), IDC_ARROW);
+    wc.hCursor = platform_window::arrow_cursor();
     wc.hbrBackground = (WHITE_BRUSH as usize) as _;
-    RegisterClassW(&wc);
+    platform_window::register_class(&wc);
     let _ = DONE.set(());
 }
 
@@ -985,11 +933,10 @@ pub(crate) unsafe fn show_image_sticker(
         ocr_hover_line: -1,
         ocr_mouse_selecting: false,
     });
-    let mut pt: POINT = zeroed();
-    GetCursorPos(&mut pt);
+    let pt = platform_input::cursor_pos().unwrap_or_else(|| zeroed());
     let w = min(760, max(260, data.width + 24));
     let h = min(760, max(180, data.height + STICKER_BAR_H + 24));
-    let hwnd = CreateWindowExW(
+    let hwnd = platform_window::create_window_ex(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         to_wide(STICKER_CLASS).as_ptr(),
         to_wide("").as_ptr(),
@@ -1000,12 +947,12 @@ pub(crate) unsafe fn show_image_sticker(
         h,
         null_mut(),
         null_mut(),
-        GetModuleHandleW(null()),
+        platform_window::module_handle(),
         Box::into_raw(data) as _,
     );
     if !hwnd.is_null() {
-        ShowWindow(hwnd, SW_SHOW);
-        InvalidateRect(hwnd, null(), 0);
+        platform_window::show(hwnd);
+        platform_gdi::invalidate_rect(hwnd, null(), 0);
         let hwnd_raw = hwnd as isize;
         let item = item.clone();
         std::thread::spawn(move || {
@@ -1013,7 +960,7 @@ pub(crate) unsafe fn show_image_sticker(
                 image: ensure_item_image_bytes(&item),
             });
             unsafe {
-                let _ = post_boxed_message(hwnd_raw as HWND, WM_STICKER_IMAGE_READY, 0, payload);
+                let _ = post_boxed_message(hwnd_raw, WM_STICKER_IMAGE_READY, 0, payload);
             }
         });
     }

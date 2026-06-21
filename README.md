@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 # 剪贴板 / ZSClip
 
@@ -17,7 +17,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.1>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9>
 - 蓝奏云下载: <https://tcnzy.lanzout.com/b01887awxg>
 - 下载密码: `7dvb`
 
@@ -69,8 +69,10 @@
 - 悬停预览
 - 图片贴图悬浮窗
 - AI 清洗文本
-- WebDAV 云同步
+- WPS 任务窗格 MVP：在 WPS 侧边栏搜索本地文本记录并插入当前文档，说明见 [docs/wps-taskpane.md](docs/wps-taskpane.md)
+- 多端同步入口：WebDAV 与局域网二选一，局域网支持扫码绑定设备
 - 局域网剪贴板同步（默认关闭，信任设备后自动双向同步）
+- 多端同步设计文档：[docs/multi-sync.md](docs/multi-sync.md)
 - 贴边自动隐藏
 - 文本、图片、文件支持拖出生成文件
 - 图片记录支持列表内缩略图预览
@@ -99,12 +101,16 @@
 - Win32 原生轻量窗口
 - 多显示器与不同缩放环境适配
 
-### 局域网同步
+### 多端同步 / 局域网同步
 
-- 独立于 WebDAV 云同步，默认关闭
+- `设置 -> 多端同步` 通过 `同步方案` 在 `关闭 / WebDAV / 局域网` 之间单选；WebDAV 与局域网不会同时开启
+- WebDAV 同步会先读取云端 `zsSyncClipboard.json`，把新的文本或图片清单导入本地记录；图片按 `dataName` 从云端 `file/` 目录下载
+- Android 客户端可按当前选择的同步方案手动检查、拉取最新文本、用选中文本菜单/通知栏快捷开关推送文本，并在 App 内查看图片和文件历史；WebDAV 方案写入云端 `zsSyncClipboard.json`，局域网方案直连已配对 Windows
+- 局域网传输默认关闭，并作为多端同步里的一个可选方案；选择局域网后才启动 UDP 发现和 TCP API，关闭或选择 WebDAV 后释放后台线程与 socket
 - 开启后才启动 UDP 发现和 TCP API，关闭后释放后台线程与 socket
 - Windows 多设备可自动发现，也可手动输入 IP 配对
-- 配对在 `设置 -> 局域网` 内完成：发现设备后点配对，另一端在同一个列表选中 `[待允许]` 后点允许
+- 配对在 `设置 -> 多端同步` 内完成：发现设备后点配对，另一端在同一个列表选中 `[待允许]` 后点允许
+- `设置 -> 多端同步 -> 打开扫码绑定页` 会生成 Android 配对二维码和 iOS/浏览器入口二维码
 - 文本、小于 10MB 的图片和小文件可自动同步；远端内容可选择只进入记录或直接覆盖系统剪贴板
 - iOS 快捷指令和 Android 最小客户端说明见 `docs/lan-sync.md` 与 `docs/ios-shortcuts.md`
 
