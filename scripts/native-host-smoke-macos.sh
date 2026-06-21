@@ -94,10 +94,7 @@ fi
 
 if [[ "$CLICK_SMOKE" == "1" ]]; then
   echo "==> Running optional AppKit button click smoke"
-  osascript <<'APPLESCRIPT' || {
-    echo "Optional click smoke failed. Grant Terminal accessibility permission and rerun with NATIVE_HOST_SMOKE_CLICK=1." >&2
-    exit 1
-  }
+  if ! osascript <<'APPLESCRIPT'
 tell application "System Events"
   tell process "zsclip"
     set frontmost to true
@@ -134,6 +131,10 @@ tell application "System Events"
   end tell
 end tell
 APPLESCRIPT
+  then
+    echo "Optional click smoke failed. Grant Terminal accessibility permission and rerun with NATIVE_HOST_SMOKE_CLICK=1." >&2
+    exit 1
+  fi
   for expected in \
     "ZSClip AppKit row action row_copy -> zsclip.row.copy" \
     "ZSClip AppKit row action row_text_translate -> zsclip.row.text_translate" \

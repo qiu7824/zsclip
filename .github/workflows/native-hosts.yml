@@ -57,7 +57,19 @@ jobs:
         env:
           NATIVE_HOST_SMOKE_WAIT: "5"
           ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
-        run: bash scripts/native-host-smoke-macos.sh
+        run: |
+          mkdir -p target/native-host-smoke/macos
+          set +e
+          bash scripts/native-host-smoke-macos.sh 2>&1 | tee target/native-host-smoke/macos/smoke.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 180 target/native-host-smoke/macos/smoke.log)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\n'/'%0A'}"
+            message="${message//$'\r'/'%0D'}"
+            echo "::error title=macOS AppKit smoke failed::$message"
+            exit "$status"
+          fi
       - name: Upload AppKit smoke artifacts
         if: always()
         uses: actions/upload-artifact@v7
@@ -110,7 +122,19 @@ jobs:
         env:
           NATIVE_HOST_SMOKE_WAIT: "5"
           ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
-        run: xvfb-run -a bash scripts/native-host-smoke-linux.sh
+        run: |
+          mkdir -p target/native-host-smoke/linux
+          set +e
+          xvfb-run -a bash scripts/native-host-smoke-linux.sh 2>&1 | tee target/native-host-smoke/linux/smoke.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            message="$(tail -n 180 target/native-host-smoke/linux/smoke.log)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\n'/'%0A'}"
+            message="${message//$'\r'/'%0D'}"
+            echo "::error title=Linux GTK smoke failed::$message"
+            exit "$status"
+          fi
       - name: Upload GTK smoke artifacts
         if: always()
         uses: actions/upload-artifact@v7
