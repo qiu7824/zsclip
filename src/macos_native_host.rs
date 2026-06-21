@@ -2981,7 +2981,10 @@ mod appkit {
             edit_text_view.setRichText(false);
             edit_text_view.setAllowsUndo(true);
             edit_text_view.setFont(Some(&NSFont::systemFontOfSize(13.0)));
-            appkit_set_accessibility_label(edit_text_view.as_ref(), "Clipboard text editor");
+            appkit_set_accessibility_label::<NSTextView>(
+                edit_text_view.as_ref(),
+                "Clipboard text editor",
+            );
             let edit_text_scroller = unsafe {
                 NSScrollView::initWithFrame(
                     NSScrollView::alloc(mtm),
@@ -2993,7 +2996,7 @@ mod appkit {
             edit_text_scroller.setHasHorizontalScroller(false);
             edit_text_scroller.setAutohidesScrollers(true);
             edit_text_scroller.setDocumentView(Some(&edit_text_view));
-            appkit_set_accessibility_label(
+            appkit_set_accessibility_label::<NSScrollView>(
                 edit_text_scroller.as_ref(),
                 "Clipboard text editor scroll area",
             );
