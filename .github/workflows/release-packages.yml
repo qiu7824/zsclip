@@ -96,7 +96,7 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
@@ -136,7 +136,13 @@ jobs:
               Result := ExpandConstant('{autopf}\{#MyAppInstallDirName}');
           end;
           '@ | Set-Content -Encoding UTF8 installer.iss
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss 2>&1 | Tee-Object -FilePath inno-build.log
+          if ($LASTEXITCODE -ne 0) {
+            $message = (Get-Content inno-build.log -Tail 120) -join "`n"
+            $message = $message.Replace('%', '%25').Replace("`n", '%0A').Replace("`r", '%0D')
+            Write-Output "::error title=Windows installer build failed::$message"
+            exit $LASTEXITCODE
+          }
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
