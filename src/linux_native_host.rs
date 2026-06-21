@@ -471,7 +471,7 @@ searchentry {
             root.append(&status);
             let search_spec = native_host_search_input_specs()[0];
             let search_entry = SearchEntry::new();
-            search_entry.set_placeholder_text(Some(search_spec.label));
+            search_entry.set_placeholder_text(Some(search_spec.placeholder));
             search_entry.set_widget_name(search_spec.id);
             search_entry.set_max_width_chars(60);
             let search_revealer = Revealer::new();
@@ -956,8 +956,7 @@ searchentry {
             None => std::env::remove_var("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"),
         }
         let file_picker_recorded = !file_dialog_host.requests().is_empty();
-        let file_picker_selected =
-            matches!(file_picker_result.as_deref(), Ok(Some(path)) if path == smoke_path);
+        let file_picker_selected = matches!(file_picker_result.as_ref().map(|path| path.as_deref()), Ok(Some(path)) if path == smoke_path);
         eprintln!(
             "ZSClip GTK file picker smoke injected=true recorded={} selected={}",
             file_picker_recorded, file_picker_selected
@@ -1081,7 +1080,7 @@ searchentry {
             }
             section.append_item(&item);
             let simple_action = gio::SimpleAction::new(action.action_name(), None);
-            let app = app.clone();
+            let action_app = app.clone();
             let status = status.clone();
             let window = window.clone();
             simple_action.connect_activate(move |_, _| {
@@ -1100,7 +1099,7 @@ searchentry {
                     toggle_gtk_main_window(&window);
                 }
                 if action.should_exit_host() {
-                    app.quit();
+                    action_app.quit();
                 }
             });
             app.add_action(&simple_action);
@@ -2943,7 +2942,8 @@ searchentry {
                             selected.get(),
                             action
                                 .move_step()
-                                .expect("move group action must define a step"),
+                                .expect("move group action must define a step")
+                                as i32,
                         )
                     }
                     NativeHostSettingsGroupAction::ShowRecords
