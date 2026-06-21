@@ -28,13 +28,26 @@ jobs:
       - name: Stage Windows binary
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64.exe
+          New-Item -ItemType Directory -Force dist\zsclip-windows-x86_64 | Out-Null
+          Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\zsclip.exe
+          @'
+          ZSClip 0.9.9 - Windows
+
+          安装/运行:
+          1. 解压此 zip 到任意目录，例如 C:\Users\<你>\AppData\Local\Programs\ZSClip。
+          2. 双击 zsclip.exe 运行。
+          3. 如果 Windows SmartScreen 提示未知发布者，选择“更多信息”后继续运行。
+
+          说明:
+          - 当前包是便携版，不写注册表，不包含安装向导。
+          - 开机自启、托盘、热键等功能在应用设置里启用。
+          '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
+          Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64.zip -Force
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-windows-x86_64
-          path: dist/zsclip-windows-x86_64.exe
+          name: zsclip-windows-x86_64.zip
+          path: dist/zsclip-windows-x86_64.zip
           if-no-files-found: error
 
   macos:
@@ -65,12 +78,52 @@ jobs:
       - name: Stage macOS binary
         run: |
           mkdir -p dist
-          cp target/release/zsclip dist/zsclip-macos
+          mkdir -p dist/ZSClip.app/Contents/MacOS
+          mkdir -p dist/ZSClip.app/Contents/Resources
+          cp target/release/zsclip dist/ZSClip.app/Contents/MacOS/zsclip
+          chmod +x dist/ZSClip.app/Contents/MacOS/zsclip
+          cat > dist/ZSClip.app/Contents/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>zsclip</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.zsclip.app</string>
+            <key>CFBundleName</key>
+            <string>ZSClip</string>
+            <key>CFBundleDisplayName</key>
+            <string>ZSClip</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.9.9</string>
+            <key>CFBundleVersion</key>
+            <string>0.9.9</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          cat > dist/INSTALL-macos.txt <<'TXT'
+          ZSClip 0.9.9 - macOS
+
+          安装/运行:
+          1. 解压 zip。
+          2. 将 ZSClip.app 拖到 Applications/应用程序。
+          3. 首次运行如果提示无法验证开发者，请右键 ZSClip.app 选择“打开”。
+
+          说明:
+          - 当前包未签名、未公证。
+          - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
+          TXT
+          (cd dist && zip -qry zsclip-macos-app.zip ZSClip.app INSTALL-macos.txt)
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-macos
-          path: dist/zsclip-macos
+          name: zsclip-macos-app.zip
+          path: dist/zsclip-macos-app.zip
           if-no-files-found: error
 
   linux:
@@ -112,12 +165,39 @@ jobs:
       - name: Stage Linux binary
         run: |
           mkdir -p dist
-          cp target/release/zsclip dist/zsclip-linux-x86_64
+          mkdir -p dist/zsclip-linux-x86_64/bin
+          mkdir -p dist/zsclip-linux-x86_64/share/applications
+          cp target/release/zsclip dist/zsclip-linux-x86_64/bin/zsclip
+          chmod +x dist/zsclip-linux-x86_64/bin/zsclip
+          cat > dist/zsclip-linux-x86_64/share/applications/zsclip.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=ZSClip
+          Exec=zsclip
+          Terminal=false
+          Categories=Utility;
+          DESKTOP
+          cat > dist/zsclip-linux-x86_64/INSTALL.txt <<'TXT'
+          ZSClip 0.9.9 - Linux x86_64
+
+          安装/运行:
+          1. 解压: tar -xzf zsclip-linux-x86_64.tar.gz
+          2. 进入目录: cd zsclip-linux-x86_64
+          3. 运行: ./bin/zsclip
+
+          Ubuntu/Debian 运行依赖示例:
+          sudo apt install libgtk-4-1 libx11-6 libxi6 libxtst6 dbus-x11
+
+          说明:
+          - 当前包是便携 tar.gz，不是 deb/AppImage。
+          - 托盘、全局热键、VV 粘贴在 Wayland/X11 下可能需要对应桌面环境权限或工具支持。
+          TXT
+          tar -czf dist/zsclip-linux-x86_64.tar.gz -C dist zsclip-linux-x86_64
       - name: Upload Linux package
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-linux-x86_64
-          path: dist/zsclip-linux-x86_64
+          name: zsclip-linux-x86_64.tar.gz
+          path: dist/zsclip-linux-x86_64.tar.gz
           if-no-files-found: error
 
   publish:
@@ -143,14 +223,45 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set +e
+          cat > release-notes.md <<'NOTES'
+          # ZSClip 0.9.9
+
+          ## 更新内容
+          - 版本更新到 0.9.9。
+          - GitHub Actions 接入 Windows、macOS、Linux 三平台自动打包。
+          - macOS AppKit 原生 host 和 Linux GTK 原生 host 已通过 CI 编译与 smoke 验证。
+          - 补齐原生 host 里的剪贴板列表、行操作、设置控制、托盘/状态菜单、VV 粘贴路由等跨平台冒烟验证。
+          - 修复 macOS AppKit 绑定、Linux GTK 构建、非 Windows 平台密钥存储编译等问题。
+
+          ## 下载与安装
+          - Windows: 下载 `zsclip-windows-x86_64.zip`，解压后运行 `zsclip.exe`。
+          - macOS: 下载 `zsclip-macos-app.zip`，解压后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
+          - Linux: 下载 `zsclip-linux-x86_64.tar.gz`，解压后运行 `./bin/zsclip`。
+
+          ## 注意
+          - 当前 Windows 包是便携版，不是安装向导。
+          - 当前 macOS 包未签名/未公证，系统级快捷键/VV 粘贴可能需要辅助功能或输入监控权限。
+          - 当前 Linux 包是便携 tar.gz，不是 deb/AppImage，GTK4 运行库需要系统已安装。
+          NOTES
+          for stale in \
+            zsclip-linux-x86_64 \
+            zsclip-macos \
+            zsclip-windows-x86_64.exe
+          do
+            gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
+          done
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" release-assets/* --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
+            if [ "$status" -eq 0 ]; then
+              gh release edit "$TAG_NAME" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
+              status=${PIPESTATUS[0]}
+            fi
           else
             gh release create "$TAG_NAME" release-assets/* \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
-              --notes "Automated release build for $TAG_NAME." 2>&1 | tee release-upload.log
+              --notes-file release-notes.md 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
           fi
           if [ "$status" -ne 0 ]; then
