@@ -55,7 +55,9 @@ jobs:
         run: bash -n scripts/native-host-smoke-macos.sh
       - name: Run AppKit smoke
         env:
+          CARGO_TERM_COLOR: never
           NATIVE_HOST_SMOKE_WAIT: "5"
+          RUSTFLAGS: -A warnings
           ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
         run: |
           mkdir -p target/native-host-smoke/macos
@@ -120,7 +122,9 @@ jobs:
         run: bash -n scripts/native-host-smoke-linux.sh
       - name: Run GTK smoke under Xvfb
         env:
+          CARGO_TERM_COLOR: never
           NATIVE_HOST_SMOKE_WAIT: "5"
+          RUSTFLAGS: -A warnings
           ZSCLIP_NATIVE_HOST_AUTO_SMOKE: "1"
         run: |
           mkdir -p target/native-host-smoke/linux
