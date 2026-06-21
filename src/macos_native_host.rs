@@ -1210,14 +1210,15 @@ mod appkit {
 
     fn appkit_set_accessibility_label<T>(element: &T, label: &str)
     where
-        T: NSAccessibility + ?Sized,
+        T: NSAccessibility,
     {
         let label = NSString::from_str(label);
         element.setAccessibilityLabel(Some(&label));
     }
 
     fn appkit_is_dark_appearance(app: &NSApplication) -> bool {
-        app.effectiveAppearance().name().as_ref() == NSAppearanceNameDarkAqua
+        let name = app.effectiveAppearance().name();
+        <Retained<NSString> as AsRef<NSString>>::as_ref(&name) == NSAppearanceNameDarkAqua
     }
 
     fn appkit_position_window_near_cursor(window: &NSWindow) {
