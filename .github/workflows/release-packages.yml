@@ -48,6 +48,9 @@ jobs:
           - 开机自启、托盘、热键等功能在应用设置里启用。
           '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
           Copy-Item dist\zsclip-windows-x86_64\INSTALL.txt dist\installer-source\INSTALL.txt
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
+            -OutFile "ChineseSimplified.isl"
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           @'
           #define MyAppName "剪贴板"
@@ -96,7 +99,7 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
+          Name: "chinesesimplified"; MessagesFile: ".\ChineseSimplified.isl"
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
