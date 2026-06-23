@@ -10392,9 +10392,7 @@ mod tests {
         assert!(host_source.contains("unsafe impl NSTableViewDelegate for Delegate"));
         assert!(host_source.contains("fn tableView_viewForTableColumn_row"));
         assert!(host_source.contains("native_host_clip_row_presentation_for_projection(&item)"));
-        assert!(
-            host_source.contains("appkit_clip_table_cell_view(self.mtm(), &presentation, width)")
-        );
+        assert!(host_source.contains("Retained::autorelease_return(appkit_clip_table_cell_view("));
         assert!(host_source.contains("fn appkit_clip_table_cell_view"));
         assert!(host_source.contains("fn appkit_clip_table_label"));
         assert!(host_source.contains("&presentation.accessibility_label"));

@@ -1796,7 +1796,7 @@ searchentry {
             .decorated(false)
             .title("ZSClip VV Popup")
             .build();
-        if let Some(parent) = app.active_window() {
+        if let Some(parent) = gtk_transient_parent_for(app, &window) {
             window.set_transient_for(Some(&parent));
         }
         window.add_css_class("vv-popup");
@@ -2319,7 +2319,7 @@ searchentry {
             .title(&format!("ZSClip Edit - {}", plan.title))
             .build();
         window.set_modal(true);
-        if let Some(parent) = app.active_window() {
+        if let Some(parent) = gtk_transient_parent_for(app, &window) {
             window.set_transient_for(Some(&parent));
         }
         let root = GtkBox::new(Orientation::Vertical, 8);
@@ -2428,6 +2428,19 @@ searchentry {
                 save.emit_clicked();
             }
         }
+    }
+
+    fn gtk_transient_parent_for(
+        app: &Application,
+        child: &ApplicationWindow,
+    ) -> Option<gtk::Window> {
+        app.active_window()
+            .filter(|parent| parent.as_ptr() != child.as_ptr().cast())
+            .or_else(|| {
+                app.windows()
+                    .into_iter()
+                    .find(|parent| parent.as_ptr() != child.as_ptr().cast())
+            })
     }
 
     #[derive(Clone)]
