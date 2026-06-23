@@ -160,18 +160,32 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: macOS release package
-    runs-on: macos-latest
+    name: macOS release package (${{ matrix.asset_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset_arch: x86_64
+            display_arch: Intel
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            asset_arch: arm64
+            display_arch: Apple Silicon
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: Build macOS release
         env:
           CARGO_TERM_COLOR: never
           RUSTFLAGS: -A warnings
         run: |
           set +e
-          cargo build --release --locked 2>&1 | tee cargo-build-macos.log
+          cargo build --release --locked --target "${{ matrix.target }}" 2>&1 | tee cargo-build-macos.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-build-macos.log | tail -n 200)"
@@ -189,7 +203,7 @@ jobs:
           mkdir -p dist
           mkdir -p dist/ZSClip.app/Contents/MacOS
           mkdir -p dist/ZSClip.app/Contents/Resources
-          cp target/release/zsclip dist/ZSClip.app/Contents/MacOS/zsclip
+          cp target/${{ matrix.target }}/release/zsclip dist/ZSClip.app/Contents/MacOS/zsclip
           chmod +x dist/ZSClip.app/Contents/MacOS/zsclip
           cat > dist/ZSClip.app/Contents/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
@@ -219,7 +233,7 @@ jobs:
           cp -R dist/ZSClip.app dist/dmg-root/ZSClip.app
           ln -s /Applications dist/dmg-root/Applications
           cat > dist/dmg-root/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9 - macOS
+          ZSClip 0.9.9 - macOS ${{ matrix.display_arch }}
 
           安装/运行:
           1. 打开 DMG。
@@ -230,12 +244,12 @@ jobs:
           - 当前包未签名、未公证。
           - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
           TXT
-          hdiutil create -volname "ZSClip 0.9.9" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos.dmg
+          hdiutil create -volname "ZSClip 0.9.9 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-macos.dmg
-          path: dist/zsclip-macos.dmg
+          name: zsclip-macos-${{ matrix.asset_arch }}.dmg
+          path: dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
           if-no-files-found: error
 
   linux:
@@ -382,13 +396,14 @@ jobs:
           ### 打包与发布
           - GitHub Actions 接入 Windows、macOS、Linux 三平台自动打包。
           - Windows 提供安装器和便携包。
-          - macOS 提供 DMG，打开后可将 `ZSClip.app` 拖入 Applications。
+          - macOS 提供 Intel 和 Apple Silicon 两个 DMG，打开后可将 `ZSClip.app` 拖入 Applications。
           - Linux 提供 Debian/Ubuntu `.deb` 包和通用便携 `tar.gz` 包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
-          - macOS: 下载 `zsclip-macos.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
+          - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
+          - macOS Apple Silicon/M 系列: 下载 `zsclip-macos-arm64.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
           - Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb` 后安装；其他发行版可用 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
@@ -403,6 +418,8 @@ jobs:
             zsclip-macos \
             zsclip-macos-app.zip \
             zsclip-macos.dmg \
+            zsclip-macos-arm64.dmg \
+            zsclip-macos-x86_64.dmg \
             zsclip-windows-x86_64.exe \
             zsclip-windows-x86_64.zip \
             zsclip-windows-x86_64-portable.zip \
