@@ -373,6 +373,211 @@ pub(crate) fn item_text(item_id: i64) -> rusqlite::Result<Option<String>> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeClipboardInsertOutcome {
+    pub(crate) item_id: Option<i64>,
+    pub(crate) inserted: bool,
+    pub(crate) reason: &'static str,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn insert_native_clipboard_text(
+    category: i64,
+    text: &str,
+    source_app: &str,
+) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    let normalized = normalize_native_captured_text(text);
+    if normalized.is_empty() {
+        return Ok(NativeClipboardInsertOutcome {
+            item_id: None,
+            inserted: false,
+            reason: "empty_text",
+        });
+    }
+    let preview = native_clip_preview(&normalized);
+    let signature = native_clip_signature("text", &normalized, &[], &[], 0, 0);
+    insert_native_clipboard_item(NativeClipboardInsert {
+        category,
+        kind: "text",
+        preview: &preview,
+        signature: &signature,
+        text_data: Some(&normalized),
+        source_app,
+        file_paths: None,
+        image_data: None,
+        image_width: 0,
+        image_height: 0,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn insert_native_clipboard_file_paths(
+    category: i64,
+    paths: &[String],
+    source_app: &str,
+) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    let paths = paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(NativeClipboardInsertOutcome {
+            item_id: None,
+            inserted: false,
+            reason: "empty_files",
+        });
+    }
+    let joined = paths.join("\n");
+    let preview = native_clip_preview(paths.first().map(String::as_str).unwrap_or(""));
+    let signature = native_clip_signature("files", "", &paths, &[], 0, 0);
+    insert_native_clipboard_item(NativeClipboardInsert {
+        category,
+        kind: "files",
+        preview: &preview,
+        signature: &signature,
+        text_data: Some(&joined),
+        source_app,
+        file_paths: Some(&joined),
+        image_data: None,
+        image_width: 0,
+        image_height: 0,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn insert_native_clipboard_image(
+    category: i64,
+    bytes: &[u8],
+    width: usize,
+    height: usize,
+    source_app: &str,
+) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    if width == 0 || height == 0 || bytes.is_empty() {
+        return Ok(NativeClipboardInsertOutcome {
+            item_id: None,
+            inserted: false,
+            reason: "empty_image",
+        });
+    }
+    let preview = format!("{width} x {height}");
+    let signature = native_clip_signature("image", "", &[], bytes, width, height);
+    insert_native_clipboard_item(NativeClipboardInsert {
+        category,
+        kind: "image",
+        preview: &preview,
+        signature: &signature,
+        text_data: None,
+        source_app,
+        file_paths: None,
+        image_data: Some(bytes),
+        image_width: width as i64,
+        image_height: height as i64,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+struct NativeClipboardInsert<'a> {
+    category: i64,
+    kind: &'a str,
+    preview: &'a str,
+    signature: &'a str,
+    text_data: Option<&'a str>,
+    source_app: &'a str,
+    file_paths: Option<&'a str>,
+    image_data: Option<&'a [u8]>,
+    image_width: i64,
+    image_height: i64,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn insert_native_clipboard_item(
+    item: NativeClipboardInsert<'_>,
+) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    with_db_mut(|conn| {
+        let duplicate = conn
+            .query_row(
+                "SELECT id FROM items WHERE category=? AND signature=? ORDER BY id DESC LIMIT 1",
+                rusqlite::params![item.category, item.signature],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?;
+        if let Some(item_id) = duplicate {
+            return Ok(NativeClipboardInsertOutcome {
+                item_id: Some(item_id),
+                inserted: false,
+                reason: "duplicate",
+            });
+        }
+
+        conn.execute(
+            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+            rusqlite::params![
+                item.category,
+                item.kind,
+                item.preview,
+                item.signature,
+                item.text_data,
+                item.source_app,
+                item.file_paths,
+                item.image_data,
+                item.image_width,
+                item.image_height,
+            ],
+        )?;
+        Ok(NativeClipboardInsertOutcome {
+            item_id: Some(conn.last_insert_rowid()),
+            inserted: true,
+            reason: "inserted",
+        })
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn normalize_native_captured_text(text: &str) -> String {
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .trim_matches(|ch| ch == '\0')
+        .trim()
+        .to_string()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn native_clip_preview(text: &str) -> String {
+    text.chars().take(120).collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn native_clip_signature(
+    kind: &str,
+    text: &str,
+    paths: &[String],
+    image: &[u8],
+    width: usize,
+    height: usize,
+) -> String {
+    let mut hasher = crc32fast::Hasher::new();
+    hasher.update(kind.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(text.as_bytes());
+    for path in paths {
+        hasher.update(b"\0path:");
+        hasher.update(path.as_bytes());
+    }
+    if !image.is_empty() {
+        hasher.update(b"\0image:");
+        hasher.update(width.to_string().as_bytes());
+        hasher.update(b"x");
+        hasher.update(height.to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(image);
+    }
+    format!("native:{kind}:{:08x}", hasher.finalize())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn update_item_text(item_id: i64, new_text: &str) -> rusqlite::Result<bool> {
     let preview: String = new_text.chars().take(120).collect();
     with_db_mut(|conn| {
