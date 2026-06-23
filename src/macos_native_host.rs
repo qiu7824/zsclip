@@ -805,16 +805,23 @@ mod appkit {
                 table_view: &NSTableView,
                 _table_column: Option<&NSTableColumn>,
                 row: NSInteger,
-            ) -> Option<Retained<NSView>> {
-                let item = self
+            ) -> *mut NSView {
+                let Some(item) = self
                     .ivars()
                     .clip_table_items
                     .borrow()
                     .get(row as usize)
-                    .cloned()?;
+                    .cloned()
+                else {
+                    return ptr::null_mut();
+                };
                 let presentation = native_host_clip_row_presentation_for_projection(&item);
                 let width = table_view.bounds().size.width.max(320.0);
-                Some(appkit_clip_table_cell_view(self.mtm(), &presentation, width))
+                Retained::autorelease_return(appkit_clip_table_cell_view(
+                    self.mtm(),
+                    &presentation,
+                    width,
+                ))
             }
 
             #[unsafe(method(tableViewSelectionDidChange:))]
