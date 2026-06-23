@@ -354,8 +354,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - windows
-      - macos
-      - linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -384,9 +382,8 @@ jobs:
 
           ### 原生多平台 UI
           - Windows 继续作为完整主线版本保留。
-          - 新增并打通 macOS AppKit 原生 host 的构建和 smoke 验证。
-          - 新增并打通 Linux GTK4 原生 host 的构建和 smoke 验证。
-          - macOS/Linux 已覆盖原生剪贴板列表、行操作、设置控制、托盘/状态菜单、VV 粘贴路由等核心路径的 CI 冒烟验证。
+          - macOS AppKit 和 Linux GTK4 原生 host 继续保留在源码与 CI 冒烟验证中。
+          - macOS/Linux 当前不作为 0.9.9 正式用户安装包发布，避免把尚未对齐 Windows 产品 UI 的 host 验证界面误作为正式版本。
 
           ### UI 框架与复用边界
           - 继续整理 `app_core`、产品适配器和 native host 的边界，减少平台 host 直接复制 Windows 业务逻辑。
@@ -394,22 +391,16 @@ jobs:
           - 针对 macOS AppKit、Linux GTK 的真实绑定修复大量编译和 objc2/GTK 适配问题。
 
           ### 打包与发布
-          - GitHub Actions 接入 Windows、macOS、Linux 三平台自动打包。
           - Windows 提供安装器和便携包。
-          - macOS 提供 Intel 和 Apple Silicon 两个 DMG，打开后可将 `ZSClip.app` 拖入 Applications。
-          - Linux 提供 Debian/Ubuntu `.deb` 包和通用便携 `tar.gz` 包。
+          - GitHub Actions 当前只向正式 Release 上传 Windows 安装包和便携包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
-          - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
-          - macOS Apple Silicon/M 系列: 下载 `zsclip-macos-arm64.dmg`，打开后把 `ZSClip.app` 拖到 Applications；未签名时请右键选择“打开”。
-          - Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb` 后安装；其他发行版可用 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
           - Windows 同时提供安装器和便携包。
-          - 当前 macOS 包未签名/未公证，系统级快捷键/VV 粘贴可能需要辅助功能或输入监控权限。
-          - Linux 当前提供 deb 和便携 tar.gz，暂未提供 AppImage/rpm。
+          - macOS/Linux 原生 host 尚未达到与 Windows 主界面和完整功能一致的正式发布标准，当前不提供正式安装包。
           NOTES
           for stale in \
             zsclip-linux-x86_64 \
