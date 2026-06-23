@@ -420,14 +420,19 @@ jobs:
             gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
           done
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" release-assets/* --clobber 2>&1 | tee release-upload.log
+            gh release upload "$TAG_NAME" \
+              release-assets/zsclip-v0.9.9-setup.exe \
+              release-assets/zsclip-windows-x86_64-portable.zip \
+              --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
               gh release edit "$TAG_NAME" --target "$GITHUB_SHA" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
               status=${PIPESTATUS[0]}
             fi
           else
-            gh release create "$TAG_NAME" release-assets/* \
+            gh release create "$TAG_NAME" \
+              release-assets/zsclip-v0.9.9-setup.exe \
+              release-assets/zsclip-windows-x86_64-portable.zip \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
               --notes-file release-notes.md 2>&1 | tee release-upload.log
