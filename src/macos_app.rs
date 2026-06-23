@@ -10162,8 +10162,8 @@ mod tests {
         assert!(host_source.contains("install_row_context_event_monitor"));
         assert!(host_source.contains("NSEventMask::RightMouseDown"));
         assert!(host_source.contains("perform_native_row_context_event"));
-        assert!(host_source.contains("NSPointInRect(location, row.frame())"));
-        assert!(host_source.contains("self.select_native_row(item_id)"));
+        assert!(host_source.contains("table_view.rowAtPoint(table_location)"));
+        assert!(host_source.contains("self.select_native_row(item.id)"));
         assert!(host_source.contains("self.present_native_row_popup_menu_at(location)"));
         assert!(host_source.contains("present_native_row_popup_menu_at"));
         assert!(host_source.contains("native_host_full_row_popup_menu_entries_for_groups"));
@@ -10235,12 +10235,12 @@ mod tests {
         let host_source = include_str!("macos_native_host.rs").replace("\r\n", "\n");
 
         assert!(host_source
-            .contains("search_field.setPlaceholderString(ns_string!(\"Search clipboard\"))"));
+            .contains("search_field.setPlaceholderString(Some(ns_string!(\"Search clipboard\")))"));
         assert!(host_source.contains("window.makeFirstResponder(Some(search_field))"));
         assert!(host_source.contains("search_field.setStringValue(ns_string!(\"\"))"));
         assert!(host_source.contains("self.update_clip_list_visibility(\"\")"));
-        assert!(host_source.contains("native_host_projected_clip_row_title"));
-        assert!(host_source.contains(".map(native_host_projected_clip_row_title)"));
+        assert!(host_source.contains("tableView:viewForTableColumn:row:"));
+        assert!(host_source.contains("native_host_clip_row_presentation_for_projection(&item)"));
         assert!(host_source.contains("NSImage::imageWithSystemSymbolName_accessibilityDescription"));
         assert!(host_source.contains("doc.on.clipboard"));
         assert!(host_source.contains("image.setTemplate(true)"));
@@ -10250,7 +10250,13 @@ mod tests {
         assert!(host_source.contains("NSWindowStyleMask::FullSizeContentView"));
         assert!(host_source.contains("window.setTitleVisibility(NSWindowTitleVisibility::Hidden)"));
         assert!(host_source.contains("window.setTitlebarAppearsTransparent(true)"));
-        assert!(host_source.contains("window.setHidesOnDeactivate(true)"));
+        assert!(host_source.contains("window.setHidesOnDeactivate(false)"));
+        assert!(host_source.contains("applicationShouldTerminateAfterLastWindowClosed:"));
+        assert!(host_source.contains("sender.orderOut(None)"));
+        assert!(host_source.contains("install_clipboard_capture_timer"));
+        assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
+        assert!(host_source.contains("scheduledTimerWithTimeInterval"));
+        assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));
         assert!(host_source.contains("setMovableByWindowBackground: true"));
         assert!(host_source.contains("fn appkit_enable_rounded_layer("));
@@ -10258,7 +10264,8 @@ mod tests {
         assert!(host_source.contains("setCornerRadius: radius"));
         assert!(host_source.contains("appkit_enable_rounded_layer(view.as_ref(), 12.0)"));
         assert!(host_source.contains("window.backingScaleFactor()"));
-        assert!(host_source.contains("app.effectiveAppearance().name().as_ref()"));
+        assert!(host_source.contains("fn appkit_is_dark_appearance(app: &NSApplication)"));
+        assert!(host_source.contains("app.effectiveAppearance().name()"));
         assert!(host_source.contains("NSAppearanceNameDarkAqua"));
         assert!(host_source.contains("NSEvent::mouseLocation()"));
         assert!(host_source.contains("window.setFrameOrigin(NSPoint::new"));
@@ -10271,12 +10278,9 @@ mod tests {
         assert!(host_source.contains("fn appkit_set_accessibility_label<T>"));
         assert!(host_source.contains("element.setAccessibilityLabel(Some(&label))"));
         assert!(host_source
-            .contains("appkit_set_accessibility_label(search_field.as_ref(), search_spec.label)"));
-        assert!(host_source.contains(
-            "appkit_set_accessibility_label(clip_table_view.as_ref(), \"Clipboard history list\")"
-        ));
-        assert!(host_source
-            .contains("appkit_set_accessibility_label(button.as_ref(), \"ZSClip status menu\")"));
+            .contains("appkit_set_accessibility_label::<NSSearchField>"));
+        assert!(host_source.contains("\"Clipboard history list\""));
+        assert!(host_source.contains("\"ZSClip status menu\""));
         assert!(host_source.contains("if spec.starts_section"));
         assert!(host_source.contains("fn appkit_status_menu_symbol_name("));
         assert!(host_source.contains("appkit_status_menu_symbol_name(spec.icon_name)"));
@@ -10285,9 +10289,7 @@ mod tests {
         assert!(host_source.contains("item.setImage(Some(&image))"));
         assert!(host_source.contains("native_popup_menu_command_macos_symbol_name(*id)"));
         assert!(host_source.contains("native_popup_menu_command_macos_key_equivalent(*id)"));
-        assert!(host_source.contains(
-            "appkit_set_accessibility_label(view.as_ref(), \"ZSClip main window content\")"
-        ));
+        assert!(host_source.contains("\"ZSClip main window content\""));
         assert!(host_source.contains("fn appkit_set_view_alpha_animated("));
         assert!(host_source.contains("appkit_set_view_alpha(search_field.as_ref(), 0.0)"));
         assert!(host_source.contains("appkit_set_view_alpha_animated(search_field.as_ref(), 1.0)"));
@@ -10337,9 +10339,7 @@ mod tests {
         assert!(host_source.contains("edit_text_view.setEditable(true)"));
         assert!(host_source.contains("edit_text_view.setRichText(false)"));
         assert!(host_source.contains("edit_text_view.setAllowsUndo(true)"));
-        assert!(host_source.contains(
-            "appkit_set_accessibility_label(edit_text_view.as_ref(), \"Clipboard text editor\")"
-        ));
+        assert!(host_source.contains("\"Clipboard text editor\""));
         assert!(host_source.contains("edit_text_scroller.setDocumentView(Some(&edit_text_view))"));
         assert!(host_source.contains("parent.beginSheet_completionHandler(&window, None)"));
         assert!(host_source.contains("parent.endSheet(window)"));
@@ -10377,20 +10377,18 @@ mod tests {
         assert!(host_source.contains("for option in spec.options"));
         assert!(host_source.contains("let title = NSString::from_str(option.label)"));
         assert!(host_source.contains("popup.addItemWithTitle(&title)"));
-        assert!(host_source.contains("appkit_set_accessibility_label(popup.as_ref(), spec.label)"));
+        assert!(host_source.contains("appkit_set_accessibility_label::<NSPopUpButton>"));
         assert!(host_source.contains("settings_tab_view.addTabViewItem(&tab_item)"));
         assert!(host_source.contains("scroller.setDocumentView(Some(&content))"));
         assert!(
             host_source.contains("let scroller_label = format!(\"{label} settings scroll area\")")
         );
-        assert!(host_source
-            .contains("appkit_set_accessibility_label(scroller.as_ref(), &scroller_label)"));
+        assert!(host_source.contains("appkit_set_accessibility_label::<NSScrollView>"));
         assert!(host_source.contains("let view = groups_content"));
         assert!(host_source.contains("let view = actions_content"));
         assert!(host_source.contains("unsafe impl NSTableViewDataSource for Delegate"));
         assert!(host_source
             .contains("fn numberOfRowsInTableView(&self, _table_view: &NSTableView) -> NSInteger"));
-        assert!(host_source.contains("fn tableView_objectValueForTableColumn_row"));
         assert!(host_source.contains("unsafe impl NSTableViewDelegate for Delegate"));
         assert!(host_source.contains("fn tableView_viewForTableColumn_row"));
         assert!(host_source.contains("native_host_clip_row_presentation_for_projection(&item)"));
@@ -10399,10 +10397,8 @@ mod tests {
         );
         assert!(host_source.contains("fn appkit_clip_table_cell_view"));
         assert!(host_source.contains("fn appkit_clip_table_label"));
-        assert!(host_source.contains(
-            "appkit_set_accessibility_label(cell.as_ref(), &presentation.accessibility_label)"
-        ));
-        assert!(host_source.contains("appkit_set_accessibility_label(label.as_ref(), text)"));
+        assert!(host_source.contains("&presentation.accessibility_label"));
+        assert!(host_source.contains("appkit_set_accessibility_label::<NSTextField>"));
         assert!(host_source.contains("presentation.kind_prefix"));
         assert!(host_source.contains("presentation.kind_icon"));
         assert!(host_source.contains("presentation.pin_badge"));
@@ -10422,9 +10418,8 @@ mod tests {
             .contains("table_view.selectRowIndexes_byExtendingSelection(&indexes, false)"));
         assert!(host_source.contains("view.addSubview(&clip_scroll_view)"));
         assert!(host_source.contains("let clip_row_height = 44.0_f64"));
-        assert!(host_source.contains("NSSize::new(clip_list_width, clip_row_height)"));
-        assert!(host_source.contains("row.setButtonType(NSButtonType::Toggle)"));
-        assert!(host_source.contains("row.setState(if action.item_id == selected_item_id"));
+        assert!(host_source.contains("let clip_list_height = 300.0_f64"));
+        assert!(!host_source.contains("row.setButtonType(NSButtonType::Toggle)"));
         assert!(host_source.contains("fn refresh_native_clip_row_selection(&self)"));
         assert!(host_source
             .contains("fn perform_native_clip_list_key_event(&self, event: &NSEvent) -> bool"));

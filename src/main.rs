@@ -27,6 +27,8 @@ mod macos_native_host;
 #[cfg(all(target_os = "windows", feature = "mail-merge"))]
 mod mail_merge_native;
 mod multi_sync;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod native_clipboard_capture;
 #[cfg(target_os = "windows")]
 mod platform;
 mod settings_model;

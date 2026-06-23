@@ -19,7 +19,7 @@ mod appkit {
 
     use block2::RcBlock;
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, Bool, ProtocolObject, Sel};
+    use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
     use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
     use objc2_app_kit::{
         NSAccessibility, NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn,
@@ -79,7 +79,7 @@ mod appkit {
         NativeHostVvTriggerAction, NativeHostVvTriggerInput, NativeHostVvTriggerKey,
         NativeHostVvTriggerTransition, NativeMenuItemSpec, NativePopupMenuEntry,
         NativeSettingsPageTabKind, ProductAdapterCommandResult, SettingsControlRole,
-        NATIVE_HOST_CLIP_ROW_CAPACITY, REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS,
+        REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS,
     };
     use crate::macos_app::MacosHostContractSummary;
 
@@ -106,6 +106,7 @@ mod appkit {
         edit_item_id: Cell<i64>,
         selected_item_id: Cell<i64>,
         current_group_filter: Cell<i64>,
+        last_clipboard_sequence: Cell<u32>,
         settings_group_category: Cell<i64>,
         selected_settings_group_id: Cell<i64>,
         search_field: OnceCell<Retained<NSSearchField>>,
@@ -118,7 +119,7 @@ mod appkit {
         settings_group_rows: OnceCell<Vec<Retained<NSButton>>>,
         clip_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         clip_table_items: RefCell<Vec<NativeHostClipListItemProjection>>,
-        clip_rows: OnceCell<Vec<Retained<NSButton>>>,
+        group_filter_button: OnceCell<Retained<NSButton>>,
     }
 
     impl fmt::Debug for AppDelegateIvars {
@@ -467,11 +468,24 @@ mod appkit {
                 };
                 self.perform_native_search_text_action(search_field.stringValue().to_string());
             }
+
+            #[unsafe(method(zsclipClipboardPoll:))]
+            fn zsclip_clipboard_poll(&self, _sender: &AnyObject) {
+                self.poll_native_clipboard_capture();
+            }
         }
 
         unsafe impl NSObjectProtocol for Delegate {}
 
         unsafe impl NSApplicationDelegate for Delegate {
+            #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
+            fn application_should_terminate_after_last_window_closed(
+                &self,
+                _sender: &NSApplication,
+            ) -> Bool {
+                false.into()
+            }
+
             #[unsafe(method(applicationDidFinishLaunching:))]
             fn did_finish_launching(&self, notification: &NSNotification) {
                 let mtm = self.mtm();
@@ -519,30 +533,7 @@ mod appkit {
                 let clip_items = crate::macos_app::macos_native_host_projected_clip_items();
                 let clip_row_height = 44.0_f64;
                 let clip_list_width = 608.0_f64;
-                let clip_list_height = clip_row_height * NATIVE_HOST_CLIP_ROW_CAPACITY as f64;
-                let clip_rows: Vec<_> =
-                    native_host_clip_row_specs(&clip_items, NATIVE_HOST_CLIP_ROW_CAPACITY)
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, spec)| {
-                            let action = spec.action;
-                            let row = appkit_clip_row_button_from_spec(
-                                mtm,
-                                target,
-                                &spec,
-                                sel!(zsclipSelectRow:),
-                            );
-                            row.setFrame(NSRect::new(
-                                NSPoint::new(0.0, clip_list_height - ((index + 1) as f64 * clip_row_height)),
-                                NSSize::new(clip_list_width, clip_row_height),
-                            ));
-                            row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-                            row.setButtonType(NSButtonType::Toggle);
-                            row.setTag(action.item_id as isize);
-                            row.setHidden(!action.has_item());
-                            row
-                        })
-                        .collect();
+                let clip_list_height = 300.0_f64;
                 let clip_list_document_view = NSView::initWithFrame(
                     NSView::alloc(mtm),
                     NSRect::new(
@@ -584,8 +575,8 @@ mod appkit {
                 let clip_scroll_view = NSScrollView::initWithFrame(
                     NSScrollView::alloc(mtm),
                     NSRect::new(
-                        NSPoint::new(16.0, 84.0),
-                        NSSize::new(clip_list_width, 184.0),
+                        NSPoint::new(16.0, 20.0),
+                        NSSize::new(clip_list_width, 300.0),
                     ),
                 );
                 clip_scroll_view.setHasVerticalScroller(true);
@@ -624,28 +615,9 @@ mod appkit {
                 for button in &main_buttons {
                     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
                 }
-                let row_buttons: Vec<_> = native_host_row_action_button_specs()
-                    .into_iter()
-                    .map(|spec| {
-                        let title = NSString::from_str(spec.label);
-                        let button = unsafe {
-                            NSButton::buttonWithTitle_target_action(
-                                &title,
-                                Some(target),
-                                Some(appkit_row_action_selector(spec.action)),
-                                mtm,
-                            )
-                        };
-                        button.setFrame(NSRect::new(
-                            NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
-                            NSSize::new(spec.width() as f64, spec.height() as f64),
-                        ));
-                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
-                        button
-                    })
-                    .collect();
                 let tool_buttons: Vec<_> = native_host_main_tool_button_specs()
                     .into_iter()
+                    .filter(|spec| spec.action == NativeHostMainToolAction::GroupFilter)
                     .map(|spec| {
                         let title = NSString::from_str(spec.label);
                         let button = unsafe {
@@ -657,16 +629,13 @@ mod appkit {
                             )
                         };
                         button.setFrame(NSRect::new(
-                            NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
-                            NSSize::new(spec.width() as f64, spec.height() as f64),
+                            NSPoint::new(410.0, 326.0),
+                            NSSize::new(96.0, 28.0),
                         ));
                         appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
                         button
                     })
                     .collect();
-                for button in &row_buttons {
-                    button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
-                }
                 for button in &tool_buttons {
                     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
                 }
@@ -687,7 +656,7 @@ mod appkit {
                 window.setTitle(ns_string!("ZSClip"));
                 window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
                 window.setTitlebarAppearsTransparent(true);
-                window.setHidesOnDeactivate(true);
+                window.setHidesOnDeactivate(false);
                 window.setLevel(NSFloatingWindowLevel);
                 unsafe {
                     let _: () = msg_send![&*window, setMovableByWindowBackground: true];
@@ -713,9 +682,6 @@ mod appkit {
                 unsafe { view.addSubview(&search_field) };
                 unsafe { view.addSubview(&clip_scroll_view) };
                 for button in &main_buttons {
-                    unsafe { view.addSubview(button) };
-                }
-                for button in &row_buttons {
                     unsafe { view.addSubview(button) };
                 }
                 for button in &tool_buttons {
@@ -753,11 +719,17 @@ mod appkit {
                     .unwrap();
                 *self.ivars().clip_table_items.borrow_mut() = clip_items.clone();
                 *self.ivars().clip_items.borrow_mut() = clip_items;
-                self.ivars().clip_rows.set(clip_rows).unwrap();
+                if let Some(group_filter_button) = tool_buttons.first() {
+                    self.ivars()
+                        .group_filter_button
+                        .set(group_filter_button.clone())
+                        .unwrap();
+                }
                 self.refresh_native_clip_rows();
 
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
                 self.install_status_item();
+                self.install_clipboard_capture_timer();
                 self.install_vv_local_event_monitor();
                 self.install_vv_global_event_monitor();
                 self.install_vv_cg_event_tap_monitor();
@@ -771,6 +743,19 @@ mod appkit {
         unsafe impl NSWindowDelegate for Delegate {
             #[unsafe(method(windowShouldClose:))]
             fn window_should_close(&self, sender: &NSWindow) -> Bool {
+                if self
+                    .ivars()
+                    .window
+                    .get()
+                    .map(|window| {
+                        Retained::<NSWindow>::as_ptr(window)
+                            == (sender as *const NSWindow).cast_mut()
+                    })
+                    .unwrap_or(false)
+                {
+                    sender.orderOut(None);
+                    return false.into();
+                }
                 if self
                     .ivars()
                     .edit_window
@@ -800,7 +785,6 @@ mod appkit {
                 {
                     return;
                 }
-                unsafe { NSApplication::sharedApplication(self.mtm()).terminate(None) };
             }
         }
 
@@ -815,6 +799,24 @@ mod appkit {
         }
 
         unsafe impl NSTableViewDelegate for Delegate {
+            #[unsafe(method(tableView:viewForTableColumn:row:))]
+            fn tableView_viewForTableColumn_row(
+                &self,
+                table_view: &NSTableView,
+                _table_column: Option<&NSTableColumn>,
+                row: NSInteger,
+            ) -> Option<Retained<NSView>> {
+                let item = self
+                    .ivars()
+                    .clip_table_items
+                    .borrow()
+                    .get(row as usize)
+                    .cloned()?;
+                let presentation = native_host_clip_row_presentation_for_projection(&item);
+                let width = table_view.bounds().size.width.max(320.0);
+                Some(appkit_clip_table_cell_view(self.mtm(), &presentation, width))
+            }
+
             #[unsafe(method(tableViewSelectionDidChange:))]
             fn tableViewSelectionDidChange(&self, _notification: &NSNotification) {
                 let Some(table_view) = self.ivars().clip_table_view.get() else {
@@ -1369,6 +1371,47 @@ mod appkit {
             status_item.setMenu(Some(&menu));
             self.ivars().status_menu.set(menu).unwrap();
             self.ivars().status_item.set(status_item).unwrap();
+        }
+
+        fn install_clipboard_capture_timer(&self) {
+            let sequence =
+                <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::sequence_number();
+            self.ivars().last_clipboard_sequence.set(sequence);
+            let Some(timer_class) = AnyClass::get(c"NSTimer") else {
+                eprintln!("ZSClip AppKit clipboard timer unavailable");
+                return;
+            };
+            unsafe {
+                let _: *mut AnyObject = msg_send![
+                    timer_class,
+                    scheduledTimerWithTimeInterval: 0.8_f64,
+                    target: self,
+                    selector: sel!(zsclipClipboardPoll:),
+                    userInfo: ptr::null_mut::<AnyObject>(),
+                    repeats: true
+                ];
+            }
+            eprintln!("ZSClip AppKit clipboard capture timer installed");
+        }
+
+        fn poll_native_clipboard_capture(&self) {
+            let sequence =
+                <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::sequence_number();
+            if sequence == self.ivars().last_clipboard_sequence.get() {
+                return;
+            }
+            self.ivars().last_clipboard_sequence.set(sequence);
+            let result =
+                crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
+                    crate::macos_app::MacosClipboardHost,
+                >(0, "macOS");
+            eprintln!(
+                "ZSClip AppKit clipboard capture sequence={} inserted={} item_id={:?} reason={}",
+                sequence, result.inserted, result.item_id, result.reason
+            );
+            if result.inserted {
+                self.reload_native_clip_items();
+            }
         }
 
         fn add_status_menu_item(
@@ -2842,42 +2885,11 @@ mod appkit {
             if let Some(table_view) = self.ivars().clip_table_view.get() {
                 table_view.reloadData();
             }
-            let Some(rows) = self.ivars().clip_rows.get() else {
-                self.refresh_native_clip_row_selection();
-                return;
-            };
-            let specs = native_host_clip_row_specs(&items, rows.len());
-            for (row, spec) in rows.iter().zip(specs.iter()) {
-                let action = spec.action;
-                let title = items
-                    .iter()
-                    .find(|item| item.id == action.item_id)
-                    .map(native_host_projected_clip_row_title)
-                    .unwrap_or_else(|| spec.label.clone());
-                let label = NSString::from_str(&title);
-                row.setTitle(&label);
-                row.setTag(action.item_id as isize);
-                row.setHidden(!action.has_item());
-                row.setState(if action.item_id == selected_item_id {
-                    NSControlStateValueOn
-                } else {
-                    NSControlStateValueOff
-                });
-            }
             self.refresh_native_clip_row_selection();
         }
 
         fn refresh_native_clip_row_selection(&self) {
             let selected_item_id = self.ivars().selected_item_id.get();
-            if let Some(rows) = self.ivars().clip_rows.get() {
-                for row in rows {
-                    row.setState(if row.tag() as i64 == selected_item_id {
-                        NSControlStateValueOn
-                    } else {
-                        NSControlStateValueOff
-                    });
-                }
-            }
             if let Some(table_view) = self.ivars().clip_table_view.get() {
                 if let Some(index) = self
                     .ivars()
@@ -3250,23 +3262,11 @@ mod appkit {
         }
 
         fn visible_native_clip_row_item_ids(&self) -> Vec<i64> {
-            if self.ivars().clip_table_view.get().is_some() {
-                return self
-                    .ivars()
-                    .clip_table_items
-                    .borrow()
-                    .iter()
-                    .map(|item| item.id)
-                    .collect();
-            }
             self.ivars()
-                .clip_rows
-                .get()
-                .into_iter()
-                .flat_map(|rows| rows.iter())
-                .filter(|row| !row.isHidden())
-                .map(|row| row.tag() as i64)
-                .filter(|item_id| *item_id > 0)
+                .clip_table_items
+                .borrow()
+                .iter()
+                .map(|item| item.id)
                 .collect()
         }
 
@@ -3395,23 +3395,6 @@ mod appkit {
                     eprintln!("ZSClip AppKit row context menu item_id={}", item.id);
                     return true;
                 }
-            }
-            let Some(rows) = self.ivars().clip_rows.get() else {
-                return false;
-            };
-            let location = event.locationInWindow();
-            for row in rows {
-                if row.isHidden() || !NSPointInRect(location, row.frame()) {
-                    continue;
-                }
-                let item_id = row.tag() as i64;
-                if item_id <= 0 {
-                    return false;
-                }
-                self.select_native_row(item_id);
-                self.present_native_row_popup_menu_at(location);
-                eprintln!("ZSClip AppKit row context menu item_id={}", item_id);
-                return true;
             }
             false
         }
@@ -3699,12 +3682,6 @@ mod appkit {
         fn update_clip_list_visibility(&self, query: &str) {
             let items = self.ivars().clip_items.borrow();
             let visible_ids = native_host_filtered_projected_clip_item_ids(&items, query);
-            if let Some(rows) = self.ivars().clip_rows.get() {
-                for row in rows {
-                    let item_id = row.tag();
-                    row.setHidden(item_id <= 0 || !visible_ids.contains(&(item_id as i64)));
-                }
-            }
             let visible_items = items
                 .iter()
                 .filter(|item| visible_ids.contains(&item.id))
