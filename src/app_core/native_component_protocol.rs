@@ -1794,7 +1794,7 @@ pub(crate) const fn native_host_settings_action_component_specs() -> [NativeComp
 
 #[cfg(feature = "ai-actions")]
 pub(crate) const fn native_host_row_action_button_specs(
-) -> [NativeButtonSpec<NativeHostRowAction>; 8] {
+) -> [NativeButtonSpec<NativeHostRowAction>; 10] {
     [
         NativeButtonSpec::new(
             "row.paste",
@@ -1839,9 +1839,21 @@ pub(crate) const fn native_host_row_action_button_specs(
             NativeHostRowAction::OpenPath,
         ),
         NativeButtonSpec::new(
+            "row.open_folder",
+            NativeHostRowAction::OpenFolder.button_label(),
+            UiRect::new(444, 164, 548, 196),
+            NativeHostRowAction::OpenFolder,
+        ),
+        NativeButtonSpec::new(
+            "row.copy_path",
+            NativeHostRowAction::CopyPath.button_label(),
+            UiRect::new(96, 128, 200, 160),
+            NativeHostRowAction::CopyPath,
+        ),
+        NativeButtonSpec::new(
             "row.text_translate",
             NativeHostRowAction::TextTranslate.button_label(),
-            UiRect::new(444, 164, 548, 196),
+            UiRect::new(212, 128, 316, 160),
             NativeHostRowAction::TextTranslate,
         ),
     ]
@@ -1849,7 +1861,7 @@ pub(crate) const fn native_host_row_action_button_specs(
 
 #[cfg(not(feature = "ai-actions"))]
 pub(crate) const fn native_host_row_action_button_specs(
-) -> [NativeButtonSpec<NativeHostRowAction>; 7] {
+) -> [NativeButtonSpec<NativeHostRowAction>; 9] {
     [
         NativeButtonSpec::new(
             "row.paste",
@@ -1892,6 +1904,18 @@ pub(crate) const fn native_host_row_action_button_specs(
             NativeHostRowAction::OpenPath.button_label(),
             UiRect::new(328, 164, 432, 196),
             NativeHostRowAction::OpenPath,
+        ),
+        NativeButtonSpec::new(
+            "row.open_folder",
+            NativeHostRowAction::OpenFolder.button_label(),
+            UiRect::new(444, 164, 548, 196),
+            NativeHostRowAction::OpenFolder,
+        ),
+        NativeButtonSpec::new(
+            "row.copy_path",
+            NativeHostRowAction::CopyPath.button_label(),
+            UiRect::new(96, 128, 200, 160),
+            NativeHostRowAction::CopyPath,
         ),
     ]
 }

@@ -232,6 +232,8 @@ pub(crate) enum NativeHostRowAction {
     Delete,
     Edit,
     OpenPath,
+    OpenFolder,
+    CopyPath,
     #[cfg(feature = "ai-actions")]
     TextTranslate,
 }
@@ -246,6 +248,8 @@ impl NativeHostRowAction {
             Self::Delete => "row_delete",
             Self::Edit => "row_edit",
             Self::OpenPath => "row_open_path",
+            Self::OpenFolder => "row_open_folder",
+            Self::CopyPath => "row_copy_path",
             #[cfg(feature = "ai-actions")]
             Self::TextTranslate => "row_text_translate",
         }
@@ -260,6 +264,8 @@ impl NativeHostRowAction {
             Self::Delete => "Delete",
             Self::Edit => "Edit",
             Self::OpenPath => "Open Path",
+            Self::OpenFolder => "Open Folder",
+            Self::CopyPath => "Copy Path",
             #[cfg(feature = "ai-actions")]
             Self::TextTranslate => "Translate",
         }
@@ -274,6 +280,8 @@ impl NativeHostRowAction {
             Self::Delete => menu_ids::ROW_DELETE,
             Self::Edit => menu_ids::ROW_EDIT,
             Self::OpenPath => menu_ids::ROW_OPEN_PATH,
+            Self::OpenFolder => menu_ids::ROW_OPEN_FOLDER,
+            Self::CopyPath => menu_ids::ROW_COPY_PATH,
             #[cfg(feature = "ai-actions")]
             Self::TextTranslate => menu_ids::ROW_TEXT_TRANSLATE,
         }
@@ -288,6 +296,8 @@ impl NativeHostRowAction {
             menu_ids::ROW_DELETE => Some(Self::Delete),
             menu_ids::ROW_EDIT => Some(Self::Edit),
             menu_ids::ROW_OPEN_PATH => Some(Self::OpenPath),
+            menu_ids::ROW_OPEN_FOLDER => Some(Self::OpenFolder),
+            menu_ids::ROW_COPY_PATH => Some(Self::CopyPath),
             #[cfg(feature = "ai-actions")]
             menu_ids::ROW_TEXT_TRANSLATE => Some(Self::TextTranslate),
             _ => None,
@@ -309,6 +319,8 @@ pub(crate) fn native_host_row_actions() -> Vec<NativeHostRowAction> {
         NativeHostRowAction::Delete,
         NativeHostRowAction::Edit,
         NativeHostRowAction::OpenPath,
+        NativeHostRowAction::OpenFolder,
+        NativeHostRowAction::CopyPath,
         #[cfg(feature = "ai-actions")]
         NativeHostRowAction::TextTranslate,
     ]

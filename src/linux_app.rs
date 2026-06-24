@@ -2216,6 +2216,51 @@ pub(crate) fn dispatch_linux_native_row_action_for_item(
                 },
             }
         }
+        NativeHostRowAction::OpenFolder => {
+            match main_row_external_action_plan(MainRowMenuAction::OpenFolder, Some(&item), &[]) {
+                Some(MainRowExternalActionPlan::OpenParentFolders(paths)) if !paths.is_empty() => {
+                    let host = LinuxShellOpenHost::default();
+                    let mut opened = 0;
+                    for path in &paths {
+                        if let Some(parent) = native_parent_folder_path(path) {
+                            host.open_path(&parent);
+                            opened += 1;
+                        }
+                    }
+                    ProductAdapterCommandResult {
+                        accepted: opened > 0,
+                        result_name: if opened > 0 {
+                            format!("zsclip.row.open_folder_native_{}", opened)
+                        } else {
+                            "zsclip.row.open_folder_no_parent".to_string()
+                        },
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.open_folder_no_paths".to_string(),
+                },
+            }
+        }
+        NativeHostRowAction::CopyPath => {
+            match main_row_external_action_plan(MainRowMenuAction::CopyPath, Some(&item), &[]) {
+                Some(MainRowExternalActionPlan::CopyText(text)) if !text.is_empty() => {
+                    let accepted = LinuxClipboardHost::write_text_ignored_by_monitors(&text);
+                    ProductAdapterCommandResult {
+                        accepted,
+                        result_name: if accepted {
+                            format!("zsclip.row.copy_path_clipboard_{}", text.len())
+                        } else {
+                            "zsclip.row.copy_path_clipboard_failed".to_string()
+                        },
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.copy_path_no_paths".to_string(),
+                },
+            }
+        }
         #[cfg(feature = "ai-actions")]
         NativeHostRowAction::TextTranslate => {
             match main_row_external_action_plan(MainRowMenuAction::TextTranslate, Some(&item), &[])
@@ -2234,6 +2279,13 @@ pub(crate) fn dispatch_linux_native_row_action_for_item(
         }
         _ => dispatch_linux_native_row_action(action),
     }
+}
+
+fn native_parent_folder_path(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(|parent| parent.to_string_lossy().to_string())
 }
 
 pub(crate) fn dispatch_linux_native_edit_text_save(
@@ -5121,6 +5173,16 @@ mod tests {
         assert!(open_path.accepted);
         assert_eq!(open_path.result_name, "zsclip.row.open_path");
 
+        let open_folder =
+            crate::linux_native_host::dispatch_gtk_row_action(NativeHostRowAction::OpenFolder);
+        assert!(open_folder.accepted);
+        assert_eq!(open_folder.result_name, "zsclip.row.open_folder");
+
+        let copy_path =
+            crate::linux_native_host::dispatch_gtk_row_action(NativeHostRowAction::CopyPath);
+        assert!(copy_path.accepted);
+        assert_eq!(copy_path.result_name, "zsclip.row.copy_path");
+
         #[cfg(feature = "ai-actions")]
         {
             let translate = crate::linux_native_host::dispatch_gtk_row_action(
@@ -5164,6 +5226,22 @@ mod tests {
                 dispatch_linux_native_row_action_for_item(NativeHostRowAction::OpenPath, file_id);
             assert!(open.accepted);
             assert_eq!(open.result_name, "zsclip.row.open_path_native_1");
+
+            let open_folder =
+                dispatch_linux_native_row_action_for_item(NativeHostRowAction::OpenFolder, file_id);
+            assert!(open_folder.accepted);
+            assert_eq!(open_folder.result_name, "zsclip.row.open_folder_native_1");
+
+            let copy_path =
+                dispatch_linux_native_row_action_for_item(NativeHostRowAction::CopyPath, file_id);
+            assert!(copy_path.accepted);
+            assert!(copy_path
+                .result_name
+                .starts_with("zsclip.row.copy_path_clipboard_"));
+            assert_eq!(
+                LinuxClipboardHost::read_text().as_deref(),
+                Some("/tmp/zsclip-linux.txt")
+            );
 
             #[cfg(feature = "ai-actions")]
             {
