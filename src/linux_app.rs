@@ -5304,9 +5304,9 @@ mod tests {
         assert!(host_source.contains("search_revealer_for_escape.set_reveal_child(false)"));
         assert!(host_source.contains("search_revealer_for_toggle.set_reveal_child(active)"));
         assert!(host_source.contains("search_entry_for_toggle.set_text(\"\")"));
-        assert!(host_source.contains(
-            "update_clip_list_visibility(\n                                &search_rows_for_toggle"
-        ));
+        assert!(host_source.contains("search_entry.connect_search_changed"));
+        assert!(host_source.contains("install_main_window_keyboard_controller("));
+        assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(host_source.contains(".decorated(false)"));
         assert!(host_source.contains(".title(\"ZSClip VV Popup\")"));
         assert!(host_source.contains("const ZSCLIP_GTK_CSS"));
@@ -5370,8 +5370,8 @@ mod tests {
         assert!(host_source.contains(".icon_name(\"open-menu-symbolic\")"));
         assert!(host_source.contains("header.pack_end(&status_button)"));
         assert!(host_source.contains("window.set_titlebar(Some(&header))"));
-        assert!(host_source.contains("search_button.set_active(next_visible)"));
-        assert!(host_source.contains("!search_revealer.reveals_child()"));
+        assert!(host_source.contains("search_button.connect_toggled"));
+        assert!(host_source.contains("search_revealer_for_toggle.set_reveal_child(active)"));
         assert!(host_source.contains("let clip_scroller = ScrolledWindow::builder()"));
         assert!(host_source.contains(".hscrollbar_policy(PolicyType::Never)"));
         assert!(host_source.contains(".vscrollbar_policy(PolicyType::Automatic)"));
@@ -5405,6 +5405,7 @@ mod tests {
         assert!(host_source.contains("Duration::from_millis(800)"));
         assert!(host_source.contains("linux_native_clipboard_capture_enabled()"));
         assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
+        assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(host_source.contains("reload_clip_items_for_group_with_selection("));
         assert!(host_source.contains("fn gtk_clip_row_content("));
         assert!(host_source.contains("NativeHostClipRowPresentation"));
