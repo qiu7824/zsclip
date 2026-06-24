@@ -948,6 +948,26 @@ pub(crate) fn linux_native_grouping_enabled() -> bool {
         .unwrap_or(true)
 }
 
+pub(crate) fn linux_native_status_menu_action_state(
+    action: NativeHostStatusMenuAction,
+) -> Option<bool> {
+    match action {
+        NativeHostStatusMenuAction::ToggleClipboardCapture => {
+            Some(linux_native_clipboard_capture_enabled())
+        }
+        #[cfg(feature = "lan-sync")]
+        NativeHostStatusMenuAction::ToggleLanSync => linux_native_settings_json_snapshot()
+            .get("lan_sync_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .or_else(|| {
+                linux_native_settings_json_snapshot()
+                    .get("lan_enable")
+                    .and_then(serde_json::Value::as_bool)
+            }),
+        _ => None,
+    }
+}
+
 fn persist_linux_native_bool_toggle(
     control_key: &str,
     field_name: &str,
@@ -4853,6 +4873,38 @@ mod tests {
     }
 
     #[test]
+    fn linux_native_status_menu_action_state_reads_saved_settings() {
+        let _guard = linux_settings_file_test_guard();
+        let path = native_settings_temp_file("linux-status-action-state");
+        set_linux_native_settings_file_for_tests(Some(path.clone()));
+
+        assert_eq!(
+            linux_native_status_menu_action_state(NativeHostStatusMenuAction::ToggleWindow),
+            None
+        );
+        assert_eq!(
+            linux_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(true)
+        );
+        std::fs::write(
+            &path,
+            serde_json::json!({ "clipboard_capture_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            linux_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(false)
+        );
+
+        set_linux_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn linux_native_grouping_enabled_reads_saved_setting() {
         let _guard = linux_settings_file_test_guard();
         let path = native_settings_temp_file("linux-grouping-enabled");
@@ -4969,6 +5021,10 @@ mod tests {
         assert!(host_source.contains("gio::ThemedIcon::new(spec.icon_name)"));
         assert!(host_source.contains("menu.append_section(None, &section)"));
         assert!(host_source.contains("dispatch_linux_native_status_menu_action(action)"));
+        assert!(host_source.contains("linux_native_status_menu_action_state(action)"));
+        assert!(host_source.contains("gio::SimpleAction::new_stateful"));
+        assert!(host_source.contains("simple_action.set_state(&enabled.to_variant())"));
+        assert!(host_source.contains("refresh_gtk_status_action_states(&app)"));
         assert!(host_source.contains("assume_sni_available(true)"));
 
         let toggle =
@@ -4983,12 +5039,24 @@ mod tests {
         assert!(capture.accepted);
         assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
         assert!(!linux_native_clipboard_capture_enabled());
+        assert_eq!(
+            linux_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(false)
+        );
         let capture = dispatch_linux_native_status_menu_action(
             NativeHostStatusMenuAction::ToggleClipboardCapture,
         );
         assert!(capture.accepted);
         assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
         assert!(linux_native_clipboard_capture_enabled());
+        assert_eq!(
+            linux_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(true)
+        );
 
         #[cfg(feature = "lan-sync")]
         {

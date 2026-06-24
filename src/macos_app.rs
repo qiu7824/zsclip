@@ -8216,6 +8216,27 @@ pub(crate) fn macos_native_grouping_enabled() -> bool {
 }
 
 #[allow(dead_code)]
+pub(crate) fn macos_native_status_menu_action_state(
+    action: NativeHostStatusMenuAction,
+) -> Option<bool> {
+    match action {
+        NativeHostStatusMenuAction::ToggleClipboardCapture => {
+            Some(macos_native_clipboard_capture_enabled())
+        }
+        #[cfg(feature = "lan-sync")]
+        NativeHostStatusMenuAction::ToggleLanSync => macos_native_settings_json_snapshot()
+            .get("lan_sync_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .or_else(|| {
+                macos_native_settings_json_snapshot()
+                    .get("lan_enable")
+                    .and_then(serde_json::Value::as_bool)
+            }),
+        _ => None,
+    }
+}
+
+#[allow(dead_code)]
 fn persist_macos_native_bool_toggle(
     control_key: &str,
     field_name: &str,
@@ -10090,6 +10111,38 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_status_menu_action_state_reads_saved_settings() {
+        let _guard = macos_settings_file_test_guard();
+        let path = native_settings_temp_file("macos-status-action-state");
+        set_macos_native_settings_file_for_tests(Some(path.clone()));
+
+        assert_eq!(
+            macos_native_status_menu_action_state(NativeHostStatusMenuAction::ToggleWindow),
+            None
+        );
+        assert_eq!(
+            macos_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(true)
+        );
+        std::fs::write(
+            &path,
+            serde_json::json!({ "clipboard_capture_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            macos_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(false)
+        );
+
+        set_macos_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn macos_native_grouping_enabled_reads_saved_setting() {
         let _guard = macos_settings_file_test_guard();
         let path = native_settings_temp_file("macos-grouping-enabled");
@@ -10192,6 +10245,12 @@ mod tests {
         let path = native_settings_temp_file("macos-status-menu-settings");
         set_macos_native_settings_file_for_tests(Some(path.clone()));
 
+        let host_source = include_str!("macos_native_host.rs").replace("\r\n", "\n");
+        assert!(host_source.contains("macos_native_status_menu_action_state(action)"));
+        assert!(host_source.contains("item.setTag(action.menu_id() as _)"));
+        assert!(host_source.contains("refresh_status_menu_action_state(action)"));
+        assert!(host_source.contains("refresh_status_menu_state_from_settings()"));
+
         let toggle =
             dispatch_macos_native_status_menu_action(NativeHostStatusMenuAction::ToggleWindow);
         assert!(toggle.accepted);
@@ -10204,12 +10263,24 @@ mod tests {
         assert!(capture.accepted);
         assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
         assert!(!macos_native_clipboard_capture_enabled());
+        assert_eq!(
+            macos_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(false)
+        );
         let capture = dispatch_macos_native_status_menu_action(
             NativeHostStatusMenuAction::ToggleClipboardCapture,
         );
         assert!(capture.accepted);
         assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
         assert!(macos_native_clipboard_capture_enabled());
+        assert_eq!(
+            macos_native_status_menu_action_state(
+                NativeHostStatusMenuAction::ToggleClipboardCapture
+            ),
+            Some(true)
+        );
 
         #[cfg(feature = "lan-sync")]
         {

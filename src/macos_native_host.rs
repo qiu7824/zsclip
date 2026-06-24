@@ -56,11 +56,10 @@ mod appkit {
         native_host_filtered_projected_clip_item_ids,
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
-        native_host_group_filter_popup_menu_entries_for_groups,
-        native_host_main_tool_button_specs, native_host_projected_clip_row_title,
-        native_host_reconciled_selected_item_id, native_host_row_action_button_specs,
-        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
-        native_host_settings_action_button_specs,
+        native_host_group_filter_popup_menu_entries_for_groups, native_host_main_tool_button_specs,
+        native_host_projected_clip_row_title, native_host_reconciled_selected_item_id,
+        native_host_row_action_button_specs, native_host_row_popup_menu_input_for_projection,
+        native_host_search_input_specs, native_host_settings_action_button_specs,
         native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
         native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
         native_host_settings_platform_button_specs, native_host_settings_section_label,
@@ -1411,6 +1410,14 @@ mod appkit {
             if !spec.accelerator_key.is_empty() {
                 appkit_set_menu_item_command_modifier(item.as_ref());
             }
+            item.setTag(action.menu_id() as _);
+            if let Some(enabled) = crate::macos_app::macos_native_status_menu_action_state(action) {
+                item.setState(if enabled {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+            }
             if let Some(symbol_name) = appkit_status_menu_symbol_name(spec.icon_name) {
                 if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
                     &NSString::from_str(symbol_name),
@@ -1445,8 +1452,28 @@ mod appkit {
             if action.toggles_main_window_surface() {
                 self.toggle_main_window_visibility();
             }
+            self.refresh_status_menu_action_state(action);
             if action.should_exit_host() {
                 unsafe { NSApplication::sharedApplication(self.mtm()).terminate(None) };
+            }
+        }
+
+        fn refresh_status_menu_action_state(&self, action: NativeHostStatusMenuAction) {
+            let Some(enabled) = crate::macos_app::macos_native_status_menu_action_state(action)
+            else {
+                return;
+            };
+            let Some(menu) = self.ivars().status_menu.get() else {
+                return;
+            };
+            let item: Option<&NSMenuItem> =
+                unsafe { msg_send![menu.as_ref(), itemWithTag: action.menu_id() as NSInteger] };
+            if let Some(item) = item {
+                item.setState(if enabled {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
             }
         }
 
@@ -2527,6 +2554,12 @@ mod appkit {
             self.reload_native_clip_items();
         }
 
+        fn refresh_status_menu_state_from_settings(&self) {
+            for spec in native_host_status_menu_item_specs() {
+                self.refresh_status_menu_action_state(spec.action);
+            }
+        }
+
         fn perform_native_settings_action(&self, action: NativeHostSettingsAction) {
             if matches!(action, NativeHostSettingsAction::Save) {
                 let plan = crate::settings_model::settings_native_apply_collect_plan();
@@ -2594,6 +2627,7 @@ mod appkit {
                     persist_result.result_name
                 );
                 self.refresh_main_state_after_settings_save();
+                self.refresh_status_menu_state_from_settings();
             }
             let result = super::dispatch_appkit_settings_action(action);
             eprintln!(
