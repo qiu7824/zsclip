@@ -1717,6 +1717,38 @@ fn open_linux_url_or_file(_target: String) -> Result<(), String> {
     Err("Linux host URL opening is only available on Linux".to_string())
 }
 
+fn percent_decode_uri_path(path: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(path.len());
+    let raw = path.as_bytes();
+    let mut index = 0;
+    while index < raw.len() {
+        if raw[index] == b'%' {
+            if index + 2 >= raw.len() {
+                return None;
+            }
+            let high = hex_value(raw[index + 1])?;
+            let low = hex_value(raw[index + 2])?;
+            bytes.push((high << 4) | low);
+            index += 3;
+        } else {
+            bytes.push(raw[index]);
+            index += 1;
+        }
+    }
+    let decoded = String::from_utf8(bytes).ok()?;
+    let local_path = decoded.strip_prefix("localhost/").unwrap_or(&decoded);
+    Some(format!("/{}", local_path.trim_start_matches('/')))
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn pick_linux_native_file(
     request: NativeFileDialogRequest<'_>,
@@ -2828,6 +2860,23 @@ impl LinuxImeHost {
 }
 
 impl LinuxClipboardHost {
+    fn file_paths_from_uri_list(text: &str) -> Option<Vec<String>> {
+        let paths = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| line.strip_prefix("file://"))
+            .filter_map(|path| {
+                let decoded = percent_decode_uri_path(path)?;
+                if decoded.is_empty() {
+                    return None;
+                }
+                Some(decoded)
+            })
+            .collect::<Vec<_>>();
+        (!paths.is_empty()).then_some(paths)
+    }
+
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_read_text() -> Option<String> {
         let mut clipboard = arboard::Clipboard::new().ok()?;
@@ -2847,6 +2896,11 @@ impl LinuxClipboardHost {
         let mut clipboard = arboard::Clipboard::new().ok()?;
         let image = clipboard.get_image().ok()?;
         Some((image.bytes.into_owned(), image.width, image.height))
+    }
+
+    #[cfg(all(target_os = "linux", not(test)))]
+    fn system_read_file_paths() -> Option<Vec<String>> {
+        Self::system_read_text().and_then(|text| Self::file_paths_from_uri_list(&text))
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
@@ -3274,6 +3328,11 @@ impl ClipboardHost for LinuxClipboardHost {
     }
 
     fn read_file_paths() -> Option<Vec<String>> {
+        #[cfg(all(target_os = "linux", not(test)))]
+        if let Some(paths) = Self::system_read_file_paths() {
+            return Some(paths);
+        }
+
         Self::mutate_state(|state| state.file_paths.clone())
     }
 
@@ -5725,6 +5784,27 @@ mod tests {
         assert!(LinuxClipboardHost::write_text_ignored_by_monitors("self"));
         assert!(LinuxClipboardHost::should_ignore_capture_by_named_format());
         assert!(!LinuxClipboardHost::should_ignore_capture_by_named_format());
+    }
+
+    #[test]
+    fn linux_clipboard_host_parses_uri_list_file_paths() {
+        assert_eq!(
+            LinuxClipboardHost::file_paths_from_uri_list(
+                "# copied files\nfile:///home/user/a%20file.txt\nfile://localhost/tmp/b.txt\n"
+            ),
+            Some(vec![
+                "/home/user/a file.txt".to_string(),
+                "/tmp/b.txt".to_string()
+            ])
+        );
+        assert_eq!(
+            LinuxClipboardHost::file_paths_from_uri_list("plain clipboard text"),
+            None
+        );
+        assert_eq!(
+            LinuxClipboardHost::file_paths_from_uri_list("file:///tmp/bad%zz.txt"),
+            None
+        );
     }
 
     #[test]
