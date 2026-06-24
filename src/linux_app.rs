@@ -1774,6 +1774,53 @@ fn percent_decode_uri_path(path: &str) -> Option<String> {
     Some(format!("/{}", local_path.trim_start_matches('/')))
 }
 
+fn file_paths_to_uri_list(paths: &[String]) -> Option<String> {
+    let uris = paths
+        .iter()
+        .map(|path| path.trim())
+        .filter(|path| !path.is_empty())
+        .map(file_path_to_uri)
+        .collect::<Vec<_>>();
+    (!uris.is_empty()).then(|| {
+        let mut text = uris.join("\n");
+        text.push('\n');
+        text
+    })
+}
+
+fn file_path_to_uri(path: &str) -> String {
+    if path.starts_with("file://") {
+        return path.to_string();
+    }
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    format!("file://{}", percent_encode_uri_path(&path))
+}
+
+fn percent_encode_uri_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.as_bytes() {
+        match *byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                encoded.push(*byte as char)
+            }
+            byte => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
+}
+
+fn clipboard_text_without_uri_list(text: String) -> Option<String> {
+    if LinuxClipboardHost::file_paths_from_uri_list(&text).is_some() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -2938,6 +2985,14 @@ impl LinuxClipboardHost {
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
+    fn system_write_file_paths(paths: &[String]) -> bool {
+        let Some(uri_list) = file_paths_to_uri_list(paths) else {
+            return false;
+        };
+        Self::system_write_text(&uri_list)
+    }
+
+    #[cfg(all(target_os = "linux", not(test)))]
     fn system_write_image_rgba(bytes: &[u8], width: usize, height: usize) -> bool {
         let Ok(mut clipboard) = arboard::Clipboard::new() else {
             return false;
@@ -3310,7 +3365,7 @@ impl ClipboardHost for LinuxClipboardHost {
     fn read_text() -> Option<String> {
         #[cfg(all(target_os = "linux", not(test)))]
         if let Some(text) = Self::system_read_text() {
-            return Some(text);
+            return clipboard_text_without_uri_list(text);
         }
 
         Self::mutate_state(|state| state.text.clone())
@@ -3371,13 +3426,18 @@ impl ClipboardHost for LinuxClipboardHost {
     }
 
     fn write_file_paths(paths: &[String]) -> bool {
+        #[cfg(all(target_os = "linux", not(test)))]
+        let system_written = Self::system_write_file_paths(paths);
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        let system_written = !paths.is_empty();
+
         Self::mutate_state(|state| {
             state.text = None;
             state.image = None;
             state.file_paths = Some(paths.to_vec());
             state.sequence = state.sequence.saturating_add(1);
-            true
-        })
+        });
+        system_written
     }
 
     fn sequence_number() -> u32 {
@@ -5921,6 +5981,41 @@ mod tests {
             LinuxClipboardHost::file_paths_from_uri_list("file:///tmp/bad%zz.txt"),
             None
         );
+    }
+
+    #[test]
+    fn linux_clipboard_host_serializes_file_paths_as_uri_list() {
+        assert_eq!(
+            file_paths_to_uri_list(&[
+                "/home/user/a file.txt".to_string(),
+                "/tmp/#hash.txt".to_string()
+            ])
+            .as_deref(),
+            Some("file:///home/user/a%20file.txt\nfile:///tmp/%23hash.txt\n")
+        );
+        assert_eq!(
+            LinuxClipboardHost::file_paths_from_uri_list(
+                file_paths_to_uri_list(&["/home/user/a file.txt".to_string()])
+                    .unwrap()
+                    .as_str(),
+            ),
+            Some(vec!["/home/user/a file.txt".to_string()])
+        );
+        assert_eq!(
+            clipboard_text_without_uri_list(
+                file_paths_to_uri_list(&["/home/user/a file.txt".to_string()]).unwrap()
+            ),
+            None
+        );
+        assert_eq!(
+            clipboard_text_without_uri_list("plain clipboard text".to_string()).as_deref(),
+            Some("plain clipboard text")
+        );
+        assert_eq!(file_paths_to_uri_list(&[]), None);
+
+        let _guard = linux_clipboard_test_guard();
+        LinuxClipboardHost::reset_for_tests();
+        assert!(!LinuxClipboardHost::write_file_paths(&[]));
     }
 
     #[test]
