@@ -12,13 +12,14 @@ use std::sync::{Mutex, OnceLock};
 use std::{env, fs};
 
 use crate::app_core::{
-    main_menu_command_for_id, poll_clipboard_monitor, settings_action_for_route,
-    settings_action_route, settings_lan_device_book_projection, settings_lan_device_projection,
-    settings_lan_mobile_link_projection_from_json, settings_lan_pair_request_projection_from_json,
-    settings_lan_pair_request_response_projection, settings_lan_pair_status_projection,
-    settings_lan_sync_action_support_plan, zsui_native_feature_status_for, ApplicationEvent,
-    ClipItem, ClipboardHost, ClipboardMonitorState, Color, ColorRole, Command, CommandQueue,
-    ComponentPhase, LifecycleEvent, LifecycleState, NativeAiActionMenuRequest,
+    main_menu_command_for_id, main_row_external_action_plan, poll_clipboard_monitor,
+    settings_action_for_route, settings_action_route, settings_lan_device_book_projection,
+    settings_lan_device_projection, settings_lan_mobile_link_projection_from_json,
+    settings_lan_pair_request_projection_from_json, settings_lan_pair_request_response_projection,
+    settings_lan_pair_status_projection, settings_lan_sync_action_support_plan,
+    zsui_native_feature_status_for, ApplicationEvent, ClipItem, ClipboardHost,
+    ClipboardMonitorState, Color, ColorRole, Command, CommandQueue, ComponentPhase, LifecycleEvent,
+    LifecycleState, MainRowExternalActionPlan, MainRowMenuAction, NativeAiActionMenuRequest,
     NativeAiActionPresenter, NativeAiSettingsSurfaceRequest, NativeAppIconResource,
     NativeAutostartApplyResult, NativeAutostartHost, NativeAutostartStatus, NativeControlMapper,
     NativeDialogButtons, NativeDialogHost, NativeDialogLevel, NativeDialogResponse,
@@ -1993,6 +1994,60 @@ pub(crate) fn dispatch_linux_native_row_action_for_item(
                 Err(_) => ProductAdapterCommandResult {
                     accepted: false,
                     result_name: "zsclip.row.delete_failed".to_string(),
+                },
+            }
+        }
+        NativeHostRowAction::ToPhrase => {
+            match crate::db_runtime::insert_native_phrase_from_item(&item, "ZSClip") {
+                Ok(outcome) if outcome.inserted => ProductAdapterCommandResult {
+                    accepted: true,
+                    result_name: "zsclip.row.to_phrase_db".to_string(),
+                },
+                Ok(outcome) if outcome.reason == "duplicate" => ProductAdapterCommandResult {
+                    accepted: true,
+                    result_name: "zsclip.row.to_phrase_duplicate".to_string(),
+                },
+                Ok(outcome) => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: format!("zsclip.row.to_phrase_{}", outcome.reason),
+                },
+                Err(_) => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.to_phrase_failed".to_string(),
+                },
+            }
+        }
+        NativeHostRowAction::OpenPath => {
+            match main_row_external_action_plan(MainRowMenuAction::OpenPath, Some(&item), &[]) {
+                Some(MainRowExternalActionPlan::OpenPaths(paths)) if !paths.is_empty() => {
+                    let host = LinuxShellOpenHost::default();
+                    for path in &paths {
+                        host.open_path(path);
+                    }
+                    ProductAdapterCommandResult {
+                        accepted: true,
+                        result_name: format!("zsclip.row.open_path_native_{}", paths.len()),
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.open_path_no_paths".to_string(),
+                },
+            }
+        }
+        #[cfg(feature = "ai-actions")]
+        NativeHostRowAction::TextTranslate => {
+            match main_row_external_action_plan(MainRowMenuAction::TextTranslate, Some(&item), &[])
+            {
+                Some(MainRowExternalActionPlan::TextTranslate(text)) if !text.is_empty() => {
+                    ProductAdapterCommandResult {
+                        accepted: true,
+                        result_name: format!("zsclip.row.text_translate_ready_{}", text.len()),
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.text_translate_no_text".to_string(),
                 },
             }
         }
@@ -4684,6 +4739,55 @@ mod tests {
             assert!(translate.accepted);
             assert_eq!(translate.result_name, "zsclip.row.text_translate");
         }
+    }
+
+    #[test]
+    fn linux_native_row_actions_execute_real_item_payloads() -> rusqlite::Result<()> {
+        crate::db_runtime::with_test_db(|| {
+            let text_id = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'phrase me', 'linux-row-phrase', 'phrase me full text', 'Terminal')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let phrase =
+                dispatch_linux_native_row_action_for_item(NativeHostRowAction::ToPhrase, text_id);
+            assert!(phrase.accepted);
+            assert_eq!(phrase.result_name, "zsclip.row.to_phrase_db");
+            let phrases = crate::db_runtime::native_clip_list_items(1, 10)?;
+            assert_eq!(phrases.len(), 1);
+            assert_eq!(phrases[0].kind, crate::app_core::ClipKind::Phrase);
+            assert_eq!(
+                crate::db_runtime::item_text(phrases[0].id)?.as_deref(),
+                Some("phrase me full text")
+            );
+
+            let file_id = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, source_app) VALUES(0, 'files', '/tmp/zsclip-linux.txt', 'linux-row-file', '/tmp/zsclip-linux.txt', '/tmp/zsclip-linux.txt', 'Files')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let open =
+                dispatch_linux_native_row_action_for_item(NativeHostRowAction::OpenPath, file_id);
+            assert!(open.accepted);
+            assert_eq!(open.result_name, "zsclip.row.open_path_native_1");
+
+            #[cfg(feature = "ai-actions")]
+            {
+                let translate = dispatch_linux_native_row_action_for_item(
+                    NativeHostRowAction::TextTranslate,
+                    text_id,
+                );
+                assert!(translate.accepted);
+                assert!(translate
+                    .result_name
+                    .starts_with("zsclip.row.text_translate_ready_"));
+            }
+            Ok(())
+        })
     }
 
     #[test]
