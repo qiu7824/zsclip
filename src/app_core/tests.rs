@@ -3581,6 +3581,18 @@ fn native_host_row_actions_map_to_existing_menu_commands() {
             "Open Path",
             menu_ids::ROW_OPEN_PATH,
         ),
+        (
+            NativeHostRowAction::OpenFolder,
+            "row_open_folder",
+            "Open Folder",
+            menu_ids::ROW_OPEN_FOLDER,
+        ),
+        (
+            NativeHostRowAction::CopyPath,
+            "row_copy_path",
+            "Copy Path",
+            menu_ids::ROW_COPY_PATH,
+        ),
         #[cfg(feature = "ai-actions")]
         (
             NativeHostRowAction::TextTranslate,
