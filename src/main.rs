@@ -639,7 +639,7 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("install_status_menu(app, &status, &window)"));
         assert!(linux_native_host_rs.contains("install_status_notifier(app, &status, &window)"));
         assert!(linux_native_host_rs.contains("native_host_status_menu_item_specs()"));
-        assert!(linux_native_host_rs.contains("native_host_row_action_button_specs"));
+        assert!(!linux_native_host_rs.contains("native_host_row_action_button_specs"));
         assert!(linux_native_host_rs.contains("dispatch_linux_native_row_action"));
         assert!(linux_native_host_rs.contains("dispatch_gtk_row_action"));
         assert!(linux_native_host_rs.contains("VV Popup"));
@@ -695,7 +695,7 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("native_host_edit_text_button_specs()"));
         assert!(linux_native_host_rs.contains("native_host_main_action_button_specs()"));
         assert!(linux_native_host_rs.contains("native_host_main_tool_button_specs()"));
-        assert!(linux_native_host_rs.contains("native_host_row_action_button_specs()"));
+        assert!(!linux_native_host_rs.contains("native_host_row_action_button_specs()"));
         assert!(linux_native_host_rs.contains("button.set_widget_name(spec.id)"));
         assert!(linux_native_host_rs.contains("connect_clicked"));
         assert!(linux_native_host_rs.contains("dispatch_linux_native_host_action"));

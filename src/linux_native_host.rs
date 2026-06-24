@@ -27,8 +27,8 @@ mod gtk_host {
         native_host_group_filter_label_for_groups,
         native_host_group_filter_popup_menu_entries_for_groups,
         native_host_main_action_button_specs, native_host_main_tool_button_specs,
-        native_host_reconciled_selected_item_id, native_host_row_action_button_specs,
-        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
+        native_host_reconciled_selected_item_id, native_host_row_popup_menu_input_for_projection,
+        native_host_search_input_specs,
         native_host_settings_action_button_specs, native_host_settings_control_button_specs,
         native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
         native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
@@ -622,44 +622,6 @@ searchentry {
             clip_scroller.set_child(Some(&clip_list));
             root.append(&clip_scroller);
             let row_actions = GtkBox::new(Orientation::Horizontal, 8);
-            for spec in native_host_row_action_button_specs() {
-                let action = spec.action;
-                let button = Button::with_label(spec.label);
-                button.set_widget_name(spec.id);
-                let status = status.clone();
-                let app = app.clone();
-                let clip_items = clip_items.clone();
-                let clip_rows = clip_rows.clone();
-                let selected_item_id = selected_item_id.clone();
-                let current_group_filter = current_group_filter.clone();
-                button.connect_clicked(move |_| {
-                    let _ = perform_gtk_item_row_action(
-                        action,
-                        &selected_item_id,
-                        &status,
-                        &current_group_filter,
-                        &clip_rows,
-                        clip_items.clone(),
-                    );
-                    if matches!(action, NativeHostRowAction::Edit) {
-                        if let Some(plan) =
-                            native_edit_plan(&clip_items.borrow(), selected_item_id.get())
-                        {
-                            present_edit_text_window(
-                                &app,
-                                plan,
-                                false,
-                                Some(EditRefreshTarget {
-                                    rows: clip_rows.clone(),
-                                    items: clip_items.clone(),
-                                    current_group_filter: current_group_filter.clone(),
-                                }),
-                            );
-                        }
-                    }
-                });
-                row_actions.append(&button);
-            }
             let row_menu = install_row_popup_menu(
                 app,
                 &status,
