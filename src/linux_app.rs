@@ -941,6 +941,13 @@ pub(crate) fn linux_native_clipboard_capture_enabled() -> bool {
         .unwrap_or(true)
 }
 
+pub(crate) fn linux_native_grouping_enabled() -> bool {
+    linux_native_settings_json_snapshot()
+        .get("grouping_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
 fn persist_linux_native_bool_toggle(
     control_key: &str,
     field_name: &str,
@@ -4846,6 +4853,24 @@ mod tests {
     }
 
     #[test]
+    fn linux_native_grouping_enabled_reads_saved_setting() {
+        let _guard = linux_settings_file_test_guard();
+        let path = native_settings_temp_file("linux-grouping-enabled");
+        set_linux_native_settings_file_for_tests(Some(path.clone()));
+
+        assert!(linux_native_grouping_enabled());
+        std::fs::write(
+            &path,
+            serde_json::json!({ "grouping_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert!(!linux_native_grouping_enabled());
+
+        set_linux_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn linux_native_settings_control_actions_enter_product_command_routes() {
         if !cfg!(target_os = "linux") {
             let autostart = dispatch_linux_native_settings_control_action(
@@ -5218,6 +5243,7 @@ mod tests {
         assert!(host_source.contains("PopoverMenu::from_model(Some(row_menu))"));
         assert!(host_source.contains("selected_item_id.set(item_id)"));
         assert!(host_source.contains("native_host_row_popup_menu_input_for_projection"));
+        assert!(host_source.contains("linux_native_grouping_enabled()"));
         assert!(host_source.contains("&clip_items.borrow()"));
         assert!(host_source.contains("replace_popup_menu_entries(\n                &row_menu"));
         assert!(host_source.contains("popover.popup()"));

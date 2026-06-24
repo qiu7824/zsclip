@@ -1615,6 +1615,7 @@ mod appkit {
             let target: &AnyObject = self.as_ref();
             let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
             let items = self.ivars().clip_items.borrow();
+            let grouping_enabled = crate::macos_app::macos_native_grouping_enabled();
             let menu = self.build_popup_menu(
                 ns_string!("Row Actions"),
                 &native_host_full_row_popup_menu_entries_for_groups(
@@ -1622,7 +1623,7 @@ mod appkit {
                     native_host_row_popup_menu_input_for_projection(
                         &items,
                         self.ivars().selected_item_id.get(),
-                        true,
+                        grouping_enabled,
                     ),
                     |label| label.to_string(),
                 ),

@@ -1147,7 +1147,7 @@ searchentry {
                     native_host_row_popup_menu_input_for_projection(
                         &clip_items.borrow(),
                         item_id,
-                        true,
+                        crate::linux_app::linux_native_grouping_enabled(),
                     ),
                     |label| label.to_string(),
                 ),
@@ -1264,12 +1264,13 @@ searchentry {
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> gio::Menu {
         let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let grouping_enabled = crate::linux_app::linux_native_grouping_enabled();
         let entries = native_host_full_row_popup_menu_entries_for_groups(
             &groups,
             native_host_row_popup_menu_input_for_projection(
                 &clip_items.borrow(),
                 selected_item_id.get(),
-                true,
+                grouping_enabled,
             ),
             |label| label.to_string(),
         );
@@ -1643,7 +1644,7 @@ searchentry {
                 native_host_row_popup_menu_input_for_projection(
                     &menus.clip_items.borrow(),
                     menus.selected_item_id.get(),
-                    true,
+                    crate::linux_app::linux_native_grouping_enabled(),
                 ),
                 |label| label.to_string(),
             ),
