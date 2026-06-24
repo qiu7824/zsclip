@@ -241,6 +241,8 @@ mod source_encoding_tests {
             fs::read_to_string(root.join("scripts/native-host-smoke-macos.sh")).unwrap();
         let linux_smoke_script =
             fs::read_to_string(root.join("scripts/native-host-smoke-linux.sh")).unwrap();
+        let native_hosts_workflow =
+            fs::read_to_string(root.join(".github/workflows/native-hosts.yml")).unwrap();
 
         assert!(main_rs.contains("#[cfg(target_os = \"windows\")]\nmod app;"));
         assert!(main_rs
@@ -306,7 +308,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("NSWindowStyleMask::FullSizeContentView"));
         assert!(macos_native_host_rs.contains("NSVisualEffectView::initWithFrame"));
         assert!(macos_native_host_rs.contains("window.setTitlebarAppearsTransparent(true)"));
-        assert!(macos_native_host_rs.contains("window.setHidesOnDeactivate(true)"));
+        assert!(macos_native_host_rs.contains("window.setHidesOnDeactivate(false)"));
+        assert!(macos_native_host_rs.contains("applicationShouldTerminateAfterLastWindowClosed:"));
         assert!(macos_native_host_rs.contains("window.setLevel(NSFloatingWindowLevel)"));
         assert!(macos_native_host_rs.contains("window.backingScaleFactor()"));
         assert!(macos_native_host_rs.contains("NSAppearanceNameDarkAqua"));
@@ -400,7 +403,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("ZSClip AppKit identity smoke queried=true"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"));
-        assert!(macos_smoke_script.contains("ZSClip AppKit VV native paste shortcut posted="));
+        assert!(macos_smoke_script
+            .contains("ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"));
         assert!(macos_smoke_script.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_smoke_script.contains("SHELL_OPEN_DRY_RUN_LOG=true"));
         assert!(macos_smoke_script.contains(
@@ -424,11 +428,14 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("row selected item_id="));
         assert!(macos_native_host_rs.contains("refresh_native_clip_rows"));
         assert!(macos_native_host_rs.contains("NSButton::buttonWithTitle_target_action"));
-        assert!(macos_native_host_rs.contains("native_host_clip_row_specs("));
+        assert!(macos_native_host_rs.contains("NSTableView::initWithFrame"));
+        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_group"));
+        assert!(macos_native_host_rs.contains("reload_native_clip_items"));
         assert!(macos_native_host_rs.contains("native_host_edit_text_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_main_action_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_main_tool_button_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_row_action_button_specs()"));
+        assert!(macos_native_host_rs.contains("native_host_row_popup_menu_input_for_projection"));
+        assert!(macos_native_host_rs.contains("perform_native_row_action"));
         assert!(macos_native_host_rs.contains("native_host_settings_action_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_settings_control_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_settings_group_button_specs()"));
@@ -439,7 +446,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("native_host_vv_select_specs(&plan"));
         assert!(macos_native_host_rs.contains("appkit_host_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("appkit_main_tool_action_selector(spec.action)"));
-        assert!(macos_native_host_rs.contains("appkit_row_action_selector(spec.action)"));
+        assert!(macos_native_host_rs.contains("NativeHostRowAction::from_menu_id"));
+        assert!(macos_native_host_rs.contains("ZSClip AppKit popup menu command"));
         assert!(macos_native_host_rs.contains("dispatch_macos_native_row_action_for_item"));
         assert!(macos_native_host_rs.contains("ZSClip AppKit row paste shortcut posted="));
         assert!(macos_native_host_rs.contains("native_host_reconciled_selected_item_id"));
@@ -576,6 +584,14 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("monitor.scale_factor()"));
         assert!(linux_native_host_rs.contains("window.scale_factor()"));
         assert!(linux_native_host_rs.contains("always_on_top_supported={}"));
+        assert!(
+            linux_smoke_script.contains("always_on_top_supported=true cursor_follow_supported=true")
+        );
+        assert!(native_hosts_workflow.contains("openbox"));
+        assert!(native_hosts_workflow.contains("wmctrl"));
+        assert!(native_hosts_workflow.contains("xdotool"));
+        assert!(native_hosts_workflow
+            .contains("openbox >/tmp/zsclip-openbox.log 2>&1 & sleep 1"));
         assert!(linux_native_host_rs.contains("SearchEntry::new()"));
         assert!(linux_native_host_rs.contains("native_host_search_input_specs()"));
         assert!(linux_native_host_rs.contains("connect_search_changed"));
