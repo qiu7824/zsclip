@@ -99,8 +99,11 @@ jobs:
             libx11-dev \
             libxi-dev \
             libxtst-dev \
+            openbox \
             pkg-config \
             scrot \
+            wmctrl \
+            xdotool \
             xvfb
       - name: Check GTK host
         env:
@@ -132,7 +135,7 @@ jobs:
         run: |
           mkdir -p target/native-host-smoke/linux
           set +e
-          xvfb-run -a bash scripts/native-host-smoke-linux.sh 2>&1 | tee target/native-host-smoke/linux/smoke.log
+          xvfb-run -a bash -c 'openbox >/tmp/zsclip-openbox.log 2>&1 & sleep 1; bash scripts/native-host-smoke-linux.sh' 2>&1 | tee target/native-host-smoke/linux/smoke.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
             message="$(tail -n 180 target/native-host-smoke/linux/smoke.log)"

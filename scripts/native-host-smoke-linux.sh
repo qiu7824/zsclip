@@ -119,6 +119,14 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     cat "$APP_LOG" >&2 || true
     exit 1
   fi
+  if command -v wmctrl >/dev/null 2>&1 && command -v xdotool >/dev/null 2>&1; then
+    if ! grep -Fq "always_on_top_supported=true cursor_follow_supported=true" "$APP_LOG"; then
+      echo "GTK X11 window command backend did not verify always-on-top and cursor-follow." >&2
+      echo "GTK app log:" >&2
+      cat "$APP_LOG" >&2 || true
+      exit 1
+    fi
+  fi
 fi
 
 if [[ "$CLICK_SMOKE" == "1" ]]; then
