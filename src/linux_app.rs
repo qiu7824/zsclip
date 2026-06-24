@@ -3487,11 +3487,10 @@ impl ClipboardHost for LinuxClipboardHost {
     }
 
     fn write_text_ignored_by_monitors(text: &str) -> bool {
+        if !Self::write_text(text) {
+            return false;
+        }
         Self::mutate_state(|state| {
-            state.text = Some(text.to_string());
-            state.image = None;
-            state.file_paths = None;
-            state.sequence = state.sequence.saturating_add(1);
             state.ignore_next_capture = true;
             true
         })
@@ -6026,6 +6025,7 @@ mod tests {
         assert_eq!(LinuxClipboardHost::read_file_paths(), Some(paths));
 
         assert!(LinuxClipboardHost::write_text_ignored_by_monitors("self"));
+        assert_eq!(LinuxClipboardHost::read_text(), Some("self".to_string()));
         assert!(LinuxClipboardHost::should_ignore_capture_by_named_format());
         assert!(!LinuxClipboardHost::should_ignore_capture_by_named_format());
     }
