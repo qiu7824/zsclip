@@ -355,6 +355,7 @@ jobs:
     needs:
       - windows
       - macos
+      - linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -394,18 +395,20 @@ jobs:
           ### 打包与发布
           - Windows 提供安装器和便携包。
           - macOS 提供 Intel 与 Apple Silicon 两个预览 DMG。
-          - GitHub Actions 当前向正式 Release 上传 Windows 安装包、Windows 便携包和 macOS 预览包。
+          - GitHub Actions 当前向正式 Release 上传 Windows 安装包、Windows 便携包、macOS 预览 DMG 和 Linux 预览包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
           - macOS Apple Silicon: 下载 `zsclip-macos-arm64.dmg`。
           - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`。
+          - Linux Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb`。
+          - Linux 便携包: 下载 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
           - Windows 同时提供安装器和便携包。
           - macOS 包当前未签名、未公证，首次运行可能需要右键选择“打开”，并在系统设置中授权相关权限。
-          - Linux 原生 host 尚未进入正式安装包发布。
+          - Linux 包当前作为预览分发，托盘、全局热键和 VV 粘贴受 X11/Wayland 与桌面环境权限影响。
           NOTES
           for stale in \
             zsclip-linux-x86_64 \
@@ -430,6 +433,8 @@ jobs:
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
+              release-assets/zsclip-linux-x86_64.deb \
+              release-assets/zsclip-linux-x86_64.tar.gz \
               --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
@@ -442,6 +447,8 @@ jobs:
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
+              release-assets/zsclip-linux-x86_64.deb \
+              release-assets/zsclip-linux-x86_64.tar.gz \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
               --notes-file release-notes.md 2>&1 | tee release-upload.log
