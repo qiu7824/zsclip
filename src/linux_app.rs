@@ -5384,6 +5384,7 @@ mod tests {
         assert!(host_source.contains("clip_list.set_show_separators(true)"));
         assert!(host_source.contains("clip_list.connect_row_selected"));
         assert!(host_source.contains("clip_list.connect_row_activated"));
+        assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("fn install_main_window_keyboard_controller("));
         assert!(host_source.contains("gdk::ModifierType::CONTROL_MASK"));
         assert!(host_source.contains("matches!(key.to_unicode(), Some('f' | 'F'))"));
