@@ -1625,6 +1625,15 @@ mod appkit {
                 identity.foreground_requested,
                 identity.focus_status
             );
+            let seeded = crate::db_runtime::insert_native_clipboard_text(
+                0,
+                "zsclip appkit auto smoke editable record",
+                "AppKit Smoke",
+            )
+            .map(|outcome| outcome.item_id.is_some())
+            .unwrap_or(false);
+            self.reload_native_clip_items();
+            eprintln!("ZSClip AppKit auto smoke real record seeded={}", seeded);
 
             self.perform_native_host_action(NativeHostUiAction::OpenSettings);
             self.perform_native_settings_control_action(

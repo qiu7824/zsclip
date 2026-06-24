@@ -925,6 +925,14 @@ searchentry {
             identity.foreground_requested,
             identity.focus_status
         );
+        let seeded = crate::db_runtime::insert_native_clipboard_text(
+            0,
+            "zsclip gtk auto smoke editable record",
+            "GTK Smoke",
+        )
+        .map(|outcome| outcome.item_id.is_some())
+        .unwrap_or(false);
+        eprintln!("ZSClip GTK auto smoke real record seeded={}", seeded);
 
         let settings_result = crate::linux_app::dispatch_linux_native_host_action(
             crate::app_core::NativeHostUiAction::OpenSettings,
