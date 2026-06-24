@@ -8208,6 +8208,14 @@ pub(crate) fn macos_native_clipboard_capture_enabled() -> bool {
 }
 
 #[allow(dead_code)]
+pub(crate) fn macos_native_grouping_enabled() -> bool {
+    macos_native_settings_json_snapshot()
+        .get("grouping_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
+#[allow(dead_code)]
 fn persist_macos_native_bool_toggle(
     control_key: &str,
     field_name: &str,
@@ -10082,6 +10090,24 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_grouping_enabled_reads_saved_setting() {
+        let _guard = macos_settings_file_test_guard();
+        let path = native_settings_temp_file("macos-grouping-enabled");
+        set_macos_native_settings_file_for_tests(Some(path.clone()));
+
+        assert!(macos_native_grouping_enabled());
+        std::fs::write(
+            &path,
+            serde_json::json!({ "grouping_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert!(!macos_native_grouping_enabled());
+
+        set_macos_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn macos_native_settings_control_actions_enter_product_command_routes() {
         if !cfg!(target_os = "macos") {
             let autostart = dispatch_macos_native_settings_control_action(
@@ -10453,6 +10479,7 @@ mod tests {
         assert!(host_source.contains("present_native_row_popup_menu_at"));
         assert!(host_source.contains("native_host_full_row_popup_menu_entries_for_groups"));
         assert!(host_source.contains("native_host_row_popup_menu_input_for_projection"));
+        assert!(host_source.contains("macos_native_grouping_enabled()"));
         assert!(host_source.contains("self.ivars().selected_item_id.get()"));
         assert!(host_source.contains("let items = self.ivars().clip_items.borrow()"));
     }
