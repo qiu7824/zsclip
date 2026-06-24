@@ -668,7 +668,8 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("ZSClip GTK identity smoke queried=true"));
         assert!(linux_rs.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(linux_rs.contains("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"));
-        assert!(linux_smoke_script.contains("ZSClip GTK VV native paste shortcut posted="));
+        assert!(linux_smoke_script
+            .contains("ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"));
         assert!(linux_smoke_script.contains("ZSClip GTK StatusNotifierItem installed"));
         assert!(linux_smoke_script.contains("ZSClip GTK StatusNotifierItem unavailable:"));
         assert!(linux_smoke_script.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));

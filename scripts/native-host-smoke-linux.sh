@@ -101,7 +101,6 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip GTK VV trigger requested" \
     "ZSClip GTK VV select 0 -> vv_select_requested" \
     "ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" \
-    "ZSClip GTK VV native paste shortcut posted=" \
     "ZSClip GTK status menu action status_toggle_lan_sync -> zsclip.tray.toggle_lan_sync" \
     "ZSClip GTK auto smoke finished"
   do
