@@ -1,5 +1,8 @@
 name: Release Packages
 
+env:
+  CARGO_NET_RETRY: "10"
+
 on:
   workflow_dispatch:
     inputs:

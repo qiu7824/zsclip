@@ -1,5 +1,8 @@
 name: Native Hosts
 
+env:
+  CARGO_NET_RETRY: "10"
+
 on:
   workflow_dispatch:
   push:
