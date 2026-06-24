@@ -9951,6 +9951,7 @@ mod tests {
         assert!(source.contains("SettingsNativeSubmittedControlValue"));
         assert!(source.contains("settings_native_collect_submission(&submitted_values)"));
         assert!(!source.contains("settings_native_collect_submission(&[])"));
+        assert!(source.contains("refresh_main_state_after_settings_save()"));
         assert!(include_str!("../Cargo.toml").contains("\"NSPopUpButton\""));
     }
 

@@ -4658,6 +4658,7 @@ mod tests {
         assert!(source.contains("binding.dropdown.selected() as usize"));
         assert!(source.contains("SettingsNativeSubmittedControlValue"));
         assert!(source.contains("settings_native_collect_submission(\n"));
+        assert!(source.contains("refresh_group_popup_menus_for_category(0"));
     }
 
     #[test]
