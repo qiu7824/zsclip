@@ -1478,7 +1478,7 @@ mod appkit {
                 if binding.action != action {
                     continue;
                 }
-                let item = binding.item.as_ref();
+                let item: &NSMenuItem = binding.item.as_ref();
                 item.setState(if enabled {
                     NSControlStateValueOn
                 } else {
