@@ -9826,15 +9826,9 @@ pub(crate) fn macos_native_host_projected_clip_items_for_group(
             return items;
         }
     } else if let Ok(items) = crate::db_runtime::native_clip_list_items(0, 64) {
-        if !items.is_empty() {
-            return items;
-        }
+        return items;
     }
-    let application = MacosApplicationModel::default();
-    application
-        .product_adapter
-        .project_product_state()
-        .native_clip_items
+    Vec::new()
 }
 
 fn run_macos_contract_scaffold(summary: MacosHostContractSummary) -> Result<(), String> {
@@ -10995,11 +10989,9 @@ mod tests {
     }
 
     #[test]
-    fn macos_native_host_projected_clip_items_prefer_database_and_fallback_to_product_adapter() {
+    fn macos_native_host_projected_clip_items_read_database_without_demo_fallback() {
         crate::db_runtime::with_test_db(|| {
-            let fallback = macos_native_host_projected_clip_items();
-            assert_eq!(fallback.len(), 4);
-            assert_eq!(fallback[0].title, "Welcome text");
+            assert!(macos_native_host_projected_clip_items().is_empty());
 
             crate::db_runtime::with_db_mut(|conn| {
                 conn.execute(
