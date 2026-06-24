@@ -26,9 +26,8 @@ mod gtk_host {
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
         native_host_group_filter_popup_menu_entries_for_groups,
-        native_host_main_action_button_specs, native_host_main_tool_button_specs,
-        native_host_reconciled_selected_item_id, native_host_row_popup_menu_input_for_projection,
-        native_host_search_input_specs,
+        native_host_main_tool_button_specs, native_host_reconciled_selected_item_id,
+        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
         native_host_settings_action_button_specs, native_host_settings_control_button_specs,
         native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
         native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
@@ -721,68 +720,6 @@ searchentry {
                     search_selected_item_id.get(),
                 );
             });
-            let actions = GtkBox::new(Orientation::Horizontal, 8);
-            for spec in native_host_main_action_button_specs() {
-                let action = spec.action;
-                let button = Button::with_label(spec.label);
-                button.set_widget_name(spec.id);
-                let app = app.clone();
-                let window = window.clone();
-                let search_entry = search_entry.clone();
-                let search_revealer = search_revealer.clone();
-                let search_button = search_button.clone();
-                let search_rows_for_toggle = clip_rows.clone();
-                let search_items_for_toggle = clip_items.clone();
-                let search_selected_item_id_for_toggle = selected_item_id.clone();
-                let search_clip_list_for_toggle = clip_list.clone();
-                let status = status.clone();
-                let group_popup_menus = group_popup_menus.clone();
-                button.connect_clicked(move |_| {
-                    let result = crate::linux_app::dispatch_linux_native_host_action(action);
-                    status.set_text(&format!(
-                        "{} -> {}",
-                        action.action_name(),
-                        result.result_name
-                    ));
-                    if action.opens_settings_surface() {
-                        present_settings_window(
-                            &app,
-                            &result.result_name,
-                            Some(group_popup_menus.clone()),
-                        );
-                    }
-                    if action.toggles_search_surface() {
-                        let next_visible = !search_revealer.reveals_child();
-                        search_revealer.set_reveal_child(next_visible);
-                        search_button.set_active(next_visible);
-                        if next_visible {
-                            search_entry.grab_focus();
-                        } else {
-                            search_entry.set_text("");
-                            update_clip_list_visibility(
-                                &search_rows_for_toggle,
-                                &search_items_for_toggle.borrow(),
-                                &search_selected_item_id_for_toggle,
-                                "",
-                            );
-                            sync_clip_list_selection(
-                                &search_clip_list_for_toggle,
-                                &search_rows_for_toggle,
-                                search_selected_item_id_for_toggle.get(),
-                            );
-                            search_clip_list_for_toggle.grab_focus();
-                        }
-                    }
-                    if action.hides_main_window_surface() {
-                        window.set_visible(false);
-                    }
-                    if action.should_close_host() {
-                        app.quit();
-                    }
-                });
-                actions.append(&button);
-            }
-            root.append(&actions);
             install_main_window_keyboard_controller(
                 &window,
                 &search_entry,

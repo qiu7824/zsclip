@@ -600,7 +600,8 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("native_host_filtered_projected_clip_item_ids"));
         assert!(linux_native_host_rs.contains("dispatch_linux_native_search_text_action"));
         assert!(linux_native_host_rs.contains("dispatch_gtk_search_text_action"));
-        assert!(linux_native_host_rs.contains("toggles_search_surface"));
+        assert!(linux_native_host_rs.contains("search_button.connect_toggled"));
+        assert!(linux_native_host_rs.contains("install_main_window_keyboard_controller"));
         assert!(linux_native_host_rs.contains("set_visible"));
         assert!(linux_native_host_rs.contains("ZSClip Settings"));
         assert!(linux_native_host_rs.contains("present_settings_window"));
@@ -693,7 +694,7 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("Button::with_label"));
         assert!(linux_native_host_rs.contains("native_host_clip_row_specs("));
         assert!(linux_native_host_rs.contains("native_host_edit_text_button_specs()"));
-        assert!(linux_native_host_rs.contains("native_host_main_action_button_specs()"));
+        assert!(!linux_native_host_rs.contains("native_host_main_action_button_specs()"));
         assert!(linux_native_host_rs.contains("native_host_main_tool_button_specs()"));
         assert!(!linux_native_host_rs.contains("native_host_row_action_button_specs()"));
         assert!(linux_native_host_rs.contains("button.set_widget_name(spec.id)"));
