@@ -354,6 +354,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - windows
+      - macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -382,8 +383,8 @@ jobs:
 
           ### 原生多平台 UI
           - Windows 继续作为完整主线版本保留。
-          - macOS AppKit 和 Linux GTK4 原生 host 继续保留在源码与 CI 冒烟验证中。
-          - macOS/Linux 当前不作为 0.9.9 正式用户安装包发布，避免把尚未对齐 Windows 产品 UI 的 host 验证界面误作为正式版本。
+          - macOS AppKit 原生 host 已提供预览 DMG，便于目标机实测剪贴板捕获、主窗口和状态栏生命周期。
+          - Linux GTK4 原生 host 继续保留在源码与 CI 冒烟验证中。
 
           ### UI 框架与复用边界
           - 继续整理 `app_core`、产品适配器和 native host 的边界，减少平台 host 直接复制 Windows 业务逻辑。
@@ -392,15 +393,19 @@ jobs:
 
           ### 打包与发布
           - Windows 提供安装器和便携包。
-          - GitHub Actions 当前只向正式 Release 上传 Windows 安装包和便携包。
+          - macOS 提供 Intel 与 Apple Silicon 两个预览 DMG。
+          - GitHub Actions 当前向正式 Release 上传 Windows 安装包、Windows 便携包和 macOS 预览包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
+          - macOS Apple Silicon: 下载 `zsclip-macos-arm64.dmg`。
+          - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`。
 
           ## 注意
           - Windows 同时提供安装器和便携包。
-          - macOS/Linux 原生 host 尚未达到与 Windows 主界面和完整功能一致的正式发布标准，当前不提供正式安装包。
+          - macOS 包当前未签名、未公证，首次运行可能需要右键选择“打开”，并在系统设置中授权相关权限。
+          - Linux 原生 host 尚未进入正式安装包发布。
           NOTES
           for stale in \
             zsclip-linux-x86_64 \
@@ -423,6 +428,8 @@ jobs:
             gh release upload "$TAG_NAME" \
               release-assets/zsclip-v0.9.9-setup.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
+              release-assets/zsclip-macos-arm64.dmg \
+              release-assets/zsclip-macos-x86_64.dmg \
               --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
@@ -433,6 +440,8 @@ jobs:
             gh release create "$TAG_NAME" \
               release-assets/zsclip-v0.9.9-setup.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
+              release-assets/zsclip-macos-arm64.dmg \
+              release-assets/zsclip-macos-x86_64.dmg \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
               --notes-file release-notes.md 2>&1 | tee release-upload.log
