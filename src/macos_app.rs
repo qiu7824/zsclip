@@ -10845,9 +10845,12 @@ mod tests {
         assert!(host_source.contains("unsafe impl NSTableViewDataSource for Delegate"));
         assert!(host_source
             .contains("fn numberOfRowsInTableView(&self, _table_view: &NSTableView) -> NSInteger"));
+        assert!(host_source.contains("clip_table_items.borrow().len().max(1)"));
         assert!(host_source.contains("unsafe impl NSTableViewDelegate for Delegate"));
         assert!(host_source.contains("fn tableView_viewForTableColumn_row"));
         assert!(host_source.contains("native_host_clip_row_presentation_for_projection(&item)"));
+        assert!(host_source.contains("fn appkit_empty_clip_table_cell_view"));
+        assert!(host_source.contains("No clipboard records"));
         assert!(host_source.contains("Retained::autorelease_return(appkit_clip_table_cell_view("));
         assert!(host_source.contains("fn appkit_clip_table_cell_view"));
         assert!(host_source.contains("fn appkit_clip_table_label"));

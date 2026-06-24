@@ -783,7 +783,7 @@ mod appkit {
         unsafe impl NSTableViewDataSource for Delegate {
             #[unsafe(method(numberOfRowsInTableView:))]
             fn numberOfRowsInTableView(&self, _table_view: &NSTableView) -> NSInteger {
-                self.ivars().clip_table_items.borrow().len() as NSInteger
+                self.ivars().clip_table_items.borrow().len().max(1) as NSInteger
             }
 
         }
@@ -803,7 +803,11 @@ mod appkit {
                     .get(row as usize)
                     .cloned()
                 else {
-                    return ptr::null_mut();
+                    let width = table_view.bounds().size.width.max(320.0);
+                    return Retained::autorelease_return(appkit_empty_clip_table_cell_view(
+                        self.mtm(),
+                        width,
+                    ));
                 };
                 let presentation = native_host_clip_row_presentation_for_projection(&item);
                 let width = table_view.bounds().size.width.max(320.0);
@@ -837,6 +841,28 @@ mod appkit {
             }
         }
     );
+
+    fn appkit_empty_clip_table_cell_view(mtm: MainThreadMarker, width: f64) -> Retained<NSView> {
+        let row_height = 44.0_f64;
+        let cell = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, row_height)),
+        );
+        cell.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+        appkit_set_accessibility_label::<NSView>(cell.as_ref(), "No clipboard records");
+        let label = appkit_clip_table_label(
+            mtm,
+            "No clipboard records",
+            NSRect::new(
+                NSPoint::new(16.0, 12.0),
+                NSSize::new((width - 32.0).max(120.0), 20.0),
+            ),
+            13.0,
+            &NSColor::secondaryLabelColor(),
+        );
+        cell.addSubview(&label);
+        cell
+    }
 
     fn appkit_clip_table_cell_view(
         mtm: MainThreadMarker,
