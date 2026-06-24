@@ -432,7 +432,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_group"));
         assert!(macos_native_host_rs.contains("reload_native_clip_items"));
         assert!(macos_native_host_rs.contains("native_host_edit_text_button_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_main_action_button_specs()"));
+        assert!(!macos_native_host_rs.contains("native_host_main_action_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_main_tool_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_row_popup_menu_input_for_projection"));
         assert!(macos_native_host_rs.contains("perform_native_row_action"));
@@ -444,7 +444,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("action.binding_control_key()"));
         assert!(macos_native_host_rs.contains("native_host_dialog_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_vv_select_specs(&plan"));
-        assert!(macos_native_host_rs.contains("appkit_host_action_selector(spec.action)"));
+        assert!(!macos_native_host_rs.contains("appkit_host_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("appkit_main_tool_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("NativeHostRowAction::from_menu_id"));
         assert!(macos_native_host_rs.contains("ZSClip AppKit popup menu command"));

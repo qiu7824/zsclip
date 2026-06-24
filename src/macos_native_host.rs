@@ -57,10 +57,10 @@ mod appkit {
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
         native_host_group_filter_popup_menu_entries_for_groups,
-        native_host_main_action_button_specs, native_host_main_tool_button_specs,
-        native_host_projected_clip_row_title, native_host_reconciled_selected_item_id,
-        native_host_row_action_button_specs, native_host_row_popup_menu_input_for_projection,
-        native_host_search_input_specs, native_host_settings_action_button_specs,
+        native_host_main_tool_button_specs, native_host_projected_clip_row_title,
+        native_host_reconciled_selected_item_id, native_host_row_action_button_specs,
+        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
+        native_host_settings_action_button_specs,
         native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
         native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
         native_host_settings_platform_button_specs, native_host_settings_section_label,
@@ -592,29 +592,6 @@ mod appkit {
                     clip_scroll_view.as_ref(),
                     "Clipboard history scroll area",
                 );
-                let main_buttons: Vec<_> = native_host_main_action_button_specs()
-                    .into_iter()
-                    .map(|spec| {
-                        let title = NSString::from_str(spec.label);
-                        let button = unsafe {
-                            NSButton::buttonWithTitle_target_action(
-                                &title,
-                                Some(target),
-                                Some(appkit_host_action_selector(spec.action)),
-                                mtm,
-                            )
-                        };
-                        button.setFrame(NSRect::new(
-                            NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
-                            NSSize::new(spec.width() as f64, spec.height() as f64),
-                        ));
-                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
-                        button
-                    })
-                    .collect();
-                for button in &main_buttons {
-                    button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
-                }
                 let tool_buttons: Vec<_> = native_host_main_tool_button_specs()
                     .into_iter()
                     .filter(|spec| spec.action == NativeHostMainToolAction::GroupFilter)
@@ -681,9 +658,6 @@ mod appkit {
                 unsafe { view.addSubview(&text_field) };
                 unsafe { view.addSubview(&search_field) };
                 unsafe { view.addSubview(&clip_scroll_view) };
-                for button in &main_buttons {
-                    unsafe { view.addSubview(button) };
-                }
                 for button in &tool_buttons {
                     unsafe { view.addSubview(button) };
                 }
@@ -990,15 +964,6 @@ mod appkit {
             } else {
                 let _: () = msg_send![animator, setAlphaValue: alpha];
             }
-        }
-    }
-
-    fn appkit_host_action_selector(action: NativeHostUiAction) -> Sel {
-        match action {
-            NativeHostUiAction::ToggleSearch => sel!(zsclipToggleSearch:),
-            NativeHostUiAction::OpenSettings => sel!(zsclipOpenSettings:),
-            NativeHostUiAction::HideWindow => sel!(zsclipHideWindow:),
-            NativeHostUiAction::CloseWindow => sel!(zsclipCloseWindow:),
         }
     }
 

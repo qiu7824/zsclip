@@ -10542,6 +10542,7 @@ mod tests {
         assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
         assert!(host_source.contains("macos_native_clipboard_capture_enabled()"));
         assert!(host_source.contains("scheduledTimerWithTimeInterval"));
+        assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));
         assert!(host_source.contains("setMovableByWindowBackground: true"));
