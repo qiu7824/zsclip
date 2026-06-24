@@ -2552,6 +2552,15 @@ mod appkit {
             self.reload_native_clip_items();
         }
 
+        fn refresh_main_state_after_settings_save(&self) {
+            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let current_group_id = self.ivars().current_group_filter.get();
+            if current_group_id > 0 && !groups.iter().any(|group| group.id == current_group_id) {
+                self.ivars().current_group_filter.set(0);
+            }
+            self.reload_native_clip_items();
+        }
+
         fn perform_native_settings_action(&self, action: NativeHostSettingsAction) {
             if matches!(action, NativeHostSettingsAction::Save) {
                 let plan = crate::settings_model::settings_native_apply_collect_plan();
@@ -2618,6 +2627,7 @@ mod appkit {
                     json_apply.summary_label(),
                     persist_result.result_name
                 );
+                self.refresh_main_state_after_settings_save();
             }
             let result = super::dispatch_appkit_settings_action(action);
             eprintln!(

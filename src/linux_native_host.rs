@@ -3138,6 +3138,7 @@ searchentry {
             let route = route.clone();
             let window = window.clone();
             let native_control_bindings = native_control_bindings.clone();
+            let group_popup_menus = group_popup_menus.clone();
             button.connect_clicked(move |_| {
                 let plan = if matches!(action, NativeHostSettingsAction::Save) {
                     let plan = crate::settings_model::settings_native_apply_collect_plan();
@@ -3191,6 +3192,7 @@ searchentry {
                         persist_result.result_name
                     );
                     eprintln!("ZSClip GTK settings apply/collect submission -> {}", label);
+                    refresh_group_popup_menus_for_category(0, group_popup_menus.as_ref());
                     Some(label)
                 } else {
                     None
