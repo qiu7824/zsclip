@@ -27,7 +27,21 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Build Windows release
-        run: cargo build --release --locked
+        shell: pwsh
+        run: |
+          $status = 1
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Output "cargo build attempt $attempt/3"
+            cargo build --release --locked
+            $status = $LASTEXITCODE
+            if ($status -eq 0) {
+              break
+            }
+            if ($attempt -lt 3) {
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+          exit $status
       - name: Install Windows packaging tools
         shell: pwsh
         run: choco install innosetup --no-progress -y
@@ -188,8 +202,18 @@ jobs:
           RUSTFLAGS: -A warnings
         run: |
           set +e
-          cargo build --release --locked --target "${{ matrix.target }}" 2>&1 | tee cargo-build-macos.log
-          status=${PIPESTATUS[0]}
+          status=1
+          for attempt in 1 2 3; do
+            echo "cargo build attempt $attempt/3"
+            cargo build --release --locked --target "${{ matrix.target }}" 2>&1 | tee cargo-build-macos.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
           if [ "$status" -ne 0 ]; then
             message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-build-macos.log | tail -n 200)"
             if [ -z "$message" ]; then
@@ -278,8 +302,18 @@ jobs:
           RUSTFLAGS: -A warnings
         run: |
           set +e
-          cargo build --release --locked 2>&1 | tee cargo-build-linux.log
-          status=${PIPESTATUS[0]}
+          status=1
+          for attempt in 1 2 3; do
+            echo "cargo build attempt $attempt/3"
+            cargo build --release --locked 2>&1 | tee cargo-build-linux.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
+          done
           if [ "$status" -ne 0 ]; then
             message="$(grep -n -B 3 -A 12 -E 'error(\[[A-Z0-9]+\])?:|could not compile|cannot find|mismatched types|no method named' cargo-build-linux.log | tail -n 200)"
             if [ -z "$message" ]; then
