@@ -420,6 +420,16 @@ mod appkit {
                 self.perform_native_row_action(NativeHostRowAction::OpenPath);
             }
 
+            #[unsafe(method(zsclipRowOpenFolder:))]
+            fn zsclip_row_open_folder(&self, _sender: &AnyObject) {
+                self.perform_native_row_action(NativeHostRowAction::OpenFolder);
+            }
+
+            #[unsafe(method(zsclipRowCopyPath:))]
+            fn zsclip_row_copy_path(&self, _sender: &AnyObject) {
+                self.perform_native_row_action(NativeHostRowAction::CopyPath);
+            }
+
             #[cfg(feature = "ai-actions")]
             #[unsafe(method(zsclipRowTextTranslate:))]
             fn zsclip_row_text_translate(&self, _sender: &AnyObject) {
@@ -982,6 +992,8 @@ mod appkit {
             NativeHostRowAction::Delete => sel!(zsclipRowDelete:),
             NativeHostRowAction::Edit => sel!(zsclipRowEdit:),
             NativeHostRowAction::OpenPath => sel!(zsclipRowOpenPath:),
+            NativeHostRowAction::OpenFolder => sel!(zsclipRowOpenFolder:),
+            NativeHostRowAction::CopyPath => sel!(zsclipRowCopyPath:),
             #[cfg(feature = "ai-actions")]
             NativeHostRowAction::TextTranslate => sel!(zsclipRowTextTranslate:),
         }
