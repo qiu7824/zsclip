@@ -71,6 +71,8 @@ mod tests {
 
     thread_local! {
         static TEXT: RefCell<Option<String>> = const { RefCell::new(None) };
+        static IMAGE: RefCell<Option<(Vec<u8>, usize, usize)>> = const { RefCell::new(None) };
+        static FILES: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
         static SEQUENCE: RefCell<u32> = const { RefCell::new(1) };
         static IGNORE: RefCell<bool> = const { RefCell::new(false) };
     }
@@ -80,11 +82,33 @@ mod tests {
     impl TestClipboardHost {
         fn set_text(text: &str) {
             TEXT.with(|slot| *slot.borrow_mut() = Some(text.to_string()));
+            IMAGE.with(|slot| *slot.borrow_mut() = None);
+            FILES.with(|slot| *slot.borrow_mut() = None);
+            Self::bump_sequence();
+            IGNORE.with(|slot| *slot.borrow_mut() = false);
+        }
+
+        fn set_image(bytes: Vec<u8>, width: usize, height: usize) {
+            TEXT.with(|slot| *slot.borrow_mut() = None);
+            IMAGE.with(|slot| *slot.borrow_mut() = Some((bytes, width, height)));
+            FILES.with(|slot| *slot.borrow_mut() = None);
+            Self::bump_sequence();
+            IGNORE.with(|slot| *slot.borrow_mut() = false);
+        }
+
+        fn set_files(paths: Vec<String>) {
+            TEXT.with(|slot| *slot.borrow_mut() = Some(paths.join("\n")));
+            IMAGE.with(|slot| *slot.borrow_mut() = Some((vec![1, 2, 3, 4], 1, 1)));
+            FILES.with(|slot| *slot.borrow_mut() = Some(paths));
+            Self::bump_sequence();
+            IGNORE.with(|slot| *slot.borrow_mut() = false);
+        }
+
+        fn bump_sequence() {
             SEQUENCE.with(|slot| {
                 let next = slot.borrow().saturating_add(1);
                 *slot.borrow_mut() = next;
             });
-            IGNORE.with(|slot| *slot.borrow_mut() = false);
         }
     }
 
@@ -99,7 +123,7 @@ mod tests {
         }
 
         fn read_image_rgba() -> Option<(Vec<u8>, usize, usize)> {
-            None
+            IMAGE.with(|slot| slot.borrow().clone())
         }
 
         fn write_image_rgba(_bytes: &[u8], _width: usize, _height: usize) -> bool {
@@ -107,7 +131,7 @@ mod tests {
         }
 
         fn read_file_paths() -> Option<Vec<String>> {
-            None
+            FILES.with(|slot| slot.borrow().clone())
         }
 
         fn write_file_paths(_paths: &[String]) -> bool {
@@ -159,5 +183,48 @@ mod tests {
         assert!(!duplicate.inserted);
         assert_eq!(duplicate.reason, "duplicate");
         assert_eq!(duplicate.item_id, first.item_id);
+    }
+
+    #[test]
+    fn native_clipboard_capture_inserts_files_before_other_payloads() {
+        let _guard = db_test_guard();
+        crate::db_runtime::with_test_db(|| {
+            TestClipboardHost::set_files(vec![
+                "/tmp/native-capture-a.txt".to_string(),
+                "/tmp/native-capture-b.txt".to_string(),
+            ]);
+            let result =
+                NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "files");
+            assert!(result.inserted);
+            let item = crate::db_runtime::native_clip_item(result.item_id.unwrap())?.unwrap();
+            assert_eq!(item.kind, crate::app_core::ClipKind::Files);
+            assert_eq!(
+                item.file_paths,
+                Some(vec![
+                    "/tmp/native-capture-a.txt".to_string(),
+                    "/tmp/native-capture-b.txt".to_string()
+                ])
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_clipboard_capture_inserts_images() {
+        let _guard = db_test_guard();
+        crate::db_runtime::with_test_db(|| {
+            TestClipboardHost::set_image(vec![255, 0, 0, 255], 1, 1);
+            let result =
+                NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "image");
+            assert!(result.inserted);
+            let item = crate::db_runtime::native_clip_item(result.item_id.unwrap())?.unwrap();
+            assert_eq!(item.kind, crate::app_core::ClipKind::Image);
+            assert_eq!(item.image_width, 1);
+            assert_eq!(item.image_height, 1);
+            assert_eq!(item.image_bytes, Some(vec![255, 0, 0, 255]));
+            Ok(())
+        })
+        .unwrap();
     }
 }
