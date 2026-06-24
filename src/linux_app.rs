@@ -882,11 +882,38 @@ pub(crate) fn dispatch_linux_native_settings_action(
 }
 
 fn linux_native_settings_file() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(path) = linux_native_settings_file_override()
+        .lock()
+        .expect("Linux settings file override lock poisoned")
+        .clone()
+    {
+        return path;
+    }
+    if let Ok(path) = std::env::var("ZSCLIP_NATIVE_SETTINGS_FILE") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return std::path::PathBuf::from(trimmed);
+        }
+    }
     let data_dir = std::env::current_exe()
         .ok()
         .and_then(|path| path.parent().map(|dir| dir.join("data")))
         .unwrap_or_else(|| std::path::PathBuf::from("data"));
     data_dir.join("settings.json")
+}
+
+#[cfg(test)]
+fn linux_native_settings_file_override() -> &'static Mutex<Option<std::path::PathBuf>> {
+    static OVERRIDE: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+    OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_linux_native_settings_file_for_tests(path: Option<std::path::PathBuf>) {
+    *linux_native_settings_file_override()
+        .lock()
+        .expect("Linux settings file override lock poisoned") = path;
 }
 
 fn linux_native_data_dir() -> std::path::PathBuf {
@@ -4438,6 +4465,24 @@ mod tests {
             .expect("Linux clipboard test lock poisoned")
     }
 
+    fn linux_settings_file_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("Linux settings file test lock poisoned")
+    }
+
+    fn native_settings_temp_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "zsclip-{name}-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn linux_native_host_launch_plan_targets_real_gtk_entry() {
         let plan = linux_native_host_launch_plan();
@@ -4632,6 +4677,46 @@ mod tests {
                 Some("linux_autostart_scaffold")
             );
         }
+    }
+
+    #[test]
+    fn linux_native_settings_save_persists_submission_to_json_file() {
+        let _guard = linux_settings_file_test_guard();
+        let path = native_settings_temp_file("linux-settings-save");
+        set_linux_native_settings_file_for_tests(Some(path.clone()));
+
+        let submission = crate::settings_model::settings_native_collect_submission(&[
+            crate::settings_model::SettingsNativeSubmittedControlValue {
+                control_key: "capture_enable".to_string(),
+                raw_value: "false".to_string(),
+            },
+            crate::settings_model::SettingsNativeSubmittedControlValue {
+                control_key: "max_items".to_string(),
+                raw_value: "120".to_string(),
+            },
+        ]);
+        let result = persist_linux_native_settings_submission(&submission);
+        assert!(result.accepted, "{result:?}");
+        assert!(result
+            .result_name
+            .starts_with("zsclip.settings.native_save.updates_2.rejected_0"));
+
+        let snapshot = linux_native_settings_json_snapshot();
+        assert_eq!(
+            snapshot
+                .get("clipboard_capture_enabled")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            snapshot
+                .get("max_items")
+                .and_then(serde_json::Value::as_u64),
+            Some(120)
+        );
+
+        set_linux_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
