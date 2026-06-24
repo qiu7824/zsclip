@@ -2507,6 +2507,14 @@ searchentry {
         let specs = native_host_clip_row_specs(items, rows.len());
         for (index, (row, spec)) in rows.iter().zip(specs.iter()).enumerate() {
             let action = spec.action;
+            if items.is_empty() && index == 0 {
+                row.set_child(Some(&gtk_clip_row_content(None, "No clipboard records")));
+                row.set_widget_name("0");
+                row.set_visible(true);
+                row.set_selectable(false);
+                row.set_activatable(false);
+                continue;
+            }
             let presentation = items
                 .get(index)
                 .map(native_host_clip_row_presentation_for_projection);

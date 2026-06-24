@@ -5597,6 +5597,9 @@ mod tests {
         assert!(host_source.contains("preview_label.set_ellipsize(gtk::pango::EllipsizeMode::End)"));
         assert!(host_source.contains("preview_label.set_lines(1)"));
         assert!(host_source.contains("row.set_child(Some(&gtk_clip_row_content("));
+        assert!(host_source.contains("No clipboard records"));
+        assert!(host_source.contains("items.is_empty() && index == 0"));
+        assert!(host_source.contains("row.set_selectable(false)"));
         assert!(host_source.contains("row.set_selectable(action.has_item())"));
         assert!(host_source.contains("row.set_activatable(action.has_item())"));
         assert!(host_source.contains("row_box.add_css_class(\"clip-row-content\")"));
