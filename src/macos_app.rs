@@ -8208,6 +8208,25 @@ pub(crate) fn macos_native_clipboard_capture_enabled() -> bool {
 }
 
 #[allow(dead_code)]
+fn persist_macos_native_bool_toggle(
+    control_key: &str,
+    field_name: &str,
+    default_current: bool,
+) -> ProductAdapterCommandResult {
+    let current = macos_native_settings_json_snapshot()
+        .get(field_name)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(default_current);
+    let submission = crate::settings_model::settings_native_collect_submission(&[
+        crate::settings_model::SettingsNativeSubmittedControlValue {
+            control_key: control_key.to_string(),
+            raw_value: (!current).to_string(),
+        },
+    ]);
+    persist_macos_native_settings_submission(&submission)
+}
+
+#[allow(dead_code)]
 pub(crate) fn persist_macos_native_settings_submission(
     submission: &crate::settings_model::SettingsNativeCollectSubmission,
 ) -> ProductAdapterCommandResult {
@@ -8958,14 +8977,37 @@ pub(crate) fn dispatch_macos_native_status_menu_action(
 ) -> ProductAdapterCommandResult {
     let mut application = MacosApplicationModel::default();
     application.dispatch_ui_command(action.command());
-    application
+    let command_result = application
         .product_command_results()
         .last()
         .cloned()
         .unwrap_or(ProductAdapterCommandResult {
             accepted: false,
             result_name: "zsclip.no_native_status_menu_action_result".to_string(),
-        })
+        });
+    let persist_result = match action {
+        NativeHostStatusMenuAction::ToggleClipboardCapture => Some(
+            persist_macos_native_bool_toggle("capture_enable", "clipboard_capture_enabled", true),
+        ),
+        #[cfg(feature = "lan-sync")]
+        NativeHostStatusMenuAction::ToggleLanSync => Some(persist_macos_native_bool_toggle(
+            "lan_enable",
+            "lan_sync_enabled",
+            false,
+        )),
+        _ => None,
+    };
+    if persist_result
+        .as_ref()
+        .map(|result| !result.accepted)
+        .unwrap_or(false)
+    {
+        return ProductAdapterCommandResult {
+            accepted: false,
+            result_name: format!("{}.settings_failed", command_result.result_name),
+        };
+    }
+    command_result
 }
 
 pub(crate) fn dispatch_macos_native_menu_command_id(menu_id: usize) -> ProductAdapterCommandResult {
@@ -10120,24 +10162,48 @@ mod tests {
 
     #[test]
     fn macos_native_status_menu_actions_enter_product_command_routes() {
+        let _guard = macos_settings_file_test_guard();
+        let path = native_settings_temp_file("macos-status-menu-settings");
+        set_macos_native_settings_file_for_tests(Some(path.clone()));
+
         let toggle =
             dispatch_macos_native_status_menu_action(NativeHostStatusMenuAction::ToggleWindow);
         assert!(toggle.accepted);
         assert_eq!(toggle.result_name, "zsclip.tray.toggle_window");
 
+        assert!(macos_native_clipboard_capture_enabled());
         let capture = crate::macos_native_host::dispatch_appkit_status_menu_action(
             NativeHostStatusMenuAction::ToggleClipboardCapture,
         );
         assert!(capture.accepted);
         assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
+        assert!(!macos_native_clipboard_capture_enabled());
+        let capture = dispatch_macos_native_status_menu_action(
+            NativeHostStatusMenuAction::ToggleClipboardCapture,
+        );
+        assert!(capture.accepted);
+        assert_eq!(capture.result_name, "zsclip.tray.toggle_clipboard_capture");
+        assert!(macos_native_clipboard_capture_enabled());
 
         #[cfg(feature = "lan-sync")]
         {
+            assert_eq!(
+                macos_native_settings_json_snapshot()
+                    .get("lan_sync_enabled")
+                    .and_then(serde_json::Value::as_bool),
+                None
+            );
             let lan = crate::macos_native_host::dispatch_appkit_status_menu_action(
                 NativeHostStatusMenuAction::ToggleLanSync,
             );
             assert!(lan.accepted);
             assert_eq!(lan.result_name, "zsclip.tray.toggle_lan_sync");
+            assert_eq!(
+                macos_native_settings_json_snapshot()
+                    .get("lan_sync_enabled")
+                    .and_then(serde_json::Value::as_bool),
+                Some(true)
+            );
         }
 
         let exit = crate::macos_native_host::dispatch_appkit_status_menu_action(
@@ -10145,6 +10211,9 @@ mod tests {
         );
         assert!(exit.accepted);
         assert_eq!(exit.result_name, "zsclip.tray.exit");
+
+        set_macos_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
