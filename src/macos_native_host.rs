@@ -88,6 +88,7 @@ mod appkit {
         settings_window: OnceCell<Retained<NSWindow>>,
         status_item: OnceCell<Retained<NSStatusItem>>,
         status_menu: OnceCell<Retained<NSMenu>>,
+        status_menu_items: RefCell<Vec<NativeStatusMenuItemBinding>>,
         clip_scroll_view: OnceCell<Retained<NSScrollView>>,
         clip_table_view: OnceCell<Retained<NSTableView>>,
         clip_table_column: OnceCell<Retained<NSTableColumn>>,
@@ -125,6 +126,12 @@ mod appkit {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("AppDelegateIvars").finish_non_exhaustive()
         }
+    }
+
+    #[derive(Clone)]
+    struct NativeStatusMenuItemBinding {
+        action: NativeHostStatusMenuAction,
+        item: Retained<NSMenuItem>,
     }
 
     #[derive(Clone)]
@@ -1428,6 +1435,10 @@ mod appkit {
                 }
             }
             menu.addItem(&item);
+            self.ivars()
+                .status_menu_items
+                .borrow_mut()
+                .push(NativeStatusMenuItemBinding { action, item });
         }
 
         fn status_selector(action: NativeHostStatusMenuAction) -> Sel {
@@ -1463,17 +1474,17 @@ mod appkit {
             else {
                 return;
             };
-            let Some(menu) = self.ivars().status_menu.get() else {
-                return;
-            };
-            let item: Option<&NSMenuItem> =
-                unsafe { msg_send![menu.as_ref(), itemWithTag: action.menu_id() as NSInteger] };
-            if let Some(item) = item {
+            for binding in self.ivars().status_menu_items.borrow().iter() {
+                if binding.action != action {
+                    continue;
+                }
+                let item = binding.item.as_ref();
                 item.setState(if enabled {
                     NSControlStateValueOn
                 } else {
                     NSControlStateValueOff
                 });
+                break;
             }
         }
 
