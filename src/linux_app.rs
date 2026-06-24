@@ -934,6 +934,13 @@ pub(crate) fn linux_native_settings_json_snapshot() -> serde_json::Value {
     read_linux_native_settings_json(&linux_native_settings_file())
 }
 
+pub(crate) fn linux_native_clipboard_capture_enabled() -> bool {
+    linux_native_settings_json_snapshot()
+        .get("clipboard_capture_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
 pub(crate) fn persist_linux_native_settings_submission(
     submission: &crate::settings_model::SettingsNativeCollectSubmission,
 ) -> ProductAdapterCommandResult {
@@ -4720,6 +4727,24 @@ mod tests {
     }
 
     #[test]
+    fn linux_native_clipboard_capture_enabled_reads_saved_setting() {
+        let _guard = linux_settings_file_test_guard();
+        let path = native_settings_temp_file("linux-capture-enabled");
+        set_linux_native_settings_file_for_tests(Some(path.clone()));
+
+        assert!(linux_native_clipboard_capture_enabled());
+        std::fs::write(
+            &path,
+            serde_json::json!({ "clipboard_capture_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert!(!linux_native_clipboard_capture_enabled());
+
+        set_linux_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn linux_native_settings_control_actions_enter_product_command_routes() {
         if !cfg!(target_os = "linux") {
             let autostart = dispatch_linux_native_settings_control_action(
@@ -5247,6 +5272,11 @@ mod tests {
         assert!(host_source.contains("clip_list.append(row)"));
         assert!(host_source.contains("clip_scroller.set_child(Some(&clip_list))"));
         assert!(host_source.contains("root.append(&clip_scroller)"));
+        assert!(host_source.contains("install_clipboard_capture_timer("));
+        assert!(host_source.contains("Duration::from_millis(800)"));
+        assert!(host_source.contains("linux_native_clipboard_capture_enabled()"));
+        assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
+        assert!(host_source.contains("reload_clip_items_for_group_with_selection("));
         assert!(host_source.contains("fn gtk_clip_row_content("));
         assert!(host_source.contains("NativeHostClipRowPresentation"));
         assert!(host_source.contains("native_host_clip_row_presentation_for_projection"));

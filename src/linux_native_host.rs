@@ -835,6 +835,13 @@ searchentry {
             );
             install_vv_key_controller(&window, app, current_group_filter.clone());
             install_vv_global_key_tap(app);
+            install_clipboard_capture_timer(
+                &status,
+                selected_item_id.clone(),
+                current_group_filter.clone(),
+                clip_rows.clone(),
+                clip_items.clone(),
+            );
             window.set_child(Some(&root));
             window.present();
             let window_backend = gtk_select_window_system_backend();
@@ -851,6 +858,52 @@ searchentry {
         });
         let _exit_code = app.run();
         Ok(())
+    }
+
+    fn install_clipboard_capture_timer(
+        status: &Label,
+        selected_item_id: Rc<Cell<i64>>,
+        current_group_filter: Rc<Cell<i64>>,
+        clip_rows: Vec<ListBoxRow>,
+        clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+    ) {
+        let last_sequence = Rc::new(Cell::new(
+            <crate::linux_app::LinuxClipboardHost as crate::app_core::ClipboardHost>::sequence_number(
+            ),
+        ));
+        let status = status.clone();
+        glib::timeout_add_local(Duration::from_millis(800), move || {
+            let sequence =
+                <crate::linux_app::LinuxClipboardHost as crate::app_core::ClipboardHost>::sequence_number();
+            if sequence == last_sequence.get() {
+                return glib::ControlFlow::Continue;
+            }
+            last_sequence.set(sequence);
+            if !crate::linux_app::linux_native_clipboard_capture_enabled() {
+                eprintln!("ZSClip GTK clipboard capture skipped: disabled by settings");
+                return glib::ControlFlow::Continue;
+            }
+
+            let result =
+                crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
+                    crate::linux_app::LinuxClipboardHost,
+                >(0, "Linux");
+            eprintln!(
+                "ZSClip GTK clipboard capture sequence={} inserted={} item_id={:?} reason={}",
+                sequence, result.inserted, result.item_id, result.reason
+            );
+            if result.inserted {
+                reload_clip_items_for_group_with_selection(
+                    &current_group_filter,
+                    &clip_rows,
+                    clip_items.clone(),
+                    &selected_item_id,
+                );
+                status.set_text("Clipboard captured");
+            }
+            glib::ControlFlow::Continue
+        });
+        eprintln!("ZSClip GTK clipboard capture timer installed");
     }
 
     fn run_auto_smoke_if_requested(app: &Application, status: &Label) {
