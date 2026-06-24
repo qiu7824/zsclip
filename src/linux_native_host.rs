@@ -25,14 +25,14 @@ mod gtk_host {
         native_host_filtered_projected_clip_item_ids,
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
-        native_host_group_filter_popup_menu_entries_for_groups,
-        native_host_main_tool_button_specs, native_host_reconciled_selected_item_id,
-        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
-        native_host_settings_action_button_specs, native_host_settings_control_button_specs,
-        native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
-        native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
-        native_host_settings_section_label, native_host_settings_toggle_specs,
-        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
+        native_host_group_filter_popup_menu_entries_for_groups, native_host_main_tool_button_specs,
+        native_host_reconciled_selected_item_id, native_host_row_popup_menu_input_for_projection,
+        native_host_search_input_specs, native_host_settings_action_button_specs,
+        native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
+        native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
+        native_host_settings_platform_button_specs, native_host_settings_section_label,
+        native_host_settings_toggle_specs, native_host_status_menu_item_specs,
+        native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_accelerator_label, native_popup_menu_command_icon_name,
         MainGroupFilterSelection, MainRowGroupSelection, NativeButtonStyleRole,
         NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
@@ -1031,17 +1031,28 @@ searchentry {
                 item.set_icon(&icon);
             }
             section.append_item(&item);
-            let simple_action = gio::SimpleAction::new(action.action_name(), None);
+            let simple_action = if let Some(enabled) =
+                crate::linux_app::linux_native_status_menu_action_state(action)
+            {
+                gio::SimpleAction::new_stateful(action.action_name(), None, &enabled.to_variant())
+            } else {
+                gio::SimpleAction::new(action.action_name(), None)
+            };
             let action_app = app.clone();
             let status = status.clone();
             let window = window.clone();
-            simple_action.connect_activate(move |_, _| {
+            simple_action.connect_activate(move |simple_action, _| {
                 let result = crate::linux_app::dispatch_linux_native_status_menu_action(action);
                 eprintln!(
                     "ZSClip GTK status menu action {} -> {}",
                     action.action_name(),
                     result.result_name
                 );
+                if let Some(enabled) =
+                    crate::linux_app::linux_native_status_menu_action_state(action)
+                {
+                    simple_action.set_state(&enabled.to_variant());
+                }
                 status.set_text(&format!(
                     "{} -> {}",
                     action.action_name(),
@@ -1064,6 +1075,19 @@ searchentry {
         menubar.append_submenu(Some("ZSClip"), &menu);
         app.set_menubar(Some(&menubar));
         menu
+    }
+
+    fn refresh_gtk_status_action_states(app: &Application) {
+        for spec in native_host_status_menu_item_specs() {
+            let Some(enabled) =
+                crate::linux_app::linux_native_status_menu_action_state(spec.action)
+            else {
+                continue;
+            };
+            if let Some(action) = app.lookup_action(spec.action.action_name()) {
+                action.change_state(&enabled.to_variant());
+            }
+        }
     }
 
     fn install_status_notifier(
@@ -3037,6 +3061,7 @@ searchentry {
             apply_gtk_button_style_role(&button, spec.style_role);
             let route = route.clone();
             let window = window.clone();
+            let app = app.clone();
             let native_control_bindings = native_control_bindings.clone();
             let group_popup_menus = group_popup_menus.clone();
             button.connect_clicked(move |_| {
@@ -3093,6 +3118,7 @@ searchentry {
                     );
                     eprintln!("ZSClip GTK settings apply/collect submission -> {}", label);
                     refresh_group_popup_menus_for_category(0, group_popup_menus.as_ref());
+                    refresh_gtk_status_action_states(&app);
                     Some(label)
                 } else {
                     None
