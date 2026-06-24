@@ -478,6 +478,41 @@ pub(crate) fn insert_native_clipboard_image(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn insert_native_phrase_from_item(
+    item: &crate::app_core::ClipItem,
+    source_app: &str,
+) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    let text = item
+        .text
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| item.preview.trim());
+    let normalized = normalize_native_captured_text(text);
+    if normalized.is_empty() {
+        return Ok(NativeClipboardInsertOutcome {
+            item_id: None,
+            inserted: false,
+            reason: "empty_phrase",
+        });
+    }
+    let preview = native_clip_preview(&normalized);
+    let signature = native_clip_signature("phrase", &normalized, &[], &[], 0, 0);
+    insert_native_clipboard_item(NativeClipboardInsert {
+        category: 1,
+        kind: "phrase",
+        preview: &preview,
+        signature: &signature,
+        text_data: Some(&normalized),
+        source_app,
+        file_paths: None,
+        image_data: None,
+        image_width: 0,
+        image_height: 0,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 struct NativeClipboardInsert<'a> {
     category: i64,
     kind: &'a str,

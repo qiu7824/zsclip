@@ -2,15 +2,16 @@ use crate::app_core::main_window::{
     MainPointerMoveTransition, MainPointerUpTransition, MainRenderPlan, MainVvPopupTextRole,
 };
 use crate::app_core::{
-    main_menu_command_for_id, main_shortcut_execution_plan, poll_clipboard_monitor,
-    settings_action_for_route, settings_action_route, settings_group_text_input_request,
-    settings_lan_device_book_projection, settings_lan_device_projection,
-    settings_lan_mobile_link_projection_from_json, settings_lan_pair_request_projection_from_json,
-    settings_lan_pair_request_response_projection, settings_lan_pair_status_projection,
-    settings_lan_sync_action_support_plan, zsui_native_feature_status_for, ApplicationEvent,
-    ClipItem, ClipKind, ClipboardHost, ClipboardMonitorState, Color, Command, CommandQueue,
-    ComponentPhase, LifecycleEvent, LifecycleState, MainAsyncEvent, MainHoverTarget,
-    MainPointerDownTarget, MainRenderInput, MainShortcutAction, MainShortcutEscapePlan,
+    main_menu_command_for_id, main_row_external_action_plan, main_shortcut_execution_plan,
+    poll_clipboard_monitor, settings_action_for_route, settings_action_route,
+    settings_group_text_input_request, settings_lan_device_book_projection,
+    settings_lan_device_projection, settings_lan_mobile_link_projection_from_json,
+    settings_lan_pair_request_projection_from_json, settings_lan_pair_request_response_projection,
+    settings_lan_pair_status_projection, settings_lan_sync_action_support_plan,
+    zsui_native_feature_status_for, ApplicationEvent, ClipItem, ClipKind, ClipboardHost,
+    ClipboardMonitorState, Color, Command, CommandQueue, ComponentPhase, LifecycleEvent,
+    LifecycleState, MainAsyncEvent, MainHoverTarget, MainPointerDownTarget, MainRenderInput,
+    MainRowExternalActionPlan, MainRowMenuAction, MainShortcutAction, MainShortcutEscapePlan,
     MainShortcutExecutionPlan, MainUiLayout, MainVvPopupHit, MainVvPopupLayout,
     MainVvPopupRenderItem, MainVvPopupRenderStrings, MainVvSelectPlan, NativeAiActionMenuRequest,
     NativeAiActionPresenter, NativeAiSettingsSurfaceRequest, NativeAppIconResource,
@@ -9042,6 +9043,60 @@ pub(crate) fn dispatch_macos_native_row_action_for_item(
                 },
             }
         }
+        NativeHostRowAction::ToPhrase => {
+            match crate::db_runtime::insert_native_phrase_from_item(&item, "ZSClip") {
+                Ok(outcome) if outcome.inserted => ProductAdapterCommandResult {
+                    accepted: true,
+                    result_name: "zsclip.row.to_phrase_db".to_string(),
+                },
+                Ok(outcome) if outcome.reason == "duplicate" => ProductAdapterCommandResult {
+                    accepted: true,
+                    result_name: "zsclip.row.to_phrase_duplicate".to_string(),
+                },
+                Ok(outcome) => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: format!("zsclip.row.to_phrase_{}", outcome.reason),
+                },
+                Err(_) => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.to_phrase_failed".to_string(),
+                },
+            }
+        }
+        NativeHostRowAction::OpenPath => {
+            match main_row_external_action_plan(MainRowMenuAction::OpenPath, Some(&item), &[]) {
+                Some(MainRowExternalActionPlan::OpenPaths(paths)) if !paths.is_empty() => {
+                    let host = MacosShellOpenHost::default();
+                    for path in &paths {
+                        host.open_path(path);
+                    }
+                    ProductAdapterCommandResult {
+                        accepted: true,
+                        result_name: format!("zsclip.row.open_path_native_{}", paths.len()),
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.open_path_no_paths".to_string(),
+                },
+            }
+        }
+        #[cfg(feature = "ai-actions")]
+        NativeHostRowAction::TextTranslate => {
+            match main_row_external_action_plan(MainRowMenuAction::TextTranslate, Some(&item), &[])
+            {
+                Some(MainRowExternalActionPlan::TextTranslate(text)) if !text.is_empty() => {
+                    ProductAdapterCommandResult {
+                        accepted: true,
+                        result_name: format!("zsclip.row.text_translate_ready_{}", text.len()),
+                    }
+                }
+                _ => ProductAdapterCommandResult {
+                    accepted: false,
+                    result_name: "zsclip.row.text_translate_no_text".to_string(),
+                },
+            }
+        }
         _ => dispatch_macos_native_row_action(action),
     }
 }
@@ -10024,6 +10079,55 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_row_actions_execute_real_item_payloads() -> rusqlite::Result<()> {
+        crate::db_runtime::with_test_db(|| {
+            let text_id = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'phrase me', 'macos-row-phrase', 'phrase me full text', 'Notes')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let phrase =
+                dispatch_macos_native_row_action_for_item(NativeHostRowAction::ToPhrase, text_id);
+            assert!(phrase.accepted);
+            assert_eq!(phrase.result_name, "zsclip.row.to_phrase_db");
+            let phrases = crate::db_runtime::native_clip_list_items(1, 10)?;
+            assert_eq!(phrases.len(), 1);
+            assert_eq!(phrases[0].kind, ClipKind::Phrase);
+            assert_eq!(
+                crate::db_runtime::item_text(phrases[0].id)?.as_deref(),
+                Some("phrase me full text")
+            );
+
+            let file_id = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, file_paths, source_app) VALUES(0, 'files', '/tmp/zsclip-macos.txt', 'macos-row-file', '/tmp/zsclip-macos.txt', '/tmp/zsclip-macos.txt', 'Finder')",
+                    [],
+                )?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let open =
+                dispatch_macos_native_row_action_for_item(NativeHostRowAction::OpenPath, file_id);
+            assert!(open.accepted);
+            assert_eq!(open.result_name, "zsclip.row.open_path_native_1");
+
+            #[cfg(feature = "ai-actions")]
+            {
+                let translate = dispatch_macos_native_row_action_for_item(
+                    NativeHostRowAction::TextTranslate,
+                    text_id,
+                );
+                assert!(translate.accepted);
+                assert!(translate
+                    .result_name
+                    .starts_with("zsclip.row.text_translate_ready_"));
+            }
+            Ok(())
+        })
+    }
+
+    #[test]
     fn macos_native_edit_text_save_updates_database_item() {
         crate::db_runtime::with_test_db(|| {
             let item_id = crate::db_runtime::with_db_mut(|conn| {
@@ -10277,8 +10381,7 @@ mod tests {
         assert!(host_source.contains("window.setContentView(Some(&view))"));
         assert!(host_source.contains("fn appkit_set_accessibility_label<T>"));
         assert!(host_source.contains("element.setAccessibilityLabel(Some(&label))"));
-        assert!(host_source
-            .contains("appkit_set_accessibility_label::<NSSearchField>"));
+        assert!(host_source.contains("appkit_set_accessibility_label::<NSSearchField>"));
         assert!(host_source.contains("\"Clipboard history list\""));
         assert!(host_source.contains("\"ZSClip status menu\""));
         assert!(host_source.contains("if spec.starts_section"));

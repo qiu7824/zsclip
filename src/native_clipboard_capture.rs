@@ -38,9 +38,7 @@ impl NativeClipboardCaptureService {
 
         if let Some(paths) = H::read_file_paths().filter(|paths| !paths.is_empty()) {
             return crate::db_runtime::insert_native_clipboard_file_paths(
-                category,
-                &paths,
-                source_app,
+                category, &paths, source_app,
             )
             .map(NativeClipboardCaptureResult::from_db)
             .unwrap_or_else(|_| NativeClipboardCaptureResult::ignored("db_error"));
@@ -48,11 +46,7 @@ impl NativeClipboardCaptureService {
 
         if let Some((bytes, width, height)) = H::read_image_rgba() {
             return crate::db_runtime::insert_native_clipboard_image(
-                category,
-                &bytes,
-                width,
-                height,
-                source_app,
+                category, &bytes, width, height, source_app,
             )
             .map(NativeClipboardCaptureResult::from_db)
             .unwrap_or_else(|_| NativeClipboardCaptureResult::ignored("db_error"));
@@ -154,18 +148,14 @@ mod tests {
             std::time::SystemTime::now()
         );
         TestClipboardHost::set_text(&text);
-        let first = NativeClipboardCaptureService::capture_current::<TestClipboardHost>(
-            0,
-            "test-host",
-        );
+        let first =
+            NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
         assert!(first.inserted);
         assert!(first.item_id.is_some());
 
         TestClipboardHost::set_text(&text);
-        let duplicate = NativeClipboardCaptureService::capture_current::<TestClipboardHost>(
-            0,
-            "test-host",
-        );
+        let duplicate =
+            NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
         assert!(!duplicate.inserted);
         assert_eq!(duplicate.reason, "duplicate");
         assert_eq!(duplicate.item_id, first.item_id);
