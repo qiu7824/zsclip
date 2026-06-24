@@ -8200,6 +8200,14 @@ pub(crate) fn macos_native_settings_json_snapshot() -> serde_json::Value {
 }
 
 #[allow(dead_code)]
+pub(crate) fn macos_native_clipboard_capture_enabled() -> bool {
+    macos_native_settings_json_snapshot()
+        .get("clipboard_capture_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
+#[allow(dead_code)]
 pub(crate) fn persist_macos_native_settings_submission(
     submission: &crate::settings_model::SettingsNativeCollectSubmission,
 ) -> ProductAdapterCommandResult {
@@ -10013,6 +10021,24 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_clipboard_capture_enabled_reads_saved_setting() {
+        let _guard = macos_settings_file_test_guard();
+        let path = native_settings_temp_file("macos-capture-enabled");
+        set_macos_native_settings_file_for_tests(Some(path.clone()));
+
+        assert!(macos_native_clipboard_capture_enabled());
+        std::fs::write(
+            &path,
+            serde_json::json!({ "clipboard_capture_enabled": false }).to_string(),
+        )
+        .unwrap();
+        assert!(!macos_native_clipboard_capture_enabled());
+
+        set_macos_native_settings_file_for_tests(None);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn macos_native_settings_control_actions_enter_product_command_routes() {
         if !cfg!(target_os = "macos") {
             let autostart = dispatch_macos_native_settings_control_action(
@@ -10444,6 +10470,7 @@ mod tests {
         assert!(host_source.contains("sender.orderOut(None)"));
         assert!(host_source.contains("install_clipboard_capture_timer"));
         assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
+        assert!(host_source.contains("macos_native_clipboard_capture_enabled()"));
         assert!(host_source.contains("scheduledTimerWithTimeInterval"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));

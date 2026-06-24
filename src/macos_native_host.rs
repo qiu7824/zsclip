@@ -1408,6 +1408,10 @@ mod appkit {
                 return;
             }
             self.ivars().last_clipboard_sequence.set(sequence);
+            if !crate::macos_app::macos_native_clipboard_capture_enabled() {
+                eprintln!("ZSClip AppKit clipboard capture skipped: disabled by settings");
+                return;
+            }
             let result =
                 crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
                     crate::macos_app::MacosClipboardHost,
