@@ -842,9 +842,9 @@ searchentry {
                 clip_rows.clone(),
                 clip_items.clone(),
             );
+            run_auto_smoke_if_requested(app, &status);
             window.set_child(Some(&root));
             window.present();
-            run_auto_smoke_if_requested(app, &status);
             let window_backend = gtk_select_window_system_backend();
             let window_traits = gtk_native_window_traits(&window, &window_backend);
             eprintln!(
