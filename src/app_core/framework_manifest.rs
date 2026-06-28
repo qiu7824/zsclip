@@ -1148,13 +1148,22 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
         .flat_map(|platform| {
             rows.iter()
                 .map(move |(feature_name, support_status, missing)| {
-                    let support_status =
+                    let mut support_status =
                         zsui_native_feature_support_status_for_platform(
                             platform,
                             feature_name,
                             *support_status,
                         );
-                    let mut missing_system_requirements = missing.to_vec();
+                    if support_status == ZsuiNativeFeatureSupportStatus::CodeLevelReadyPendingTargetSmoke
+                        && zsui_native_feature_target_smoke_verified_by_ci(platform, feature_name)
+                    {
+                        support_status = ZsuiNativeFeatureSupportStatus::TargetSmokeVerified;
+                    }
+                    let mut missing_system_requirements = if support_status.system_complete() {
+                        Vec::new()
+                    } else {
+                        missing.to_vec()
+                    };
                     if *feature_name == "sync_lan" {
                         match support_status {
                             ZsuiNativeFeatureSupportStatus::PlannedNotImplemented => {
@@ -1171,18 +1180,21 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
                     }
                     if platform == NativeUiPlatform::Linux
                         && *feature_name == "window_system_integration"
+                        && !support_status.system_complete()
                     {
                         missing_system_requirements.push(
                             "target GTK X11 command backend smoke for keep-above and cursor-follow; Wayland layer-shell follow-up if compositor blocks window moves",
                         );
                     }
-                    missing_system_requirements.push(match platform {
-                        NativeUiPlatform::Windows => {
-                            "Windows local release build and native smoke verification"
-                        }
-                        NativeUiPlatform::Macos => "real macOS AppKit build/run smoke verification",
-                        NativeUiPlatform::Linux => "real Ubuntu GTK build/run smoke verification",
-                    });
+                    if !support_status.system_complete() {
+                        missing_system_requirements.push(match platform {
+                            NativeUiPlatform::Windows => {
+                                "Windows local release build and native smoke verification"
+                            }
+                            NativeUiPlatform::Macos => "real macOS AppKit build/run smoke verification",
+                            NativeUiPlatform::Linux => "real Ubuntu GTK build/run smoke verification",
+                        });
+                    }
                     ZsuiNativeFeatureParityStatus {
                         feature_name,
                         platform,
@@ -1198,6 +1210,31 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
                 })
         })
         .collect()
+}
+
+fn zsui_native_feature_target_smoke_verified_by_ci(
+    platform: NativeUiPlatform,
+    feature_name: &str,
+) -> bool {
+    if !matches!(platform, NativeUiPlatform::Macos | NativeUiPlatform::Linux) {
+        return false;
+    }
+    matches!(
+        feature_name,
+        "right_click_copy"
+            | "right_click_paste"
+            | "right_click_delete"
+            | "right_click_pin"
+            | "right_click_group_assign_remove"
+            | "vv_popup_select"
+            | "vv_paste"
+            | "clipboard_text_payload"
+            | "clipboard_image_payload"
+            | "clipboard_file_path_payload"
+            | "shell_open"
+            | "file_picker"
+            | "window_paste_target_identity"
+    )
 }
 
 fn zsui_native_feature_support_status_for_platform(
