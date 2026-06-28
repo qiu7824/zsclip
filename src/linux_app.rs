@@ -5617,6 +5617,13 @@ mod tests {
         assert!(host_source.contains("Duration::from_millis(800)"));
         assert!(host_source.contains("linux_native_clipboard_capture_enabled()"));
         assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
+        assert!(host_source.contains("ZSClip GTK auto smoke row action"));
+        assert!(host_source.contains("NativeHostRowAction::Paste"));
+        assert!(host_source.contains("NativeHostRowAction::Pin"));
+        assert!(host_source.contains("dispatch_linux_native_assign_group(item_id, group.id)"));
+        assert!(host_source.contains("dispatch_linux_native_group_filter(group.id)"));
+        assert!(host_source.contains("dispatch_linux_native_remove_group(item_id)"));
+        assert!(host_source.contains("ZSClip GTK auto smoke delete item_id="));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(host_source.contains("reload_clip_items_for_group_with_selection("));
         assert!(host_source.contains("fn gtk_clip_row_content("));

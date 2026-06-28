@@ -1679,13 +1679,14 @@ mod appkit {
                 identity.foreground_requested,
                 identity.focus_status
             );
-            let seeded = crate::db_runtime::insert_native_clipboard_text(
+            let seeded_item_id = crate::db_runtime::insert_native_clipboard_text(
                 0,
                 "zsclip appkit auto smoke editable record",
                 "AppKit Smoke",
             )
-            .map(|outcome| outcome.item_id.is_some())
-            .unwrap_or(false);
+            .ok()
+            .and_then(|outcome| outcome.item_id);
+            let seeded = seeded_item_id.is_some();
             self.reload_native_clip_items();
             eprintln!("ZSClip AppKit auto smoke real record seeded={}", seeded);
 
@@ -1701,6 +1702,70 @@ mod appkit {
             self.perform_native_settings_control_action(
                 NativeHostSettingsControlAction::OpenSyncModeDropdown,
             );
+            if let Some(item_id) = seeded_item_id {
+                for action in [
+                    NativeHostRowAction::Copy,
+                    NativeHostRowAction::Paste,
+                    NativeHostRowAction::Pin,
+                ] {
+                    let result =
+                        crate::macos_app::dispatch_macos_native_row_action_for_item(action, item_id);
+                    eprintln!(
+                        "ZSClip AppKit auto smoke row action {} item_id={} -> {} accepted={}",
+                        action.action_name(),
+                        item_id,
+                        result.result_name,
+                        result.accepted
+                    );
+                }
+                if let Ok(group) =
+                    crate::db_runtime::create_native_clip_group(0, "AppKit Auto Smoke")
+                {
+                    let assign =
+                        crate::macos_app::dispatch_macos_native_assign_group(item_id, group.id);
+                    eprintln!(
+                        "ZSClip AppKit auto smoke assign group item_id={} group_id={} -> {} accepted={}",
+                        item_id,
+                        group.id,
+                        assign.result_name,
+                        assign.accepted
+                    );
+                    let filter = crate::macos_app::dispatch_macos_native_group_filter(group.id);
+                    eprintln!(
+                        "ZSClip AppKit auto smoke group filter group_id={} -> {} accepted={}",
+                        group.id,
+                        filter.result_name,
+                        filter.accepted
+                    );
+                    let remove = crate::macos_app::dispatch_macos_native_remove_group(item_id);
+                    eprintln!(
+                        "ZSClip AppKit auto smoke remove group item_id={} -> {} accepted={}",
+                        item_id,
+                        remove.result_name,
+                        remove.accepted
+                    );
+                }
+                let delete_seed = crate::db_runtime::insert_native_clipboard_text(
+                    0,
+                    "zsclip appkit auto smoke delete record",
+                    "AppKit Smoke",
+                )
+                .ok()
+                .and_then(|outcome| outcome.item_id);
+                if let Some(delete_item_id) = delete_seed {
+                    let delete = crate::macos_app::dispatch_macos_native_row_action_for_item(
+                        NativeHostRowAction::Delete,
+                        delete_item_id,
+                    );
+                    eprintln!(
+                        "ZSClip AppKit auto smoke delete item_id={} -> {} accepted={}",
+                        delete_item_id,
+                        delete.result_name,
+                        delete.accepted
+                    );
+                }
+                self.reload_native_clip_items();
+            }
             self.perform_native_row_action(NativeHostRowAction::Copy);
             self.perform_native_row_action(NativeHostRowAction::Edit);
             self.present_native_edit_window(true);
