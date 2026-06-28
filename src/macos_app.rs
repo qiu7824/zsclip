@@ -8397,6 +8397,15 @@ pub(crate) fn dispatch_macos_native_settings_platform_action(
                 "zsclip.settings.open_wps_taskpane_docs_failed"
             }
         }
+        NativeHostSettingsPlatformAction::DisableSystemClipboardHistory => {
+            "zsclip.settings_platform.disable_system_clipboard_history.not_applicable_on_macos_native_host"
+        }
+        NativeHostSettingsPlatformAction::EnableSystemClipboardHistory => {
+            "zsclip.settings_platform.enable_system_clipboard_history.not_applicable_on_macos_native_host"
+        }
+        NativeHostSettingsPlatformAction::RestartSystemShell => {
+            "zsclip.settings_platform.restart_system_shell.not_required_on_macos_native_host"
+        }
     };
     ProductAdapterCommandResult {
         accepted: true,
@@ -8414,6 +8423,15 @@ fn macos_native_settings_platform_action_for_shared_action(
         SettingsAction::CheckForUpdates => Some(NativeHostSettingsPlatformAction::CheckForUpdates),
         SettingsAction::OpenWpsTaskpaneDocs => {
             Some(NativeHostSettingsPlatformAction::OpenWpsTaskpaneDocs)
+        }
+        SettingsAction::DisableSystemClipboardHistory => {
+            Some(NativeHostSettingsPlatformAction::DisableSystemClipboardHistory)
+        }
+        SettingsAction::EnableSystemClipboardHistory => {
+            Some(NativeHostSettingsPlatformAction::EnableSystemClipboardHistory)
+        }
+        SettingsAction::RestartSystemShell => {
+            Some(NativeHostSettingsPlatformAction::RestartSystemShell)
         }
         _ => None,
     }
@@ -10029,6 +10047,34 @@ mod tests {
             "zsclip.settings_sync.reject_lan_pairing.no_pending_pair_on_macos_native_host"
         );
 
+        let disable_history = dispatch_macos_native_settings_route_action(
+            "settings_platform",
+            "disable_system_clipboard_history",
+        );
+        assert!(disable_history.accepted);
+        assert_eq!(
+            disable_history.result_name,
+            "zsclip.settings_platform.disable_system_clipboard_history.not_applicable_on_macos_native_host"
+        );
+
+        let enable_history = dispatch_macos_native_settings_route_action(
+            "settings_platform",
+            "enable_system_clipboard_history",
+        );
+        assert!(enable_history.accepted);
+        assert_eq!(
+            enable_history.result_name,
+            "zsclip.settings_platform.enable_system_clipboard_history.not_applicable_on_macos_native_host"
+        );
+
+        let restart_shell =
+            dispatch_macos_native_settings_route_action("settings_platform", "restart_system_shell");
+        assert!(restart_shell.accepted);
+        assert_eq!(
+            restart_shell.result_name,
+            "zsclip.settings_platform.restart_system_shell.not_required_on_macos_native_host"
+        );
+
         let missing = dispatch_macos_native_settings_route_action("settings_sync", "missing");
         assert!(!missing.accepted);
         assert_eq!(
@@ -10743,6 +10789,9 @@ mod tests {
         assert!(host_source.contains("NSString::from_str(spec.accelerator_key)"));
         assert!(host_source.contains("appkit_set_menu_item_command_modifier(item.as_ref())"));
         assert!(host_source.contains("item.setImage(Some(&image))"));
+        assert!(host_source.contains("zsclipDisableSystemClipboardHistory:"));
+        assert!(host_source.contains("zsclipEnableSystemClipboardHistory:"));
+        assert!(host_source.contains("zsclipRestartSystemShell:"));
         assert!(host_source.contains("native_popup_menu_command_macos_symbol_name(*id)"));
         assert!(host_source.contains("native_popup_menu_command_macos_key_equivalent(*id)"));
         assert!(host_source.contains("\"ZSClip main window content\""));

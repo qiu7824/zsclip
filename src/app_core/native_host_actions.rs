@@ -1426,6 +1426,9 @@ pub(crate) enum NativeHostSettingsPlatformAction {
     OpenSourceRepository,
     CheckForUpdates,
     OpenWpsTaskpaneDocs,
+    DisableSystemClipboardHistory,
+    EnableSystemClipboardHistory,
+    RestartSystemShell,
 }
 
 impl NativeHostSettingsPlatformAction {
@@ -1434,6 +1437,9 @@ impl NativeHostSettingsPlatformAction {
             Self::OpenSourceRepository => "settings_open_source_repository",
             Self::CheckForUpdates => "settings_check_for_updates",
             Self::OpenWpsTaskpaneDocs => "settings_open_wps_taskpane_docs",
+            Self::DisableSystemClipboardHistory => "settings_disable_system_clipboard_history",
+            Self::EnableSystemClipboardHistory => "settings_enable_system_clipboard_history",
+            Self::RestartSystemShell => "settings_restart_system_shell",
         }
     }
 
@@ -1442,15 +1448,21 @@ impl NativeHostSettingsPlatformAction {
             Self::OpenSourceRepository => "Open Source",
             Self::CheckForUpdates => "Check Updates",
             Self::OpenWpsTaskpaneDocs => "WPS Docs",
+            Self::DisableSystemClipboardHistory => "Disable Clipboard History",
+            Self::EnableSystemClipboardHistory => "Enable Clipboard History",
+            Self::RestartSystemShell => "Restart Shell",
         }
     }
 }
 
 pub(crate) const REQUIRED_NATIVE_HOST_SETTINGS_PLATFORM_ACTIONS:
-    [NativeHostSettingsPlatformAction; 3] = [
+    [NativeHostSettingsPlatformAction; 6] = [
     NativeHostSettingsPlatformAction::OpenSourceRepository,
     NativeHostSettingsPlatformAction::CheckForUpdates,
     NativeHostSettingsPlatformAction::OpenWpsTaskpaneDocs,
+    NativeHostSettingsPlatformAction::DisableSystemClipboardHistory,
+    NativeHostSettingsPlatformAction::EnableSystemClipboardHistory,
+    NativeHostSettingsPlatformAction::RestartSystemShell,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
