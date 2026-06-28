@@ -980,6 +980,31 @@ searchentry {
                     result.accepted
                 );
             }
+            let image_seed = crate::db_runtime::insert_native_clipboard_image(
+                0,
+                &[255, 0, 0, 255, 0, 128, 255, 255],
+                2,
+                1,
+                "GTK Smoke",
+            )
+            .ok()
+            .and_then(|outcome| outcome.item_id);
+            if let Some(image_item_id) = image_seed {
+                let image_copy = crate::linux_app::dispatch_linux_native_row_action_for_item(
+                    crate::app_core::NativeHostRowAction::Copy,
+                    image_item_id,
+                );
+                let image_read =
+                    <crate::linux_app::LinuxClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()
+                        .map(|(_, width, height)| (width, height));
+                eprintln!(
+                    "ZSClip GTK auto smoke image copy item_id={} -> {} accepted={} read={:?}",
+                    image_item_id,
+                    image_copy.result_name,
+                    image_copy.accepted,
+                    image_read
+                );
+            }
             if let Ok(group) = crate::db_runtime::create_native_clip_group(0, "GTK Auto Smoke") {
                 let assign =
                     crate::linux_app::dispatch_linux_native_assign_group(item_id, group.id);

@@ -5624,6 +5624,9 @@ mod tests {
         assert!(host_source.contains("dispatch_linux_native_group_filter(group.id)"));
         assert!(host_source.contains("dispatch_linux_native_remove_group(item_id)"));
         assert!(host_source.contains("ZSClip GTK auto smoke delete item_id="));
+        assert!(host_source.contains("insert_native_clipboard_image("));
+        assert!(host_source.contains("ZSClip GTK auto smoke image copy item_id="));
+        assert!(host_source.contains("LinuxClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(host_source.contains("reload_clip_items_for_group_with_selection("));
         assert!(host_source.contains("fn gtk_clip_row_content("));

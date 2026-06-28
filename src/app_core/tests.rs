@@ -802,11 +802,11 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(macos.code_level_ready_count, 17);
     assert_eq!(macos.host_usable_count, 17);
     assert_eq!(macos.planned_not_implemented_count, 0);
-    assert_eq!(macos.target_smoke_required_count, 17);
-    assert_eq!(macos.system_complete_count, 0);
+    assert_eq!(macos.target_smoke_required_count, 12);
+    assert_eq!(macos.system_complete_count, 5);
     assert_eq!(macos.code_level_ready_percent, 100);
     assert_eq!(macos.host_usable_percent, 100);
-    assert_eq!(macos.system_complete_percent, 0);
+    assert_eq!(macos.system_complete_percent, 29);
     assert_eq!(macos.next_user_feature_name, Some("right_click_edit"));
     assert!(macos.next_missing_requirement.is_some());
 
@@ -818,11 +818,11 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(linux.code_level_ready_count, 17);
     assert_eq!(linux.host_usable_count, 17);
     assert_eq!(linux.planned_not_implemented_count, 0);
-    assert_eq!(linux.target_smoke_required_count, 17);
-    assert_eq!(linux.system_complete_count, 0);
+    assert_eq!(linux.target_smoke_required_count, 12);
+    assert_eq!(linux.system_complete_count, 5);
     assert_eq!(linux.code_level_ready_percent, 100);
     assert_eq!(linux.host_usable_percent, 100);
-    assert_eq!(linux.system_complete_percent, 0);
+    assert_eq!(linux.system_complete_percent, 29);
     assert_eq!(linux.next_user_feature_name, Some("right_click_edit"));
     assert!(linux.next_missing_requirement.is_some());
 
@@ -935,9 +935,9 @@ fn user_feature_cross_platform_summaries_answer_feature_progress_directly() {
         zsui_user_feature_cross_platform_summary_for("vv_mode").expect("VV cross-platform summary");
     assert_eq!(
         vv.target_smoke_required_platform_names,
-        vec!["windows", "macos", "linux"]
+        vec!["windows"]
     );
-    assert!(vv.system_complete_platform_names.is_empty());
+    assert_eq!(vv.system_complete_platform_names, vec!["macos", "linux"]);
 
     assert!(zsui_user_feature_cross_platform_summary_for("unknown_feature").is_none());
 
@@ -955,17 +955,17 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     assert_eq!(progress.code_level_ready_slots, 51);
     assert_eq!(progress.host_usable_slots, 51);
     assert_eq!(progress.planned_not_implemented_slots, 0);
-    assert_eq!(progress.target_smoke_required_slots, 51);
-    assert_eq!(progress.system_complete_slots, 0);
+    assert_eq!(progress.target_smoke_required_slots, 41);
+    assert_eq!(progress.system_complete_slots, 10);
     assert_eq!(progress.non_windows_host_slots, 34);
     assert_eq!(progress.non_windows_host_code_level_ready_slots, 34);
     assert_eq!(progress.non_windows_host_usable_slots, 34);
     assert_eq!(progress.non_windows_host_code_gap_slots, 0);
-    assert_eq!(progress.non_windows_host_system_complete_slots, 0);
+    assert_eq!(progress.non_windows_host_system_complete_slots, 10);
     assert_eq!(progress.code_level_ready_percent, 100);
     assert_eq!(progress.host_usable_percent, 100);
     assert_eq!(progress.non_windows_host_usable_percent, 100);
-    assert_eq!(progress.system_complete_percent, 0);
+    assert_eq!(progress.system_complete_percent, 19);
     assert_eq!(progress.next_platform_name, Some("macos"));
     assert_eq!(progress.next_user_feature_name, Some("right_click_edit"));
     assert_eq!(progress.next_display_name, Some("右键编辑"));
@@ -1118,7 +1118,7 @@ fn user_feature_progress_report_combines_cross_platform_summary_and_platform_row
 #[test]
 fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
     let work_items = zsui_user_feature_work_items();
-    assert_eq!(work_items.len(), 51);
+    assert_eq!(work_items.len(), 41);
     assert!(work_items.iter().all(|item| {
         !item.ui_ingress_names.is_empty()
             && !item.native_component_family_names.is_empty()
@@ -1187,7 +1187,7 @@ fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
     assert_eq!(linux_window_system.display_name, "窗口系统");
     assert_eq!(
         linux_window_system.support_status_name,
-        ZsuiNativeFeatureSupportStatus::PartiallyCodeReadyPendingTargetSmoke.status_name()
+        ZsuiNativeFeatureSupportStatus::CodeLevelReadyPendingTargetSmoke.status_name()
     );
     assert_eq!(
         linux_window_system.ui_ingress_names,
@@ -1231,7 +1231,7 @@ fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
 #[test]
 fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_queue() {
     let work_items = zsui_native_target_smoke_work_items();
-    assert_eq!(work_items.len(), 51);
+    assert_eq!(work_items.len(), 41);
     assert!(work_items.iter().all(|item| {
         item.code_level_ready
             && item.target_smoke_required
@@ -1253,11 +1253,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Macos).len(),
-        17
+        12
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Linux).len(),
-        17
+        12
     );
     assert!(
         zsui_native_target_smoke_work_item_for(NativeUiPlatform::Linux, "window_system").is_some()
@@ -1339,10 +1339,10 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .collect::<Vec<_>>(),
         vec![
             "right_click_edit",
-            "right_click_copy",
-            "right_click_paste",
-            "right_click_delete",
-            "right_click_pin"
+            "grouping",
+            "search",
+            "settings_pages",
+            "window_system"
         ]
     );
 
@@ -1359,10 +1359,10 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .collect::<Vec<_>>(),
         vec![
             "right_click_edit",
-            "right_click_copy",
-            "right_click_paste",
-            "right_click_delete",
-            "right_click_pin"
+            "grouping",
+            "search",
+            "settings_pages",
+            "window_system"
         ]
     );
     assert_eq!(

@@ -1718,6 +1718,31 @@ mod appkit {
                         result.accepted
                     );
                 }
+                let image_seed = crate::db_runtime::insert_native_clipboard_image(
+                    0,
+                    &[255, 0, 0, 255, 0, 128, 255, 255],
+                    2,
+                    1,
+                    "AppKit Smoke",
+                )
+                .ok()
+                .and_then(|outcome| outcome.item_id);
+                if let Some(image_item_id) = image_seed {
+                    let image_copy = crate::macos_app::dispatch_macos_native_row_action_for_item(
+                        NativeHostRowAction::Copy,
+                        image_item_id,
+                    );
+                    let image_read =
+                        <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()
+                            .map(|(_, width, height)| (width, height));
+                    eprintln!(
+                        "ZSClip AppKit auto smoke image copy item_id={} -> {} accepted={} read={:?}",
+                        image_item_id,
+                        image_copy.result_name,
+                        image_copy.accepted,
+                        image_read
+                    );
+                }
                 if let Ok(group) =
                     crate::db_runtime::create_native_clip_group(0, "AppKit Auto Smoke")
                 {

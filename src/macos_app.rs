@@ -10765,6 +10765,9 @@ mod tests {
         assert!(host_source.contains("dispatch_macos_native_group_filter(group.id)"));
         assert!(host_source.contains("dispatch_macos_native_remove_group(item_id)"));
         assert!(host_source.contains("ZSClip AppKit auto smoke delete item_id="));
+        assert!(host_source.contains("insert_native_clipboard_image("));
+        assert!(host_source.contains("ZSClip AppKit auto smoke image copy item_id="));
+        assert!(host_source.contains("MacosClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));
