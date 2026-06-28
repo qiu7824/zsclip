@@ -69,8 +69,8 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip AppKit file picker smoke injected=true recorded=true selected=true" \
     "ZSClip AppKit identity smoke queried=true" \
     "ZSClip AppKit action open_settings -> zsclip.window.open_settings" \
-    "ZSClip AppKit auto smoke dialog action show_info_message -> zsclip.dialog.show_info_message accepted=true" \
-    "ZSClip AppKit auto smoke dialog action confirm_question -> zsclip.dialog.confirm_cancel accepted=true" \
+    "ZSClip AppKit auto smoke dialog action dialog_show_info_message -> zsclip.dialog.show_info_message accepted=true" \
+    "ZSClip AppKit auto smoke dialog action dialog_confirm_question -> zsclip.dialog.confirm_cancel accepted=true" \
     "ZSClip AppKit auto smoke edit save item_id=" \
     "accepted=true read_back=true" \
     "ZSClip AppKit row action row_copy" \
