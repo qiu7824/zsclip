@@ -1688,7 +1688,7 @@ pub(crate) fn native_host_settings_control_component_specs() -> Vec<NativeCompon
 }
 
 pub(crate) const fn native_host_settings_platform_button_specs(
-) -> [NativeButtonSpec<NativeHostSettingsPlatformAction>; 3] {
+) -> [NativeButtonSpec<NativeHostSettingsPlatformAction>; 6] {
     [
         NativeButtonSpec::new(
             "settings.platform.open_source",
@@ -1708,10 +1708,28 @@ pub(crate) const fn native_host_settings_platform_button_specs(
             UiRect::new(312, 46, 444, 78),
             NativeHostSettingsPlatformAction::OpenWpsTaskpaneDocs,
         ),
+        NativeButtonSpec::new(
+            "settings.platform.disable_clipboard_history",
+            NativeHostSettingsPlatformAction::DisableSystemClipboardHistory.button_label(),
+            UiRect::new(24, 90, 198, 122),
+            NativeHostSettingsPlatformAction::DisableSystemClipboardHistory,
+        ),
+        NativeButtonSpec::new(
+            "settings.platform.enable_clipboard_history",
+            NativeHostSettingsPlatformAction::EnableSystemClipboardHistory.button_label(),
+            UiRect::new(210, 90, 384, 122),
+            NativeHostSettingsPlatformAction::EnableSystemClipboardHistory,
+        ),
+        NativeButtonSpec::new(
+            "settings.platform.restart_shell",
+            NativeHostSettingsPlatformAction::RestartSystemShell.button_label(),
+            UiRect::new(396, 90, 528, 122),
+            NativeHostSettingsPlatformAction::RestartSystemShell,
+        ),
     ]
 }
 
-pub(crate) const fn native_host_settings_platform_component_specs() -> [NativeComponentSpec; 3] {
+pub(crate) const fn native_host_settings_platform_component_specs() -> [NativeComponentSpec; 6] {
     let specs = native_host_settings_platform_button_specs();
     [
         NativeComponentSpec::settings_platform_button(
@@ -1728,6 +1746,21 @@ pub(crate) const fn native_host_settings_platform_component_specs() -> [NativeCo
             specs[2].id,
             specs[2].action,
             specs[2].bounds,
+        ),
+        NativeComponentSpec::settings_platform_button(
+            specs[3].id,
+            specs[3].action,
+            specs[3].bounds,
+        ),
+        NativeComponentSpec::settings_platform_button(
+            specs[4].id,
+            specs[4].action,
+            specs[4].bounds,
+        ),
+        NativeComponentSpec::settings_platform_button(
+            specs[5].id,
+            specs[5].action,
+            specs[5].bounds,
         ),
     ]
 }

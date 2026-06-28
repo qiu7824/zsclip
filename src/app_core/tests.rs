@@ -3148,6 +3148,21 @@ fn native_host_settings_platform_actions_have_expected_labels() {
             "settings_open_wps_taskpane_docs",
             "WPS Docs",
         ),
+        (
+            NativeHostSettingsPlatformAction::DisableSystemClipboardHistory,
+            "settings_disable_system_clipboard_history",
+            "Disable Clipboard History",
+        ),
+        (
+            NativeHostSettingsPlatformAction::EnableSystemClipboardHistory,
+            "settings_enable_system_clipboard_history",
+            "Enable Clipboard History",
+        ),
+        (
+            NativeHostSettingsPlatformAction::RestartSystemShell,
+            "settings_restart_system_shell",
+            "Restart Shell",
+        ),
     ];
 
     for (action, action_name, button_label) in cases {
@@ -3201,6 +3216,33 @@ fn native_host_settings_platform_components_describe_reusable_native_buttons() {
                 "button",
                 "plain",
                 "settings_open_wps_taskpane_docs",
+                132,
+                32
+            ),
+            (
+                "settings.platform.disable_clipboard_history",
+                "Disable Clipboard History",
+                "button",
+                "plain",
+                "settings_disable_system_clipboard_history",
+                174,
+                32
+            ),
+            (
+                "settings.platform.enable_clipboard_history",
+                "Enable Clipboard History",
+                "button",
+                "plain",
+                "settings_enable_system_clipboard_history",
+                174,
+                32
+            ),
+            (
+                "settings.platform.restart_shell",
+                "Restart Shell",
+                "button",
+                "plain",
+                "settings_restart_system_shell",
                 132,
                 32
             ),

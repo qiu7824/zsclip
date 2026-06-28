@@ -375,6 +375,27 @@ mod appkit {
                 );
             }
 
+            #[unsafe(method(zsclipDisableSystemClipboardHistory:))]
+            fn zsclip_disable_system_clipboard_history(&self, _sender: &AnyObject) {
+                self.perform_native_settings_platform_action(
+                    NativeHostSettingsPlatformAction::DisableSystemClipboardHistory,
+                );
+            }
+
+            #[unsafe(method(zsclipEnableSystemClipboardHistory:))]
+            fn zsclip_enable_system_clipboard_history(&self, _sender: &AnyObject) {
+                self.perform_native_settings_platform_action(
+                    NativeHostSettingsPlatformAction::EnableSystemClipboardHistory,
+                );
+            }
+
+            #[unsafe(method(zsclipRestartSystemShell:))]
+            fn zsclip_restart_system_shell(&self, _sender: &AnyObject) {
+                self.perform_native_settings_platform_action(
+                    NativeHostSettingsPlatformAction::RestartSystemShell,
+                );
+            }
+
             #[unsafe(method(zsclipShowInfoDialog:))]
             fn zsclip_show_info_dialog(&self, _sender: &AnyObject) {
                 self.perform_native_dialog_action(NativeHostDialogAction::ShowInfoMessage);
@@ -1070,6 +1091,13 @@ mod appkit {
             NativeHostSettingsPlatformAction::OpenWpsTaskpaneDocs => {
                 sel!(zsclipOpenWpsTaskpaneDocs:)
             }
+            NativeHostSettingsPlatformAction::DisableSystemClipboardHistory => {
+                sel!(zsclipDisableSystemClipboardHistory:)
+            }
+            NativeHostSettingsPlatformAction::EnableSystemClipboardHistory => {
+                sel!(zsclipEnableSystemClipboardHistory:)
+            }
+            NativeHostSettingsPlatformAction::RestartSystemShell => sel!(zsclipRestartSystemShell:),
         }
     }
 
