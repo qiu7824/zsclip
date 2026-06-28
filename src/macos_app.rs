@@ -10758,6 +10758,13 @@ mod tests {
         assert!(host_source.contains("NativeClipboardCaptureService::capture_current"));
         assert!(host_source.contains("macos_native_clipboard_capture_enabled()"));
         assert!(host_source.contains("scheduledTimerWithTimeInterval"));
+        assert!(host_source.contains("ZSClip AppKit auto smoke row action"));
+        assert!(host_source.contains("NativeHostRowAction::Paste"));
+        assert!(host_source.contains("NativeHostRowAction::Pin"));
+        assert!(host_source.contains("dispatch_macos_native_assign_group(item_id, group.id)"));
+        assert!(host_source.contains("dispatch_macos_native_group_filter(group.id)"));
+        assert!(host_source.contains("dispatch_macos_native_remove_group(item_id)"));
+        assert!(host_source.contains("ZSClip AppKit auto smoke delete item_id="));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));

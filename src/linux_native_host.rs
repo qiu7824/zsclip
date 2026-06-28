@@ -930,8 +930,10 @@ searchentry {
             "zsclip gtk auto smoke editable record",
             "GTK Smoke",
         )
-        .map(|outcome| outcome.item_id.is_some())
-        .unwrap_or(false);
+        .ok()
+        .and_then(|outcome| outcome.item_id);
+        let seeded_item_id = seeded;
+        let seeded = seeded_item_id.is_some();
         eprintln!("ZSClip GTK auto smoke real record seeded={}", seeded);
 
         let settings_result = crate::linux_app::dispatch_linux_native_host_action(
@@ -958,6 +960,70 @@ searchentry {
                 action.action_name(),
                 result.result_name
             );
+        }
+
+        if let Some(item_id) = seeded_item_id {
+            for action in [
+                crate::app_core::NativeHostRowAction::Copy,
+                crate::app_core::NativeHostRowAction::Paste,
+                crate::app_core::NativeHostRowAction::Pin,
+            ] {
+                let result = crate::linux_app::dispatch_linux_native_row_action_for_item(
+                    action,
+                    item_id,
+                );
+                eprintln!(
+                    "ZSClip GTK auto smoke row action {} item_id={} -> {} accepted={}",
+                    action.action_name(),
+                    item_id,
+                    result.result_name,
+                    result.accepted
+                );
+            }
+            if let Ok(group) = crate::db_runtime::create_native_clip_group(0, "GTK Auto Smoke") {
+                let assign =
+                    crate::linux_app::dispatch_linux_native_assign_group(item_id, group.id);
+                eprintln!(
+                    "ZSClip GTK auto smoke assign group item_id={} group_id={} -> {} accepted={}",
+                    item_id,
+                    group.id,
+                    assign.result_name,
+                    assign.accepted
+                );
+                let filter = crate::linux_app::dispatch_linux_native_group_filter(group.id);
+                eprintln!(
+                    "ZSClip GTK auto smoke group filter group_id={} -> {} accepted={}",
+                    group.id,
+                    filter.result_name,
+                    filter.accepted
+                );
+                let remove = crate::linux_app::dispatch_linux_native_remove_group(item_id);
+                eprintln!(
+                    "ZSClip GTK auto smoke remove group item_id={} -> {} accepted={}",
+                    item_id,
+                    remove.result_name,
+                    remove.accepted
+                );
+            }
+            let delete_seed = crate::db_runtime::insert_native_clipboard_text(
+                0,
+                "zsclip gtk auto smoke delete record",
+                "GTK Smoke",
+            )
+            .ok()
+            .and_then(|outcome| outcome.item_id);
+            if let Some(delete_item_id) = delete_seed {
+                let delete = crate::linux_app::dispatch_linux_native_row_action_for_item(
+                    crate::app_core::NativeHostRowAction::Delete,
+                    delete_item_id,
+                );
+                eprintln!(
+                    "ZSClip GTK auto smoke delete item_id={} -> {} accepted={}",
+                    delete_item_id,
+                    delete.result_name,
+                    delete.accepted
+                );
+            }
         }
 
         let mut row_actions = vec![
