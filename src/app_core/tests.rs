@@ -584,17 +584,17 @@ fn user_feature_platform_statuses_cover_named_clipboard_features() {
     assert_eq!(edit.ui_ingress_names, vec!["menu", "dialog"]);
     assert_eq!(
         edit.support_status_name,
-        ZsuiNativeFeatureSupportStatus::CodeLevelReadyPendingTargetSmoke.status_name()
+        ZsuiNativeFeatureSupportStatus::TargetSmokeVerified.status_name()
     );
     assert!(edit.code_level_ready);
     assert_eq!(
         edit.host_maturity_name,
-        ZsuiUserFeatureHostMaturity::HostUsablePendingTargetSmoke.maturity_name()
+        ZsuiUserFeatureHostMaturity::TargetSmokeVerified.maturity_name()
     );
-    assert_eq!(edit.host_maturity_percent, 80);
+    assert_eq!(edit.host_maturity_percent, 100);
     assert!(edit.host_usable);
-    assert!(edit.target_smoke_required);
-    assert!(!edit.system_complete);
+    assert!(!edit.target_smoke_required);
+    assert!(edit.system_complete);
 
     let linux_webdav = statuses
         .iter()
@@ -722,8 +722,8 @@ fn user_feature_status_queries_answer_feature_progress_directly() {
     );
     assert_eq!(mac_edit.ui_ingress_names, vec!["menu", "dialog"]);
     assert!(mac_edit.code_level_ready);
-    assert!(mac_edit.target_smoke_required);
-    assert!(!mac_edit.system_complete);
+    assert!(!mac_edit.target_smoke_required);
+    assert!(mac_edit.system_complete);
 
     let linux_grouping = zsui_user_feature_status_for(NativeUiPlatform::Linux, "grouping")
         .expect("Linux grouping status");
@@ -802,12 +802,12 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(macos.code_level_ready_count, 17);
     assert_eq!(macos.host_usable_count, 17);
     assert_eq!(macos.planned_not_implemented_count, 0);
-    assert_eq!(macos.target_smoke_required_count, 12);
-    assert_eq!(macos.system_complete_count, 5);
+    assert_eq!(macos.target_smoke_required_count, 10);
+    assert_eq!(macos.system_complete_count, 7);
     assert_eq!(macos.code_level_ready_percent, 100);
     assert_eq!(macos.host_usable_percent, 100);
-    assert_eq!(macos.system_complete_percent, 29);
-    assert_eq!(macos.next_user_feature_name, Some("right_click_edit"));
+    assert_eq!(macos.system_complete_percent, 41);
+    assert_eq!(macos.next_user_feature_name, Some("grouping"));
     assert!(macos.next_missing_requirement.is_some());
 
     let linux = summaries
@@ -818,12 +818,12 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(linux.code_level_ready_count, 17);
     assert_eq!(linux.host_usable_count, 17);
     assert_eq!(linux.planned_not_implemented_count, 0);
-    assert_eq!(linux.target_smoke_required_count, 12);
-    assert_eq!(linux.system_complete_count, 5);
+    assert_eq!(linux.target_smoke_required_count, 10);
+    assert_eq!(linux.system_complete_count, 7);
     assert_eq!(linux.code_level_ready_percent, 100);
     assert_eq!(linux.host_usable_percent, 100);
-    assert_eq!(linux.system_complete_percent, 29);
-    assert_eq!(linux.next_user_feature_name, Some("right_click_edit"));
+    assert_eq!(linux.system_complete_percent, 41);
+    assert_eq!(linux.next_user_feature_name, Some("grouping"));
     assert!(linux.next_missing_requirement.is_some());
 
     let manifest = zsui_framework_manifest();
@@ -849,7 +849,7 @@ fn user_feature_completion_summary_query_answers_platform_progress_directly() {
     assert_eq!(linux.code_level_ready_count, 17);
     assert_eq!(linux.host_usable_count, 17);
     assert_eq!(linux.planned_not_implemented_count, 0);
-    assert_eq!(linux.next_user_feature_name, Some("right_click_edit"));
+    assert_eq!(linux.next_user_feature_name, Some("grouping"));
     assert!(linux.next_missing_requirement.is_some());
 }
 
@@ -955,40 +955,41 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     assert_eq!(progress.code_level_ready_slots, 51);
     assert_eq!(progress.host_usable_slots, 51);
     assert_eq!(progress.planned_not_implemented_slots, 0);
-    assert_eq!(progress.target_smoke_required_slots, 41);
-    assert_eq!(progress.system_complete_slots, 10);
+    assert_eq!(progress.target_smoke_required_slots, 37);
+    assert_eq!(progress.system_complete_slots, 14);
     assert_eq!(progress.non_windows_host_slots, 34);
     assert_eq!(progress.non_windows_host_code_level_ready_slots, 34);
     assert_eq!(progress.non_windows_host_usable_slots, 34);
     assert_eq!(progress.non_windows_host_code_gap_slots, 0);
-    assert_eq!(progress.non_windows_host_system_complete_slots, 10);
+    assert_eq!(progress.non_windows_host_system_complete_slots, 14);
     assert_eq!(progress.code_level_ready_percent, 100);
     assert_eq!(progress.host_usable_percent, 100);
     assert_eq!(progress.non_windows_host_usable_percent, 100);
-    assert_eq!(progress.system_complete_percent, 19);
+    assert_eq!(progress.system_complete_percent, 27);
     assert_eq!(progress.next_platform_name, Some("macos"));
-    assert_eq!(progress.next_user_feature_name, Some("right_click_edit"));
-    assert_eq!(progress.next_display_name, Some("右键编辑"));
-    assert_eq!(progress.next_ui_ingress_names, vec!["menu", "dialog"]);
+    assert_eq!(progress.next_user_feature_name, Some("grouping"));
+    assert_eq!(progress.next_display_name, Some("分组功能"));
+    assert_eq!(progress.next_ui_ingress_names, vec!["menu", "settings_page"]);
     assert_eq!(
         progress.next_native_component_family_names,
-        vec!["row_action_button", "edit_text_button", "dialog_button"]
+        vec![
+            "row_action_button",
+            "main_tool_button",
+            "settings_group_button"
+        ]
     );
     assert!(progress
         .next_typed_component_spec_names
         .contains(&"NativeButtonSpec<NativeHostRowAction>"));
     assert!(progress
         .next_typed_component_spec_names
-        .contains(&"NativeButtonSpec<NativeHostEditTextAction>"));
+        .contains(&"NativeButtonSpec<NativeHostSettingsGroupAction>"));
     assert!(progress
         .next_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_host_actions.rs"));
     assert!(progress
         .next_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_component_protocol.rs"));
-    assert!(progress
-        .next_preferred_app_core_edit_modules
-        .contains(&"src/app_core/host_protocol.rs"));
     assert_eq!(
         progress.next_platform_host_module_paths,
         vec!["src/macos_native_host.rs", "src/macos_app.rs"]
@@ -997,29 +998,30 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     assert_eq!(progress.next_host_platform_name, Some("macos"));
     assert_eq!(
         progress.next_host_user_feature_name,
-        Some("right_click_edit")
+        Some("grouping")
     );
-    assert_eq!(progress.next_host_display_name, Some("右键编辑"));
-    assert_eq!(progress.next_host_ui_ingress_names, vec!["menu", "dialog"]);
+    assert_eq!(progress.next_host_display_name, Some("分组功能"));
+    assert_eq!(progress.next_host_ui_ingress_names, vec!["menu", "settings_page"]);
     assert_eq!(
         progress.next_host_native_component_family_names,
-        vec!["row_action_button", "edit_text_button", "dialog_button"]
+        vec![
+            "row_action_button",
+            "main_tool_button",
+            "settings_group_button"
+        ]
     );
     assert!(progress
         .next_host_typed_component_spec_names
         .contains(&"NativeButtonSpec<NativeHostRowAction>"));
     assert!(progress
         .next_host_typed_component_spec_names
-        .contains(&"NativeButtonSpec<NativeHostEditTextAction>"));
+        .contains(&"NativeButtonSpec<NativeHostSettingsGroupAction>"));
     assert!(progress
         .next_host_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_host_actions.rs"));
     assert!(progress
         .next_host_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_component_protocol.rs"));
-    assert!(progress
-        .next_host_preferred_app_core_edit_modules
-        .contains(&"src/app_core/host_protocol.rs"));
     assert_eq!(
         progress.next_host_module_paths,
         vec!["src/macos_native_host.rs", "src/macos_app.rs"]
@@ -1118,7 +1120,7 @@ fn user_feature_progress_report_combines_cross_platform_summary_and_platform_row
 #[test]
 fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
     let work_items = zsui_user_feature_work_items();
-    assert_eq!(work_items.len(), 41);
+    assert_eq!(work_items.len(), 37);
     assert!(work_items.iter().all(|item| {
         !item.ui_ingress_names.is_empty()
             && !item.native_component_family_names.is_empty()
@@ -1231,7 +1233,7 @@ fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
 #[test]
 fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_queue() {
     let work_items = zsui_native_target_smoke_work_items();
-    assert_eq!(work_items.len(), 41);
+    assert_eq!(work_items.len(), 37);
     assert!(work_items.iter().all(|item| {
         item.code_level_ready
             && item.target_smoke_required
@@ -1253,11 +1255,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Macos).len(),
-        12
+        10
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Linux).len(),
-        12
+        10
     );
     assert!(
         zsui_native_target_smoke_work_item_for(NativeUiPlatform::Linux, "window_system").is_some()
@@ -1287,43 +1289,45 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
         .target_smoke_name
         .contains("target settings sync toggle smoke"));
 
-    let macos_edit =
-        zsui_native_target_smoke_work_item_for(NativeUiPlatform::Macos, "right_click_edit")
-            .expect("macOS edit target-smoke item");
+    let macos_grouping =
+        zsui_native_target_smoke_work_item_for(NativeUiPlatform::Macos, "grouping")
+            .expect("macOS grouping target-smoke item");
     assert_eq!(
-        macos_edit.target_environment_name,
+        macos_grouping.target_environment_name,
         "real macOS AppKit host smoke verification"
     );
-    assert_eq!(macos_edit.ui_ingress_names, vec!["menu", "dialog"]);
+    assert_eq!(macos_grouping.ui_ingress_names, vec!["menu", "settings_page"]);
     assert_eq!(
-        macos_edit.native_component_family_names,
-        vec!["row_action_button", "edit_text_button", "dialog_button"]
+        macos_grouping.native_component_family_names,
+        vec![
+            "row_action_button",
+            "main_tool_button",
+            "settings_group_button"
+        ]
     );
-    assert!(macos_edit
+    assert!(macos_grouping
         .typed_component_spec_names
         .contains(&"NativeButtonSpec<NativeHostRowAction>"));
-    assert!(macos_edit
+    assert!(macos_grouping
         .typed_component_spec_names
-        .contains(&"NativeButtonSpec<NativeHostEditTextAction>"));
+        .contains(&"NativeButtonSpec<NativeHostSettingsGroupAction>"));
     assert_eq!(
-        macos_edit.platform_host_module_paths,
+        macos_grouping.platform_host_module_paths,
         vec!["src/macos_native_host.rs", "src/macos_app.rs"]
     );
     assert_eq!(
-        macos_edit.target_smoke_steps,
+        macos_grouping.target_smoke_steps,
         vec![
-            "open native clipboard window with at least one text row",
-            "select a row and invoke the shared row edit action",
-            "verify the native edit surface uses a multiline text editor",
-            "change text, save, and confirm the row refreshes with edited content",
-            "change text again, close without saving, and verify the unsaved-change prompt"
+            "create or select a group in the native group surface",
+            "assign a selected row to the group from the shared row menu",
+            "filter by group and verify the native list projection changes"
         ]
     );
 
     assert_eq!(
         zsui_next_native_target_smoke_work_item_for_platform(NativeUiPlatform::Linux)
             .map(|item| item.user_feature_name),
-        Some("right_click_edit")
+        Some("grouping")
     );
 
     let macos_batch = zsui_native_target_smoke_batch_for_platform(NativeUiPlatform::Macos);
@@ -1338,11 +1342,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .map(|item| item.user_feature_name)
             .collect::<Vec<_>>(),
         vec![
-            "right_click_edit",
             "grouping",
             "search",
             "settings_pages",
-            "window_system"
+            "window_system",
+            "sync_webdav"
         ]
     );
 
@@ -1358,11 +1362,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .map(|item| item.user_feature_name)
             .collect::<Vec<_>>(),
         vec![
-            "right_click_edit",
             "grouping",
             "search",
             "settings_pages",
-            "window_system"
+            "window_system",
+            "sync_webdav"
         ]
     );
     assert_eq!(

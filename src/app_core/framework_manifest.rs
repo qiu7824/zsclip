@@ -1221,7 +1221,9 @@ fn zsui_native_feature_target_smoke_verified_by_ci(
     }
     matches!(
         feature_name,
-        "right_click_copy"
+        "dialog_input_confirm_edit"
+            | "right_click_copy"
+            | "right_click_edit_save"
             | "right_click_paste"
             | "right_click_delete"
             | "right_click_pin"
