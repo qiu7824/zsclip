@@ -91,6 +91,10 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip GTK file picker smoke injected=true recorded=true selected=true" \
     "ZSClip GTK identity smoke queried=true" \
     "ZSClip GTK action open_settings -> zsclip.window.open_settings" \
+    "ZSClip GTK auto smoke dialog action show_info_message -> zsclip.dialog.show_info_message accepted=true" \
+    "ZSClip GTK auto smoke dialog action confirm_question -> zsclip.dialog.confirm_cancel accepted=true" \
+    "ZSClip GTK auto smoke edit save item_id=" \
+    "accepted=true read_back=true" \
     "ZSClip GTK row action row_copy -> zsclip.row.copy" \
     "ZSClip GTK row action row_edit -> zsclip.row.edit" \
     "ZSClip GTK edit window shown" \

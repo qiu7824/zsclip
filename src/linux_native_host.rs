@@ -961,6 +961,18 @@ searchentry {
                 result.result_name
             );
         }
+        for action in [
+            crate::app_core::NativeHostDialogAction::ShowInfoMessage,
+            crate::app_core::NativeHostDialogAction::ConfirmQuestion,
+        ] {
+            let result = crate::linux_app::dispatch_linux_native_dialog_action(action);
+            eprintln!(
+                "ZSClip GTK auto smoke dialog action {} -> {} accepted={}",
+                action.action_name(),
+                result.result_name,
+                result.accepted
+            );
+        }
 
         if let Some(item_id) = seeded_item_id {
             for action in [
@@ -980,6 +992,21 @@ searchentry {
                     result.accepted
                 );
             }
+            let edited_text = "zsclip gtk auto smoke edited text";
+            let edit =
+                crate::linux_app::dispatch_linux_native_edit_text_save(item_id, edited_text);
+            let edit_read_back = crate::db_runtime::item_text(item_id)
+                .ok()
+                .flatten()
+                .as_deref()
+                == Some(edited_text);
+            eprintln!(
+                "ZSClip GTK auto smoke edit save item_id={} -> {} accepted={} read_back={}",
+                item_id,
+                edit.result_name,
+                edit.accepted,
+                edit_read_back
+            );
             let image_seed = crate::db_runtime::insert_native_clipboard_image(
                 0,
                 &[255, 0, 0, 255, 0, 128, 255, 255],
