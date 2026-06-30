@@ -655,7 +655,7 @@ searchentry {
                 .iter()
                 .map(|tab| {
                     let button =
-                        ToggleButton::with_label(crate::i18n_runtime::tr(tab.label_source, tab.label_en));
+                        ToggleButton::with_label(crate::i18n::tr(tab.label_source, tab.label_en));
                     button.set_widget_name(tab.id);
                     button.set_active(tab.category == current_source_category.get());
                     let category = current_source_category.clone();
@@ -1176,7 +1176,7 @@ searchentry {
         }
 
         eprintln!("ZSClip GTK VV trigger requested");
-        perform_vv_trigger_demo(app, 0);
+        perform_vv_trigger_demo(app, 0, 0);
         let vv_result = crate::linux_app::dispatch_linux_native_vv_select_event(0);
         let vv_paste = perform_gtk_vv_paste(0, 0);
         eprintln!("ZSClip GTK VV select 0 -> {}", vv_result.event_name);
@@ -1806,6 +1806,7 @@ searchentry {
                 );
                 true
             }
+            Some(MainGroupFilterSelection::Kind { .. }) => true,
             None => false,
         }
     }
