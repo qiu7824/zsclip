@@ -1509,6 +1509,7 @@ searchentry {
         selected_item_id: Rc<Cell<i64>>,
         current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
+        current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> gio::Menu {
