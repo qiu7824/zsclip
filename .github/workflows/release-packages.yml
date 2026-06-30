@@ -430,8 +430,6 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     needs:
       - windows
-      - macos
-      - linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -470,21 +468,16 @@ jobs:
 
           ### 打包与发布
           - Windows 提供安装器、无局域网同步安装器和便携包。
-          - macOS 提供 Intel 与 Apple Silicon 两个预览 DMG。
-          - GitHub Actions 当前向正式 Release 上传 Windows 安装包、Windows 便携包、macOS 预览 DMG 和 Linux 预览包。
+          - macOS/Linux 原生 host 继续在源码与 CI 中验证，正式 Release 暂只发布 Windows 包。
+          - GitHub Actions 当前向正式 Release 上传 Windows 完整安装包、Windows 无局域网同步安装包和 Windows 便携包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
-          - macOS Apple Silicon: 下载 `zsclip-macos-arm64.dmg`。
-          - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`。
-          - Linux Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb`。
-          - Linux 便携包: 下载 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
           - Windows 同时提供完整安装器、无局域网同步安装器和便携包。
-          - macOS 包当前未签名、未公证，首次运行可能需要右键选择“打开”，并在系统设置中授权相关权限。
-          - Linux 包当前作为预览分发，托盘、全局热键和 VV 粘贴受 X11/Wayland 与桌面环境权限影响。
+          - macOS/Linux 包在原生 host 验收通过前不进入正式 Release。
           NOTES
           for stale in \
             zsclip-linux-x86_64 \
@@ -509,10 +502,6 @@ jobs:
               release-assets/zsclip-v0.9.9-setup.exe \
               release-assets/zsclip-v0.9.9-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
-              release-assets/zsclip-macos-arm64.dmg \
-              release-assets/zsclip-macos-x86_64.dmg \
-              release-assets/zsclip-linux-x86_64.deb \
-              release-assets/zsclip-linux-x86_64.tar.gz \
               --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
@@ -524,10 +513,6 @@ jobs:
               release-assets/zsclip-v0.9.9-setup.exe \
               release-assets/zsclip-v0.9.9-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
-              release-assets/zsclip-macos-arm64.dmg \
-              release-assets/zsclip-macos-x86_64.dmg \
-              release-assets/zsclip-linux-x86_64.deb \
-              release-assets/zsclip-linux-x86_64.tar.gz \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
               --notes-file release-notes.md 2>&1 | tee release-upload.log
