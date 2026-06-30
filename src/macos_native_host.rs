@@ -50,15 +50,17 @@ mod appkit {
     };
 
     use crate::app_core::{
-        main_group_filter_selection_for_id, main_row_group_selection_for_id, menu_ids,
+        clip_kind_filter_options_for_tab, main_group_filter_selection_for_id,
+        main_row_group_selection_for_id, menu_ids,
         native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
         native_host_dialog_button_specs, native_host_edit_text_button_specs,
         native_host_edit_text_close_plan, native_host_edit_text_plan_for_item,
         native_host_filtered_projected_clip_item_ids,
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
-        native_host_group_filter_popup_menu_entries_for_groups, native_host_main_tool_button_specs,
-        native_host_projected_clip_row_title, native_host_reconciled_selected_item_id,
+        native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
+        native_host_main_tool_button_specs, native_host_projected_clip_row_title,
+        native_host_reconciled_selected_item_id,
         native_host_row_action_button_specs, native_host_row_popup_menu_input_for_projection,
         native_host_search_input_specs, native_host_settings_action_button_specs,
         native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
@@ -67,7 +69,8 @@ mod appkit {
         native_host_settings_toggle_specs, native_host_source_tab_for_category,
         native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_macos_key_equivalent,
-        native_popup_menu_command_macos_symbol_name, HostComponent, MainGroupFilterSelection,
+        native_popup_menu_command_macos_symbol_name, ClipKindFilter, HostComponent,
+        MainGroupFilterSelection,
         MainRowGroupSelection, MainVvPopupTextRole, NativeButtonStyleRole, NativeClipRowSpec,
         NativeComponentAction, NativeComponentInstanceSpec, NativeComponentSpec,
         NativeDialogResponse, NativeDropdownSpec, NativeHostClipKindIcon,
@@ -153,6 +156,7 @@ mod appkit {
         selected_item_id: Cell<i64>,
         current_group_filter: Cell<i64>,
         current_source_category: Cell<i64>,
+        current_kind_filter: Cell<ClipKindFilter>,
         last_clipboard_sequence: Cell<u32>,
         settings_group_category: Cell<i64>,
         selected_settings_group_id: Cell<i64>,
@@ -2049,11 +2053,15 @@ mod appkit {
             let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
                 .unwrap_or_default();
             let group_filter_title = NSString::from_str(appkit_tr("分组", "Group Filter"));
+            let category = self.active_source_category();
             let menu = self.build_popup_menu(
                 &group_filter_title,
-                &native_host_group_filter_popup_menu_entries_for_groups(
+                &native_host_group_filter_popup_menu_entries_for_groups_kind_filter(
                     &groups,
                     self.ivars().current_group_filter.get(),
+                    crate::macos_app::macos_native_group_type_filter_enabled(),
+                    self.ivars().current_kind_filter.get(),
+                    clip_kind_filter_options_for_tab(category as usize),
                 ),
                 target,
             );
@@ -3245,6 +3253,7 @@ mod appkit {
             match main_group_filter_selection_for_id(menu_id) {
                 Some(MainGroupFilterSelection::All) => {
                     self.ivars().current_group_filter.set(0);
+                    self.ivars().current_kind_filter.set(ClipKindFilter::All);
                     let result = crate::macos_app::dispatch_macos_native_group_filter(0);
                     eprintln!("ZSClip AppKit group filter all -> {}", result.result_name);
                     self.reload_native_clip_items();
@@ -3263,7 +3272,16 @@ mod appkit {
                     self.reload_native_clip_items();
                     true
                 }
-                Some(MainGroupFilterSelection::Kind { .. }) => true,
+                Some(MainGroupFilterSelection::Kind { index }) => {
+                    if let Some(filter) =
+                        clip_kind_filter_options_for_tab(self.active_source_category() as usize)
+                            .get(index)
+                    {
+                        self.ivars().current_kind_filter.set(*filter);
+                        self.reload_native_clip_items();
+                    }
+                    true
+                }
                 None => false,
             }
         }
@@ -3278,10 +3296,12 @@ mod appkit {
         }
 
         fn reload_native_clip_items(&self) {
-            let items = crate::macos_app::macos_native_host_projected_clip_items_for_category_group(
-                self.active_source_category(),
-                self.ivars().current_group_filter.get(),
-            );
+            let items =
+                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter(
+                    self.active_source_category(),
+                    self.ivars().current_group_filter.get(),
+                    self.ivars().current_kind_filter.get(),
+                );
             *self.ivars().clip_items.borrow_mut() = items;
             self.refresh_native_clip_rows();
         }
@@ -3298,6 +3318,7 @@ mod appkit {
             }
             self.ivars().current_source_category.set(normalized);
             self.ivars().current_group_filter.set(0);
+            self.ivars().current_kind_filter.set(ClipKindFilter::All);
             self.ivars().selected_item_id.set(0);
             self.refresh_native_source_tab_buttons();
             self.reload_native_clip_items();

@@ -949,6 +949,13 @@ pub(crate) fn linux_native_grouping_enabled() -> bool {
         .unwrap_or(true)
 }
 
+pub(crate) fn linux_native_group_type_filter_enabled() -> bool {
+    linux_native_settings_json_snapshot()
+        .get("group_type_filter_enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
 pub(crate) fn linux_native_status_menu_action_state(
     action: NativeHostStatusMenuAction,
 ) -> Option<bool> {
@@ -2600,13 +2607,26 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group(
     category: i64,
     group_id: i64,
 ) -> Vec<NativeHostClipListItemProjection> {
-    if group_id > 0 {
-        if let Ok(items) =
-            crate::db_runtime::native_clip_list_items_for_group(category, group_id, 64)
-        {
-            return items;
-        }
-    } else if let Ok(items) = crate::db_runtime::native_clip_list_items(category, 64) {
+    linux_native_host_projected_clip_items_for_category_group_kind_filter(
+        category,
+        group_id,
+        crate::app_core::ClipKindFilter::All,
+    )
+}
+
+pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_filter(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+) -> Vec<NativeHostClipListItemProjection> {
+    if let Ok(items) =
+        crate::db_runtime::native_clip_list_items_for_group_kind_filter(
+            category,
+            group_id,
+            kind_filter,
+            64,
+        )
+    {
         return items;
     }
     Vec::new()

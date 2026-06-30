@@ -743,6 +743,20 @@ pub(crate) fn native_clip_list_items_for_group(
     group_id: i64,
     limit: usize,
 ) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    native_clip_list_items_for_group_kind_filter(
+        category,
+        group_id,
+        crate::app_core::ClipKindFilter::All,
+        limit,
+    )
+}
+
+pub(crate) fn native_clip_list_items_for_group_kind_filter(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    limit: usize,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
     with_db(|conn| {
         let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned \
              FROM items WHERE category=?"
@@ -751,6 +765,20 @@ pub(crate) fn native_clip_list_items_for_group(
         if group_id > 0 {
             sql.push_str(" AND group_id=?");
             values.push(rusqlite::types::Value::from(group_id));
+        }
+        let kind_values = kind_filter.db_kinds(category);
+        if !kind_values.is_empty() {
+            sql.push_str(" AND kind IN (");
+            for index in 0..kind_values.len() {
+                if index > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for kind in kind_values {
+                values.push(rusqlite::types::Value::from((*kind).to_string()));
+            }
         }
         sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
         values.push(rusqlite::types::Value::from(limit.max(1) as i64));

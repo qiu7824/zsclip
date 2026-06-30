@@ -65,6 +65,12 @@ pub(crate) enum ClipKindFilter {
     Phrase,
 }
 
+impl Default for ClipKindFilter {
+    fn default() -> Self {
+        Self::All
+    }
+}
+
 impl ClipKindFilter {
     pub(crate) const fn db_kinds(self, category: i64) -> &'static [&'static str] {
         match self {

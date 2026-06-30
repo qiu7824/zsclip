@@ -3941,6 +3941,31 @@ fn native_host_group_filter_entries_accept_real_group_list_and_checked_id() {
 }
 
 #[test]
+fn native_host_group_filter_entries_append_virtual_kind_filters_when_enabled() {
+    let entries = native_host_group_filter_popup_menu_entries_for_groups_kind_filter(
+        &[ClipGroup {
+            id: 10,
+            category: 0,
+            name: "客户资料".to_string(),
+        }],
+        10,
+        true,
+        ClipKindFilter::Image,
+        clip_kind_filter_options_for_tab(0),
+    );
+
+    assert!(entries.iter().any(|entry| matches!(
+        entry,
+        NativePopupMenuEntry::Command {
+            id,
+            label,
+            checked: true,
+            ..
+        } if *id == menu_ids::GROUP_TYPE_FILTER_BASE + 2 && label == "图片"
+    )));
+}
+
+#[test]
 fn native_host_group_filter_label_prefers_current_group_name() {
     let groups = [
         ClipGroup {
