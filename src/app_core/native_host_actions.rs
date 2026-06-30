@@ -224,6 +224,43 @@ pub(crate) const REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS: [NativeHostStatusMenu
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NativeHostSourceTabSpec {
+    pub(crate) id: &'static str,
+    pub(crate) label_source: &'static str,
+    pub(crate) label_en: &'static str,
+    pub(crate) category: i64,
+}
+
+impl NativeHostSourceTabSpec {
+    pub(crate) const fn zsui_tab(self) -> crate::zsui::ZsTabSpec {
+        crate::zsui::ZsTabSpec::new(self.id, self.label_source)
+    }
+}
+
+pub(crate) const NATIVE_HOST_SOURCE_TABS: [NativeHostSourceTabSpec; 2] = [
+    NativeHostSourceTabSpec {
+        id: "clipboard_records",
+        label_source: "复制记录",
+        label_en: "Clipboard Records",
+        category: 0,
+    },
+    NativeHostSourceTabSpec {
+        id: "phrases",
+        label_source: "常用短语",
+        label_en: "Phrases",
+        category: 1,
+    },
+];
+
+pub(crate) const fn native_host_source_tab_for_category(category: i64) -> NativeHostSourceTabSpec {
+    if category == NATIVE_HOST_SOURCE_TABS[1].category {
+        NATIVE_HOST_SOURCE_TABS[1]
+    } else {
+        NATIVE_HOST_SOURCE_TABS[0]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeHostRowAction {
     Paste,
     Copy,
@@ -1090,6 +1127,16 @@ impl NativeHostClipKindIcon {
             Self::Phrase => "phrase",
             Self::Files => "files",
             Self::Folder => "folder",
+        }
+    }
+
+    pub(crate) const fn zsui_icon(self) -> crate::zsui::ZsIcon {
+        match self {
+            Self::Text => crate::zsui::ZsIcon::Text,
+            Self::Image => crate::zsui::ZsIcon::Image,
+            Self::Phrase => crate::zsui::ZsIcon::Phrase,
+            Self::Files => crate::zsui::ZsIcon::File,
+            Self::Folder => crate::zsui::ZsIcon::Folder,
         }
     }
 }

@@ -27,17 +27,19 @@ pub(crate) fn run() -> AppResult<()> {
 
         let startup_layout = main_layout_for_window(null_mut());
         let startup_h = startup_layout.list_y + startup_layout.list_h + 7;
+        let startup_window = crate::zsui::Window::new(app_title())
+            .size(startup_layout.win_w.max(1) as u32, startup_h.max(1) as u32)
+            .visible(!startup_can_hide(&boot_settings))
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true);
         let mut main_window_host = WindowsMainWindowHost::new(Some(wnd_proc));
-        if let NativeMainWindowPresentation::Failed =
-            main_window_host.create_main_windows(NativeMainWindowRequest {
-                title: app_title().to_string(),
-                size: UiSize {
-                    width: startup_layout.win_w,
-                    height: startup_h,
-                },
-                main_visible: !startup_can_hide(&boot_settings),
-            })
-        {
+        if let NativeMainWindowPresentation::Failed = main_window_host.create_main_windows(
+            NativeMainWindowRequest::from_zsui_window_for_host(
+                &startup_window,
+                &crate::zsui::HostCapabilities::windows_native_window_host(),
+            ),
+        ) {
             return Err(io::Error::last_os_error());
         }
 
@@ -83,11 +85,15 @@ pub(super) unsafe extern "system" fn wnd_proc(
     match msg {
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
-            let role = WindowRole::from_create_param(cs.lpCreateParams as isize);
-            match on_create(hwnd, role) {
+            let create_params = WindowCreateParams::from_create_param(cs.lpCreateParams as isize);
+            match on_create(hwnd, create_params) {
                 Ok(_) => 0,
                 Err(_) => -1,
             }
+        }
+        WM_GETMINMAXINFO => {
+            apply_main_window_min_track_size(hwnd, lparam);
+            0
         }
         WM_PAINT => {
             paint_main_window(hwnd);
@@ -138,7 +144,30 @@ pub(super) unsafe extern "system" fn wnd_proc(
     }
 }
 
-pub(super) unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
+fn apply_main_window_min_track_size(hwnd: HWND, lparam: LPARAM) {
+    let ptr = unsafe { get_state_ptr(hwnd) };
+    if ptr.is_null() || lparam == 0 {
+        return;
+    }
+    let Some(min_size) = (unsafe { (*ptr).native_min_size }) else {
+        return;
+    };
+    let info = lparam as *mut MINMAXINFO;
+    if info.is_null() {
+        return;
+    }
+    unsafe {
+        apply_min_track_size(&mut *info, min_size);
+    }
+}
+
+fn apply_min_track_size(info: &mut MINMAXINFO, min_size: UiSize) {
+    info.ptMinTrackSize.x = info.ptMinTrackSize.x.max(min_size.width);
+    info.ptMinTrackSize.y = info.ptMinTrackSize.y.max(min_size.height);
+}
+
+pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) -> AppResult<()> {
+    let role = create_params.role;
     let layout = main_layout_for_window(hwnd);
     let mut search_host = WindowsMainSearchControlHost::new();
     let search_request = WindowsMainSearchControlHost::search_control_request_from_native_spec(
@@ -169,7 +198,13 @@ pub(super) unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         );
     }
 
-    let state = Box::new(AppState::new(role, hwnd, search_hwnd, icons));
+    let state = Box::new(AppState::new(
+        role,
+        hwnd,
+        search_hwnd,
+        icons,
+        create_params.min_size,
+    ));
     platform_window::set_user_data(hwnd, Box::into_raw(state) as isize);
     set_window_host(role, hwnd);
     let _ = dispatch_main_ui_event(hwnd, UiEvent::Lifecycle(LifecycleEvent::Mount));
@@ -177,8 +212,13 @@ pub(super) unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         refresh_search_font(state);
         ensure_db();
         if role == WindowRole::Main {
+            #[cfg(feature = "lan-sync")]
             if lan_sync::ensure_device_identity(&mut state.settings) {
                 save_settings(&state.settings);
+            }
+            #[cfg(not(feature = "lan-sync"))]
+            {
+                state.settings.lan_sync_enabled = false;
             }
             reload_state_from_db_persisting(state);
             spawn_startup_data_reconcile(hwnd, !state.settings.dedupe_filter_enabled);
@@ -187,7 +227,9 @@ pub(super) unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
             let _ = update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
             refresh_low_level_input_hooks();
+            #[cfg(feature = "lan-sync")]
             refresh_lan_latest_from_db(&state.settings);
+            #[cfg(feature = "lan-sync")]
             lan_sync::refresh_service(hwnd, &state.settings);
         }
     }
@@ -217,6 +259,40 @@ pub(super) unsafe fn on_create(hwnd: HWND, role: WindowRole) -> AppResult<()> {
         timer::start(hwnd, ID_TIMER_CLOUD_SYNC, 5000);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn win32_min_track_size_uses_declared_window_min_size() {
+        let mut info: MINMAXINFO = unsafe { zeroed() };
+        info.ptMinTrackSize.x = 320;
+        info.ptMinTrackSize.y = 240;
+
+        apply_min_track_size(
+            &mut info,
+            UiSize {
+                width: 640,
+                height: 420,
+            },
+        );
+
+        assert_eq!(info.ptMinTrackSize.x, 640);
+        assert_eq!(info.ptMinTrackSize.y, 420);
+
+        apply_min_track_size(
+            &mut info,
+            UiSize {
+                width: 500,
+                height: 360,
+            },
+        );
+
+        assert_eq!(info.ptMinTrackSize.x, 640);
+        assert_eq!(info.ptMinTrackSize.y, 420);
+    }
 }
 
 pub(super) unsafe fn handle_control_command(hwnd: HWND, id: usize, notification: u16) {

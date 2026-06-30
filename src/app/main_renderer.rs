@@ -132,19 +132,8 @@ unsafe fn draw_main_row_text_command(hdc: HDC, command: MainRowTextCommand, text
 }
 
 fn main_icon_asset_kind(kind: MainIconKind) -> IconAssetKind {
-    match kind {
-        MainIconKind::App => IconAssetKind::App,
-        MainIconKind::Search => IconAssetKind::Search,
-        MainIconKind::Settings => IconAssetKind::Setting,
-        MainIconKind::Minimize => IconAssetKind::Min,
-        MainIconKind::Close => IconAssetKind::Close,
-        MainIconKind::Text => IconAssetKind::Text,
-        MainIconKind::Image => IconAssetKind::Image,
-        MainIconKind::File => IconAssetKind::File,
-        MainIconKind::Folder => IconAssetKind::Folder,
-        MainIconKind::Pin => IconAssetKind::Pin,
-        MainIconKind::Delete => IconAssetKind::Delete,
-    }
+    IconAssetKind::from_zsui(kind.zsui_icon())
+        .expect("main window icon must have a Windows icon asset")
 }
 
 fn main_row_icon_kind_for_clip_presentation(

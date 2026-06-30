@@ -131,7 +131,11 @@ pub fn perform_cloud_sync(
 }
 
 pub fn cleanup_cloud_sync_temp_files() -> CloudSyncTempCleanup {
-    cleanup_cloud_sync_temp_files_in_dir(&std::env::temp_dir())
+    let mut report = cleanup_cloud_sync_temp_files_in_dir(&cloud_sync_temp_root());
+    let old_report = cleanup_cloud_sync_temp_files_in_dir(&std::env::temp_dir());
+    report.files_removed += old_report.files_removed;
+    report.dirs_removed += old_report.dirs_removed;
+    report
 }
 
 fn cleanup_cloud_sync_temp_files_in_dir(dir: &Path) -> CloudSyncTempCleanup {
@@ -1036,7 +1040,9 @@ fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
+    let root = cloud_sync_temp_root();
+    let _ = fs::create_dir_all(&root);
+    root.join(format!(
         "zsclip_{}_{}_{}.{}",
         prefix,
         std::process::id(),
@@ -1102,11 +1108,23 @@ fn temp_dir_path(prefix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("zsclip-{prefix}-{}-{ts}", std::process::id()))
+    let root = cloud_sync_temp_root();
+    let _ = fs::create_dir_all(&root);
+    root.join(format!("zsclip-{prefix}-{}-{ts}", std::process::id()))
 }
 
 fn temp_file_path(prefix: &str, ext: &str) -> PathBuf {
     temp_unique_path(prefix, ext)
+}
+
+fn cloud_sync_temp_root() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|dir| dir.join("data").join("temp").join("cloud_sync"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("zsclip").join("cloud_sync"))
 }
 
 fn write_temp_json_file<T: Serialize>(prefix: &str, value: &T) -> Result<PathBuf, String> {

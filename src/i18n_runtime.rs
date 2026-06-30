@@ -129,6 +129,13 @@ fn detect_system_language_code() -> String {
         return platform_locale::user_default_language_code();
     }
 
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(locale) = macos_system_language_code() {
+            return locale;
+        }
+    }
+
     #[cfg(not(target_os = "windows"))]
     {
         ["LC_ALL", "LC_MESSAGES", "LANG"]
@@ -138,6 +145,34 @@ fn detect_system_language_code() -> String {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "en".to_string())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_system_language_code() -> Option<String> {
+    ["AppleLanguages", "AppleLocale"]
+        .into_iter()
+        .find_map(|key| {
+            std::process::Command::new("defaults")
+                .args(["read", "-g", key])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|text| first_macos_locale_code(&text))
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn first_macos_locale_code(raw: &str) -> Option<String> {
+    raw.lines()
+        .map(|line| {
+            line.trim()
+                .trim_matches(|ch| {
+                    ch == char::from(0) || matches!(ch, '(' | ')' | '"' | '\'' | ',' | ';')
+                })
+                .replace('_', "-")
+        })
+        .find(|line| !line.is_empty() && line.chars().any(|ch| ch.is_ascii_alphabetic()))
 }
 
 fn parse_translation_map(text: &str) -> Result<TranslationMap, serde_json::Error> {

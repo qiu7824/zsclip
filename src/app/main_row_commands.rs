@@ -76,6 +76,7 @@ unsafe fn execute_row_external_action(hwnd: HWND, state: &mut AppState, action: 
             let _ = platform_clipboard::WindowsClipboardHost::write_text(&text);
         }
         MainRowExternalActionPlan::LanPushFiles(paths) => {
+            #[cfg(feature = "lan-sync")]
             if paths.is_empty() {
                 platform_dialog::WindowsDialogHost::new().show_message(
                     hwnd,
@@ -85,6 +86,10 @@ unsafe fn execute_row_external_action(hwnd: HWND, state: &mut AppState, action: 
                 );
             } else {
                 lan_sync::push_files_to_trusted(&state.settings, paths);
+            }
+            #[cfg(not(feature = "lan-sync"))]
+            {
+                let _ = paths;
             }
         }
         MainRowExternalActionPlan::QuickSearch(text) => {

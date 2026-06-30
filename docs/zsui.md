@@ -1,5 +1,108 @@
 # ZSUI
 
+## Current API Snapshot
+
+The new public framework-shaped entry point is `src/zsui/`. It is intentionally
+small and declaration-first, so application code and AI tools can read or
+generate one Rust UI description without importing Win32, AppKit, GTK or
+ZSClip product modules.
+
+Minimal declaration:
+
+```rust
+use zsclip::zsui::{app, Command, TraySpec, Window};
+
+let runtime = app("ZSClip")
+    .window(Window::new("ZSClip").size(900, 620).resizable(true))
+    .tray(
+        TraySpec::new()
+            .tooltip("ZSClip")
+            .item("Open", Command::ShowMainWindow)
+            .separator()
+            .item("Quit", Command::Quit),
+    )
+    .global_hotkey("Alt+V", Command::OpenQuickPanel)
+    .run();
+```
+
+For tests, demos and backend bring-up, use `run_with_host`:
+
+```rust
+use zsclip::zsui::{app, Command, MemoryHost, TraySpec, Window};
+
+let mut host = MemoryHost::new();
+let runtime = app("ZSClip")
+    .window(Window::new("ZSClip").size(900, 620))
+    .tray(TraySpec::new().item("Open", Command::ShowMainWindow))
+    .global_hotkey("Alt+V", Command::OpenQuickPanel)
+    .run_with_host(&mut host)?;
+```
+
+The first version exports these stable declaration types:
+
+- `WindowSpec`
+- `Window`
+- `TraySpec`
+- `MenuSpec`
+- `MenuItemSpec`
+- `HotkeySpec`
+- `ClipboardData`
+- `SettingsPageSpec`
+- `SettingsItemSpec`
+- `Command`
+- `AppEvent`
+- `HostCapabilities`
+
+The central backend trait is `ZsuiHost`. It covers creating a main window,
+showing/hiding a window, creating a tray/status menu, registering global
+hotkeys, reading/writing clipboard data, opening a file picker, showing native
+dialogs and querying `HostCapabilities`.
+
+`MemoryHost` is the executable demo/test backend. `PlatformHost` is a safe
+scaffold for the current target: it accepts declarations where the platform
+has a known native path and reports partial or unsupported capabilities instead
+of panicking. The current Windows production path is still the existing
+`src/app/*` plus `src/platform/*` implementation; the new `ZsuiHost` adapter is
+the migration target, not a rewrite of the running application.
+
+Window declarations also report feature-level degradation. For example, a host
+may accept a window declaration while reporting that transparent windows,
+always-on-top behavior, native decorations or resize policy are only partially
+supported on the active backend. The declaration stays portable; the host owns
+the native fallback.
+Hosts keep both sides of that decision: the requested `WindowSpec` and an
+effective spec after unsupported traits fall back to a standard native window
+shape. This lets adapters create a real platform window from effective values
+without losing the user's original declaration.
+
+The native host bridge uses the same semantic fields: title, default size,
+minimum size, resize policy, decorations, always-on-top and transparency. Win32
+maps those fields to window styles, while the AppKit and GTK hosts now collect
+their main window title and sizing traits from a `Window` declaration before
+translating them to `NSWindow` or `ApplicationWindow` calls.
+Win32 also applies declared minimum size through the native
+`WM_GETMINMAXINFO` resize constraint.
+Internal startup code can call `NativeMainWindowRequest::from_zsui_window_for_host`
+to apply `HostCapabilities` first, so unsupported traits are removed before the
+native window is created.
+That request also carries `degraded_capabilities`, so the platform startup path
+can inspect which requested traits were downgraded instead of losing the reason
+after effective native options are calculated.
+Recording native hosts keep those details with their create-window requests,
+which gives macOS and Linux bring-up tests the same visibility as the shared
+`MemoryHost`.
+Use the `*_native_window_host()` capability constructors for real Win32,
+AppKit and GTK window hosts; keep `*_scaffold()` for recording or bring-up
+hosts that only accept declarations partially.
+Traits that are not wired in a real native window host, such as current main
+window transparency, are marked unsupported there and resolve to the standard
+opaque native window shape.
+
+See also:
+
+- `docs/zsui-architecture.md`
+- `docs/zsui-platform-matrix.md`
+
 ZSUI is the UI architecture being extracted from ZSClip. It is not a single
 cross-platform skin. It is a Rust-first contract for sharing UI behavior while
 each operating system keeps a native host.
@@ -704,7 +807,8 @@ Windows message handling, class names or drawing helpers.
 ## Naming
 
 - Framework name: `ZSUI`
-- Current source of truth: `src/app_core/zsui.rs`
+- Current public API source of truth: `src/zsui/`
+- Framework manifest source: `src/app_core/zsui.rs`
 - UI surface protocol source: `src/app_core/ui_surface_protocol.rs`
 - Command protocol source: `src/app_core/command_protocol.rs`
 - Component protocol source: `src/app_core/component_protocol.rs`

@@ -2510,6 +2510,22 @@ pub(crate) enum MainIconColorMode {
 }
 
 impl MainIconKind {
+    pub(crate) const fn zsui_icon(self) -> crate::zsui::ZsIcon {
+        match self {
+            Self::App => crate::zsui::ZsIcon::App,
+            Self::Search => crate::zsui::ZsIcon::Search,
+            Self::Settings => crate::zsui::ZsIcon::Settings,
+            Self::Minimize => crate::zsui::ZsIcon::Minimize,
+            Self::Close => crate::zsui::ZsIcon::Close,
+            Self::Text => crate::zsui::ZsIcon::Text,
+            Self::Image => crate::zsui::ZsIcon::Image,
+            Self::File => crate::zsui::ZsIcon::File,
+            Self::Folder => crate::zsui::ZsIcon::Folder,
+            Self::Pin => crate::zsui::ZsIcon::Pin,
+            Self::Delete => crate::zsui::ZsIcon::Delete,
+        }
+    }
+
     pub(crate) fn for_clip_item(kind: ClipKind, is_directory: bool) -> Self {
         match kind {
             ClipKind::Text | ClipKind::Phrase => Self::Text,
@@ -2900,10 +2916,17 @@ impl MainUiLayout {
     ) -> Option<UiRect> {
         let row = self.row_rect(visible_idx, filtered_len, scroll_y)?;
         let size = (self.row_h * 16 / 44).max(16);
-        let left = row.left + (self.row_h * 32 / 44).clamp(24, 40);
+        let icon = self.row_icon_rect(visible_idx, filtered_len, scroll_y)?;
+        let left = icon.left + (self.row_h * 22 / 44).max(22);
         let view_top = self.list_y + self.list_pad;
         let view_bottom = self.list_y + self.list_h - self.list_pad;
-        let top = (row.top + 3).clamp(view_top + 2, view_bottom - size - 2);
+        let mut top = row.top + (self.row_h * 3 / 44).max(3);
+        if top < view_top + 2 {
+            top = view_top + 2;
+        }
+        if top + size > view_bottom - 2 {
+            return None;
+        }
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
@@ -4488,10 +4511,31 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
-        assert!(plan
+        assert!(plan.visible_rows.iter().all(|row| row.icon_rect.is_some()));
+        let first_row = plan
             .visible_rows
             .iter()
-            .all(|row| row.icon_rect.is_some() && row.pin_rect.is_some()));
+            .find(|row| row.rect.top >= layout.list_y + layout.list_pad)
+            .expect("fully visible row");
+        let row_icon = first_row.icon_rect.expect("row icon rect");
+        let pin = first_row.pin_rect.expect("pin rect");
+        let expected_pin_left = row_icon.left + (layout.row_h * 22 / 44).max(22);
+        assert!(
+            pin.left >= expected_pin_left - 1 && pin.left <= expected_pin_left + 1,
+            "pin icon should match the 0.7.1 row-icon badge position, got row_icon={row_icon:?} pin={pin:?}"
+        );
+        assert!(
+            pin.width() == 16 && pin.height() == 16,
+            "pin icon should keep the 0.7.1 16px badge size"
+        );
+        assert!(
+            pin.left < first_row.rect.left + first_row.rect.width() / 3,
+            "pin icon should not drift into the row text/action area"
+        );
+        assert!(
+            pin.top <= first_row.rect.top + 5,
+            "pin icon should stay near the 0.7.1 row top badge position"
+        );
         assert_eq!(
             plan.visible_rows
                 .iter()
@@ -5445,6 +5489,26 @@ mod tests {
         assert!(compact.paint_commands.is_empty());
         assert!(compact.icon_commands.is_empty());
 
+        let pinned_only = layout.row_content_plan(
+            &row,
+            MainRowContentInput {
+                pinned: true,
+                show_delete: false,
+                show_preview: false,
+            },
+        );
+        assert_eq!(pinned_only.text_rect, compact.text_rect);
+        assert_eq!(pinned_only.text_command.rect, compact.text_rect);
+        assert_eq!(pinned_only.preview_rect, None);
+        assert_eq!(
+            pinned_only
+                .icon_commands
+                .iter()
+                .map(|command| (command.kind, command.rect))
+                .collect::<Vec<_>>(),
+            vec![(MainIconKind::Pin, UiRect::new(64, 112, 80, 128))]
+        );
+
         let expanded = layout.row_content_plan(
             &row,
             MainRowContentInput {
@@ -5454,8 +5518,8 @@ mod tests {
             },
         );
         assert_eq!(expanded.delete_rect, Some(UiRect::new(232, 107, 248, 123)));
-        assert_eq!(expanded.preview_rect, Some(UiRect::new(92, 103, 116, 127)));
-        assert_eq!(expanded.text_rect, UiRect::new(126, 105, 228, 125));
+        assert_eq!(expanded.preview_rect, Some(UiRect::new(72, 103, 96, 127)));
+        assert_eq!(expanded.text_rect, UiRect::new(106, 105, 228, 125));
         assert_eq!(expanded.text_command.rect, expanded.text_rect);
         assert_eq!(
             expanded.paint_commands,
@@ -5467,7 +5531,7 @@ mod tests {
                     radius: 10,
                 },
                 MainPaintCommand::RoundRect {
-                    rect: UiRect::new(90, 101, 118, 129),
+                    rect: UiRect::new(70, 101, 98, 129),
                     fill: MainPaintFill::Theme(MainThemeRole::Surface2),
                     stroke: Some(MainThemeRole::Stroke),
                     radius: 8,

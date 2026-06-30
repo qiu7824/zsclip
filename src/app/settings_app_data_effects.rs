@@ -2,7 +2,9 @@ use super::prelude::*;
 
 pub(super) unsafe fn settings_refresh_data_after_commit(st: &SettingsWndState, app: &mut AppState) {
     schedule_cloud_sync(app, false);
+    #[cfg(feature = "lan-sync")]
     refresh_lan_latest_from_db(&app.settings);
+    #[cfg(feature = "lan-sync")]
     crate::lan_sync::refresh_service(st.parent_hwnd, &app.settings);
     let new_max = app.settings.max_items;
     let mut reload_needed = false;
@@ -19,5 +21,6 @@ pub(super) unsafe fn settings_refresh_data_after_commit(st: &SettingsWndState, a
     if reload_needed {
         reload_state_from_db_persisting(app);
     }
+    #[cfg(feature = "lan-sync")]
     refresh_lan_latest_from_db(&app.settings);
 }

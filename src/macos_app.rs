@@ -1,3 +1,5 @@
+#![cfg_attr(not(target_os = "macos"), allow(dead_code, unused_imports))]
+
 use crate::app_core::main_window::{
     MainPointerMoveTransition, MainPointerUpTransition, MainRenderPlan, MainVvPopupTextRole,
 };
@@ -37,17 +39,17 @@ use crate::app_core::{
     NativeSettingsWindowRequest, NativeShellOpenHost, NativeTextCaretAnchor, NativeTextCaretHost,
     NativeTextInputDialogHost, NativeTextInputDialogRequest, NativeTransientWindowHost,
     NativeTransientWindowPresentation, NativeTransientWindowRequest, NativeUiPlatform,
-    NativeUiToolkit, NativeWindowIdentityHost, NativeWindowToken, PasteTargetFocusStatus,
-    PasteTargetTextInputCapabilities, Point, ProductAdapterAsyncBridgeResult,
-    ProductAdapterCommandResult, ProductAdapterHost, ProductAiExecutionPlan, ProductAiInvocation,
-    ProductAiUiSurface, Rect, Renderer, SettingsAction, SettingsActionExecutor,
-    SettingsActionRoute, SettingsComponentKind, SettingsControlSpec, SettingsGroupTextInputKind,
-    SettingsLanAcceptedDeviceProjection, StatusItemHost, StatusMenuEntry, TextLayout, TextRun,
-    TextStyle, TitleButtonVisibility, UiRect, APP_CORE_API_VERSION,
-    REQUIRED_MAIN_HOST_EXECUTION_PLAN_KINDS, REQUIRED_NATIVE_CONTROL_MAPPER_OPERATIONS,
-    REQUIRED_NATIVE_DIALOG_HOST_OPERATIONS, REQUIRED_NATIVE_EDIT_TEXT_DIALOG_HOST_OPERATIONS,
-    REQUIRED_NATIVE_FILE_DIALOG_HOST_OPERATIONS, REQUIRED_NATIVE_IME_HOST_OPERATIONS,
-    REQUIRED_NATIVE_MAIL_MERGE_WINDOW_HOST_OPERATIONS,
+    NativeUiToolkit, NativeWindowIdentityHost, NativeWindowOptions, NativeWindowToken,
+    PasteTargetFocusStatus, PasteTargetTextInputCapabilities, Point,
+    ProductAdapterAsyncBridgeResult, ProductAdapterCommandResult, ProductAdapterHost,
+    ProductAiExecutionPlan, ProductAiInvocation, ProductAiUiSurface, Rect, Renderer,
+    SettingsAction, SettingsActionExecutor, SettingsActionRoute, SettingsComponentKind,
+    SettingsControlSpec, SettingsGroupTextInputKind, SettingsLanAcceptedDeviceProjection,
+    StatusItemHost, StatusMenuEntry, TextLayout, TextRun, TextStyle, TitleButtonVisibility, UiRect,
+    APP_CORE_API_VERSION, REQUIRED_MAIN_HOST_EXECUTION_PLAN_KINDS,
+    REQUIRED_NATIVE_CONTROL_MAPPER_OPERATIONS, REQUIRED_NATIVE_DIALOG_HOST_OPERATIONS,
+    REQUIRED_NATIVE_EDIT_TEXT_DIALOG_HOST_OPERATIONS, REQUIRED_NATIVE_FILE_DIALOG_HOST_OPERATIONS,
+    REQUIRED_NATIVE_IME_HOST_OPERATIONS, REQUIRED_NATIVE_MAIL_MERGE_WINDOW_HOST_OPERATIONS,
     REQUIRED_NATIVE_MAIN_SEARCH_CONTROL_HOST_OPERATIONS,
     REQUIRED_NATIVE_MAIN_WINDOW_HOST_OPERATIONS, REQUIRED_NATIVE_PASTE_TARGET_HOST_OPERATIONS,
     REQUIRED_NATIVE_POPUP_MENU_HOST_OPERATIONS, REQUIRED_NATIVE_SETTINGS_DROPDOWN_HOST_OPERATIONS,
@@ -1302,7 +1304,9 @@ pub(crate) struct MacosMainWindowHandle(u64);
 pub(crate) struct MacosMainWindowRequest {
     title: String,
     size: crate::app_core::Size,
+    options: NativeWindowOptions,
     main_visible: bool,
+    degraded_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6280,15 +6284,20 @@ impl MacosMainWindowModel {
         title: impl Into<String>,
         main_visible: bool,
     ) -> MacosStartupPlan {
+        let main_window = crate::zsui::Window::new(title)
+            .size(
+                self.layout.win_w.max(1) as u32,
+                (self.layout.list_y + self.layout.list_h + 7).max(1) as u32,
+            )
+            .visible(main_visible)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true);
         MacosStartupPlan {
-            main_window: NativeMainWindowRequest {
-                title: title.into(),
-                size: crate::app_core::Size {
-                    width: self.layout.win_w,
-                    height: self.layout.list_y + self.layout.list_h + 7,
-                },
-                main_visible,
-            },
+            main_window: NativeMainWindowRequest::from_zsui_window_for_host(
+                &main_window,
+                &crate::zsui::HostCapabilities::macos_native_window_host(),
+            ),
             lifecycle: LifecycleEvent::Mount,
         }
     }
@@ -7171,7 +7180,9 @@ impl NativeMainWindowHost for MacosMainWindowHost {
         self.requests.borrow_mut().push(MacosMainWindowRequest {
             title: request.title,
             size: request.size,
+            options: request.options,
             main_visible: request.main_visible,
+            degraded_capabilities: request.degraded_capabilities,
         });
         let handles = NativeMainWindowHandles {
             main: MacosMainWindowHandle(1),
@@ -9839,11 +9850,20 @@ pub(crate) fn macos_native_host_projected_clip_items() -> Vec<NativeHostClipList
 pub(crate) fn macos_native_host_projected_clip_items_for_group(
     group_id: i64,
 ) -> Vec<NativeHostClipListItemProjection> {
+    macos_native_host_projected_clip_items_for_category_group(0, group_id)
+}
+
+pub(crate) fn macos_native_host_projected_clip_items_for_category_group(
+    category: i64,
+    group_id: i64,
+) -> Vec<NativeHostClipListItemProjection> {
     if group_id > 0 {
-        if let Ok(items) = crate::db_runtime::native_clip_list_items_for_group(0, group_id, 64) {
+        if let Ok(items) =
+            crate::db_runtime::native_clip_list_items_for_group(category, group_id, 64)
+        {
             return items;
         }
-    } else if let Ok(items) = crate::db_runtime::native_clip_list_items(0, 64) {
+    } else if let Ok(items) = crate::db_runtime::native_clip_list_items(category, 64) {
         return items;
     }
     Vec::new()
@@ -10067,8 +10087,10 @@ mod tests {
             "zsclip.settings_platform.enable_system_clipboard_history.not_applicable_on_macos_native_host"
         );
 
-        let restart_shell =
-            dispatch_macos_native_settings_route_action("settings_platform", "restart_system_shell");
+        let restart_shell = dispatch_macos_native_settings_route_action(
+            "settings_platform",
+            "restart_system_shell",
+        );
         assert!(restart_shell.accepted);
         assert_eq!(
             restart_shell.result_name,
@@ -10583,6 +10605,48 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_category_projection_keeps_records_and_phrases_separate() {
+        crate::db_runtime::with_test_db(|| {
+            let (record_id, phrase_id) = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'record only', 'macos-record-only', 'record only text', '')",
+                    [],
+                )?;
+                let record_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(1, 'phrase', 'phrase only', 'macos-phrase-only', 'phrase only text', '')",
+                    [],
+                )?;
+                Ok((record_id, conn.last_insert_rowid()))
+            })?;
+            let phrase_group = crate::db_runtime::create_native_clip_group(1, "macOS Phrase Group")?;
+            assert_eq!(
+                crate::db_runtime::assign_native_clip_group(&[phrase_id], phrase_group.id)?,
+                1
+            );
+
+            let records = macos_native_host_projected_clip_items_for_category_group(0, 0);
+            assert!(records.iter().any(|item| item.id == record_id));
+            assert!(!records.iter().any(|item| item.id == phrase_id));
+
+            let phrases = macos_native_host_projected_clip_items_for_category_group(1, 0);
+            assert!(phrases.iter().any(|item| item.id == phrase_id));
+            assert!(!phrases.iter().any(|item| item.id == record_id));
+
+            let grouped_phrases =
+                macos_native_host_projected_clip_items_for_category_group(1, phrase_group.id);
+            assert_eq!(grouped_phrases.len(), 1);
+            assert_eq!(grouped_phrases[0].id, phrase_id);
+            assert!(
+                macos_native_host_projected_clip_items_for_category_group(0, phrase_group.id)
+                    .is_empty()
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn macos_native_settings_group_management_updates_database() {
         crate::db_runtime::with_test_db(|| {
             let create = dispatch_macos_native_create_group(0, "macOS Managed");
@@ -10746,6 +10810,17 @@ mod tests {
         assert!(host_source.contains("doc.on.clipboard"));
         assert!(host_source.contains("image.setTemplate(true)"));
         assert!(host_source.contains("NSWindowStyleMask::Borderless"));
+        assert!(host_source.contains("fn appkit_main_window_capabilities()"));
+        assert!(host_source.contains("HostCapabilities::macos_native_window_host()"));
+        assert!(host_source.contains(".resolve_for(&appkit_main_window_capabilities())"));
+        assert!(host_source.contains("fn appkit_window_style_mask(spec: &Window)"));
+        assert!(host_source.contains("appkit_window_style_mask(&window_spec)"));
+        assert!(host_source.contains("if spec.resizable"));
+        assert!(host_source.contains("if window_spec.always_on_top"));
+        assert!(host_source.contains("(window_spec.min_width, window_spec.min_height)"));
+        assert!(host_source.contains(
+            "window.setContentMinSize(NSSize::new(min_width as f64, min_height as f64))"
+        ));
         assert!(host_source.contains("window.setHasShadow(true)"));
         assert!(host_source.contains("NSColor::clearColor()"));
         assert!(host_source.contains("NSWindowStyleMask::FullSizeContentView"));
@@ -10767,7 +10842,8 @@ mod tests {
         assert!(host_source.contains("ZSClip AppKit auto smoke delete item_id="));
         assert!(host_source.contains("insert_native_clipboard_image("));
         assert!(host_source.contains("ZSClip AppKit auto smoke image copy item_id="));
-        assert!(host_source.contains("MacosClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
+        assert!(host_source
+            .contains("MacosClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
         assert!(host_source.contains("window.setLevel(NSFloatingWindowLevel)"));
@@ -11487,7 +11563,9 @@ mod tests {
                 width: 300,
                 height: 614,
             },
+            options: NativeWindowOptions::tool_window(),
             main_visible: true,
+            degraded_capabilities: Vec::new(),
         });
 
         assert_eq!(
@@ -11500,6 +11578,7 @@ mod tests {
         assert_eq!(host.requests().len(), 1);
         assert_eq!(host.requests()[0].title, "ZSClip");
         assert_eq!(host.requests()[0].size.width, 300);
+        assert!(host.requests()[0].options.always_on_top);
         assert!(host.requests()[0].main_visible);
 
         host.apply_main_window_appearance(MacosMainWindowHandle(1));
@@ -11764,6 +11843,7 @@ mod tests {
         assert_eq!(startup.main_window.title, "ZSClip Test");
         assert_eq!(startup.main_window.size.width, 300);
         assert_eq!(startup.main_window.size.height, 615);
+        assert!(startup.main_window.options.always_on_top);
         assert!(!startup.main_window.main_visible);
 
         let presentation = host.create_main_windows(startup.main_window.clone());
@@ -11777,6 +11857,33 @@ mod tests {
     }
 
     #[test]
+    fn macos_main_window_host_records_zsui_degradation_details() {
+        let mut host = MacosMainWindowHost::default();
+        let request = NativeMainWindowRequest::from_zsui_window_for_host(
+            &crate::zsui::Window::new("Transparent Mac").transparent(true),
+            &crate::zsui::HostCapabilities::macos_native_window_host(),
+        );
+
+        assert!(!request.options.transparent);
+        assert!(request
+            .degraded_capabilities
+            .iter()
+            .any(|detail| detail.contains("window_transparency")));
+
+        let presentation = host.create_main_windows(request);
+        assert!(matches!(
+            presentation,
+            NativeMainWindowPresentation::Created(_)
+        ));
+        assert_eq!(host.requests().len(), 1);
+        assert!(!host.requests()[0].options.transparent);
+        assert!(host.requests()[0]
+            .degraded_capabilities
+            .iter()
+            .any(|detail| detail.contains("window_transparency")));
+    }
+
+    #[test]
     fn macos_application_model_implements_native_runtime_driver() {
         let mut application = MacosApplicationModel::default();
         let startup = application.start_runtime(NativeRuntimeStartupRequest {
@@ -11787,7 +11894,9 @@ mod tests {
                     width: 640,
                     height: 420,
                 },
+                options: NativeWindowOptions::standard(),
                 main_visible: true,
+                degraded_capabilities: Vec::new(),
             },
             status_item_tooltip: Some("Demo Mac".to_string()),
         });

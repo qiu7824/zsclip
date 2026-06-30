@@ -64,7 +64,121 @@ pub(crate) fn required_native_runtime_driver_operation_names() -> Vec<&'static s
 pub(crate) struct NativeMainWindowRequest {
     pub(crate) title: String,
     pub(crate) size: Size,
+    pub(crate) options: NativeWindowOptions,
     pub(crate) main_visible: bool,
+    pub(crate) degraded_capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeWindowOptions {
+    pub(crate) min_size: Option<Size>,
+    pub(crate) resizable: bool,
+    pub(crate) decorations: bool,
+    pub(crate) always_on_top: bool,
+    pub(crate) transparent: bool,
+}
+
+impl NativeWindowOptions {
+    pub(crate) const fn standard() -> Self {
+        Self {
+            min_size: None,
+            resizable: true,
+            decorations: true,
+            always_on_top: false,
+            transparent: false,
+        }
+    }
+
+    pub(crate) const fn tool_window() -> Self {
+        Self {
+            min_size: None,
+            resizable: false,
+            decorations: false,
+            always_on_top: true,
+            transparent: false,
+        }
+    }
+
+    pub(crate) const fn from_parts(
+        min_size: Option<Size>,
+        resizable: bool,
+        decorations: bool,
+        always_on_top: bool,
+        transparent: bool,
+    ) -> Self {
+        Self {
+            min_size,
+            resizable,
+            decorations,
+            always_on_top,
+            transparent,
+        }
+    }
+
+    pub(crate) const fn with_min_size(mut self, size: Size) -> Self {
+        self.min_size = Some(size);
+        self
+    }
+
+    pub(crate) fn from_zsui_window(window: &crate::zsui::WindowSpec) -> Self {
+        let min_size = match (window.min_width, window.min_height) {
+            (Some(width), Some(height)) => Some(Size {
+                width: u32_to_i32_saturating(width).max(1),
+                height: u32_to_i32_saturating(height).max(1),
+            }),
+            _ => None,
+        };
+        Self {
+            min_size,
+            resizable: window.resizable,
+            decorations: window.decorations,
+            always_on_top: window.always_on_top,
+            transparent: window.transparent,
+        }
+    }
+
+    pub(crate) fn from_zsui_window_for_host(
+        window: &crate::zsui::WindowSpec,
+        capabilities: &crate::zsui::HostCapabilities,
+    ) -> Self {
+        let resolved = window.resolve_for(capabilities);
+        Self::from_zsui_window(&resolved.effective)
+    }
+}
+
+impl Default for NativeWindowOptions {
+    fn default() -> Self {
+        Self::standard()
+    }
+}
+
+impl NativeMainWindowRequest {
+    pub(crate) fn from_zsui_window(window: &crate::zsui::WindowSpec) -> Self {
+        Self {
+            title: window.title.clone(),
+            size: Size {
+                width: u32_to_i32_saturating(window.width).max(1),
+                height: u32_to_i32_saturating(window.height).max(1),
+            },
+            options: NativeWindowOptions::from_zsui_window(window),
+            main_visible: window.visible,
+            degraded_capabilities: Vec::new(),
+        }
+    }
+
+    pub(crate) fn from_zsui_window_for_host(
+        window: &crate::zsui::WindowSpec,
+        capabilities: &crate::zsui::HostCapabilities,
+    ) -> Self {
+        let resolved = window.resolve_for(capabilities);
+        let mut request = Self::from_zsui_window(&resolved.effective);
+        request.degraded_capabilities = resolved.degraded_capabilities;
+        request
+    }
+}
+
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    value.min(i32::MAX as u32) as i32
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

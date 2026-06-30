@@ -62,6 +62,7 @@ mod windows_text_input_dialog;
 #[cfg(any(target_os = "windows", test))]
 mod windows_win32_adapter;
 mod zsclip_product_adapter;
+pub mod zsui;
 
 #[cfg(target_os = "windows")]
 fn main() {
@@ -403,8 +404,9 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("ZSClip AppKit identity smoke queried=true"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"));
-        assert!(macos_smoke_script
-            .contains("ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"));
+        assert!(macos_smoke_script.contains(
+            "ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"
+        ));
         assert!(macos_smoke_script.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_smoke_script.contains("SHELL_OPEN_DRY_RUN_LOG=true"));
         assert!(macos_smoke_script.contains(
@@ -584,14 +586,12 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("monitor.scale_factor()"));
         assert!(linux_native_host_rs.contains("window.scale_factor()"));
         assert!(linux_native_host_rs.contains("always_on_top_supported={}"));
-        assert!(
-            linux_smoke_script.contains("always_on_top_supported=true cursor_follow_supported=true")
-        );
+        assert!(linux_smoke_script
+            .contains("always_on_top_supported=true cursor_follow_supported=true"));
         assert!(native_hosts_workflow.contains("openbox"));
         assert!(native_hosts_workflow.contains("wmctrl"));
         assert!(native_hosts_workflow.contains("xdotool"));
-        assert!(native_hosts_workflow
-            .contains("openbox >/tmp/zsclip-openbox.log 2>&1 & sleep 1"));
+        assert!(native_hosts_workflow.contains("openbox >/tmp/zsclip-openbox.log 2>&1 & sleep 1"));
         assert!(linux_native_host_rs.contains("SearchEntry::new()"));
         assert!(linux_native_host_rs.contains("native_host_search_input_specs()"));
         assert!(linux_native_host_rs.contains("connect_search_changed"));

@@ -35,6 +35,7 @@ pub(super) unsafe fn execute_main_menu_command(hwnd: HWND, intent: MainMenuComma
                         reset_clipboard_retry(hwnd, state);
                     }
                 }
+                #[cfg(feature = "lan-sync")]
                 MainTrayActionPlan::SetLanSync { enabled } => {
                     state.settings.lan_sync_enabled = enabled;
                     if lan_sync::ensure_device_identity(&mut state.settings) {
@@ -45,6 +46,8 @@ pub(super) unsafe fn execute_main_menu_command(hwnd: HWND, intent: MainMenuComma
                     lan_sync::refresh_service(hwnd, &state.settings);
                     request_settings_window_repaint(state.settings_hwnd);
                 }
+                #[cfg(not(feature = "lan-sync"))]
+                MainTrayActionPlan::SetLanSync { .. } => {}
                 MainTrayActionPlan::Exit => {
                     destroy_main_window(hwnd);
                 }
@@ -326,7 +329,10 @@ pub(super) unsafe fn dispatch_main_ui_event(hwnd: HWND, event: UiEvent) -> bool 
 
 pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: ApplicationEvent) {
     match event {
+        #[cfg(feature = "lan-sync")]
         ApplicationEvent::LanSyncReady => handle_lan_sync_ready(hwnd),
+        #[cfg(not(feature = "lan-sync"))]
+        ApplicationEvent::LanSyncReady => {}
         ApplicationEvent::VvShowRequested { target } => {
             let ptr = get_state_ptr(hwnd);
             if ptr.is_null() {

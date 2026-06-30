@@ -144,6 +144,27 @@ pub(crate) enum IconAssetKind {
     Delete = 10,
 }
 
+impl IconAssetKind {
+    pub(crate) const fn from_zsui(icon: crate::zsui::ZsIcon) -> Option<Self> {
+        match icon {
+            crate::zsui::ZsIcon::App => Some(Self::App),
+            crate::zsui::ZsIcon::Search => Some(Self::Search),
+            crate::zsui::ZsIcon::Settings => Some(Self::Setting),
+            crate::zsui::ZsIcon::Minimize => Some(Self::Min),
+            crate::zsui::ZsIcon::Close => Some(Self::Close),
+            crate::zsui::ZsIcon::Text | crate::zsui::ZsIcon::Phrase => Some(Self::Text),
+            crate::zsui::ZsIcon::Image => Some(Self::Image),
+            crate::zsui::ZsIcon::File => Some(Self::File),
+            crate::zsui::ZsIcon::Folder | crate::zsui::ZsIcon::Group => Some(Self::Folder),
+            crate::zsui::ZsIcon::Pin => Some(Self::Pin),
+            crate::zsui::ZsIcon::Delete => Some(Self::Delete),
+            crate::zsui::ZsIcon::Copy | crate::zsui::ZsIcon::Paste | crate::zsui::ZsIcon::Edit => {
+                None
+            }
+        }
+    }
+}
+
 pub(crate) unsafe fn open_path_with_shell(path: &str) {
     if let Some((scheme, _)) = path.split_once("://") {
         let scheme = scheme.trim().to_ascii_lowercase();
@@ -204,7 +225,7 @@ fn version_score(path: &Path) -> Vec<u32> {
 }
 
 fn embedded_wcocr_extract_path() -> Option<PathBuf> {
-    let base = std::env::temp_dir().join("zsclip").join("plugin");
+    let base = app_temp_root().join("plugin");
     std::fs::create_dir_all(&base).ok()?;
     let hash = format!("{:x}", md5::compute(EMBEDDED_WCOCR_DLL));
     let dll_path = base.join(format!("wcocr-{}.dll", &hash[..8]));
@@ -482,13 +503,25 @@ fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
+    let root = app_temp_root();
+    let _ = std::fs::create_dir_all(&root);
+    root.join(format!(
         "zsclip_{}_{}_{}.{}",
         prefix,
         std::process::id(),
         ts,
         ext.trim_start_matches('.')
     ))
+}
+
+fn app_temp_root() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|dir| dir.join("data").join("temp").join("shell"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("zsclip").join("shell"))
 }
 
 fn curl_config_quote(value: &str) -> String {

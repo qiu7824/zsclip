@@ -171,6 +171,22 @@ pub(crate) const fn native_popup_menu_command_icon_name(menu_id: usize) -> Optio
     }
 }
 
+pub(crate) const fn native_popup_menu_command_zsui_icon(
+    menu_id: usize,
+) -> Option<crate::zsui::ZsIcon> {
+    match menu_id {
+        menu_ids::ROW_COPY => Some(crate::zsui::ZsIcon::Copy),
+        menu_ids::ROW_PASTE => Some(crate::zsui::ZsIcon::Paste),
+        menu_ids::ROW_EDIT => Some(crate::zsui::ZsIcon::Edit),
+        menu_ids::ROW_DELETE | menu_ids::ROW_DELETE_UNPINNED => Some(crate::zsui::ZsIcon::Delete),
+        menu_ids::ROW_PIN => Some(crate::zsui::ZsIcon::Pin),
+        menu_ids::ROW_COPY_PATH => Some(crate::zsui::ZsIcon::File),
+        menu_ids::ROW_GROUP_REMOVE => Some(crate::zsui::ZsIcon::Group),
+        menu_ids::GROUP_FILTER_ALL => Some(crate::zsui::ZsIcon::Group),
+        _ => None,
+    }
+}
+
 pub(crate) const fn native_popup_menu_command_accelerator_label(
     menu_id: usize,
 ) -> Option<&'static str> {

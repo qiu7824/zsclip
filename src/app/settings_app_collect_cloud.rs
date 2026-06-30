@@ -37,6 +37,11 @@ pub(super) unsafe fn settings_collect_cloud_to_draft(st: &mut SettingsWndState) 
             }
         };
     }
+    #[cfg(not(feature = "lan-sync"))]
+    {
+        st.draft.lan_sync_enabled = false;
+    }
+    #[cfg(feature = "lan-sync")]
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_lan_name.is_null() {
         st.draft.lan_device_name = settings_host_text(st.ed_lan_name)
             .trim()
@@ -44,6 +49,7 @@ pub(super) unsafe fn settings_collect_cloud_to_draft(st: &mut SettingsWndState) 
             .take(48)
             .collect();
     }
+    #[cfg(feature = "lan-sync")]
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_lan_tcp_port.is_null() {
         st.draft.lan_tcp_port = settings_host_text(st.ed_lan_tcp_port)
             .trim()
@@ -52,9 +58,11 @@ pub(super) unsafe fn settings_collect_cloud_to_draft(st: &mut SettingsWndState) 
             .filter(|port| *port > 0)
             .unwrap_or(crate::lan_sync::LAN_TCP_PORT_DEFAULT);
     }
+    #[cfg(feature = "lan-sync")]
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.ed_lan_manual_host.is_null() {
         st.draft.lan_manual_host = settings_host_text(st.ed_lan_manual_host).trim().to_string();
     }
+    #[cfg(feature = "lan-sync")]
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.cb_lan_receive_mode.is_null() {
         st.draft.lan_receive_mode =
             lan_receive_mode_from_label(&settings_host_text(st.cb_lan_receive_mode)).to_string();

@@ -56,7 +56,7 @@ jobs:
           剪贴板 0.9.9 - Windows
 
           安装/运行:
-          1. 解压此 zip 到任意目录，例如 C:\Users\<你>\AppData\Local\Programs\ZSClip。
+          1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
           2. 双击 剪贴板.exe 运行。
           3. 如果 Windows SmartScreen 提示未知发布者，选择“更多信息”后继续运行。
 
@@ -65,9 +65,6 @@ jobs:
           - 开机自启、托盘、热键等功能在应用设置里启用。
           '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
           Copy-Item dist\zsclip-windows-x86_64\INSTALL.txt dist\installer-source\INSTALL.txt
-          Invoke-WebRequest `
-            -Uri "https://raw.githubusercontent.com/kira-96/Inno-Setup-Chinese-Simplified-Translation/master/ChineseSimplified.isl" `
-            -OutFile "ChineseSimplified.isl"
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           @'
           #define MyAppName "剪贴板"
@@ -116,7 +113,7 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimplified"; MessagesFile: ".\ChineseSimplified.isl"
+          Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
@@ -124,6 +121,11 @@ jobs:
 
           [Files]
           Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\Output\*,\.git\*,\.github\*,\target\*,\__pycache__\*,\build\*,\dist\*,\installer\*,\venv\*,\.venv\*,\node_modules\*,\*.iss,*.pyc,*.pyo"
+
+          [Dirs]
+          Name: "{app}\data"
+          Name: "{app}\data\temp"
+          Name: "{app}\data\logs"
 
           [InstallDelete]
           Type: files; Name: "{autoprograms}\ZSClip.lnk"
@@ -163,11 +165,48 @@ jobs:
             Write-Output "::error title=Windows installer build failed::$message"
             exit $LASTEXITCODE
           }
+          $status = 1
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            Write-Output "cargo build no-lan attempt $attempt/3"
+            cargo build --release --locked --no-default-features --features "vv-paste,cloud-sync,mail-merge,ai-actions,sticker"
+            $status = $LASTEXITCODE
+            if ($status -eq 0) {
+              break
+            }
+            if ($attempt -lt 3) {
+              Start-Sleep -Seconds (10 * $attempt)
+            }
+          }
+          if ($status -ne 0) {
+            exit $status
+          }
+          New-Item -ItemType Directory -Force dist\installer-source-no-lan | Out-Null
+          Copy-Item target\release\zsclip.exe dist\installer-source-no-lan\剪贴板.exe -Force
+          Copy-Item dist\installer-source\INSTALL.txt dist\installer-source-no-lan\INSTALL.txt -Force
+          $noLanInstaller = (Get-Content installer.iss -Raw).
+            Replace('#define MySourceDir "dist\installer-source"', '#define MySourceDir "dist\installer-source-no-lan"').
+            Replace('OutputBaseFilename=zsclip-v{#MyAppVersion}-setup', 'OutputBaseFilename=zsclip-v{#MyAppVersion}-setup-no-lan').
+            Replace('AppVerName={#MyAppName} {#MyAppVersion}', 'AppVerName={#MyAppName} {#MyAppVersion} 无局域网同步').
+            Replace('VersionInfoDescription={#MyAppName}', 'VersionInfoDescription={#MyAppName} 无局域网同步')
+          [System.IO.File]::WriteAllText((Resolve-Path .).Path + '\installer-no-lan.iss', $noLanInstaller, [System.Text.UTF8Encoding]::new($true))
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer-no-lan.iss 2>&1 | Tee-Object -FilePath inno-build-no-lan.log
+          if ($LASTEXITCODE -ne 0) {
+            $message = (Get-Content inno-build-no-lan.log -Tail 120) -join "`n"
+            $message = $message.Replace('%', '%25').Replace("`n", '%0A').Replace("`r", '%0D')
+            Write-Output "::error title=Windows no-lan installer build failed::$message"
+            exit $LASTEXITCODE
+          }
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
           name: zsclip-v0.9.9-setup.exe
           path: dist/zsclip-v0.9.9-setup.exe
+          if-no-files-found: error
+      - name: Upload Windows no-lan installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-v0.9.9-setup-no-lan.exe
+          path: dist/zsclip-v0.9.9-setup-no-lan.exe
           if-no-files-found: error
       - name: Upload Windows portable package
         uses: actions/upload-artifact@v7
@@ -430,20 +469,20 @@ jobs:
           - 针对 macOS AppKit、Linux GTK 的真实绑定修复大量编译和 objc2/GTK 适配问题。
 
           ### 打包与发布
-          - Windows 提供安装器和便携包。
+          - Windows 提供安装器、无局域网同步安装器和便携包。
           - macOS 提供 Intel 与 Apple Silicon 两个预览 DMG。
           - GitHub Actions 当前向正式 Release 上传 Windows 安装包、Windows 便携包、macOS 预览 DMG 和 Linux 预览包。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v0.9.9-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`。
           - macOS Apple Silicon: 下载 `zsclip-macos-arm64.dmg`。
           - macOS Intel: 下载 `zsclip-macos-x86_64.dmg`。
           - Linux Ubuntu/Debian: 下载 `zsclip-linux-x86_64.deb`。
           - Linux 便携包: 下载 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
-          - Windows 同时提供安装器和便携包。
+          - Windows 同时提供完整安装器、无局域网同步安装器和便携包。
           - macOS 包当前未签名、未公证，首次运行可能需要右键选择“打开”，并在系统设置中授权相关权限。
           - Linux 包当前作为预览分发，托盘、全局热键和 VV 粘贴受 X11/Wayland 与桌面环境权限影响。
           NOTES
@@ -460,13 +499,15 @@ jobs:
             zsclip-windows-x86_64.zip \
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-setup.exe \
-            zsclip-v0.9.9-setup.exe
+            zsclip-v0.9.9-setup.exe \
+            zsclip-v0.9.9-setup-no-lan.exe
           do
             gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
           done
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
               release-assets/zsclip-v0.9.9-setup.exe \
+              release-assets/zsclip-v0.9.9-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
@@ -481,6 +522,7 @@ jobs:
           else
             gh release create "$TAG_NAME" \
               release-assets/zsclip-v0.9.9-setup.exe \
+              release-assets/zsclip-v0.9.9-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \

@@ -12,5 +12,6 @@ pub(super) unsafe fn settings_sync_cloud_page_state(st: &mut SettingsWndState) {
         crate::multi_sync::transport_status_label(s.cloud_sync_enabled, s.lan_sync_enabled),
     );
     settings_sync_cloud_webdav_state(st, webdav_enabled);
+    #[cfg(feature = "lan-sync")]
     settings_sync_cloud_lan_state(st, lan_enabled);
 }

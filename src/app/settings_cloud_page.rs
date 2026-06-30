@@ -38,6 +38,7 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
         settings_create_cloud_webdav_page(st, &b, line_h);
     }
 
+    #[cfg(feature = "lan-sync")]
     if mode == "lan" {
         settings_create_cloud_lan_page(st, &b, line_h, lan_btn_w, small_btn_w);
     }

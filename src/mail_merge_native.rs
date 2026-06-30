@@ -2,6 +2,7 @@ use arboard::Clipboard;
 use std::fs;
 use std::mem::{size_of, zeroed};
 use std::os::windows::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
@@ -157,7 +158,9 @@ fn is_excel_path(path: &str) -> bool {
 }
 
 fn ps_run(script: &str, args: &[String]) -> Result<String, String> {
-    let temp_path = std::env::temp_dir().join(format!(
+    let temp_root = app_temp_root();
+    let _ = fs::create_dir_all(&temp_root);
+    let temp_path = temp_root.join(format!(
         "zsclip_mailmerge_{}.ps1",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -198,6 +201,16 @@ fn ps_run(script: &str, args: &[String]) -> Result<String, String> {
             "PowerShell 执行失败".to_string()
         })
     }
+}
+
+fn app_temp_root() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|dir| dir.join("data").join("temp").join("mail_merge"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("zsclip").join("mail_merge"))
 }
 
 fn parse_proto_list(raw: &str) -> Vec<String> {

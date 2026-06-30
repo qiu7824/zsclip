@@ -4989,7 +4989,9 @@ fn windows_main_window_creation_path_uses_main_window_host() {
     let run_block = &main_entry[start..end];
 
     assert!(run_block.contains("WindowsMainWindowHost::new"));
-    assert!(run_block.contains("create_main_windows(NativeMainWindowRequest"));
+    assert!(run_block.contains("crate::zsui::Window::new(app_title())"));
+    assert!(run_block.contains("NativeMainWindowRequest::from_zsui_window_for_host"));
+    assert!(run_block.contains("HostCapabilities::windows_native_window_host()"));
     assert!(run_block.contains("NativeMainWindowPresentation::Failed"));
     assert!(!run_block.contains("register_class_ex"));
     assert!(!run_block.contains("create_window_ex"));
@@ -5156,7 +5158,10 @@ fn windows_main_entry_adapter_lives_outside_app_rs() {
         "pub(super) unsafe fn cancel_main_scroll_drag",
         "pub(super) unsafe fn settings_set_hotkey_recording",
         "pub(super) unsafe fn handle_vv_select",
-        "create_main_windows(NativeMainWindowRequest",
+        "NativeMainWindowRequest::from_zsui_window_for_host",
+        "crate::zsui::Window::new(app_title())",
+        "WM_GETMINMAXINFO",
+        "apply_min_track_size",
         "main_window_host_event_from_message(msg, wparam, lparam)",
         "UiEvent::Lifecycle(LifecycleEvent::Mount)",
     ] {

@@ -15,12 +15,19 @@ pub(super) unsafe fn apply_loaded_settings(hwnd: HWND, state: &mut AppState) {
     let old_edge_hide = state.settings.edge_auto_hide;
     let mut loaded = load_settings();
     loaded.auto_start = is_autostart_enabled();
+    #[cfg(not(feature = "lan-sync"))]
+    {
+        loaded.lan_sync_enabled = false;
+    }
+    #[cfg(feature = "lan-sync")]
     crate::lan_sync::ensure_device_identity(&mut loaded);
     settings_normalize_multi_sync_mode(&mut loaded);
     state.settings = loaded;
     save_settings(&state.settings);
     schedule_cloud_sync(state, false);
+    #[cfg(feature = "lan-sync")]
     refresh_lan_latest_from_db(&state.settings);
+    #[cfg(feature = "lan-sync")]
     crate::lan_sync::refresh_service(hwnd, &state.settings);
     if state.role == WindowRole::Main {
         sync_main_tray_icon(hwnd, state);
@@ -55,6 +62,11 @@ pub(super) unsafe fn refresh_window_state(hwnd: HWND, reload_settings: bool) {
     if reload_settings {
         state.settings = load_settings();
         state.settings.auto_start = is_autostart_enabled();
+        #[cfg(not(feature = "lan-sync"))]
+        {
+            state.settings.lan_sync_enabled = false;
+        }
+        settings_normalize_multi_sync_mode(&mut state.settings);
         schedule_cloud_sync(state, false);
         if state.role == WindowRole::Main {
             sync_main_tray_icon(hwnd, state);

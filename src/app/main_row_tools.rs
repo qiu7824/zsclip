@@ -280,7 +280,7 @@ pub(crate) fn write_image_bytes_to_ocr_temp_path(
     width: u32,
     height: u32,
 ) -> Option<PathBuf> {
-    let base = std::env::temp_dir().join("zsclip").join("ocr");
+    let base = data_dir().join("temp").join("ocr");
     let _ = fs::create_dir_all(&base);
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)

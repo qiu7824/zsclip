@@ -1527,12 +1527,23 @@ where
         .unwrap_or_else(|| all_label.to_string())
 }
 
+#[cfg(feature = "lan-sync")]
 pub const MULTI_SYNC_MODE_OPTIONS: [&str; 3] = ["关闭", "WebDAV", "局域网"];
+#[cfg(not(feature = "lan-sync"))]
+pub const MULTI_SYNC_MODE_OPTIONS: [&str; 2] = ["关闭", "WebDAV"];
 
 pub fn multi_sync_mode_from_flags(
     cloud_sync_enabled: bool,
     lan_sync_enabled: bool,
 ) -> &'static str {
+    #[cfg(not(feature = "lan-sync"))]
+    {
+        if cloud_sync_enabled {
+            return "webdav";
+        }
+        return "off";
+    }
+    #[cfg(feature = "lan-sync")]
     if lan_sync_enabled {
         "lan"
     } else if cloud_sync_enabled {
@@ -1545,6 +1556,7 @@ pub fn multi_sync_mode_from_flags(
 pub fn multi_sync_mode_display(mode: &str) -> &'static str {
     match mode {
         "webdav" => "WebDAV",
+        #[cfg(feature = "lan-sync")]
         "lan" => "局域网",
         _ => "关闭",
     }
@@ -1552,17 +1564,19 @@ pub fn multi_sync_mode_display(mode: &str) -> &'static str {
 
 pub fn multi_sync_mode_from_label(label: &str) -> &'static str {
     if label.eq_ignore_ascii_case("webdav") {
-        "webdav"
-    } else if label.contains("局域") || label.eq_ignore_ascii_case("lan") {
-        "lan"
-    } else {
-        "off"
+        return "webdav";
     }
+    #[cfg(feature = "lan-sync")]
+    if label.contains("局域") || label.eq_ignore_ascii_case("lan") {
+        return "lan";
+    }
+    "off"
 }
 
 pub fn multi_sync_flags_for_mode(mode: &str) -> (bool, bool) {
     match mode {
         "webdav" => (true, false),
+        #[cfg(feature = "lan-sync")]
         "lan" => (false, true),
         _ => (false, false),
     }

@@ -212,6 +212,30 @@ impl WindowRole {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowCreateParams {
+    pub(crate) role: WindowRole,
+    pub(crate) min_size: Option<UiSize>,
+}
+
+impl WindowCreateParams {
+    pub(super) const fn new(role: WindowRole, min_size: Option<UiSize>) -> Self {
+        Self { role, min_size }
+    }
+
+    pub(super) fn from_create_param(value: isize) -> Self {
+        if value == WindowRole::Quick as isize || value == WindowRole::Main as isize {
+            return Self::new(WindowRole::from_create_param(value), None);
+        }
+        let params = value as *const Self;
+        if params.is_null() {
+            Self::new(WindowRole::Main, None)
+        } else {
+            unsafe { *params }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Icons {
     pub(crate) app: isize,
@@ -257,6 +281,7 @@ pub(crate) struct AppState {
     pub(crate) ui_lifecycle: LifecycleState,
     pub(crate) ui_commands: CommandQueue,
     pub(crate) hwnd: HWND,
+    pub(crate) native_min_size: Option<UiSize>,
     pub(crate) search_hwnd: HWND,
     pub(crate) ui_dpi: u32,
     pub(crate) dpi_comp: DpiCompensationState,
@@ -599,7 +624,13 @@ pub(super) fn vv_set_popup_menu_active(active: bool) {
 }
 
 impl AppState {
-    pub(super) fn new(role: WindowRole, hwnd: HWND, search_hwnd: HWND, icons: Icons) -> Self {
+    pub(super) fn new(
+        role: WindowRole,
+        hwnd: HWND,
+        search_hwnd: HWND,
+        icons: Icons,
+        native_min_size: Option<UiSize>,
+    ) -> Self {
         let mut settings = load_settings();
         settings.auto_start = is_autostart_enabled();
         let cloud_sync_next_due = if cloud_sync_should_schedule(&settings) {
@@ -613,6 +644,7 @@ impl AppState {
             ui_lifecycle: LifecycleState::new(),
             ui_commands: CommandQueue::default(),
             hwnd,
+            native_min_size,
             search_hwnd,
             ui_dpi: unsafe { crate::platform::dpi::layout_dpi_for_window(hwnd) },
             dpi_comp: DpiCompensationState::default(),
