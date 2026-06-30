@@ -520,8 +520,29 @@ pub(crate) fn native_host_group_filter_popup_menu_entries_for_groups(
     groups: &[ClipGroup],
     current_group_id: i64,
 ) -> Vec<NativePopupMenuEntry> {
-    let plan =
-        main_group_filter_menu_plan(current_group_id, groups, false, ClipKindFilter::All, &[]);
+    native_host_group_filter_popup_menu_entries_for_groups_kind_filter(
+        groups,
+        current_group_id,
+        false,
+        ClipKindFilter::All,
+        &[],
+    )
+}
+
+pub(crate) fn native_host_group_filter_popup_menu_entries_for_groups_kind_filter(
+    groups: &[ClipGroup],
+    current_group_id: i64,
+    kind_filter_enabled: bool,
+    current_kind_filter: ClipKindFilter,
+    kind_filters: &[ClipKindFilter],
+) -> Vec<NativePopupMenuEntry> {
+    let plan = main_group_filter_menu_plan(
+        current_group_id,
+        groups,
+        kind_filter_enabled,
+        current_kind_filter,
+        kind_filters,
+    );
     main_group_filter_popup_entries(&plan, "All")
 }
 
