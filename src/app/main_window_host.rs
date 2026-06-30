@@ -1,7 +1,8 @@
 use super::prelude::*;
 use crate::app_core::{
     NativeAppIconResource, NativeMainWindowHandles, NativeMainWindowHost,
-    NativeMainWindowPresentMode, NativeMainWindowPresentation, NativeMainWindowRequest, UiRect,
+    NativeMainWindowPresentMode, NativeMainWindowPresentation, NativeMainWindowRequest,
+    NativeWindowOptions, UiRect,
 };
 use crate::platform::appearance as platform_appearance;
 use crate::platform::dpi as platform_dpi;
@@ -50,16 +51,15 @@ impl WindowsMainWindowHost {
         width: i32,
         height: i32,
         hinstance: HINSTANCE,
+        options: &NativeWindowOptions,
     ) -> HWND {
-        let ex_style = match role {
-            WindowRole::Main => WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            WindowRole::Quick => WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-        };
+        let (ex_style, style) = win32_main_window_styles(role, options);
+        let create_params = WindowCreateParams::new(role, options.min_size);
         platform_window::create_window_ex(
             ex_style,
             to_wide(role.class_name()).as_ptr(),
             title.as_ptr(),
-            WS_POPUP | WS_CLIPCHILDREN,
+            style,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
             width,
@@ -67,9 +67,34 @@ impl WindowsMainWindowHost {
             null_mut(),
             null_mut(),
             hinstance,
-            role as usize as _,
+            &create_params as *const WindowCreateParams as _,
         )
     }
+}
+
+fn win32_main_window_styles(role: WindowRole, options: &NativeWindowOptions) -> (u32, u32) {
+    let mut ex_style = 0;
+    if !options.decorations {
+        ex_style |= WS_EX_TOOLWINDOW;
+    }
+    if options.always_on_top {
+        ex_style |= WS_EX_TOPMOST;
+    }
+    if matches!(role, WindowRole::Quick) {
+        ex_style |= WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE;
+    }
+
+    let style = if options.decorations {
+        let mut style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+        if options.resizable {
+            style |= WS_MAXIMIZEBOX | WS_THICKFRAME;
+        }
+        style
+    } else {
+        WS_POPUP | WS_CLIPCHILDREN
+    };
+
+    (ex_style, style)
 }
 
 pub(super) fn repaint_main_window_area(hwnd: HWND, area: Option<UiRect>, erase: bool) -> bool {
@@ -90,6 +115,57 @@ pub(super) fn main_window_client_bounds(hwnd: HWND) -> Option<UiRect> {
 
 pub(super) fn main_window_bounds(hwnd: HWND) -> Option<UiRect> {
     WindowsMainWindowHost::new(Some(wnd_proc)).main_window_bounds(hwnd)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_options_map_to_decorated_resizable_win32_window() {
+        let (ex_style, style) =
+            win32_main_window_styles(WindowRole::Main, &NativeWindowOptions::standard());
+
+        assert_eq!(ex_style & WS_EX_TOPMOST, 0);
+        assert_eq!(ex_style & WS_EX_TOOLWINDOW, 0);
+        assert_ne!(style & WS_CAPTION, 0);
+        assert_ne!(style & WS_SYSMENU, 0);
+        assert_ne!(style & WS_THICKFRAME, 0);
+        assert_ne!(style & WS_MAXIMIZEBOX, 0);
+    }
+
+    #[test]
+    fn tool_window_options_preserve_current_popup_topmost_shape() {
+        let (ex_style, style) =
+            win32_main_window_styles(WindowRole::Main, &NativeWindowOptions::tool_window());
+
+        assert_ne!(ex_style & WS_EX_TOPMOST, 0);
+        assert_ne!(ex_style & WS_EX_TOOLWINDOW, 0);
+        assert_ne!(style & WS_POPUP, 0);
+        assert_eq!(style & WS_CAPTION, 0);
+        assert_eq!(style & WS_THICKFRAME, 0);
+    }
+
+    #[test]
+    fn window_create_params_preserve_role_and_min_size_for_win32_create() {
+        let params = WindowCreateParams::new(
+            WindowRole::Main,
+            Some(UiSize {
+                width: 640,
+                height: 420,
+            }),
+        );
+
+        let decoded = WindowCreateParams::from_create_param(&params as *const _ as isize);
+        assert_eq!(decoded.role, WindowRole::Main);
+        assert_eq!(
+            decoded.min_size,
+            Some(UiSize {
+                width: 640,
+                height: 420
+            })
+        );
+    }
 }
 
 pub(super) fn track_main_pointer_leave(hwnd: HWND) -> bool {
@@ -156,12 +232,27 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
             let title = to_wide(&request.title);
             let width = request.size.width.max(1);
             let height = request.size.height.max(1);
-            let main = self.create_window(WindowRole::Main, &title, width, height, hinstance);
+            let main = self.create_window(
+                WindowRole::Main,
+                &title,
+                width,
+                height,
+                hinstance,
+                &request.options,
+            );
             if main.is_null() {
                 return NativeMainWindowPresentation::Failed;
             }
 
-            let quick = self.create_window(WindowRole::Quick, &title, width, height, hinstance);
+            let quick_options = NativeWindowOptions::tool_window();
+            let quick = self.create_window(
+                WindowRole::Quick,
+                &title,
+                width,
+                height,
+                hinstance,
+                &quick_options,
+            );
             if quick.is_null() {
                 platform_window::destroy(main);
                 return NativeMainWindowPresentation::Failed;

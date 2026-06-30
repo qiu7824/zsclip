@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 
 use std::cell::RefCell;
 #[cfg(all(target_os = "linux", not(test)))]
@@ -43,8 +44,8 @@ use crate::app_core::{
     NativeSettingsWindowRequest, NativeShellOpenHost, NativeStyleResolver, NativeTextCaretAnchor,
     NativeTextCaretHost, NativeTextInputDialogHost, NativeTextInputDialogRequest,
     NativeTransientWindowHost, NativeTransientWindowPresentation, NativeTransientWindowRequest,
-    NativeUiPlatform, NativeUiToolkit, NativeWindowIdentityHost, NativeWindowToken,
-    PasteTargetFocusStatus, PasteTargetTextInputCapabilities, Point,
+    NativeUiPlatform, NativeUiToolkit, NativeWindowIdentityHost, NativeWindowOptions,
+    NativeWindowToken, PasteTargetFocusStatus, PasteTargetTextInputCapabilities, Point,
     ProductAdapterAsyncBridgeResult, ProductAdapterCommandResult, ProductAdapterHost,
     ProductAiExecutionPlan, ProductAiInvocation, ProductAiUiSurface, Rect, Renderer,
     SemanticTextStyle, SettingsAction, SettingsActionRoute, SettingsComponentKind,
@@ -2592,11 +2593,20 @@ pub(crate) fn linux_native_host_projected_clip_items() -> Vec<NativeHostClipList
 pub(crate) fn linux_native_host_projected_clip_items_for_group(
     group_id: i64,
 ) -> Vec<NativeHostClipListItemProjection> {
+    linux_native_host_projected_clip_items_for_category_group(0, group_id)
+}
+
+pub(crate) fn linux_native_host_projected_clip_items_for_category_group(
+    category: i64,
+    group_id: i64,
+) -> Vec<NativeHostClipListItemProjection> {
     if group_id > 0 {
-        if let Ok(items) = crate::db_runtime::native_clip_list_items_for_group(0, group_id, 64) {
+        if let Ok(items) =
+            crate::db_runtime::native_clip_list_items_for_group(category, group_id, 64)
+        {
             return items;
         }
-    } else if let Ok(items) = crate::db_runtime::native_clip_list_items(0, 64) {
+    } else if let Ok(items) = crate::db_runtime::native_clip_list_items(category, 64) {
         return items;
     }
     Vec::new()
@@ -2625,15 +2635,16 @@ impl LinuxApplicationModel {
         if !self.lifecycle.apply(lifecycle) {
             return Err("Linux application lifecycle rejected mount".to_string());
         }
+        let main_window = crate::zsui::Window::new(title)
+            .size(760, 520)
+            .visible(main_visible)
+            .resizable(true)
+            .decorations(true);
         Ok(LinuxStartupPlan {
-            request: NativeMainWindowRequest {
-                title: title.into(),
-                size: Size {
-                    width: 760,
-                    height: 520,
-                },
-                main_visible,
-            },
+            request: NativeMainWindowRequest::from_zsui_window_for_host(
+                &main_window,
+                &crate::zsui::HostCapabilities::linux_native_window_host(),
+            ),
             lifecycle,
             backend: LinuxNativeBackend::Gtk4Libadwaita,
         })
@@ -2993,6 +3004,10 @@ impl LinuxStartupSessionState {
 impl LinuxMainWindowHost {
     pub(crate) fn create_request_count(&self) -> usize {
         self.create_requests.len()
+    }
+
+    pub(crate) fn create_requests(&self) -> &[NativeMainWindowRequest] {
+        &self.create_requests
     }
 
     pub(crate) fn created_handles(&self) -> Option<NativeMainWindowHandles<LinuxMainWindowHandle>> {
@@ -4836,8 +4851,10 @@ mod tests {
             "zsclip.settings_platform.enable_system_clipboard_history.not_applicable_on_linux_native_host"
         );
 
-        let restart_shell =
-            dispatch_linux_native_settings_route_action("settings_platform", "restart_system_shell");
+        let restart_shell = dispatch_linux_native_settings_route_action(
+            "settings_platform",
+            "restart_system_shell",
+        );
         assert!(restart_shell.accepted);
         assert_eq!(
             restart_shell.result_name,
@@ -5358,6 +5375,48 @@ mod tests {
     }
 
     #[test]
+    fn linux_native_category_projection_keeps_records_and_phrases_separate() {
+        crate::db_runtime::with_test_db(|| {
+            let (record_id, phrase_id) = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(0, 'text', 'record only', 'linux-record-only', 'record only text', '')",
+                    [],
+                )?;
+                let record_id = conn.last_insert_rowid();
+                conn.execute(
+                    "INSERT INTO items(category, kind, preview, signature, text_data, source_app) VALUES(1, 'phrase', 'phrase only', 'linux-phrase-only', 'phrase only text', '')",
+                    [],
+                )?;
+                Ok((record_id, conn.last_insert_rowid()))
+            })?;
+            let phrase_group = crate::db_runtime::create_native_clip_group(1, "Linux Phrase Group")?;
+            assert_eq!(
+                crate::db_runtime::assign_native_clip_group(&[phrase_id], phrase_group.id)?,
+                1
+            );
+
+            let records = linux_native_host_projected_clip_items_for_category_group(0, 0);
+            assert!(records.iter().any(|item| item.id == record_id));
+            assert!(!records.iter().any(|item| item.id == phrase_id));
+
+            let phrases = linux_native_host_projected_clip_items_for_category_group(1, 0);
+            assert!(phrases.iter().any(|item| item.id == phrase_id));
+            assert!(!phrases.iter().any(|item| item.id == record_id));
+
+            let grouped_phrases =
+                linux_native_host_projected_clip_items_for_category_group(1, phrase_group.id);
+            assert_eq!(grouped_phrases.len(), 1);
+            assert_eq!(grouped_phrases[0].id, phrase_id);
+            assert!(
+                linux_native_host_projected_clip_items_for_category_group(0, phrase_group.id)
+                    .is_empty()
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn linux_native_settings_group_management_updates_database() {
         crate::db_runtime::with_test_db(|| {
             let create = dispatch_linux_native_create_group(0, "Linux Managed");
@@ -5556,6 +5615,18 @@ mod tests {
         assert!(host_source.contains("struct Gtk4WindowSystemBackend"));
         assert!(host_source.contains("struct X11CommandWindowSystemBackend"));
         assert!(host_source.contains("fn gtk_select_window_system_backend("));
+        assert!(host_source.contains("fn gtk_main_window_capabilities()"));
+        assert!(host_source.contains("HostCapabilities::linux_native_window_host()"));
+        assert!(host_source.contains(".resolve_for(&gtk_main_window_capabilities())"));
+        assert!(host_source.contains("window.set_resizable(window_spec.resizable)"));
+        assert!(host_source.contains("window.set_decorated(window_spec.decorations)"));
+        assert!(host_source.contains("(window_spec.min_width, window_spec.min_height)"));
+        assert!(
+            host_source.contains("window.set_size_request(min_width as i32, min_height as i32)")
+        );
+        assert!(host_source.contains(
+            "gtk_native_window_traits(&window, &window_backend, window_spec.always_on_top)"
+        ));
         assert!(host_source.contains("fn apply_always_on_top("));
         assert!(host_source.contains("fn position_near_cursor("));
         assert!(host_source.contains("gtk_window_command_success(\"wmctrl\""));
@@ -5626,7 +5697,8 @@ mod tests {
         assert!(host_source.contains("ZSClip GTK auto smoke delete item_id="));
         assert!(host_source.contains("insert_native_clipboard_image("));
         assert!(host_source.contains("ZSClip GTK auto smoke image copy item_id="));
-        assert!(host_source.contains("LinuxClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
+        assert!(host_source
+            .contains("LinuxClipboardHost as crate::app_core::ClipboardHost>::read_image_rgba()"));
         assert!(!host_source.contains("native_host_main_action_button_specs()"));
         assert!(host_source.contains("reload_clip_items_for_group_with_selection("));
         assert!(host_source.contains("fn gtk_clip_row_content("));
@@ -5918,6 +5990,8 @@ mod tests {
         assert_eq!(startup.backend, LinuxNativeBackend::Gtk4Libadwaita);
         assert_eq!(startup.request.title, "ZSClip Linux");
         assert_eq!(startup.request.size.width, 760);
+        assert!(startup.request.options.resizable);
+        assert!(startup.request.options.decorations);
 
         let presentation = application
             .main_window_host_mut()
@@ -5961,6 +6035,33 @@ mod tests {
     }
 
     #[test]
+    fn linux_main_window_host_records_zsui_degradation_details() {
+        let mut host = LinuxMainWindowHost::default();
+        let request = NativeMainWindowRequest::from_zsui_window_for_host(
+            &crate::zsui::Window::new("Transparent Linux").transparent(true),
+            &crate::zsui::HostCapabilities::linux_native_window_host(),
+        );
+
+        assert!(!request.options.transparent);
+        assert!(request
+            .degraded_capabilities
+            .iter()
+            .any(|detail| detail.contains("window_transparency")));
+
+        let presentation = host.create_main_windows(request);
+        assert!(matches!(
+            presentation,
+            NativeMainWindowPresentation::Created(_)
+        ));
+        assert_eq!(host.create_requests().len(), 1);
+        assert!(!host.create_requests()[0].options.transparent);
+        assert!(host.create_requests()[0]
+            .degraded_capabilities
+            .iter()
+            .any(|detail| detail.contains("window_transparency")));
+    }
+
+    #[test]
     fn linux_application_model_implements_native_runtime_driver() {
         let mut application = LinuxApplicationModel::default();
         let startup = application.start_runtime(NativeRuntimeStartupRequest {
@@ -5971,7 +6072,9 @@ mod tests {
                     width: 640,
                     height: 420,
                 },
+                options: NativeWindowOptions::standard(),
                 main_visible: true,
+                degraded_capabilities: Vec::new(),
             },
             status_item_tooltip: Some("Demo Linux".to_string()),
         });

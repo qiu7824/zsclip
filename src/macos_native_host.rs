@@ -27,11 +27,12 @@ mod appkit {
         NSApplicationDelegate, NSAutoresizingMaskOptions, NSBackingStoreType, NSBorderType,
         NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
         NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
-        NSFloatingWindowLevel, NSFont, NSImage, NSLineBreakMode, NSMenu, NSMenuItem, NSPopUpButton,
-        NSScrollView, NSSearchField, NSStatusBar, NSStatusBarButton, NSStatusItem, NSTabView,
-        NSTabViewItem, NSTabViewType, NSTableColumn, NSTableView, NSTableViewDataSource,
-        NSTableViewDelegate, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment,
-        NSTextField, NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
+        NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSImageView, NSLineBreakMode,
+        NSMenu, NSMenuItem, NSPopUpButton, NSScrollView, NSSearchField, NSStatusBar,
+        NSStatusBarButton, NSStatusItem, NSTabView, NSTabViewItem, NSTabViewType, NSTableColumn,
+        NSTableView, NSTableViewDataSource, NSTableViewDelegate,
+        NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment, NSTextField,
+        NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
         NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
         NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
     };
@@ -44,7 +45,7 @@ mod appkit {
         CGEventTapPlacement, CGEventTapProxy, CGEventType,
     };
     use objc2_foundation::{
-        ns_string, MainThreadMarker, NSIndexSet, NSInteger, NSNotification, NSObject,
+        ns_string, MainThreadMarker, NSData, NSIndexSet, NSInteger, NSNotification, NSObject,
         NSObjectProtocol, NSPoint, NSPointInRect, NSRect, NSSize, NSString, NSUInteger,
     };
 
@@ -63,8 +64,8 @@ mod appkit {
         native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
         native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
         native_host_settings_platform_button_specs, native_host_settings_section_label,
-        native_host_settings_toggle_specs, native_host_status_menu_item_specs,
-        native_host_vv_popup_render_plan_for_projection,
+        native_host_settings_toggle_specs, native_host_source_tab_for_category,
+        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_macos_key_equivalent,
         native_popup_menu_command_macos_symbol_name, HostComponent, MainGroupFilterSelection,
         MainRowGroupSelection, MainVvPopupTextRole, NativeButtonStyleRole, NativeClipRowSpec,
@@ -78,9 +79,54 @@ mod appkit {
         NativeHostVvTriggerAction, NativeHostVvTriggerInput, NativeHostVvTriggerKey,
         NativeHostVvTriggerTransition, NativeMenuItemSpec, NativePopupMenuEntry,
         NativeSettingsPageTabKind, ProductAdapterCommandResult, SettingsControlRole,
-        REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS,
+        NATIVE_HOST_SOURCE_TABS, REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS,
     };
     use crate::macos_app::MacosHostContractSummary;
+    use crate::zsui::{HostCapabilities, Window};
+
+    fn appkit_tr(source: &'static str, fallback_en: &'static str) -> &'static str {
+        crate::i18n_runtime::tr(source, fallback_en)
+    }
+
+    fn appkit_localized_label(label: &str) -> String {
+        match label {
+            "Search" => appkit_tr("搜索", "Search").to_string(),
+            "Settings" => appkit_tr("设置", "Settings").to_string(),
+            "Hide" => appkit_tr("隐藏", "Hide").to_string(),
+            "Close" => appkit_tr("关闭", "Close").to_string(),
+            "Row Menu" => appkit_tr("行菜单", "Row Menu").to_string(),
+            "Group Filter" => appkit_tr("分组", "Group Filter").to_string(),
+            "VV Popup" => appkit_tr("VV 粘贴", "VV Popup").to_string(),
+            "VV Trigger" => appkit_tr("VV 触发", "VV Trigger").to_string(),
+            "Show ZSClip" => appkit_tr("显示剪贴板", "Show ZSClip").to_string(),
+            "Toggle Capture" => appkit_tr("启用/暂停捕获", "Toggle Capture").to_string(),
+            "Toggle LAN Sync" => appkit_tr("启用/暂停局域网同步", "Toggle LAN Sync").to_string(),
+            "Exit" => appkit_tr("退出", "Exit").to_string(),
+            "Paste" => appkit_tr("粘贴", "Paste").to_string(),
+            "Copy" => appkit_tr("复制", "Copy").to_string(),
+            "Pin" => appkit_tr("置顶", "Pin").to_string(),
+            "To Phrase" => appkit_tr("转为常用短语", "To Phrase").to_string(),
+            "Delete" => appkit_tr("删除", "Delete").to_string(),
+            "Edit" => appkit_tr("编辑", "Edit").to_string(),
+            "Open Path" => appkit_tr("打开路径", "Open Path").to_string(),
+            "Open Folder" => appkit_tr("打开所在文件夹", "Open Folder").to_string(),
+            "Copy Path" => appkit_tr("复制路径", "Copy Path").to_string(),
+            "Translate" => appkit_tr("翻译", "Translate").to_string(),
+            "Save" => appkit_tr("保存", "Save").to_string(),
+            "Cancel" => appkit_tr("取消", "Cancel").to_string(),
+            "Discard" => appkit_tr("不保存", "Discard").to_string(),
+            "Open Config" => appkit_tr("打开配置", "Open Config").to_string(),
+            "Auto Start" => appkit_tr("开机自启", "Auto Start").to_string(),
+            "Capture" => appkit_tr("剪贴板捕获", "Capture").to_string(),
+            "LAN Sync" => appkit_tr("局域网同步", "LAN Sync").to_string(),
+            "Cloud Sync" => appkit_tr("云同步", "Cloud Sync").to_string(),
+            "Sync Mode" => appkit_tr("同步模式", "Sync Mode").to_string(),
+            "All" => appkit_tr("全部", "All").to_string(),
+            "(No groups)" => appkit_tr("（暂无分组）", "(No groups)").to_string(),
+            "PIN" => appkit_tr("置顶", "PIN").to_string(),
+            _ => crate::i18n_runtime::translate(label).into_owned(),
+        }
+    }
 
     #[derive(Default)]
     struct AppDelegateIvars {
@@ -106,6 +152,7 @@ mod appkit {
         edit_item_id: Cell<i64>,
         selected_item_id: Cell<i64>,
         current_group_filter: Cell<i64>,
+        current_source_category: Cell<i64>,
         last_clipboard_sequence: Cell<u32>,
         settings_group_category: Cell<i64>,
         selected_settings_group_id: Cell<i64>,
@@ -120,6 +167,7 @@ mod appkit {
         clip_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         clip_table_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         group_filter_button: OnceCell<Retained<NSButton>>,
+        source_tab_buttons: OnceCell<Vec<Retained<NSButton>>>,
     }
 
     impl fmt::Debug for AppDelegateIvars {
@@ -189,6 +237,37 @@ mod appkit {
         )
     }
 
+    fn appkit_main_window_capabilities() -> HostCapabilities {
+        HostCapabilities::macos_native_window_host()
+    }
+
+    fn appkit_main_window_spec() -> Window {
+        let requested = Window::new("ZSClip")
+            .size(640, 420)
+            .min_size(420, 300)
+            .resizable(true)
+            .decorations(true)
+            .always_on_top(true);
+        requested
+            .resolve_for(&appkit_main_window_capabilities())
+            .effective
+    }
+
+    fn appkit_window_style_mask(spec: &Window) -> NSWindowStyleMask {
+        let mut style = if spec.decorations {
+            NSWindowStyleMask::Titled
+                | NSWindowStyleMask::Closable
+                | NSWindowStyleMask::Miniaturizable
+                | NSWindowStyleMask::FullSizeContentView
+        } else {
+            NSWindowStyleMask::Borderless
+        };
+        if spec.resizable {
+            style |= NSWindowStyleMask::Resizable;
+        }
+        style
+    }
+
     define_class!(
         #[unsafe(super = NSObject)]
         #[thread_kind = MainThreadOnly]
@@ -225,6 +304,12 @@ mod appkit {
             #[unsafe(method(zsclipActivateClipTableRow:))]
             fn zsclip_activate_clip_table_row(&self, _sender: &AnyObject) {
                 self.perform_native_row_action(NativeHostRowAction::Paste);
+            }
+
+            #[unsafe(method(zsclipSelectSourceTab:))]
+            fn zsclip_select_source_tab(&self, sender: &AnyObject) {
+                let item_id: isize = unsafe { msg_send![sender, tag] };
+                self.select_native_source_category(item_id as i64);
             }
 
             #[unsafe(method(zsclipSelectSettingsGroup:))]
@@ -559,7 +644,10 @@ mod appkit {
                 ));
                 unsafe { search_field.setTarget(Some(target)) };
                 unsafe { search_field.setAction(Some(sel!(zsclipSearchTextChanged:))) };
-                search_field.setPlaceholderString(Some(ns_string!("Search clipboard")));
+                search_field.setPlaceholderString(Some(&NSString::from_str(appkit_tr(
+                    "搜索剪贴板",
+                    "Search clipboard",
+                ))));
                 search_field.setHidden(true);
                 appkit_set_view_alpha(search_field.as_ref(), 0.0);
                 search_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
@@ -588,7 +676,7 @@ mod appkit {
                 );
                 let clip_table_column = NSTableColumn::new(mtm);
                 clip_table_column.setWidth(clip_list_width);
-                clip_table_column.setTitle(ns_string!("Clipboard"));
+                clip_table_column.setTitle(&NSString::from_str(appkit_tr("剪贴板", "Clipboard")));
                 clip_table_view.addTableColumn(&clip_table_column);
                 clip_table_view.setHeaderView(None);
                 clip_table_view.setRowHeight(clip_row_height);
@@ -633,7 +721,8 @@ mod appkit {
                     .into_iter()
                     .filter(|spec| spec.action == NativeHostMainToolAction::GroupFilter)
                     .map(|spec| {
-                        let title = NSString::from_str(spec.label);
+                        let localized = appkit_localized_label(spec.label);
+                        let title = NSString::from_str(&localized);
                         let button = unsafe {
                             NSButton::buttonWithTitle_target_action(
                                 &title,
@@ -646,38 +735,77 @@ mod appkit {
                             NSPoint::new(410.0, 326.0),
                             NSSize::new(96.0, 28.0),
                         ));
-                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label);
+                        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
                         button
                     })
                     .collect();
                 for button in &tool_buttons {
                     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
                 }
+                let source_tab_buttons: Vec<_> = NATIVE_HOST_SOURCE_TABS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, tab)| {
+                        let title =
+                            NSString::from_str(appkit_tr(tab.label_source, tab.label_en));
+                        let button = unsafe {
+                            NSButton::buttonWithTitle_target_action(
+                                &title,
+                                Some(target),
+                                Some(sel!(zsclipSelectSourceTab:)),
+                                mtm,
+                            )
+                        };
+                        button.setFrame(NSRect::new(
+                            NSPoint::new(16.0 + index as f64 * 116.0, 326.0),
+                            NSSize::new(108.0, 28.0),
+                        ));
+                        button.setButtonType(NSButtonType::PushOnPushOff);
+                        button.setTag(tab.category as isize);
+                        button.setState(if tab.category == 0 {
+                            NSControlStateValueOn
+                        } else {
+                            NSControlStateValueOff
+                        });
+                        button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+                        appkit_set_accessibility_label::<NSButton>(
+                            button.as_ref(),
+                            appkit_tr(tab.label_source, tab.label_en),
+                        );
+                        button
+                    })
+                    .collect();
+                let window_spec = appkit_main_window_spec();
                 let window = unsafe {
                     NSWindow::initWithContentRect_styleMask_backing_defer(
                         NSWindow::alloc(mtm),
-                        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 420.0)),
-                        NSWindowStyleMask::Titled
-                            | NSWindowStyleMask::Closable
-                            | NSWindowStyleMask::Miniaturizable
-                            | NSWindowStyleMask::Resizable
-                            | NSWindowStyleMask::FullSizeContentView,
+                        NSRect::new(
+                            NSPoint::new(0.0, 0.0),
+                            NSSize::new(window_spec.width as f64, window_spec.height as f64),
+                        ),
+                        appkit_window_style_mask(&window_spec),
                         NSBackingStoreType::Buffered,
                         false,
                     )
                 };
                 unsafe { window.setReleasedWhenClosed(false) };
-                window.setTitle(ns_string!("ZSClip"));
+                let window_title = NSString::from_str(&window_spec.title);
+                window.setTitle(&window_title);
                 window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
                 window.setTitlebarAppearsTransparent(true);
                 window.setHidesOnDeactivate(false);
-                window.setLevel(NSFloatingWindowLevel);
+                if window_spec.always_on_top {
+                    window.setLevel(NSFloatingWindowLevel);
+                }
                 unsafe {
                     let _: () = msg_send![&*window, setMovableByWindowBackground: true];
                 }
                 let view = NSVisualEffectView::initWithFrame(
                     NSVisualEffectView::alloc(mtm),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 420.0)),
+                    NSRect::new(
+                        NSPoint::new(0.0, 0.0),
+                        NSSize::new(window_spec.width as f64, window_spec.height as f64),
+                    ),
                 );
                 view.setMaterial(NSVisualEffectMaterial::WindowBackground);
                 view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
@@ -695,6 +823,9 @@ mod appkit {
                 unsafe { view.addSubview(&text_field) };
                 unsafe { view.addSubview(&search_field) };
                 unsafe { view.addSubview(&clip_scroll_view) };
+                for button in &source_tab_buttons {
+                    unsafe { view.addSubview(button) };
+                }
                 for button in &tool_buttons {
                     unsafe { view.addSubview(button) };
                 }
@@ -703,10 +834,17 @@ mod appkit {
                 let appkit_scale_factor = window.backingScaleFactor();
                 let appkit_dark_mode = appkit_is_dark_appearance(&app);
                 eprintln!(
-                    "ZSClip AppKit native window traits always_on_top=true scale_factor={} dark_mode={}",
+                    "ZSClip AppKit native window traits always_on_top={} scale_factor={} dark_mode={}",
+                    window_spec.always_on_top,
                     appkit_scale_factor, appkit_dark_mode
                 );
-                unsafe { window.setContentMinSize(NSSize::new(420.0, 300.0)) };
+                if let (Some(min_width), Some(min_height)) =
+                    (window_spec.min_width, window_spec.min_height)
+                {
+                    unsafe {
+                        window.setContentMinSize(NSSize::new(min_width as f64, min_height as f64))
+                    };
+                }
                 window.setDelegate(Some(ProtocolObject::from_ref(self)));
                 window.makeKeyAndOrderFront(None);
                 window.makeFirstResponder(Some(&clip_table_view));
@@ -736,6 +874,10 @@ mod appkit {
                         .set(group_filter_button.clone())
                         .unwrap();
                 }
+                self.ivars()
+                    .source_tab_buttons
+                    .set(source_tab_buttons)
+                    .unwrap();
                 self.refresh_native_clip_rows();
 
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
@@ -898,14 +1040,11 @@ mod appkit {
         cell.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         appkit_set_accessibility_label::<NSView>(cell.as_ref(), &presentation.accessibility_label);
 
-        let kind_label = appkit_clip_table_label(
+        let kind_icon = appkit_clip_table_icon_view(
             mtm,
-            presentation.kind_prefix,
-            NSRect::new(NSPoint::new(10.0, 13.0), NSSize::new(62.0, 18.0)),
-            11.0,
-            &appkit_clip_table_kind_color(presentation.kind_icon),
+            presentation.kind_icon.zsui_icon(),
+            NSRect::new(NSPoint::new(20.0, 10.0), NSSize::new(24.0, 24.0)),
         );
-        kind_label.setAlignment(NSTextAlignment::Center);
 
         let pin_width = 36.0_f64;
         let text_left = 82.0_f64;
@@ -918,27 +1057,20 @@ mod appkit {
         let text_width = (width - text_left - text_right_padding).max(160.0);
         let title_label = appkit_clip_table_label(
             mtm,
-            &presentation.title,
-            NSRect::new(NSPoint::new(text_left, 22.0), NSSize::new(text_width, 17.0)),
+            &presentation.preview,
+            NSRect::new(NSPoint::new(text_left, 13.0), NSSize::new(text_width, 18.0)),
             13.0,
             &NSColor::labelColor(),
         );
-        let preview_label = appkit_clip_table_label(
-            mtm,
-            &presentation.preview,
-            NSRect::new(NSPoint::new(text_left, 5.0), NSSize::new(text_width, 16.0)),
-            11.0,
-            &NSColor::secondaryLabelColor(),
-        );
 
-        unsafe { cell.addSubview(&kind_label) };
+        unsafe { cell.addSubview(&kind_icon) };
         unsafe { cell.addSubview(&title_label) };
-        unsafe { cell.addSubview(&preview_label) };
 
         if let Some(pin_badge) = presentation.pin_badge {
+            let localized_pin_badge = appkit_localized_label(pin_badge);
             let pin_label = appkit_clip_table_label(
                 mtm,
-                pin_badge,
+                &localized_pin_badge,
                 NSRect::new(
                     NSPoint::new((width - pin_width - 8.0).max(text_left), 13.0),
                     NSSize::new(pin_width, 18.0),
@@ -973,15 +1105,62 @@ mod appkit {
         label
     }
 
-    fn appkit_clip_table_kind_color(kind_icon: NativeHostClipKindIcon) -> Retained<NSColor> {
-        match kind_icon {
-            NativeHostClipKindIcon::Text | NativeHostClipKindIcon::Phrase => {
-                NSColor::secondaryLabelColor()
+    fn appkit_clip_table_icon_view(
+        mtm: MainThreadMarker,
+        icon: crate::zsui::ZsIcon,
+        frame: NSRect,
+    ) -> Retained<NSImageView> {
+        let image_view = NSImageView::initWithFrame(NSImageView::alloc(mtm), frame);
+        image_view.setImageScaling(NSImageScaling::ProportionallyUpOrDown);
+        if let Some(image) = appkit_image_for_zsui_icon(icon) {
+            image_view.setImage(Some(&image));
+        }
+        appkit_set_accessibility_label::<NSImageView>(image_view.as_ref(), icon.asset_name());
+        image_view
+    }
+
+    fn appkit_image_for_zsui_icon(icon: crate::zsui::ZsIcon) -> Option<Retained<NSImage>> {
+        let bytes = appkit_zsui_icon_png_bytes(icon)?;
+        let data = unsafe { NSData::dataWithBytes_length(bytes.as_ptr().cast(), bytes.len()) };
+        let image = NSImage::initWithData(NSImage::alloc(), &data)?;
+        image.setTemplate(true);
+        Some(image)
+    }
+
+    fn appkit_zsui_icon_png_bytes(icon: crate::zsui::ZsIcon) -> Option<&'static [u8]> {
+        match icon {
+            crate::zsui::ZsIcon::Text | crate::zsui::ZsIcon::Phrase => {
+                Some(include_bytes!("../assets/icons/text/text_24x24.png"))
             }
-            NativeHostClipKindIcon::Image => NSColor::controlAccentColor(),
-            NativeHostClipKindIcon::Files | NativeHostClipKindIcon::Folder => {
-                NSColor::systemGrayColor()
+            crate::zsui::ZsIcon::Image => {
+                Some(include_bytes!("../assets/icons/image/image_24x24.png"))
             }
+            crate::zsui::ZsIcon::File => {
+                Some(include_bytes!("../assets/icons/file/file_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Folder | crate::zsui::ZsIcon::Group => {
+                Some(include_bytes!("../assets/icons/fold/fold_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Pin => Some(include_bytes!("../assets/icons/top/top_24x24.png")),
+            crate::zsui::ZsIcon::Delete => {
+                Some(include_bytes!("../assets/icons/del/del_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Search => {
+                Some(include_bytes!("../assets/icons/search/search_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Settings => {
+                Some(include_bytes!("../assets/icons/setting/setting_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Minimize => {
+                Some(include_bytes!("../assets/icons/min/min_24x24.png"))
+            }
+            crate::zsui::ZsIcon::Close => {
+                Some(include_bytes!("../assets/icons/exit/exit_24x24.png"))
+            }
+            crate::zsui::ZsIcon::App
+            | crate::zsui::ZsIcon::Copy
+            | crate::zsui::ZsIcon::Paste
+            | crate::zsui::ZsIcon::Edit => None,
         }
     }
 
@@ -1137,7 +1316,8 @@ mod appkit {
         Spec: HostComponent,
     {
         let bounds = spec.bounds();
-        let title = NSString::from_str(spec.label());
+        let localized = appkit_localized_label(spec.label());
+        let title = NSString::from_str(&localized);
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(&title, Some(target), Some(selector), mtm)
         };
@@ -1145,7 +1325,7 @@ mod appkit {
             NSPoint::new(bounds.left as f64, bounds.top as f64),
             NSSize::new(bounds.width() as f64, bounds.height() as f64),
         ));
-        appkit_set_accessibility_label::<NSButton>(button.as_ref(), spec.label());
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
         appkit_apply_button_style_role(button.as_ref(), spec.style_role());
         button
     }
@@ -1191,11 +1371,11 @@ mod appkit {
             )
         };
         if spec.options.is_empty() {
-            let title = NSString::from_str(spec.label());
+            let title = NSString::from_str(&appkit_localized_label(spec.label()));
             popup.addItemWithTitle(&title);
         } else {
             for option in spec.options {
-                let title = NSString::from_str(option.label);
+                let title = NSString::from_str(&appkit_localized_label(option.label));
                 popup.addItemWithTitle(&title);
             }
         }
@@ -1203,7 +1383,10 @@ mod appkit {
             let _: () = msg_send![&*popup, setTarget: target];
             let _: () = msg_send![&*popup, setAction: selector];
         }
-        appkit_set_accessibility_label::<NSPopUpButton>(popup.as_ref(), spec.label);
+        appkit_set_accessibility_label::<NSPopUpButton>(
+            popup.as_ref(),
+            &appkit_localized_label(spec.label),
+        );
         popup
     }
 
@@ -1213,7 +1396,8 @@ mod appkit {
         spec: &NativeComponentInstanceSpec,
         selector: Sel,
     ) -> Retained<NSButton> {
-        let title = NSString::from_str(&spec.label);
+        let localized = appkit_localized_label(&spec.label);
+        let title = NSString::from_str(&localized);
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(&title, Some(target), Some(selector), mtm)
         };
@@ -1221,7 +1405,7 @@ mod appkit {
             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
             NSSize::new(spec.width() as f64, spec.height() as f64),
         ));
-        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
         button
     }
 
@@ -1231,7 +1415,8 @@ mod appkit {
         spec: &NativeClipRowSpec,
         selector: Sel,
     ) -> Retained<NSButton> {
-        let title = NSString::from_str(&spec.label);
+        let localized = appkit_localized_label(&spec.label);
+        let title = NSString::from_str(&localized);
         let button = unsafe {
             NSButton::buttonWithTitle_target_action(&title, Some(target), Some(selector), mtm)
         };
@@ -1239,7 +1424,7 @@ mod appkit {
             NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
             NSSize::new(spec.width() as f64, spec.height() as f64),
         ));
-        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
+        appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
         button
     }
 
@@ -1452,7 +1637,7 @@ mod appkit {
             let result =
                 crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
                     crate::macos_app::MacosClipboardHost,
-                >(0, "macOS");
+                >(0, "");
             eprintln!(
                 "ZSClip AppKit clipboard capture sequence={} inserted={} item_id={:?} reason={}",
                 sequence, result.inserted, result.item_id, result.reason
@@ -1469,7 +1654,8 @@ mod appkit {
             target: &AnyObject,
         ) {
             let action = spec.action;
-            let title = NSString::from_str(spec.label);
+            let localized = appkit_localized_label(spec.label);
+            let title = NSString::from_str(&localized);
             let key_equivalent = NSString::from_str(spec.accelerator_key);
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -1720,8 +1906,9 @@ mod appkit {
                     NativeHostRowAction::Paste,
                     NativeHostRowAction::Pin,
                 ] {
-                    let result =
-                        crate::macos_app::dispatch_macos_native_row_action_for_item(action, item_id);
+                    let result = crate::macos_app::dispatch_macos_native_row_action_for_item(
+                        action, item_id,
+                    );
                     eprintln!(
                         "ZSClip AppKit auto smoke row action {} item_id={} -> {} accepted={}",
                         action.action_name(),
@@ -1731,10 +1918,8 @@ mod appkit {
                     );
                 }
                 let edited_text = "zsclip appkit auto smoke edited text";
-                let edit = crate::macos_app::dispatch_macos_native_edit_text_save(
-                    item_id,
-                    edited_text,
-                );
+                let edit =
+                    crate::macos_app::dispatch_macos_native_edit_text_save(item_id, edited_text);
                 let edit_read_back = crate::db_runtime::item_text(item_id)
                     .ok()
                     .flatten()
@@ -1742,10 +1927,7 @@ mod appkit {
                     == Some(edited_text);
                 eprintln!(
                     "ZSClip AppKit auto smoke edit save item_id={} -> {} accepted={} read_back={}",
-                    item_id,
-                    edit.result_name,
-                    edit.accepted,
-                    edit_read_back
+                    item_id, edit.result_name, edit.accepted, edit_read_back
                 );
                 let image_seed = crate::db_runtime::insert_native_clipboard_image(
                     0,
@@ -1766,10 +1948,7 @@ mod appkit {
                             .map(|(_, width, height)| (width, height));
                     eprintln!(
                         "ZSClip AppKit auto smoke image copy item_id={} -> {} accepted={} read={:?}",
-                        image_item_id,
-                        image_copy.result_name,
-                        image_copy.accepted,
-                        image_read
+                        image_item_id, image_copy.result_name, image_copy.accepted, image_read
                     );
                 }
                 if let Ok(group) =
@@ -1779,24 +1958,17 @@ mod appkit {
                         crate::macos_app::dispatch_macos_native_assign_group(item_id, group.id);
                     eprintln!(
                         "ZSClip AppKit auto smoke assign group item_id={} group_id={} -> {} accepted={}",
-                        item_id,
-                        group.id,
-                        assign.result_name,
-                        assign.accepted
+                        item_id, group.id, assign.result_name, assign.accepted
                     );
                     let filter = crate::macos_app::dispatch_macos_native_group_filter(group.id);
                     eprintln!(
                         "ZSClip AppKit auto smoke group filter group_id={} -> {} accepted={}",
-                        group.id,
-                        filter.result_name,
-                        filter.accepted
+                        group.id, filter.result_name, filter.accepted
                     );
                     let remove = crate::macos_app::dispatch_macos_native_remove_group(item_id);
                     eprintln!(
                         "ZSClip AppKit auto smoke remove group item_id={} -> {} accepted={}",
-                        item_id,
-                        remove.result_name,
-                        remove.accepted
+                        item_id, remove.result_name, remove.accepted
                     );
                 }
                 let delete_seed = crate::db_runtime::insert_native_clipboard_text(
@@ -1813,9 +1985,7 @@ mod appkit {
                     );
                     eprintln!(
                         "ZSClip AppKit auto smoke delete item_id={} -> {} accepted={}",
-                        delete_item_id,
-                        delete.result_name,
-                        delete.accepted
+                        delete_item_id, delete.result_name, delete.accepted
                     );
                 }
                 self.reload_native_clip_items();
@@ -1845,11 +2015,13 @@ mod appkit {
                 return;
             };
             let target: &AnyObject = self.as_ref();
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
+                .unwrap_or_default();
             let items = self.ivars().clip_items.borrow();
             let grouping_enabled = crate::macos_app::macos_native_grouping_enabled();
+            let row_actions_title = NSString::from_str(appkit_tr("行操作", "Row Actions"));
             let menu = self.build_popup_menu(
-                ns_string!("Row Actions"),
+                &row_actions_title,
                 &native_host_full_row_popup_menu_entries_for_groups(
                     &groups,
                     native_host_row_popup_menu_input_for_projection(
@@ -1857,7 +2029,7 @@ mod appkit {
                         self.ivars().selected_item_id.get(),
                         grouping_enabled,
                     ),
-                    |label| label.to_string(),
+                    |label| crate::i18n_runtime::translate(label).into_owned(),
                 ),
                 target,
             );
@@ -1874,9 +2046,11 @@ mod appkit {
                 return;
             };
             let target: &AnyObject = self.as_ref();
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
+                .unwrap_or_default();
+            let group_filter_title = NSString::from_str(appkit_tr("分组", "Group Filter"));
             let menu = self.build_popup_menu(
-                ns_string!("Group Filter"),
+                &group_filter_title,
                 &native_host_group_filter_popup_menu_entries_for_groups(
                     &groups,
                     self.ivars().current_group_filter.get(),
@@ -1899,9 +2073,11 @@ mod appkit {
 
             let mtm = self.mtm();
             let current_group_id = self.ivars().current_group_filter.get();
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let source_category = self.active_source_category();
+            let groups = crate::db_runtime::native_clip_groups(source_category).unwrap_or_default();
             let group_label = native_host_group_filter_label_for_groups(&groups, current_group_id);
-            let items = crate::macos_app::macos_native_host_projected_clip_items_for_group(
+            let items = crate::macos_app::macos_native_host_projected_clip_items_for_category_group(
+                source_category,
                 current_group_id,
             );
             let plan = native_host_vv_popup_render_plan_for_projection(&items, &group_label);
@@ -1936,7 +2112,10 @@ mod appkit {
             unsafe { window.setOpaque(false) };
             window.setHasShadow(true);
             window.setBackgroundColor(Some(&NSColor::clearColor()));
-            window.setTitle(ns_string!("ZSClip VV Popup"));
+            window.setTitle(&NSString::from_str(appkit_tr(
+                "ZSClip VV 粘贴",
+                "ZSClip VV Popup",
+            )));
             let view = window
                 .contentView()
                 .expect("vv popup must have content view");
@@ -1957,7 +2136,8 @@ mod appkit {
                 let target: &AnyObject = self.as_ref();
                 for spec in crate::app_core::native_host_vv_select_specs(&plan, width, height) {
                     let action = spec.action;
-                    let title = NSString::from_str(&spec.label);
+                    let localized = appkit_localized_label(&spec.label);
+                    let title = NSString::from_str(&localized);
                     let button = unsafe {
                         NSButton::buttonWithTitle_target_action(
                             &title,
@@ -1970,7 +2150,7 @@ mod appkit {
                         NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
                         NSSize::new(spec.width() as f64, spec.height() as f64),
                     ));
-                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &spec.label);
+                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
                     button.setTag(action.index as _);
                     unsafe { view.addSubview(&button) };
                 }
@@ -2006,7 +2186,8 @@ mod appkit {
                     enabled,
                     checked,
                 } => {
-                    let title = NSString::from_str(label);
+                    let localized = appkit_localized_label(label);
+                    let title = NSString::from_str(&localized);
                     let key_equivalent = NSString::from_str(
                         native_popup_menu_command_macos_key_equivalent(*id).unwrap_or(""),
                     );
@@ -2045,7 +2226,8 @@ mod appkit {
                     enabled,
                     entries,
                 } => {
-                    let title = NSString::from_str(label);
+                    let localized = appkit_localized_label(label);
+                    let title = NSString::from_str(&localized);
                     let item = unsafe {
                         NSMenuItem::initWithTitle_action_keyEquivalent(
                             NSMenuItem::alloc(self.mtm()),
@@ -2751,7 +2933,8 @@ mod appkit {
         }
 
         fn refresh_main_state_after_settings_save(&self) {
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
+                .unwrap_or_default();
             let current_group_id = self.ivars().current_group_filter.get();
             if current_group_id > 0 && !groups.iter().any(|group| group.id == current_group_id) {
                 self.ivars().current_group_filter.set(0);
@@ -3030,7 +3213,8 @@ mod appkit {
         }
 
         fn perform_native_group_menu_command(&self, menu_id: usize) -> bool {
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
+                .unwrap_or_default();
             if menu_id == menu_ids::ROW_GROUP_REMOVE {
                 let item_id = self.ivars().selected_item_id.get();
                 let result = crate::macos_app::dispatch_macos_native_remove_group(item_id);
@@ -3093,11 +3277,43 @@ mod appkit {
         }
 
         fn reload_native_clip_items(&self) {
-            let items = crate::macos_app::macos_native_host_projected_clip_items_for_group(
+            let items = crate::macos_app::macos_native_host_projected_clip_items_for_category_group(
+                self.active_source_category(),
                 self.ivars().current_group_filter.get(),
             );
             *self.ivars().clip_items.borrow_mut() = items;
             self.refresh_native_clip_rows();
+        }
+
+        fn active_source_category(&self) -> i64 {
+            native_host_source_tab_for_category(self.ivars().current_source_category.get()).category
+        }
+
+        fn select_native_source_category(&self, category: i64) {
+            let normalized = native_host_source_tab_for_category(category).category;
+            if self.ivars().current_source_category.get() == normalized {
+                self.refresh_native_source_tab_buttons();
+                return;
+            }
+            self.ivars().current_source_category.set(normalized);
+            self.ivars().current_group_filter.set(0);
+            self.ivars().selected_item_id.set(0);
+            self.refresh_native_source_tab_buttons();
+            self.reload_native_clip_items();
+            eprintln!("ZSClip AppKit source tab category={} selected", normalized);
+        }
+
+        fn refresh_native_source_tab_buttons(&self) {
+            let category = self.active_source_category();
+            if let Some(buttons) = self.ivars().source_tab_buttons.get() {
+                for button in buttons {
+                    button.setState(if button.tag() as i64 == category {
+                        NSControlStateValueOn
+                    } else {
+                        NSControlStateValueOff
+                    });
+                }
+            }
         }
 
         fn refresh_native_clip_rows(&self) {
@@ -3189,13 +3405,16 @@ mod appkit {
             };
             unsafe { window.setReleasedWhenClosed(false) };
             window.setDelegate(Some(ProtocolObject::from_ref(self)));
-            let window_title = NSString::from_str(&format!("ZSClip Edit - {}", plan.title));
+            let window_title = NSString::from_str(appkit_tr("编辑剪贴板", "ZSClip Edit"));
             window.setTitle(&window_title);
             let view = window
                 .contentView()
                 .expect("edit window must have content view");
             let title = unsafe {
-                let label = NSTextField::labelWithString(ns_string!("Edit clipboard text"), mtm);
+                let label = NSTextField::labelWithString(
+                    &NSString::from_str(appkit_tr("编辑剪贴板内容", "Edit clipboard text")),
+                    mtm,
+                );
                 label.setFrame(NSRect::new(
                     NSPoint::new(20.0, 276.0),
                     NSSize::new(520.0, 24.0),
@@ -3217,7 +3436,7 @@ mod appkit {
             edit_text_view.setFont(Some(&NSFont::systemFontOfSize(13.0)));
             appkit_set_accessibility_label::<NSTextView>(
                 edit_text_view.as_ref(),
-                "Clipboard text editor",
+                appkit_tr("剪贴板内容编辑器", "Clipboard text editor"),
             );
             let edit_text_scroller = unsafe {
                 NSScrollView::initWithFrame(
@@ -3232,7 +3451,7 @@ mod appkit {
             edit_text_scroller.setDocumentView(Some(&edit_text_view));
             appkit_set_accessibility_label::<NSScrollView>(
                 edit_text_scroller.as_ref(),
-                "Clipboard text editor scroll area",
+                appkit_tr("剪贴板内容编辑区域", "Clipboard text editor scroll area"),
             );
             let save_buttons: Vec<_> = native_host_edit_text_button_specs()
                 .into_iter()
@@ -3345,12 +3564,18 @@ mod appkit {
 
         fn present_native_edit_unsaved_changes_alert(&self) -> NativeDialogResponse {
             let alert = NSAlert::new(self.mtm());
-            alert.setMessageText(ns_string!("Save edited clipboard text?"));
-            alert.setInformativeText(ns_string!("The edited clipboard text has unsaved changes."));
+            alert.setMessageText(&NSString::from_str(appkit_tr(
+                "保存编辑后的剪贴板内容？",
+                "Save edited clipboard text?",
+            )));
+            alert.setInformativeText(&NSString::from_str(appkit_tr(
+                "编辑后的剪贴板内容还没有保存。",
+                "The edited clipboard text has unsaved changes.",
+            )));
             alert.setAlertStyle(NSAlertStyle::Warning);
-            alert.addButtonWithTitle(ns_string!("Save"));
-            alert.addButtonWithTitle(ns_string!("Discard"));
-            alert.addButtonWithTitle(ns_string!("Cancel"));
+            alert.addButtonWithTitle(&NSString::from_str(appkit_tr("保存", "Save")));
+            alert.addButtonWithTitle(&NSString::from_str(appkit_tr("不保存", "Discard")));
+            alert.addButtonWithTitle(&NSString::from_str(appkit_tr("取消", "Cancel")));
             let response = alert.runModal();
             if response == NSAlertFirstButtonReturn {
                 NativeDialogResponse::Yes
@@ -4108,6 +4333,7 @@ pub(crate) fn dispatch_appkit_vv_paste(index: usize) -> NativeHostVvPasteExecuti
     crate::macos_app::dispatch_macos_native_vv_paste(index)
 }
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn dispatch_appkit_vv_paste_for_group(
     index: usize,
     group_id: i64,

@@ -10,6 +10,15 @@ pub(crate) const MULTI_SYNC_MANIFEST_FILE_NAME: &str = "zsSyncClipboard.json";
 pub(crate) const MULTI_SYNC_LEGACY_MANIFEST_FILE_NAME: &str = "SyncClipboard.json";
 
 pub(crate) fn transport_status_label(webdav_enabled: bool, lan_enabled: bool) -> &'static str {
+    #[cfg(not(feature = "lan-sync"))]
+    {
+        return if webdav_enabled {
+            "多端同步：当前方案为 WebDAV；适合跨网络同步。"
+        } else {
+            "多端同步：未选择同步方案。请选择 WebDAV。"
+        };
+    }
+    #[cfg(feature = "lan-sync")]
     match (webdav_enabled, lan_enabled) {
         (_, true) => "多端同步：当前方案为局域网；扫码绑定后在同一 Wi-Fi 内传输。",
         (true, false) => "多端同步：当前方案为 WebDAV；适合跨网络同步。",

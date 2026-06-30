@@ -5,7 +5,12 @@ pub(super) unsafe fn settings_commit_collected_app_settings(
     app: &mut AppState,
 ) {
     let baseline = SettingsAppEffectBaseline::capture(app);
+    #[cfg(feature = "lan-sync")]
     crate::lan_sync::ensure_device_identity(&mut st.draft);
+    #[cfg(not(feature = "lan-sync"))]
+    {
+        st.draft.lan_sync_enabled = false;
+    }
     app.settings = st.draft.clone();
     if app.settings.edge_auto_hide {
         if let Some(rc) = platform_window::window_rect(st.parent_hwnd) {

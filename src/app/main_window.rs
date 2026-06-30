@@ -6,6 +6,7 @@ unsafe fn reclaim_window_state_memory(hwnd: HWND, state: &mut AppState) {
     clear_cloud_sync_results_for_hwnd(hwnd);
     state.release_list_memory();
     crate::win_ui_render::release_idle_memory();
+    #[cfg(feature = "lan-sync")]
     if !state.settings.lan_sync_enabled {
         lan_sync::release_idle_memory();
     }
@@ -197,6 +198,7 @@ unsafe fn handle_main_destroy(hwnd: HWND, state: &mut AppState) {
                 destroy_vv_popup_window(popup);
             }
             let _ = update_vv_mode_hook(hwnd, false);
+            #[cfg(feature = "lan-sync")]
             lan_sync::stop_service();
             shutdown_low_level_input_hooks();
             unregister_clipboard_listener_for(hwnd, state);

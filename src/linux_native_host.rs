@@ -31,8 +31,8 @@ mod gtk_host {
         native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
         native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
         native_host_settings_platform_button_specs, native_host_settings_section_label,
-        native_host_settings_toggle_specs, native_host_status_menu_item_specs,
-        native_host_vv_popup_render_plan_for_projection,
+        native_host_settings_toggle_specs, native_host_source_tab_for_category,
+        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_accelerator_label, native_popup_menu_command_icon_name,
         MainGroupFilterSelection, MainRowGroupSelection, NativeButtonStyleRole,
         NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
@@ -43,7 +43,7 @@ mod gtk_host {
         NativeHostSettingsPlatformAction, NativeHostVvPasteExecution, NativeHostVvTriggerAction,
         NativeHostVvTriggerInput, NativeHostVvTriggerKey, NativeHostVvTriggerTransition,
         NativePopupMenuEntry, NativeSettingsPageTabKind, ProductAdapterCommandResult,
-        SettingsControlRole, NATIVE_HOST_CLIP_ROW_CAPACITY,
+        SettingsControlRole, NATIVE_HOST_CLIP_ROW_CAPACITY, NATIVE_HOST_SOURCE_TABS,
     };
     use gtk::prelude::*;
     use gtk::{gdk, gio, glib};
@@ -57,6 +57,7 @@ mod gtk_host {
     use ksni::blocking::TrayMethods;
 
     use crate::linux_app::LinuxHostContractSummary;
+    use crate::zsui::{HostCapabilities, Window};
 
     const ZSCLIP_GTK_CSS: &str = r#"
 .clip-row {
@@ -414,11 +415,28 @@ searchentry {
         X11CommandWindowSystemBackend::new()
     }
 
+    fn gtk_main_window_capabilities() -> HostCapabilities {
+        HostCapabilities::linux_native_window_host()
+    }
+
+    fn gtk_main_window_spec() -> Window {
+        let requested = Window::new("ZSClip")
+            .size(960, 640)
+            .min_size(420, 300)
+            .resizable(true)
+            .decorations(true)
+            .always_on_top(true);
+        requested
+            .resolve_for(&gtk_main_window_capabilities())
+            .effective
+    }
+
     fn gtk_native_window_traits(
         window: &ApplicationWindow,
         backend: &dyn GtkWindowSystemBackend,
+        always_on_top_requested: bool,
     ) -> GtkWindowSystemSnapshot {
-        let always_on_top = backend.apply_always_on_top(window, true);
+        let always_on_top = backend.apply_always_on_top(window, always_on_top_requested);
         let cursor_follow = backend.position_near_cursor(window);
         if !always_on_top.supported {
             eprintln!("{}", always_on_top.result_name);
@@ -441,13 +459,21 @@ searchentry {
             .build();
         app.connect_activate(move |app| {
             install_zsclip_gtk_css();
+            let window_spec = gtk_main_window_spec();
             let window = ApplicationWindow::builder()
                 .application(app)
-                .default_width(960)
-                .default_height(640)
-                .title("ZSClip")
+                .default_width(window_spec.width as i32)
+                .default_height(window_spec.height as i32)
+                .title(window_spec.title.as_str())
                 .build();
             window.set_icon_name(Some("edit-paste"));
+            window.set_resizable(window_spec.resizable);
+            window.set_decorated(window_spec.decorations);
+            if let (Some(min_width), Some(min_height)) =
+                (window_spec.min_width, window_spec.min_height)
+            {
+                window.set_size_request(min_width as i32, min_height as i32);
+            }
 
             let root = GtkBox::new(Orientation::Vertical, 12);
             root.set_margin_top(24);
@@ -455,7 +481,7 @@ searchentry {
             root.set_margin_start(24);
             root.set_margin_end(24);
 
-            let title = Label::new(Some("ZSClip"));
+            let title = Label::new(Some(&window_spec.title));
             title.add_css_class("title-1");
             title.set_xalign(0.0);
 
@@ -496,7 +522,7 @@ searchentry {
             }
             let header = HeaderBar::new();
             header.set_show_title_buttons(true);
-            let header_title = Label::new(Some("ZSClip"));
+            let header_title = Label::new(Some(&window_spec.title));
             header_title.add_css_class("heading");
             header.set_title_widget(Some(&header_title));
             let search_button = ToggleButton::builder()
@@ -535,6 +561,7 @@ searchentry {
                     .unwrap_or_default(),
             ));
             let current_group_filter = Rc::new(Cell::new(0_i64));
+            let current_source_category = Rc::new(Cell::new(0_i64));
             let clip_rows: Vec<_> = native_host_clip_row_specs(
                 &clip_items.borrow(),
                 NATIVE_HOST_CLIP_ROW_CAPACITY,
@@ -564,6 +591,7 @@ searchentry {
                 app,
                 &status,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -598,6 +626,7 @@ searchentry {
             });
             let selected_item_id_for_activation = selected_item_id.clone();
             let status_for_activation = status.clone();
+            let current_source_category_for_activation = current_source_category.clone();
             let current_group_filter_for_activation = current_group_filter.clone();
             let clip_rows_for_activation = clip_rows.clone();
             let clip_items_for_activation = clip_items.clone();
@@ -611,6 +640,7 @@ searchentry {
                     NativeHostRowAction::Paste,
                     &selected_item_id_for_activation,
                     &status_for_activation,
+                    &current_source_category_for_activation,
                     &current_group_filter_for_activation,
                     &clip_rows_for_activation,
                     clip_items_for_activation.clone(),
@@ -619,12 +649,53 @@ searchentry {
             sync_clip_list_selection(&clip_list, &clip_rows, selected_item_id.get());
             clip_list.grab_focus();
             clip_scroller.set_child(Some(&clip_list));
+            let source_tabs = GtkBox::new(Orientation::Horizontal, 8);
+            source_tabs.add_css_class("linked");
+            let source_tab_buttons: Vec<_> = NATIVE_HOST_SOURCE_TABS
+                .iter()
+                .map(|tab| {
+                    let button =
+                        ToggleButton::with_label(crate::i18n_runtime::tr(tab.label_source, tab.label_en));
+                    button.set_widget_name(tab.id);
+                    button.set_active(tab.category == current_source_category.get());
+                    let category = current_source_category.clone();
+                    let group_filter = current_group_filter.clone();
+                    let rows = clip_rows.clone();
+                    let items = clip_items.clone();
+                    let selected = selected_item_id.clone();
+                    let list = clip_list.clone();
+                    button.connect_clicked(move |button| {
+                        let next_category = native_host_source_tab_for_category(tab.category).category;
+                        if category.get() == next_category {
+                            button.set_active(true);
+                            return;
+                        }
+                        category.set(next_category);
+                        group_filter.set(0);
+                        selected.set(0);
+                        reload_clip_items_for_group_with_selection(
+                            &category,
+                            &group_filter,
+                            &rows,
+                            items.clone(),
+                            &selected,
+                        );
+                        sync_clip_list_selection(&list, &rows, selected.get());
+                        eprintln!("ZSClip GTK source tab category={} selected", next_category);
+                    });
+                    source_tabs.append(&button);
+                    button
+                })
+                .collect();
+            refresh_gtk_source_tab_buttons(&source_tab_buttons, current_source_category.get());
+            root.append(&source_tabs);
             root.append(&clip_scroller);
             let row_actions = GtkBox::new(Orientation::Horizontal, 8);
             let row_menu = install_row_popup_menu(
                 app,
                 &status,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -635,6 +706,7 @@ searchentry {
                     &clip_list,
                     &row_menu,
                     selected_item_id.clone(),
+                    current_source_category.clone(),
                     clip_items.clone(),
                 );
             }
@@ -642,6 +714,7 @@ searchentry {
                 app,
                 &status,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -650,6 +723,7 @@ searchentry {
                 row_menu: row_menu.clone(),
                 group_filter_menu: group_filter_menu.clone(),
                 current_group_filter: current_group_filter.clone(),
+                current_source_category: current_source_category.clone(),
                 selected_item_id: selected_item_id.clone(),
                 clip_rows: clip_rows.clone(),
                 clip_items: clip_items.clone(),
@@ -676,10 +750,15 @@ searchentry {
                         let button = Button::with_label(spec.label);
                         button.set_widget_name(spec.id);
                         let app_for_vv = app.clone();
+                        let current_source_category_for_vv = current_source_category.clone();
                         let current_group_filter_for_vv = current_group_filter.clone();
                         button.connect_clicked(move |_| {
                             eprintln!("ZSClip GTK VV popup requested");
-                            present_vv_popup_window(&app_for_vv, current_group_filter_for_vv.get());
+                            present_vv_popup_window(
+                                &app_for_vv,
+                                current_source_category_for_vv.get(),
+                                current_group_filter_for_vv.get(),
+                            );
                         });
                         row_actions.append(&button);
                     }
@@ -688,11 +767,14 @@ searchentry {
                         let button = Button::with_label(spec.label);
                         button.set_widget_name(spec.id);
                         let app_for_vv_trigger = app.clone();
+                        let current_source_category_for_vv_trigger =
+                            current_source_category.clone();
                         let current_group_filter_for_vv_trigger = current_group_filter.clone();
                         button.connect_clicked(move |_| {
                             eprintln!("ZSClip GTK VV trigger requested");
                             perform_vv_trigger_demo(
                                 &app_for_vv_trigger,
+                                current_source_category_for_vv_trigger.get(),
                                 current_group_filter_for_vv_trigger.get(),
                             );
                         });
@@ -728,15 +810,22 @@ searchentry {
                 &clip_list,
                 selected_item_id.clone(),
                 &status,
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
             );
-            install_vv_key_controller(&window, app, current_group_filter.clone());
+            install_vv_key_controller(
+                &window,
+                app,
+                current_source_category.clone(),
+                current_group_filter.clone(),
+            );
             install_vv_global_key_tap(app);
             install_clipboard_capture_timer(
                 &status,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -745,7 +834,8 @@ searchentry {
             window.set_child(Some(&root));
             window.present();
             let window_backend = gtk_select_window_system_backend();
-            let window_traits = gtk_native_window_traits(&window, &window_backend);
+            let window_traits =
+                gtk_native_window_traits(&window, &window_backend, window_spec.always_on_top);
             eprintln!(
                 "ZSClip GTK native window traits backend={} always_on_top_supported={} cursor_follow_supported={} scale_factor={} dark_mode={}",
                 window_traits.backend_name,
@@ -762,6 +852,7 @@ searchentry {
     fn install_clipboard_capture_timer(
         status: &Label,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -786,13 +877,14 @@ searchentry {
             let result =
                 crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
                     crate::linux_app::LinuxClipboardHost,
-                >(0, "Linux");
+                >(0, "");
             eprintln!(
                 "ZSClip GTK clipboard capture sequence={} inserted={} item_id={:?} reason={}",
                 sequence, result.inserted, result.item_id, result.reason
             );
             if result.inserted {
                 reload_clip_items_for_group_with_selection(
+                    &current_source_category,
                     &current_group_filter,
                     &clip_rows,
                     clip_items.clone(),
@@ -980,10 +1072,8 @@ searchentry {
                 crate::app_core::NativeHostRowAction::Paste,
                 crate::app_core::NativeHostRowAction::Pin,
             ] {
-                let result = crate::linux_app::dispatch_linux_native_row_action_for_item(
-                    action,
-                    item_id,
-                );
+                let result =
+                    crate::linux_app::dispatch_linux_native_row_action_for_item(action, item_id);
                 eprintln!(
                     "ZSClip GTK auto smoke row action {} item_id={} -> {} accepted={}",
                     action.action_name(),
@@ -993,8 +1083,7 @@ searchentry {
                 );
             }
             let edited_text = "zsclip gtk auto smoke edited text";
-            let edit =
-                crate::linux_app::dispatch_linux_native_edit_text_save(item_id, edited_text);
+            let edit = crate::linux_app::dispatch_linux_native_edit_text_save(item_id, edited_text);
             let edit_read_back = crate::db_runtime::item_text(item_id)
                 .ok()
                 .flatten()
@@ -1002,10 +1091,7 @@ searchentry {
                 == Some(edited_text);
             eprintln!(
                 "ZSClip GTK auto smoke edit save item_id={} -> {} accepted={} read_back={}",
-                item_id,
-                edit.result_name,
-                edit.accepted,
-                edit_read_back
+                item_id, edit.result_name, edit.accepted, edit_read_back
             );
             let image_seed = crate::db_runtime::insert_native_clipboard_image(
                 0,
@@ -1026,10 +1112,7 @@ searchentry {
                         .map(|(_, width, height)| (width, height));
                 eprintln!(
                     "ZSClip GTK auto smoke image copy item_id={} -> {} accepted={} read={:?}",
-                    image_item_id,
-                    image_copy.result_name,
-                    image_copy.accepted,
-                    image_read
+                    image_item_id, image_copy.result_name, image_copy.accepted, image_read
                 );
             }
             if let Ok(group) = crate::db_runtime::create_native_clip_group(0, "GTK Auto Smoke") {
@@ -1037,24 +1120,17 @@ searchentry {
                     crate::linux_app::dispatch_linux_native_assign_group(item_id, group.id);
                 eprintln!(
                     "ZSClip GTK auto smoke assign group item_id={} group_id={} -> {} accepted={}",
-                    item_id,
-                    group.id,
-                    assign.result_name,
-                    assign.accepted
+                    item_id, group.id, assign.result_name, assign.accepted
                 );
                 let filter = crate::linux_app::dispatch_linux_native_group_filter(group.id);
                 eprintln!(
                     "ZSClip GTK auto smoke group filter group_id={} -> {} accepted={}",
-                    group.id,
-                    filter.result_name,
-                    filter.accepted
+                    group.id, filter.result_name, filter.accepted
                 );
                 let remove = crate::linux_app::dispatch_linux_native_remove_group(item_id);
                 eprintln!(
                     "ZSClip GTK auto smoke remove group item_id={} -> {} accepted={}",
-                    item_id,
-                    remove.result_name,
-                    remove.accepted
+                    item_id, remove.result_name, remove.accepted
                 );
             }
             let delete_seed = crate::db_runtime::insert_native_clipboard_text(
@@ -1071,9 +1147,7 @@ searchentry {
                 );
                 eprintln!(
                     "ZSClip GTK auto smoke delete item_id={} -> {} accepted={}",
-                    delete_item_id,
-                    delete.result_name,
-                    delete.accepted
+                    delete_item_id, delete.result_name, delete.accepted
                 );
             }
         }
@@ -1272,6 +1346,7 @@ searchentry {
         clip_list: &ListBox,
         row_menu: &gio::Menu,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) {
         let popover = PopoverMenu::from_model(Some(row_menu));
@@ -1289,7 +1364,9 @@ searchentry {
             }
             selected_item_id.set(item_id);
             clip_list.select_row(Some(&gesture_row));
-            let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+            let category =
+                native_host_source_tab_for_category(current_source_category.get()).category;
+            let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
             replace_popup_menu_entries(
                 &row_menu,
                 &native_host_full_row_popup_menu_entries_for_groups(
@@ -1317,6 +1394,7 @@ searchentry {
         clip_list: &ListBox,
         selected_item_id: Rc<Cell<i64>>,
         status: &Label,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -1354,6 +1432,7 @@ searchentry {
                     NativeHostRowAction::Paste,
                     &selected_item_id,
                     &status,
+                    &current_source_category,
                     &current_group_filter,
                     &clip_rows,
                     clip_items.clone(),
@@ -1374,6 +1453,7 @@ searchentry {
                     NativeHostRowAction::Delete,
                     &selected_item_id,
                     &status,
+                    &current_source_category,
                     &current_group_filter,
                     &clip_rows,
                     clip_items.clone(),
@@ -1409,11 +1489,13 @@ searchentry {
         app: &Application,
         status: &Label,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> gio::Menu {
-        let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let category = native_host_source_tab_for_category(current_source_category.get()).category;
+        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         let grouping_enabled = crate::linux_app::linux_native_grouping_enabled();
         let entries = native_host_full_row_popup_menu_entries_for_groups(
             &groups,
@@ -1429,6 +1511,7 @@ searchentry {
             status,
             entries,
             selected_item_id,
+            current_source_category,
             current_group_filter,
             clip_rows,
             clip_items,
@@ -1439,11 +1522,13 @@ searchentry {
         app: &Application,
         status: &Label,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> gio::Menu {
-        let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let category = native_host_source_tab_for_category(current_source_category.get()).category;
+        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         install_popup_menu(
             app,
             status,
@@ -1452,6 +1537,7 @@ searchentry {
                 current_group_filter.get(),
             ),
             selected_item_id,
+            current_source_category,
             current_group_filter,
             clip_rows,
             clip_items,
@@ -1463,6 +1549,7 @@ searchentry {
         status: &Label,
         entries: Vec<NativePopupMenuEntry>,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -1473,6 +1560,7 @@ searchentry {
                 status,
                 menu_id,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -1486,6 +1574,7 @@ searchentry {
         app: &Application,
         status: &Label,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -1495,6 +1584,7 @@ searchentry {
             status,
             menu_ids::GROUP_FILTER_ALL,
             selected_item_id.clone(),
+            current_source_category.clone(),
             current_group_filter.clone(),
             clip_rows.clone(),
             clip_items.clone(),
@@ -1505,6 +1595,7 @@ searchentry {
                 status,
                 menu_ids::ROW_GROUP_BASE + index,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -1514,6 +1605,7 @@ searchentry {
                 status,
                 menu_ids::GROUP_FILTER_BASE + index,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
@@ -1526,6 +1618,7 @@ searchentry {
         status: &Label,
         menu_id: usize,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -1550,6 +1643,7 @@ searchentry {
             if perform_group_menu_command(
                 menu_id,
                 selected_item_id.clone(),
+                current_source_category.clone(),
                 current_group_filter.clone(),
                 &clip_rows,
                 clip_items.clone(),
@@ -1561,6 +1655,7 @@ searchentry {
                     action,
                     &selected_item_id,
                     &status,
+                    &current_source_category,
                     &current_group_filter,
                     &clip_rows,
                     clip_items.clone(),
@@ -1576,6 +1671,7 @@ searchentry {
                         Some(EditRefreshTarget {
                             rows: clip_rows.clone(),
                             items: clip_items.clone(),
+                            current_source_category: current_source_category.clone(),
                             current_group_filter: current_group_filter.clone(),
                         }),
                     );
@@ -1589,6 +1685,7 @@ searchentry {
         action: NativeHostRowAction,
         selected_item_id: &Cell<i64>,
         status: &Label,
+        current_source_category: &Cell<i64>,
         current_group_filter: &Cell<i64>,
         clip_rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
@@ -1618,6 +1715,7 @@ searchentry {
             )
         {
             reload_clip_items_for_group_with_selection(
+                current_source_category,
                 current_group_filter,
                 clip_rows,
                 clip_items,
@@ -1630,11 +1728,13 @@ searchentry {
     fn perform_group_menu_command(
         menu_id: usize,
         selected_item_id: Rc<Cell<i64>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         clip_rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) -> bool {
-        let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let category = native_host_source_tab_for_category(current_source_category.get()).category;
+        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         if menu_id == menu_ids::ROW_GROUP_REMOVE {
             let item_id = selected_item_id.get();
             let result = crate::linux_app::dispatch_linux_native_remove_group(item_id);
@@ -1643,6 +1743,7 @@ searchentry {
                 item_id, result.result_name
             );
             reload_clip_items_for_group_with_selection(
+                &current_source_category,
                 &current_group_filter,
                 clip_rows,
                 clip_items,
@@ -1663,6 +1764,7 @@ searchentry {
                 item_id, group.id, result.result_name
             );
             reload_clip_items_for_group_with_selection(
+                &current_source_category,
                 &current_group_filter,
                 clip_rows,
                 clip_items,
@@ -1677,6 +1779,7 @@ searchentry {
                 let result = crate::linux_app::dispatch_linux_native_group_filter(0);
                 eprintln!("ZSClip GTK group filter all -> {}", result.result_name);
                 reload_clip_items_for_group_with_selection(
+                    &current_source_category,
                     &current_group_filter,
                     clip_rows,
                     clip_items,
@@ -1695,6 +1798,7 @@ searchentry {
                     group.id, result.result_name
                 );
                 reload_clip_items_for_group_with_selection(
+                    &current_source_category,
                     &current_group_filter,
                     clip_rows,
                     clip_items,
@@ -1707,25 +1811,45 @@ searchentry {
     }
 
     fn reload_clip_items_for_group(
+        current_source_category: &Cell<i64>,
         current_group_filter: &Cell<i64>,
         rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) {
         *clip_items.borrow_mut() =
-            crate::linux_app::linux_native_host_projected_clip_items_for_group(
+            crate::linux_app::linux_native_host_projected_clip_items_for_category_group(
+                native_host_source_tab_for_category(current_source_category.get()).category,
                 current_group_filter.get(),
             );
         refresh_clip_rows(rows, &clip_items.borrow());
     }
 
     fn reload_clip_items_for_group_with_selection(
+        current_source_category: &Cell<i64>,
         current_group_filter: &Cell<i64>,
         rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
         selected_item_id: &Cell<i64>,
     ) {
-        reload_clip_items_for_group(current_group_filter, rows, clip_items.clone());
+        reload_clip_items_for_group(
+            current_source_category,
+            current_group_filter,
+            rows,
+            clip_items.clone(),
+        );
         reconcile_selected_item_id(selected_item_id, &clip_items.borrow());
+    }
+
+    fn refresh_gtk_source_tab_buttons(buttons: &[ToggleButton], category: i64) {
+        let normalized = native_host_source_tab_for_category(category).category;
+        for button in buttons {
+            let active = NATIVE_HOST_SOURCE_TABS
+                .iter()
+                .find(|tab| tab.id == button.widget_name().as_str())
+                .map(|tab| tab.category == normalized)
+                .unwrap_or(false);
+            button.set_active(active);
+        }
     }
 
     fn reconcile_selected_item_id(
@@ -1772,6 +1896,7 @@ searchentry {
     struct GroupPopupMenus {
         row_menu: gio::Menu,
         group_filter_menu: gio::Menu,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         selected_item_id: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
@@ -1779,7 +1904,9 @@ searchentry {
     }
 
     fn refresh_group_popup_menus(menus: &GroupPopupMenus) {
-        let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+        let category =
+            native_host_source_tab_for_category(menus.current_source_category.get()).category;
+        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         if menus.current_group_filter.get() > 0
             && !groups
                 .iter()
@@ -1807,6 +1934,7 @@ searchentry {
             ),
         );
         reload_clip_items_for_group_with_selection(
+            &menus.current_source_category,
             &menus.current_group_filter,
             &menus.clip_rows,
             menus.clip_items.clone(),
@@ -1815,8 +1943,11 @@ searchentry {
     }
 
     fn refresh_group_popup_menus_for_category(category: i64, menus: Option<&GroupPopupMenus>) {
-        if category == 0 {
-            if let Some(menus) = menus {
+        if let Some(menus) = menus {
+            let active =
+                native_host_source_tab_for_category(menus.current_source_category.get()).category;
+            let changed = native_host_source_tab_for_category(category).category;
+            if active == changed {
                 refresh_group_popup_menus(menus);
             }
         }
@@ -1871,11 +2002,18 @@ searchentry {
         }
     }
 
-    fn present_vv_popup_window(app: &Application, current_group_id: i64) {
-        let groups = crate::db_runtime::native_clip_groups(0).unwrap_or_default();
+    fn present_vv_popup_window(
+        app: &Application,
+        current_source_category: i64,
+        current_group_id: i64,
+    ) {
+        let category = native_host_source_tab_for_category(current_source_category).category;
+        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         let group_label = native_host_group_filter_label_for_groups(&groups, current_group_id);
-        let items =
-            crate::linux_app::linux_native_host_projected_clip_items_for_group(current_group_id);
+        let items = crate::linux_app::linux_native_host_projected_clip_items_for_category_group(
+            category,
+            current_group_id,
+        );
         let plan = native_host_vv_popup_render_plan_for_projection(&items, &group_label);
         let width = plan
             .text_commands
@@ -2007,7 +2145,11 @@ searchentry {
         window.present();
     }
 
-    fn perform_vv_trigger_demo(app: &Application, current_group_id: i64) {
+    fn perform_vv_trigger_demo(
+        app: &Application,
+        current_source_category: i64,
+        current_group_id: i64,
+    ) {
         let target_token = app.as_ptr() as usize as u64;
         let first = NativeHostVvTriggerInput {
             key: NativeHostVvTriggerKey::TriggerV,
@@ -2017,9 +2159,10 @@ searchentry {
             popup_menu_active: false,
             now_ms: 1,
         };
-        let _ = perform_vv_trigger_input(app, first, current_group_id);
+        let _ = perform_vv_trigger_input(app, first, current_source_category, current_group_id);
         let second = NativeHostVvTriggerInput { now_ms: 2, ..first };
-        let transition = perform_vv_trigger_input(app, second, current_group_id);
+        let transition =
+            perform_vv_trigger_input(app, second, current_source_category, current_group_id);
         eprintln!(
             "ZSClip GTK VV trigger demo -> {:?} consume={}",
             transition.action, transition.consume_key
@@ -2029,6 +2172,7 @@ searchentry {
     fn install_vv_key_controller(
         window: &ApplicationWindow,
         app: &Application,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
     ) {
         let controller = EventControllerKey::new();
@@ -2048,6 +2192,7 @@ searchentry {
                     popup_menu_active: false,
                     now_ms: gtk_vv_now_ms(),
                 },
+                current_source_category.get(),
                 current_group_filter.get(),
             );
             if transition.consume_key {
@@ -2087,7 +2232,7 @@ searchentry {
         let app_for_tap = app.clone();
         glib::timeout_add_local(Duration::from_millis(40), move || {
             for input in receiver.try_iter() {
-                let transition = perform_vv_trigger_input(&app_for_tap, input, 0);
+                let transition = perform_vv_trigger_input(&app_for_tap, input, 0, 0);
                 if transition.consume_key {
                     eprintln!("ZSClip GTK VV global keytap cannot consume external key");
                 }
@@ -2171,21 +2316,23 @@ searchentry {
     fn perform_vv_trigger_input(
         app: &Application,
         input: NativeHostVvTriggerInput,
+        current_source_category: i64,
         current_group_id: i64,
     ) -> NativeHostVvTriggerTransition {
         let transition = crate::linux_native_host::dispatch_gtk_vv_trigger_key(input);
-        handle_vv_trigger_transition(app, transition, current_group_id);
+        handle_vv_trigger_transition(app, transition, current_source_category, current_group_id);
         transition
     }
 
     fn handle_vv_trigger_transition(
         app: &Application,
         transition: NativeHostVvTriggerTransition,
+        current_source_category: i64,
         current_group_id: i64,
     ) {
         match transition.action {
             NativeHostVvTriggerAction::Show { .. } => {
-                present_vv_popup_window(app, current_group_id)
+                present_vv_popup_window(app, current_source_category, current_group_id)
             }
             NativeHostVvTriggerAction::Select { index } => {
                 let result = crate::linux_app::dispatch_linux_native_vv_select_event(index);
@@ -2301,9 +2448,13 @@ searchentry {
 
     fn refresh_edit_target(refresh_target: &Option<EditRefreshTarget>) {
         if let Some(target) = refresh_target.as_ref() {
-            let refreshed = crate::linux_app::linux_native_host_projected_clip_items_for_group(
-                target.current_group_filter.get(),
-            );
+            let category =
+                native_host_source_tab_for_category(target.current_source_category.get()).category;
+            let refreshed =
+                crate::linux_app::linux_native_host_projected_clip_items_for_category_group(
+                    category,
+                    target.current_group_filter.get(),
+                );
             *target.items.borrow_mut() = refreshed;
             refresh_clip_rows(&target.rows, &target.items.borrow());
         }
@@ -2550,6 +2701,7 @@ searchentry {
     struct EditRefreshTarget {
         rows: Vec<ListBoxRow>,
         items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
     }
 
@@ -2613,12 +2765,10 @@ searchentry {
     }
 
     fn gtk_clip_row_icon_name(kind_icon: Option<NativeHostClipKindIcon>) -> &'static str {
-        match kind_icon.unwrap_or(NativeHostClipKindIcon::Text) {
-            NativeHostClipKindIcon::Text => "text-x-generic-symbolic",
-            NativeHostClipKindIcon::Image => "image-x-generic-symbolic",
-            NativeHostClipKindIcon::Phrase => "format-text-symbolic",
-            NativeHostClipKindIcon::Files | NativeHostClipKindIcon::Folder => "folder-symbolic",
-        }
+        kind_icon
+            .unwrap_or(NativeHostClipKindIcon::Text)
+            .zsui_icon()
+            .gtk_symbolic_name()
     }
 
     fn refresh_clip_rows(rows: &[ListBoxRow], items: &[NativeHostClipListItemProjection]) {
@@ -3251,7 +3401,9 @@ searchentry {
                         persist_result.result_name
                     );
                     eprintln!("ZSClip GTK settings apply/collect submission -> {}", label);
-                    refresh_group_popup_menus_for_category(0, group_popup_menus.as_ref());
+                    if let Some(menus) = group_popup_menus.as_ref() {
+                        refresh_group_popup_menus(menus);
+                    }
                     refresh_gtk_status_action_states(&app);
                     Some(label)
                 } else {

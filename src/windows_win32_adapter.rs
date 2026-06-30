@@ -350,7 +350,9 @@ mod tests {
                     width: 640,
                     height: 420,
                 },
+                options: crate::app_core::NativeWindowOptions::standard(),
                 main_visible: true,
+                degraded_capabilities: Vec::new(),
             },
             status_item_tooltip: Some("Demo Windows".to_string()),
         });

@@ -33,6 +33,25 @@ fn shared_ui_protocols_are_explicitly_not_platform_host_surfaces() {
 }
 
 #[test]
+fn native_host_source_tabs_are_product_specs_translated_by_platforms() {
+    assert_eq!(NATIVE_HOST_SOURCE_TABS.len(), 2);
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[0].id, "clipboard_records");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[0].label_source, "复制记录");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[0].label_en, "Clipboard Records");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[0].category, 0);
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[1].id, "phrases");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[1].label_source, "常用短语");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[1].label_en, "Phrases");
+    assert_eq!(NATIVE_HOST_SOURCE_TABS[1].category, 1);
+
+    let product_tab = NATIVE_HOST_SOURCE_TABS[1].zsui_tab();
+    assert_eq!(product_tab.id, "phrases");
+    assert_eq!(product_tab.label, "常用短语");
+    assert_eq!(native_host_source_tab_for_category(999).category, 0);
+    assert_eq!(native_host_source_tab_for_category(1).id, "phrases");
+}
+
+#[test]
 fn native_ui_protocol_surfaces_classify_host_entry_points() {
     let surfaces = native_ui_protocol_surfaces();
     assert_eq!(
@@ -933,10 +952,7 @@ fn user_feature_cross_platform_summaries_answer_feature_progress_directly() {
 
     let vv =
         zsui_user_feature_cross_platform_summary_for("vv_mode").expect("VV cross-platform summary");
-    assert_eq!(
-        vv.target_smoke_required_platform_names,
-        vec!["windows"]
-    );
+    assert_eq!(vv.target_smoke_required_platform_names, vec!["windows"]);
     assert_eq!(vv.system_complete_platform_names, vec!["macos", "linux"]);
 
     assert!(zsui_user_feature_cross_platform_summary_for("unknown_feature").is_none());
@@ -969,7 +985,10 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     assert_eq!(progress.next_platform_name, Some("macos"));
     assert_eq!(progress.next_user_feature_name, Some("grouping"));
     assert_eq!(progress.next_display_name, Some("分组功能"));
-    assert_eq!(progress.next_ui_ingress_names, vec!["menu", "settings_page"]);
+    assert_eq!(
+        progress.next_ui_ingress_names,
+        vec!["menu", "settings_page"]
+    );
     assert_eq!(
         progress.next_native_component_family_names,
         vec![
@@ -996,12 +1015,12 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     );
     assert!(progress.next_missing_requirement.is_some());
     assert_eq!(progress.next_host_platform_name, Some("macos"));
-    assert_eq!(
-        progress.next_host_user_feature_name,
-        Some("grouping")
-    );
+    assert_eq!(progress.next_host_user_feature_name, Some("grouping"));
     assert_eq!(progress.next_host_display_name, Some("分组功能"));
-    assert_eq!(progress.next_host_ui_ingress_names, vec!["menu", "settings_page"]);
+    assert_eq!(
+        progress.next_host_ui_ingress_names,
+        vec!["menu", "settings_page"]
+    );
     assert_eq!(
         progress.next_host_native_component_family_names,
         vec![
@@ -1296,7 +1315,10 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
         macos_grouping.target_environment_name,
         "real macOS AppKit host smoke verification"
     );
-    assert_eq!(macos_grouping.ui_ingress_names, vec!["menu", "settings_page"]);
+    assert_eq!(
+        macos_grouping.ui_ingress_names,
+        vec!["menu", "settings_page"]
+    );
     assert_eq!(
         macos_grouping.native_component_family_names,
         vec![
@@ -5710,10 +5732,108 @@ fn native_main_window_host_operations_are_explicit_porting_contract() {
             width: 300,
             height: 614,
         },
+        options: NativeWindowOptions::standard(),
         main_visible: true,
+        degraded_capabilities: Vec::new(),
     };
     assert_eq!(request.title, "ZSClip");
     assert_eq!(request.size.height, 614);
+    assert!(request.options.resizable);
+    assert!(request.options.decorations);
+
+    let custom_options = NativeWindowOptions::from_parts(
+        Some(Size {
+            width: 640,
+            height: 420,
+        }),
+        false,
+        false,
+        true,
+        true,
+    );
+    assert_eq!(
+        custom_options.min_size,
+        Some(Size {
+            width: 640,
+            height: 420
+        })
+    );
+    assert!(!custom_options.resizable);
+    assert!(!custom_options.decorations);
+    assert!(custom_options.always_on_top);
+    assert!(custom_options.transparent);
+
+    let bridged = NativeMainWindowRequest::from_zsui_window(
+        &crate::zsui::Window::new("Unified")
+            .size(800, 600)
+            .min_size(640, 420)
+            .visible(false)
+            .resizable(false)
+            .decorations(false)
+            .always_on_top(true)
+            .transparent(true),
+    );
+    assert_eq!(bridged.title, "Unified");
+    assert_eq!(
+        bridged.size,
+        Size {
+            width: 800,
+            height: 600
+        }
+    );
+    assert_eq!(
+        bridged.options.min_size,
+        Some(Size {
+            width: 640,
+            height: 420
+        })
+    );
+    assert!(!bridged.main_visible);
+    assert!(!bridged.options.resizable);
+    assert!(!bridged.options.decorations);
+    assert!(bridged.options.always_on_top);
+    assert!(bridged.options.transparent);
+
+    let limited_window = crate::zsui::Window::new("Limited")
+        .size(800, 600)
+        .min_size(640, 420)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true);
+    let mut limited_capabilities =
+        crate::zsui::HostCapabilities::all_supported(crate::zsui::PlatformName::Unknown);
+    limited_capabilities.window_resizing =
+        crate::zsui::CapabilitySupport::unsupported("resize policy unavailable");
+    limited_capabilities.window_decorations =
+        crate::zsui::CapabilitySupport::unsupported("decorations unavailable");
+    limited_capabilities.window_always_on_top =
+        crate::zsui::CapabilitySupport::unsupported("topmost unavailable");
+    limited_capabilities.window_transparency =
+        crate::zsui::CapabilitySupport::unsupported("transparency unavailable");
+    let limited_options =
+        NativeWindowOptions::from_zsui_window_for_host(&limited_window, &limited_capabilities);
+    assert_eq!(limited_options.min_size, None);
+    assert!(limited_options.resizable);
+    assert!(limited_options.decorations);
+    assert!(!limited_options.always_on_top);
+    assert!(!limited_options.transparent);
+
+    let limited_request =
+        NativeMainWindowRequest::from_zsui_window_for_host(&limited_window, &limited_capabilities);
+    assert_eq!(limited_request.title, "Limited");
+    assert!(limited_request.options.resizable);
+    assert!(limited_request.options.decorations);
+    assert!(!limited_request.options.always_on_top);
+    assert!(!limited_request.options.transparent);
+    assert!(limited_request
+        .degraded_capabilities
+        .iter()
+        .any(|detail| detail.contains("window_resizing")));
+    assert!(limited_request
+        .degraded_capabilities
+        .iter()
+        .any(|detail| detail.contains("window_transparency")));
 
     let handles = NativeMainWindowHandles {
         main: NativeWindowToken(1),
@@ -8906,7 +9026,9 @@ fn native_runtime_driver_trait_executes_platform_entry_path() {
                 width: 320,
                 height: 240,
             },
+            options: NativeWindowOptions::standard(),
             main_visible: true,
+            degraded_capabilities: Vec::new(),
         },
         status_item_tooltip: Some("Demo Tool".to_string()),
     });
@@ -9054,7 +9176,9 @@ fn reusable_runtime_harness_connects_native_driver_and_product_adapter() {
                 width: 360,
                 height: 240,
             },
+            options: NativeWindowOptions::standard(),
             main_visible: true,
+            degraded_capabilities: Vec::new(),
         },
         status_item_tooltip: Some("Harness Tool".to_string()),
     });

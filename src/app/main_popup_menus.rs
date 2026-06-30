@@ -73,8 +73,16 @@ pub(super) unsafe fn show_row_menu(
                 quick_search_enabled: state.settings.quick_search_enabled,
                 qr_quick_enabled: state.settings.qr_quick_enabled,
                 super_mail_merge_enabled: state.settings.super_mail_merge_enabled,
-                lan_push_available: state.settings.lan_sync_enabled
-                    && !lan_sync::trusted_devices().is_empty(),
+                lan_push_available: {
+                    #[cfg(feature = "lan-sync")]
+                    {
+                        state.settings.lan_sync_enabled && !lan_sync::trusted_devices().is_empty()
+                    }
+                    #[cfg(not(feature = "lan-sync"))]
+                    {
+                        false
+                    }
+                },
             },
             labels: MainRowMenuLabelInput {
                 selected_count,

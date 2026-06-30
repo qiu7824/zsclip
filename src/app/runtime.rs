@@ -20,6 +20,10 @@ pub(super) fn local_app_data_dir() -> Option<PathBuf> {
         .map(|path| path.join("ZSClip").join("data"))
 }
 
+pub(super) fn install_data_dir() -> Option<PathBuf> {
+    current_exe_path().and_then(|path| path.parent().map(|dir| dir.join("data")))
+}
+
 pub(super) fn preferred_secondary_drive_data_dir() -> Option<PathBuf> {
     let system_drive = std::env::var("SystemDrive")
         .unwrap_or_else(|_| "C:".to_string())
@@ -64,29 +68,172 @@ pub(super) fn dir_is_writable(dir: &Path) -> bool {
 pub(crate) fn data_dir() -> PathBuf {
     DATA_DIR_CACHE
         .get_or_init(|| {
-            if let Some(exe_dir) =
-                current_exe_path().and_then(|path| path.parent().map(|dir| dir.join("data")))
-            {
+            if let Some(exe_dir) = install_data_dir() {
                 if dir_is_writable(&exe_dir) {
+                    migrate_legacy_data_dirs_to(&exe_dir);
                     return exe_dir;
                 }
-            }
-            let local = local_app_data_dir().unwrap_or_else(|| PathBuf::from("data"));
-            if local.join("clipboard.db").exists()
-                || local.join("settings.json").exists()
-                || local.join("images").exists()
-            {
-                let _ = fs::create_dir_all(&local);
-                return local;
             }
             if let Some(secondary) = preferred_secondary_drive_data_dir() {
                 let _ = fs::create_dir_all(&secondary);
                 return secondary;
             }
+            let local = local_app_data_dir().unwrap_or_else(|| PathBuf::from("data"));
             let _ = fs::create_dir_all(&local);
             local
         })
         .clone()
+}
+
+fn migrate_legacy_data_dirs_to(target: &Path) {
+    if fs::create_dir_all(target).is_err() {
+        return;
+    }
+    for source in legacy_data_dir_candidates(target) {
+        if !legacy_data_dir_has_content(&source) {
+            continue;
+        }
+        if same_path(&source, target) {
+            continue;
+        }
+        if migrate_dir_contents(&source, target, target).is_ok() {
+            let _ = fs::remove_dir_all(&source);
+            remove_empty_legacy_parent_dirs(&source);
+        }
+    }
+}
+
+fn legacy_data_dir_candidates(target: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    push_unique_path(&mut dirs, local_app_data_dir());
+    for drive in ('D'..='Z').map(|letter| format!("{letter}:")) {
+        push_unique_path(
+            &mut dirs,
+            Some(PathBuf::from(format!("{drive}\\ZSClip\\data"))),
+        );
+    }
+    if !target.ends_with("data") {
+        push_unique_path(&mut dirs, Some(PathBuf::from("data")));
+    }
+    dirs
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, candidate: Option<PathBuf>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    if paths.iter().any(|path| same_path(path, &candidate)) {
+        return;
+    }
+    paths.push(candidate);
+}
+
+fn legacy_data_dir_has_content(path: &Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    path.join("clipboard.db").exists()
+        || path.join("settings.json").exists()
+        || path.join("images").exists()
+        || fs::read_dir(path)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false)
+}
+
+fn migrate_dir_contents(source: &Path, target: &Path, migration_root: &Path) -> io::Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        if same_path(&source_path, migration_root) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            migrate_dir_contents(&source_path, &target_path, migration_root)?;
+        } else if file_type.is_file() {
+            migrate_file(&source_path, &target_path, migration_root)?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_file(source: &Path, target: &Path, migration_root: &Path) -> io::Result<()> {
+    if !target.exists() {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, target)?;
+        return Ok(());
+    }
+    if file_contents_match(source, target) {
+        return Ok(());
+    }
+    let backup = legacy_conflict_backup_path(source, migration_root);
+    if let Some(parent) = backup.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(source, backup)?;
+    Ok(())
+}
+
+fn legacy_conflict_backup_path(source: &Path, migration_root: &Path) -> PathBuf {
+    let label = source
+        .components()
+        .filter_map(|part| match part {
+            std::path::Component::Prefix(prefix) => {
+                Some(prefix.as_os_str().to_string_lossy().replace(':', ""))
+            }
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("_");
+    migration_root
+        .join("legacy_migration")
+        .join(if label.is_empty() { "legacy" } else { &label })
+}
+
+fn file_contents_match(left: &Path, right: &Path) -> bool {
+    let Ok(left_meta) = fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_meta) = fs::metadata(right) else {
+        return false;
+    };
+    if left_meta.len() != right_meta.len() {
+        return false;
+    }
+    match (fs::read(left), fs::read(right)) {
+        (Ok(left_bytes), Ok(right_bytes)) => left_bytes == right_bytes,
+        _ => false,
+    }
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    let left_norm = left
+        .canonicalize()
+        .unwrap_or_else(|_| left.to_path_buf())
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    let right_norm = right
+        .canonicalize()
+        .unwrap_or_else(|_| right.to_path_buf())
+        .to_string_lossy()
+        .trim_end_matches(['\\', '/'])
+        .to_ascii_lowercase();
+    left_norm == right_norm
+}
+
+fn remove_empty_legacy_parent_dirs(source: &Path) {
+    let Some(parent) = source.parent() else {
+        return;
+    };
+    if parent.file_name().and_then(|name| name.to_str()) == Some("ZSClip") {
+        let _ = fs::remove_dir(parent);
+    }
 }
 
 pub(crate) fn db_file() -> PathBuf {
@@ -300,6 +447,14 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn test_runtime_dir(name: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("zsclip-runtime-{name}-{ts}"))
+    }
+
     #[test]
     fn missing_dedupe_filter_setting_defaults_enabled() {
         let settings = load_settings_from_text(r#"{"hotkey_enabled":false}"#);
@@ -344,5 +499,43 @@ mod tests {
         let loaded = load_settings_from_text(&text);
 
         assert_eq!(loaded.max_items, 3000);
+    }
+
+    #[test]
+    fn legacy_data_migration_moves_missing_files_to_install_data_dir() {
+        let root = test_runtime_dir("move");
+        let source = root.join("old").join("ZSClip").join("data");
+        let target = root.join("install").join("data");
+        fs::create_dir_all(source.join("images")).unwrap();
+        fs::write(source.join("settings.json"), "{}").unwrap();
+        fs::write(source.join("images").join("clip.png"), b"png").unwrap();
+
+        migrate_dir_contents(&source, &target, &target).unwrap();
+
+        assert_eq!(fs::read_to_string(target.join("settings.json")).unwrap(), "{}");
+        assert_eq!(fs::read(target.join("images").join("clip.png")).unwrap(), b"png");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_data_migration_preserves_conflicting_files_under_install_data_dir() {
+        let root = test_runtime_dir("conflict");
+        let source = root.join("old").join("ZSClip").join("data");
+        let target = root.join("install").join("data");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(source.join("clipboard.db"), b"old-db").unwrap();
+        fs::write(target.join("clipboard.db"), b"new-db").unwrap();
+
+        migrate_dir_contents(&source, &target, &target).unwrap();
+
+        assert_eq!(fs::read(target.join("clipboard.db")).unwrap(), b"new-db");
+        let backups = fs::read_dir(target.join("legacy_migration"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(backups[0].path()).unwrap(), b"old-db");
+        let _ = fs::remove_dir_all(root);
     }
 }
