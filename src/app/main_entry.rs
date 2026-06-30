@@ -1,6 +1,7 @@
 use super::prelude::*;
 
 pub(crate) fn run() -> AppResult<()> {
+    let _ = crate::cloud_sync::cleanup_cloud_sync_temp_files();
     let boot_settings = load_settings();
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     let (_single_instance_mutex, already_running) =
