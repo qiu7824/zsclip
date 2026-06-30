@@ -135,7 +135,8 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     let source_tab = normalize_source_tab(state.settings.vv_source_tab);
     let groups = state.groups_for_tab(source_tab);
     let current_group_id = vv_popup_resolved_group_id(state, state.vv_popup_group_id);
-    let plan = main_group_filter_menu_plan(current_group_id, groups);
+    let plan =
+        main_group_filter_menu_plan(current_group_id, groups, false, ClipKindFilter::All, &[]);
     let entries = main_group_filter_popup_entries(
         &plan,
         translate(if source_tab == 0 {
@@ -163,6 +164,7 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
     match main_group_filter_selection_for_id(cmd) {
         Some(MainGroupFilterSelection::All) => Some(0),
         Some(MainGroupFilterSelection::Group { index }) => groups.get(index).map(|g| g.id),
+        Some(MainGroupFilterSelection::Kind { .. }) => None,
         None => None,
     }
 }

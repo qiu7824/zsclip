@@ -478,6 +478,10 @@ pub(super) unsafe fn execute_row_command(
         MainMenuCommandIntent::GroupFilterAll => {
             let plan = state.list.group_filter_plan(state.tab_index, 0);
             state.list.apply_group_filter_plan(plan);
+            let tab_index = state.tab_index;
+            if let Some(slot) = state.tab_kind_filters.get_mut(tab_index) {
+                *slot = ClipKindFilter::All;
+            }
             state.refilter();
             repaint_main_window(hwnd, true);
         }
@@ -503,6 +507,16 @@ pub(super) unsafe fn execute_row_command(
             {
                 let plan = state.list.group_filter_plan(state.tab_index, group_id);
                 state.list.apply_group_filter_plan(plan);
+                state.refilter();
+                repaint_main_window(hwnd, true);
+            }
+        }
+        MainMenuCommandIntent::GroupKindFilter { index } => {
+            let tab_index = state.tab_index;
+            if let Some(filter) = clip_kind_filter_options_for_tab(tab_index).get(index) {
+                if let Some(slot) = state.tab_kind_filters.get_mut(tab_index) {
+                    *slot = *filter;
+                }
                 state.refilter();
                 repaint_main_window(hwnd, true);
             }

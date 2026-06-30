@@ -3,10 +3,10 @@ use crate::app_core::{
     command_ids, main_group_filter_menu_plan, main_group_filter_popup_entries,
     main_menu_command_for_id, main_row_group_popup_entries, main_row_menu_plan,
     main_row_popup_menu_entries, main_vv_select_plan, menu_ids, settings_command_for_control_role,
-    ApplicationEvent, ClipGroup, ClipItem, ClipKind, Command, CommandId, MainRowMenuInput,
-    MainRowMenuLabelInput, MainTrayMenuAction, MainVvPopupLayout, MainVvPopupRenderItem,
-    MainVvPopupRenderPlan, MainVvPopupRenderStrings, MainVvSelectPlan, NativePopupMenuEntry,
-    SettingsControlRole, UiRect,
+    ApplicationEvent, ClipGroup, ClipItem, ClipKind, ClipKindFilter, Command, CommandId,
+    MainRowMenuInput, MainRowMenuLabelInput, MainTrayMenuAction, MainVvPopupLayout,
+    MainVvPopupRenderItem, MainVvPopupRenderPlan, MainVvPopupRenderStrings, MainVvSelectPlan,
+    NativePopupMenuEntry, SettingsControlRole, UiRect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,7 +520,8 @@ pub(crate) fn native_host_group_filter_popup_menu_entries_for_groups(
     groups: &[ClipGroup],
     current_group_id: i64,
 ) -> Vec<NativePopupMenuEntry> {
-    let plan = main_group_filter_menu_plan(current_group_id, groups);
+    let plan =
+        main_group_filter_menu_plan(current_group_id, groups, false, ClipKindFilter::All, &[]);
     main_group_filter_popup_entries(&plan, "All")
 }
 

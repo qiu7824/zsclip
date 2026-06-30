@@ -297,6 +297,7 @@ pub(crate) mod menu_ids {
     pub(crate) const ROW_GROUP_BASE: usize = 41100;
     pub(crate) const GROUP_FILTER_ALL: usize = 43100;
     pub(crate) const GROUP_FILTER_BASE: usize = 43110;
+    pub(crate) const GROUP_TYPE_FILTER_BASE: usize = 45200;
     pub(crate) const DYNAMIC_GROUP_LIMIT: usize = 2000;
 }
 
@@ -304,6 +305,7 @@ pub(crate) mod menu_ids {
 pub(crate) enum MainGroupFilterSelection {
     All,
     Group { index: usize },
+    Kind { index: usize },
 }
 
 pub(crate) fn main_group_filter_menu_all_id() -> usize {
@@ -314,9 +316,21 @@ pub(crate) fn main_group_filter_menu_group_id(index: usize) -> usize {
     menu_ids::GROUP_FILTER_BASE + index
 }
 
+pub(crate) fn main_group_filter_menu_kind_id(index: usize) -> usize {
+    menu_ids::GROUP_TYPE_FILTER_BASE + index
+}
+
 pub(crate) fn main_group_filter_selection_for_id(id: usize) -> Option<MainGroupFilterSelection> {
     if id == menu_ids::GROUP_FILTER_ALL {
         return Some(MainGroupFilterSelection::All);
+    }
+    if (menu_ids::GROUP_TYPE_FILTER_BASE
+        ..menu_ids::GROUP_TYPE_FILTER_BASE + menu_ids::DYNAMIC_GROUP_LIMIT)
+        .contains(&id)
+    {
+        return Some(MainGroupFilterSelection::Kind {
+            index: id - menu_ids::GROUP_TYPE_FILTER_BASE,
+        });
     }
     if (menu_ids::GROUP_FILTER_BASE..menu_ids::GROUP_FILTER_BASE + menu_ids::DYNAMIC_GROUP_LIMIT)
         .contains(&id)
@@ -406,6 +420,7 @@ pub(crate) enum MainMenuCommandIntent {
     AssignRowGroup { index: usize },
     GroupFilterAll,
     GroupFilter { index: usize },
+    GroupKindFilter { index: usize },
 }
 
 pub(crate) fn main_menu_command_intent_for_id(id: usize) -> Option<MainMenuCommandIntent> {
@@ -427,6 +442,14 @@ pub(crate) fn main_menu_command_intent_for_id(id: usize) -> Option<MainMenuComma
     }
     if id == menu_ids::GROUP_FILTER_ALL {
         return Some(MainMenuCommandIntent::GroupFilterAll);
+    }
+    if (menu_ids::GROUP_TYPE_FILTER_BASE
+        ..menu_ids::GROUP_TYPE_FILTER_BASE + menu_ids::DYNAMIC_GROUP_LIMIT)
+        .contains(&id)
+    {
+        return Some(MainMenuCommandIntent::GroupKindFilter {
+            index: id - menu_ids::GROUP_TYPE_FILTER_BASE,
+        });
     }
     if let Some(MainRowGroupSelection::Group { index }) = main_row_group_selection_for_id(id) {
         return Some(MainMenuCommandIntent::AssignRowGroup { index });
@@ -579,6 +602,9 @@ fn main_menu_id_is_dynamic_group_command(id: usize) -> bool {
         .contains(&id)
         || (menu_ids::GROUP_FILTER_BASE
             ..menu_ids::GROUP_FILTER_BASE + menu_ids::DYNAMIC_GROUP_LIMIT)
+            .contains(&id)
+        || (menu_ids::GROUP_TYPE_FILTER_BASE
+            ..menu_ids::GROUP_TYPE_FILTER_BASE + menu_ids::DYNAMIC_GROUP_LIMIT)
             .contains(&id)
 }
 

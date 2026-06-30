@@ -5055,7 +5055,7 @@ fn main_group_filter_popup_entries_are_shared_by_group_and_vv_menus() {
             name: "Temp".to_string(),
         },
     ];
-    let plan = main_group_filter_menu_plan(9, &groups);
+    let plan = main_group_filter_menu_plan(9, &groups, false, ClipKindFilter::All, &[]);
     let entries = main_group_filter_popup_entries(&plan, "All records");
 
     assert_eq!(

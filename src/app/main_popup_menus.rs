@@ -9,10 +9,12 @@ fn localize_group_filter_entry(entry: NativePopupMenuEntry) -> NativePopupMenuEn
             checked,
         } => NativePopupMenuEntry::Command {
             id,
-            label: if label == "All" {
-                translate("全部").into_owned()
-            } else {
-                label
+            label: match label.as_str() {
+                "All" => translate("全部").into_owned(),
+                "全部类型" | "文本" | "图片" | "文件" | "短语" => {
+                    translate(&label).into_owned()
+                }
+                _ => label,
             },
             enabled,
             checked,
@@ -126,7 +128,24 @@ pub(super) unsafe fn show_group_filter_menu(
     } else {
         state.current_group_filter
     };
-    let entries = native_host_group_filter_popup_menu_entries_for_groups(groups, current_group_id)
+    let current_kind_filter = state
+        .tab_kind_filters
+        .get(tab_index)
+        .copied()
+        .unwrap_or(ClipKindFilter::All);
+    let plan = main_group_filter_menu_plan(
+        current_group_id,
+        groups,
+        state.settings.group_type_filter_enabled,
+        current_kind_filter,
+        clip_kind_filter_options_for_tab(tab_index),
+    );
+    let all_label = if tab_index == 1 {
+        source_tab_all_label(1)
+    } else {
+        source_tab_all_label(0)
+    };
+    let entries = main_group_filter_popup_entries(&plan, translate(all_label).into_owned())
         .into_iter()
         .map(localize_group_filter_entry)
         .collect::<Vec<_>>();

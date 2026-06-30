@@ -2883,6 +2883,7 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "plugin_wps_taskpane" => native_setting_binding("wps_taskpane_enabled"),
         "plugin_qr_quick" => native_setting_binding("quick_qr_enabled"),
         "group_enable" => native_setting_binding("grouping_enabled"),
+        "group_type_filter" => native_setting_binding("group_type_filter_enabled"),
         "vv_source" => native_setting_binding("vv_source_tab"),
         "vv_group" => native_setting_binding("vv_group_id"),
         "group_list" => native_runtime_list_binding("clip_groups"),
@@ -3007,6 +3008,7 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "wps_taskpane_docs" => native_action_route("settings_platform", "open_wps_taskpane_docs"),
         "plugin_qr_quick" => native_toggle_route(7103),
         "group_enable" => native_toggle_route(5030),
+        "group_type_filter" => native_toggle_route(5031),
         "vv_source" => native_dropdown_route(5056),
         "vv_group" => native_dropdown_route(5055),
         "group_view_records" => native_action_route("settings_group", "show_record_groups"),
@@ -3246,6 +3248,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         0,
         &[
             ("group_enable", "启用分组", Toggle),
+            ("group_type_filter", "文件类型选项", Toggle),
             ("vv_source", "VV 来源", Dropdown),
             ("vv_group", "VV 分组", Dropdown),
         ],

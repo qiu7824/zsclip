@@ -7,7 +7,7 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         page,
         font: st.ui_font,
     };
-    let sec0 = b.section(0, 104);
+    let sec0 = b.section(0, 138);
     let sec1 = b.section(1, 0);
     let (_, btn) = b.own_toggle_row(
         st,
@@ -18,12 +18,21 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         sec0.full_w(),
     );
     st.chk_group_enable = btn;
+    let (_, type_btn) = b.own_toggle_row(
+        st,
+        "文件类型选项",
+        IDC_SET_GROUP_TYPE_FILTER,
+        sec0.left(),
+        sec0.row_y(1),
+        sec0.full_w(),
+    );
+    st.chk_group_type_filter = type_btn;
 
     b.label(
         st,
         tr("VV 来源：", "VV Source:"),
         sec0.left(),
-        sec0.label_y(1, settings_scale(24)),
+        sec0.label_y(2, settings_scale(24)),
         sec0.label_w(),
         settings_scale(24),
     );
@@ -32,7 +41,7 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         source_tab_label(0),
         IDC_SET_VV_SOURCE,
         sec0.field_x(),
-        sec0.row_y(1),
+        sec0.row_y(2),
         settings_scale(180),
     );
     if !st.cb_vv_source.is_null() {
@@ -43,7 +52,7 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         st,
         tr("VV 默认分组：", "VV Default Group:"),
         sec0.left(),
-        sec0.label_y(2, settings_scale(24)),
+        sec0.label_y(3, settings_scale(24)),
         sec0.label_w(),
         settings_scale(24),
     );
@@ -52,7 +61,7 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         source_tab_all_label(0),
         IDC_SET_VV_GROUP,
         sec0.field_x(),
-        sec0.row_y(2),
+        sec0.row_y(3),
         settings_scale(220),
     );
     if !st.cb_vv_group.is_null() {
@@ -92,9 +101,20 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     );
     b.label(
         st,
-        "分组列表：",
+        tr(
+            "提示：右键主窗口顶部“复制记录”或“常用短语”tab，可快速切换分组。",
+            "Tip: Right-click the Clipboard Records or Phrases tab in the main window to switch groups quickly.",
+        ),
         sec1.left(),
         sec1.row_y(2),
+        sec1.full_w(),
+        settings_scale(24),
+    );
+    b.label(
+        st,
+        "分组列表：",
+        sec1.left(),
+        sec1.row_y(3),
         settings_scale(220),
         settings_scale(22),
     );
@@ -103,12 +123,12 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         st,
         IDC_SET_GROUP_LIST,
         sec1.left(),
-        sec1.row_y(3),
+        sec1.row_y(4),
         sec1.full_w(),
         settings_scale(170),
     );
 
-    let btn_y = sec1.row_y(3) + settings_scale(186);
+    let btn_y = sec1.row_y(4) + settings_scale(186);
     let bw = settings_scale(90);
     let gap = settings_scale(10);
     let x0 = sec1.left();

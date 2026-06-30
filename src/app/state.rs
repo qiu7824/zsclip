@@ -55,6 +55,7 @@ pub(crate) struct AppSettings {
     pub(crate) super_mail_merge_enabled: bool,
     pub(crate) wps_taskpane_enabled: bool,
     pub(crate) grouping_enabled: bool,
+    pub(crate) group_type_filter_enabled: bool,
     pub(crate) cloud_sync_enabled: bool,
     pub(crate) cloud_sync_interval: String,
     pub(crate) cloud_webdav_url: String,
@@ -129,6 +130,7 @@ impl Default for AppSettings {
             super_mail_merge_enabled: false,
             wps_taskpane_enabled: false,
             grouping_enabled: true,
+            group_type_filter_enabled: false,
             cloud_sync_enabled: false,
             cloud_sync_interval: "1小时".to_string(),
             cloud_webdav_url: String::new(),
@@ -292,6 +294,7 @@ pub(crate) struct AppState {
     pub(crate) phrases: Vec<ClipItem>,
     pub(crate) record_groups: Vec<ClipGroup>,
     pub(crate) phrase_groups: Vec<ClipGroup>,
+    pub(crate) tab_kind_filters: [ClipKindFilter; 2],
     pub(crate) list: ClipListState,
     pub(crate) hover_btn: &'static str,
     pub(crate) down_btn: &'static str,
@@ -655,6 +658,7 @@ impl AppState {
             phrases: Vec::new(),
             record_groups: Vec::new(),
             phrase_groups: Vec::new(),
+            tab_kind_filters: [ClipKindFilter::All, ClipKindFilter::All],
             list: ClipListState::default(),
             hover_btn: "",
             down_btn: "",
@@ -855,10 +859,16 @@ impl AppState {
     }
 
     pub(super) fn desired_query_for_tab(&self, tab: usize) -> ItemsQuery {
+        let tab_kind_filters = if self.settings.group_type_filter_enabled {
+            self.tab_kind_filters
+        } else {
+            [ClipKindFilter::All, ClipKindFilter::All]
+        };
         ItemsQuery::for_tab(
             tab,
             self.settings.grouping_enabled,
             self.tab_group_filters,
+            tab_kind_filters,
             &self.search_text,
         )
     }

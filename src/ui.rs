@@ -28,9 +28,10 @@ pub fn rgba_to_opaque_bgra_on_bg(bytes: &[u8], bg: u32) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::app_core::{
-        clamp_window_pos_to_rect, dpi_compensated_size, ClipListState, DpiCompensationPlan,
-        DpiCompensationState, ItemsCursor, ItemsQuery, MainFrameHitTarget, MainPointerDownTarget,
-        MainUiLayout, SharedTabViewState, TabLoadState, TitleButtonVisibility, UiRect,
+        clamp_window_pos_to_rect, dpi_compensated_size, ClipKindFilter, ClipListState,
+        DpiCompensationPlan, DpiCompensationState, ItemsCursor, ItemsQuery, MainFrameHitTarget,
+        MainPointerDownTarget, MainUiLayout, SharedTabViewState, TabLoadState,
+        TitleButtonVisibility, UiRect,
     };
     use crate::win_native_style::rgb;
 
@@ -182,27 +183,33 @@ mod tests {
     #[test]
     fn items_query_for_tab_applies_group_filter_and_trims_search() {
         assert_eq!(
-            ItemsQuery::for_tab(1, true, [3, 8], "  bili  "),
+            ItemsQuery::for_tab(1, true, [3, 8], [ClipKindFilter::All; 2], "  bili  "),
             ItemsQuery {
                 category: 1,
                 group_id: 8,
                 search_text: "bili".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             }
         );
         assert_eq!(
-            ItemsQuery::for_tab(1, false, [3, 8], "  catsxp  "),
+            ItemsQuery::for_tab(1, false, [3, 8], [ClipKindFilter::All; 2], "  catsxp  "),
             ItemsQuery {
                 category: 1,
                 group_id: 0,
                 search_text: "catsxp".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             }
         );
         assert_eq!(
-            ItemsQuery::for_tab(9, true, [3, 8], "  all  "),
+            ItemsQuery::for_tab(9, true, [3, 8], [ClipKindFilter::All; 2], "  all  "),
             ItemsQuery {
                 category: 9,
                 group_id: 0,
                 search_text: "all".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             }
         );
     }
@@ -231,6 +238,8 @@ mod tests {
             category: 0,
             group_id: 7,
             search_text: "hello".to_string(),
+            kind_filter: ClipKindFilter::All,
+            near_query: None,
         };
         let seq = load.begin_request(query.clone(), true);
 
@@ -247,6 +256,8 @@ mod tests {
                 category: 1,
                 group_id: 7,
                 search_text: "hello".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             },
         ));
     }
@@ -258,6 +269,8 @@ mod tests {
             category: 1,
             group_id: 0,
             search_text: String::new(),
+            kind_filter: ClipKindFilter::All,
+            near_query: None,
         };
         load.begin_request(query, false);
         load.finish_request(

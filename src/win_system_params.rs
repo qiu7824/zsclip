@@ -18,6 +18,7 @@ pub const IDC_SET_FX: isize = 5019;
 pub const IDC_SET_FY: isize = 5020;
 pub const IDC_SET_BTN_OPENCFG: isize = 5021;
 pub const IDC_SET_GROUP_ENABLE: isize = 5030;
+pub const IDC_SET_GROUP_TYPE_FILTER: isize = 5031;
 pub const IDC_SET_GROUP_LIST: isize = 5032;
 pub const IDC_SET_GROUP_ADD: isize = 5033;
 pub const IDC_SET_GROUP_RENAME: isize = 5034;

@@ -559,19 +559,37 @@ pub(super) fn db_load_items_page(
     limit: usize,
 ) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
     let date_context = current_search_date_context();
-    let (search_terms, time_filter, app_filter) =
+    let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(query.search_text.trim(), date_context);
     with_db(|conn| {
-        let mut sql = String::from(
-            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, \
-             COALESCE(created_at, '') as created_at \
-             FROM items WHERE category=?",
-        );
+        let select_columns = "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at";
+        let mut sql = if near_query.is_some() {
+            format!(
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE category=?"
+            )
+        } else {
+            format!("SELECT {select_columns} FROM items WHERE category=?")
+        };
         let mut bind_values = vec![SqlValue::from(query.category)];
 
         if query.group_id > 0 {
             sql.push_str(" AND group_id=?");
             bind_values.push(SqlValue::from(query.group_id));
+        }
+
+        let kind_values = query.kind_filter.db_kinds(query.category);
+        if !kind_values.is_empty() {
+            sql.push_str(" AND kind IN (");
+            for index in 0..kind_values.len() {
+                if index > 0 {
+                    sql.push(',');
+                }
+                sql.push('?');
+            }
+            sql.push(')');
+            for kind in kind_values {
+                bind_values.push(SqlValue::from((*kind).to_string()));
+            }
         }
 
         for term in search_terms {
@@ -608,6 +626,23 @@ pub(super) fn db_load_items_page(
                 bind_values.push(SqlValue::from(days_to_sqlite_date(end_day)));
             }
             None => {}
+        }
+
+        if let Some(near_value) = near_query {
+            let like = format!("%{}%", near_value);
+            sql.push_str(
+                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? \
+                 OR LOWER(COALESCE(source_app, '')) LIKE ? \
+                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
+                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?), \
+                 near_rows AS (SELECT DISTINCT base.rn FROM base JOIN hits ON base.rn BETWEEN hits.rn - 3 AND hits.rn + 3) \
+                 SELECT id, kind, preview, text_data, source_app, file_paths, image_path, image_width, image_height, pinned, group_id, created_at \
+                 FROM base WHERE rn IN (SELECT rn FROM near_rows)",
+            );
+            bind_values.push(SqlValue::from(like.clone()));
+            bind_values.push(SqlValue::from(like.clone()));
+            bind_values.push(SqlValue::from(like.clone()));
+            bind_values.push(SqlValue::from(like));
         }
 
         if let Some(cursor) = cursor {
@@ -660,6 +695,8 @@ pub(super) fn db_load_vv_popup_items(category: i64, group_id: i64, limit: usize)
         category,
         group_id,
         search_text: String::new(),
+        kind_filter: ClipKindFilter::All,
+        near_query: None,
     };
     db_load_items_page(&query, None, limit)
         .map(|(items, _, _)| items)
@@ -1379,4 +1416,95 @@ pub(super) fn reload_state_from_db(state: &mut AppState) -> bool {
     state.invalidate_all_queries();
     state.refilter();
     settings_changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert_item(
+        category: i64,
+        kind: &str,
+        preview: &str,
+        group_id: i64,
+        created_at: &str,
+    ) -> rusqlite::Result<i64> {
+        with_db_mut(|conn| {
+            conn.execute(
+                "INSERT INTO items(category, kind, preview, signature, text_data, source_app, group_id, created_at) VALUES(?, ?, ?, ?, ?, '', ?, ?)",
+                rusqlite::params![
+                    category,
+                    kind,
+                    preview,
+                    format!("{kind}:{preview}:{created_at}"),
+                    preview,
+                    group_id,
+                    created_at
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    #[test]
+    fn db_load_items_page_filters_by_virtual_clip_kind() {
+        crate::db_runtime::with_test_db(|| {
+            insert_item(0, "text", "alpha", 0, "2026-07-01 10:00:00")?;
+            let image_id = insert_item(0, "image", "beta image", 0, "2026-07-01 10:01:00")?;
+            insert_item(0, "files", "gamma file", 0, "2026-07-01 10:02:00")?;
+
+            let query = ItemsQuery {
+                category: 0,
+                group_id: 0,
+                search_text: String::new(),
+                kind_filter: ClipKindFilter::Image,
+                near_query: None,
+            };
+            let (items, _, _) = db_load_items_page(&query, None, 20)?;
+            assert_eq!(
+                items.iter().map(|item| item.id).collect::<Vec<_>>(),
+                vec![image_id]
+            );
+            assert_eq!(items[0].kind, ClipKind::Image);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn db_load_items_page_near_query_returns_time_neighbors() {
+        crate::db_runtime::with_test_db(|| {
+            let mut ids = Vec::new();
+            for index in 0..8 {
+                let label = if index == 4 {
+                    "target invoice"
+                } else {
+                    "plain row"
+                };
+                ids.push(insert_item(
+                    0,
+                    "text",
+                    &format!("{label} {index}"),
+                    0,
+                    &format!("2026-07-01 10:0{index}:00"),
+                )?);
+            }
+
+            let query = ItemsQuery {
+                category: 0,
+                group_id: 0,
+                search_text: "附近:invoice".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: Some("invoice".to_string()),
+            };
+            let (items, _, _) = db_load_items_page(&query, None, 20)?;
+            let returned = items.iter().map(|item| item.id).collect::<Vec<_>>();
+            assert_eq!(
+                returned,
+                ids[1..=7].iter().rev().copied().collect::<Vec<_>>()
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
 }
