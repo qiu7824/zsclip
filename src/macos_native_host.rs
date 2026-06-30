@@ -85,7 +85,7 @@ mod appkit {
     use crate::zsui::{HostCapabilities, Window};
 
     fn appkit_tr(source: &'static str, fallback_en: &'static str) -> &'static str {
-        crate::i18n_runtime::tr(source, fallback_en)
+        crate::i18n::tr(source, fallback_en)
     }
 
     fn appkit_localized_label(label: &str) -> String {
@@ -124,7 +124,7 @@ mod appkit {
             "All" => appkit_tr("全部", "All").to_string(),
             "(No groups)" => appkit_tr("（暂无分组）", "(No groups)").to_string(),
             "PIN" => appkit_tr("置顶", "PIN").to_string(),
-            _ => crate::i18n_runtime::translate(label).into_owned(),
+            _ => crate::i18n::translate(label).into_owned(),
         }
     }
 
@@ -1111,7 +1111,7 @@ mod appkit {
         frame: NSRect,
     ) -> Retained<NSImageView> {
         let image_view = NSImageView::initWithFrame(NSImageView::alloc(mtm), frame);
-        image_view.setImageScaling(NSImageScaling::ProportionallyUpOrDown);
+        image_view.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
         if let Some(image) = appkit_image_for_zsui_icon(icon) {
             image_view.setImage(Some(&image));
         }
@@ -2029,7 +2029,7 @@ mod appkit {
                         self.ivars().selected_item_id.get(),
                         grouping_enabled,
                     ),
-                    |label| crate::i18n_runtime::translate(label).into_owned(),
+                    |label| crate::i18n::translate(label).into_owned(),
                 ),
                 target,
             );
@@ -3263,6 +3263,7 @@ mod appkit {
                     self.reload_native_clip_items();
                     true
                 }
+                Some(MainGroupFilterSelection::Kind { .. }) => true,
                 None => false,
             }
         }
