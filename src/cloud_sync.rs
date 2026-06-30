@@ -45,6 +45,12 @@ pub struct CloudSyncOutcome {
     pub reload_data: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CloudSyncTempCleanup {
+    pub files_removed: usize,
+    pub dirs_removed: usize,
+}
+
 #[derive(Clone, Debug)]
 struct RemoteLayout {
     settings_url: String,
@@ -113,6 +119,7 @@ pub fn perform_cloud_sync(
     config: &CloudSyncConfig,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
+    let _ = cleanup_cloud_sync_temp_files();
     let remote = RemoteLayout::from_config(config)?;
     ensure_remote_layout(config, &remote)?;
     match action {
@@ -121,6 +128,44 @@ pub fn perform_cloud_sync(
         CloudSyncAction::ApplyRemoteConfig => apply_remote_config(config, &remote, paths),
         CloudSyncAction::RestoreBackup => restore_remote_backup(config, &remote, paths),
     }
+}
+
+pub fn cleanup_cloud_sync_temp_files() -> CloudSyncTempCleanup {
+    cleanup_cloud_sync_temp_files_in_dir(&std::env::temp_dir())
+}
+
+fn cleanup_cloud_sync_temp_files_in_dir(dir: &Path) -> CloudSyncTempCleanup {
+    let mut report = CloudSyncTempCleanup::default();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return report;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if is_cloud_sync_temp_file_name(name) {
+            if fs::remove_file(&path).is_ok() {
+                report.files_removed += 1;
+            }
+        } else if is_cloud_sync_temp_dir_name(name) && fs::remove_dir_all(&path).is_ok() {
+            report.dirs_removed += 1;
+        }
+    }
+    report
+}
+
+fn is_cloud_sync_temp_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".zip")
+        && (lower.starts_with("zsclip-cloud-")
+            || lower.starts_with("zsclip_cloud_")
+            || lower.starts_with("zsclip_cloud-"))
+}
+
+fn is_cloud_sync_temp_dir_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.starts_with("zsclip-snapshot-staging-") || lower.starts_with("zsclip-snapshot-restore-")
 }
 
 fn sync_snapshot(
@@ -190,6 +235,7 @@ fn sync_snapshot(
 
     let stamp = local_stamp.max(unix_now());
     let archive_path = create_snapshot_archive(paths, stamp)?;
+    let _archive_guard = TempPathGuard::file(archive_path.clone());
     upload_file(config, &archive_path, &remote.backup_url)?;
     upload_file(config, &paths.settings_file, &remote.settings_url)?;
     let manifest = CloudSyncManifest {
@@ -199,10 +245,9 @@ fn sync_snapshot(
         backup_name: BACKUP_FILE_NAME.to_string(),
     };
     let manifest_path = write_temp_json_file("manifest", &manifest)?;
+    let _manifest_guard = TempPathGuard::file(manifest_path.clone());
     upload_file(config, &manifest_path, &remote.manifest_url)?;
     upload_syncclipboard_manifest(config, remote)?;
-    let _ = fs::remove_file(&archive_path);
-    let _ = fs::remove_file(&manifest_path);
     let imported_note = if imported_light_clip {
         tr(
             " 已导入云端最新轻量清单。",
@@ -279,12 +324,12 @@ fn restore_remote_backup(
         }
     }
     let download_path = temp_file_path("cloud-backup", "zip");
+    let _download_guard = TempPathGuard::file(download_path.clone());
     if !download_file(config, &remote.backup_url, &download_path)? {
         return Err("云端没有找到可恢复的备份。".to_string());
     }
     let local_backup = create_local_restore_backup(paths)?;
     restore_snapshot_archive(paths, &download_path)?;
-    let _ = fs::remove_file(download_path);
     Ok(CloudSyncOutcome {
         status_text: if let Some(path) = local_backup {
             format!(
@@ -422,6 +467,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, _stamp: u64) -> Result<PathBu
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);
     }
+    let staging_guard = TempPathGuard::dir(staging_root.clone());
     let payload_dir = staging_root.join("payload");
     fs::create_dir_all(&payload_dir).map_err(|err| err.to_string())?;
 
@@ -440,7 +486,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, _stamp: u64) -> Result<PathBu
 
     let archive_path = temp_unique_path("cloud", "zip");
     compress_archive(&payload_dir, &archive_path)?;
-    let _ = fs::remove_dir_all(staging_root);
+    drop(staging_guard);
     Ok(archive_path)
 }
 
@@ -450,6 +496,7 @@ fn create_local_restore_backup(paths: &CloudSyncPaths) -> Result<Option<PathBuf>
     }
     let stamp = local_state_stamp(paths).max(unix_now());
     let temp_archive = create_snapshot_archive(paths, stamp)?;
+    let temp_guard = TempPathGuard::file(temp_archive.clone());
     let backup_dir = paths.data_dir.join("restore-backups");
     fs::create_dir_all(&backup_dir).map_err(|err| err.to_string())?;
     let final_path = backup_dir.join(format!("before-restore-{}.zip", stamp));
@@ -460,6 +507,7 @@ fn create_local_restore_backup(paths: &CloudSyncPaths) -> Result<Option<PathBuf>
                 .and_then(|_| fs::remove_file(&temp_archive))
         })
         .map_err(|err| err.to_string())?;
+    temp_guard.dismiss();
     Ok(Some(final_path))
 }
 
@@ -468,6 +516,7 @@ fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Resu
     if extract_root.exists() {
         let _ = fs::remove_dir_all(&extract_root);
     }
+    let extract_guard = TempPathGuard::dir(extract_root.clone());
     fs::create_dir_all(&extract_root).map_err(|err| err.to_string())?;
     expand_archive(archive_path, &extract_root)?;
     let payload_dir = extract_root.join("payload");
@@ -506,7 +555,7 @@ fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Resu
         copy_dir_recursive(&images_src, &images_dst)?;
     }
 
-    let _ = fs::remove_dir_all(extract_root);
+    drop(extract_guard);
     Ok(())
 }
 
@@ -1113,6 +1162,53 @@ fn remove_optional_file(path: &Path) {
     }
 }
 
+struct TempPathGuard {
+    path: Option<PathBuf>,
+    kind: TempPathKind,
+}
+
+#[derive(Clone, Copy)]
+enum TempPathKind {
+    File,
+    Dir,
+}
+
+impl TempPathGuard {
+    fn file(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            kind: TempPathKind::File,
+        }
+    }
+
+    fn dir(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            kind: TempPathKind::Dir,
+        }
+    }
+
+    fn dismiss(mut self) {
+        self.path = None;
+    }
+}
+
+impl Drop for TempPathGuard {
+    fn drop(&mut self) {
+        let Some(path) = self.path.take() else {
+            return;
+        };
+        match self.kind {
+            TempPathKind::File => {
+                let _ = fs::remove_file(path);
+            }
+            TempPathKind::Dir => {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,6 +1269,34 @@ mod tests {
         );
         assert_eq!(cloud_sync_interval("1d"), Duration::from_secs(24 * 60 * 60));
         assert_eq!(cloud_sync_interval("bad"), Duration::from_secs(60 * 60));
+    }
+
+    #[test]
+    fn bdd_cleanup_removes_legacy_and_current_cloud_temp_archives() {
+        let nonce = unix_now();
+        let dir = temp_dir_path("cloud-cleanup-test");
+        fs::create_dir_all(&dir).unwrap();
+        let legacy = dir.join(format!("zsclip-cloud-{nonce}.zip"));
+        let current = dir.join(format!("zsclip_cloud_{}_{}.zip", std::process::id(), nonce));
+        let download = dir.join(format!(
+            "zsclip_cloud-backup_{}_{}.zip",
+            std::process::id(),
+            nonce
+        ));
+        let unrelated = dir.join(format!("zsclip-unrelated-{nonce}.zip"));
+        fs::write(&legacy, b"old").unwrap();
+        fs::write(&current, b"new").unwrap();
+        fs::write(&download, b"download").unwrap();
+        fs::write(&unrelated, b"keep").unwrap();
+
+        let cleanup = cleanup_cloud_sync_temp_files_in_dir(&dir);
+
+        assert!(cleanup.files_removed >= 3);
+        assert!(!legacy.exists());
+        assert!(!current.exists());
+        assert!(!download.exists());
+        assert!(unrelated.exists());
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
