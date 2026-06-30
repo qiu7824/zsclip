@@ -371,6 +371,9 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
             Some(MainGroupFilterSelection::All) => {
                 let plan = state.list.group_filter_plan(target_tab, 0);
                 state.list.apply_group_filter_plan(plan);
+                if let Some(slot) = state.tab_kind_filters.get_mut(target_tab) {
+                    *slot = ClipKindFilter::All;
+                }
                 state.refilter();
                 remember_shared_tab_view_state(state);
             }
@@ -378,6 +381,15 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
                 if let Some(group_id) = state.groups_for_tab(target_tab).get(index).map(|g| g.id) {
                     let plan = state.list.group_filter_plan(target_tab, group_id);
                     state.list.apply_group_filter_plan(plan);
+                    state.refilter();
+                    remember_shared_tab_view_state(state);
+                }
+            }
+            Some(MainGroupFilterSelection::Kind { index }) => {
+                if let Some(filter) = clip_kind_filter_options_for_tab(target_tab).get(index) {
+                    if let Some(slot) = state.tab_kind_filters.get_mut(target_tab) {
+                        *slot = *filter;
+                    }
                     state.refilter();
                     remember_shared_tab_view_state(state);
                 }

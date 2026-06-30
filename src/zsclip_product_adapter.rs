@@ -203,6 +203,7 @@ impl ZsclipProductAdapter {
             MainMenuCommandIntent::AssignRowGroup { .. } => Some("zsclip.row.assign_group"),
             MainMenuCommandIntent::GroupFilterAll => Some("zsclip.group_filter.all"),
             MainMenuCommandIntent::GroupFilter { .. } => Some("zsclip.group_filter.select"),
+            MainMenuCommandIntent::GroupKindFilter { .. } => Some("zsclip.group_filter.kind"),
         }
     }
 }

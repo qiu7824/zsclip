@@ -7,7 +7,7 @@ use super::{
     host_protocol::NativePopupMenuEntry,
     main_commands::{
         main_group_filter_menu_all_id, main_group_filter_menu_group_id,
-        main_row_group_menu_group_id, main_row_menu_action_id,
+        main_group_filter_menu_kind_id, main_row_group_menu_group_id, main_row_menu_action_id,
     },
     product_adapter::{
         product_ai_capabilities_for_context, ProductAiActionKind, ProductAiContextKind,
@@ -54,6 +54,51 @@ pub(crate) enum ClipKind {
     Image,
     Phrase,
     Files,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClipKindFilter {
+    All,
+    Text,
+    Image,
+    Files,
+    Phrase,
+}
+
+impl ClipKindFilter {
+    pub(crate) const fn db_kinds(self, category: i64) -> &'static [&'static str] {
+        match self {
+            Self::All => &[],
+            Self::Text if category == 1 => &["phrase"],
+            Self::Text => &["text"],
+            Self::Image => &["image"],
+            Self::Files => &["files"],
+            Self::Phrase => &["phrase"],
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::All => "全部类型",
+            Self::Text => "文本",
+            Self::Image => "图片",
+            Self::Files => "文件",
+            Self::Phrase => "短语",
+        }
+    }
+}
+
+pub(crate) fn clip_kind_filter_options_for_tab(tab: usize) -> &'static [ClipKindFilter] {
+    if tab == 1 {
+        &[ClipKindFilter::All, ClipKindFilter::Phrase]
+    } else {
+        &[
+            ClipKindFilter::All,
+            ClipKindFilter::Text,
+            ClipKindFilter::Image,
+            ClipKindFilter::Files,
+        ]
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +199,11 @@ pub(crate) enum MainGroupFilterMenuEntry {
         label: String,
         checked: bool,
     },
+    Kind {
+        index: usize,
+        label: &'static str,
+        checked: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,9 +214,12 @@ pub(crate) struct MainGroupFilterMenuPlan {
 pub(crate) fn main_group_filter_menu_plan(
     current_group_id: i64,
     groups: &[ClipGroup],
+    kind_filter_enabled: bool,
+    current_kind_filter: ClipKindFilter,
+    kind_filters: &[ClipKindFilter],
 ) -> MainGroupFilterMenuPlan {
     let mut entries = vec![MainGroupFilterMenuEntry::All {
-        checked: current_group_id == 0,
+        checked: current_group_id == 0 && current_kind_filter == ClipKindFilter::All,
     }];
     if !groups.is_empty() {
         entries.push(MainGroupFilterMenuEntry::Separator);
@@ -176,6 +229,16 @@ pub(crate) fn main_group_filter_menu_plan(
                 group_id: group.id,
                 label: group.name.clone(),
                 checked: current_group_id == group.id,
+            }
+        }));
+    }
+    if kind_filter_enabled && !kind_filters.is_empty() {
+        entries.push(MainGroupFilterMenuEntry::Separator);
+        entries.extend(kind_filters.iter().enumerate().map(|(index, filter)| {
+            MainGroupFilterMenuEntry::Kind {
+                index,
+                label: filter.label(),
+                checked: current_kind_filter == *filter,
             }
         }));
     }
@@ -434,6 +497,16 @@ pub(crate) fn main_group_filter_popup_entries(
             } => NativePopupMenuEntry::Command {
                 id: main_group_filter_menu_group_id(*index),
                 label: label.clone(),
+                enabled: true,
+                checked: *checked,
+            },
+            MainGroupFilterMenuEntry::Kind {
+                index,
+                label,
+                checked,
+            } => NativePopupMenuEntry::Command {
+                id: main_group_filter_menu_kind_id(*index),
+                label: (*label).to_string(),
                 enabled: true,
                 checked: *checked,
             },
@@ -943,13 +1016,21 @@ fn prefixed_search_value<'a>(
     cn_prefixes: &[&str],
 ) -> Option<&'a str> {
     let lower = token.to_lowercase();
-    if let Some(value) = lower.strip_prefix(ascii_prefix) {
-        let start = token.len().saturating_sub(value.len());
-        return Some(&token[start..]);
+    let ascii_key = ascii_prefix.trim_end_matches(':');
+    for separator in ["::", ":", "：：", "："] {
+        let candidate = format!("{ascii_key}{separator}");
+        if let Some(value) = lower.strip_prefix(&candidate) {
+            let start = token.len().saturating_sub(value.len());
+            return Some(&token[start..]);
+        }
     }
     for prefix in cn_prefixes {
-        if let Some(value) = token.strip_prefix(prefix) {
-            return Some(value);
+        let cn_key = prefix.trim_end_matches(|ch| ch == ':' || ch == '：');
+        for separator in ["：：", "：", "::", ":"] {
+            let candidate = format!("{cn_key}{separator}");
+            if let Some(value) = token.strip_prefix(&candidate) {
+                return Some(value);
+            }
         }
     }
     None
@@ -959,6 +1040,8 @@ fn is_prefixed_search_token(token: &str) -> bool {
     prefixed_search_value(token, "time:", &["时间:", "时间：", "日期:", "日期："]).is_some()
         || prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："]).is_some()
         || prefixed_search_value(token, "app:", &["应用:", "应用："]).is_some()
+        || prefixed_search_value(token, "near:", &["附近:", "附近："]).is_some()
+        || prefixed_search_value(token, "nearby:", &["附近:", "附近："]).is_some()
 }
 
 fn collect_prefixed_value(tokens: &[String], start: usize, initial: &str) -> (String, usize) {
@@ -980,17 +1063,28 @@ fn collect_prefixed_value(tokens: &[String], start: usize, initial: &str) -> (St
 
 pub(crate) fn parse_search_query(
     query: &str,
-) -> (Vec<String>, Option<SearchTimeFilter>, Option<String>) {
+) -> (
+    Vec<String>,
+    Option<SearchTimeFilter>,
+    Option<String>,
+    Option<String>,
+) {
     parse_search_query_with_context(query, SearchDateContext::utc_now())
 }
 
 pub(crate) fn parse_search_query_with_context(
     query: &str,
     date_context: SearchDateContext,
-) -> (Vec<String>, Option<SearchTimeFilter>, Option<String>) {
+) -> (
+    Vec<String>,
+    Option<SearchTimeFilter>,
+    Option<String>,
+    Option<String>,
+) {
     let mut text_terms = Vec::new();
     let mut time_filter = None;
     let mut app_filter = None;
+    let mut near_query = None;
 
     let tokens = tokenize_search_query(query);
     let mut index = 0usize;
@@ -1023,11 +1117,22 @@ pub(crate) fn parse_search_query_with_context(
             }
         }
 
+        if let Some(initial) = prefixed_search_value(token, "near:", &["附近:", "附近："])
+            .or_else(|| prefixed_search_value(token, "nearby:", &["附近:", "附近："]))
+        {
+            let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
+            if !value.trim().is_empty() {
+                near_query = Some(value.trim().to_lowercase());
+                index = next_index;
+                continue;
+            }
+        }
+
         text_terms.push(token.to_lowercase());
         index += 1;
     }
 
-    (text_terms, time_filter, app_filter)
+    (text_terms, time_filter, app_filter, near_query)
 }
 
 #[derive(Clone, Debug)]
@@ -2101,6 +2206,8 @@ pub(crate) struct ItemsQuery {
     pub(crate) category: i64,
     pub(crate) group_id: i64,
     pub(crate) search_text: String,
+    pub(crate) kind_filter: ClipKindFilter,
+    pub(crate) near_query: Option<String>,
 }
 
 impl ItemsQuery {
@@ -2108,8 +2215,11 @@ impl ItemsQuery {
         tab: usize,
         grouping_enabled: bool,
         tab_group_filters: [i64; 2],
+        tab_kind_filters: [ClipKindFilter; 2],
         search_text: &str,
     ) -> Self {
+        let (_, _, _, near_query) =
+            parse_search_query_with_context(search_text.trim(), SearchDateContext::utc_now());
         Self {
             category: tab as i64,
             group_id: if grouping_enabled {
@@ -2118,6 +2228,11 @@ impl ItemsQuery {
                 0
             },
             search_text: search_text.trim().to_string(),
+            kind_filter: tab_kind_filters
+                .get(tab)
+                .copied()
+                .unwrap_or(ClipKindFilter::All),
+            near_query,
         }
     }
 }
@@ -5614,19 +5729,23 @@ mod tests {
     #[test]
     fn main_list_query_and_loading_state_are_platform_neutral() {
         assert_eq!(
-            ItemsQuery::for_tab(1, true, [3, 8], "  bili  "),
+            ItemsQuery::for_tab(1, true, [3, 8], [ClipKindFilter::All; 2], "  bili  "),
             ItemsQuery {
                 category: 1,
                 group_id: 8,
                 search_text: "bili".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             }
         );
         assert_eq!(
-            ItemsQuery::for_tab(1, false, [3, 8], "  catsxp  "),
+            ItemsQuery::for_tab(1, false, [3, 8], [ClipKindFilter::All; 2], "  catsxp  "),
             ItemsQuery {
                 category: 1,
                 group_id: 0,
                 search_text: "catsxp".to_string(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
             }
         );
 
@@ -5635,6 +5754,8 @@ mod tests {
             category: 0,
             group_id: 3,
             search_text: "clip".to_string(),
+            kind_filter: ClipKindFilter::All,
+            near_query: None,
         };
         let seq = load.begin_request(query.clone(), true);
         assert!(load.loading);
@@ -5698,34 +5819,58 @@ mod tests {
 
     #[test]
     fn search_query_parser_is_platform_neutral() {
-        let (terms, time, app) = parse_search_query("foo bar app:\"Cats XP\" time:2026-06-06");
+        let (terms, time, app, near) =
+            parse_search_query("foo bar app:\"Cats XP\" time:2026-06-06");
         assert_eq!(terms, vec!["foo".to_string(), "bar".to_string()]);
         assert_eq!(
             time,
             Some(SearchTimeFilter::ExactDay(gregorian_to_days(2026, 6, 6)))
         );
         assert_eq!(app.as_deref(), Some("cats xp"));
+        assert_eq!(near, None);
 
-        let (terms, time, app) = parse_search_query("发票 应用：微信 日期：14天");
+        let (terms, time, app, near) = parse_search_query("发票 应用：微信 日期：14天");
         assert_eq!(terms, vec!["发票".to_string()]);
         assert_eq!(time, Some(SearchTimeFilter::RecentDays(14)));
         assert_eq!(app.as_deref(), Some("微信"));
+        assert_eq!(near, None);
+    }
+
+    #[test]
+    fn search_query_parser_accepts_near_prefix_and_colon_variants() {
+        for query in [
+            "附近:发票",
+            "near:invoice",
+            "nearby::invoice",
+            "附近：：发票",
+        ] {
+            let (terms, _, _, near) = parse_search_query(query);
+            assert!(terms.is_empty());
+            assert!(near.as_deref() == Some("发票") || near.as_deref() == Some("invoice"));
+        }
+
+        let (_, today, app, _) = parse_search_query_with_context(
+            "app::wechat time::today",
+            SearchDateContext::from_date(2026, 7, 1),
+        );
+        assert_eq!(app.as_deref(), Some("wechat"));
+        assert!(today.is_some());
     }
 
     #[test]
     fn search_query_date_context_keeps_local_calendar_out_of_core_platform_calls() {
         let context = SearchDateContext::from_date(2026, 6, 9);
 
-        let (_, today, _) = parse_search_query_with_context("time:today", context);
+        let (_, today, _, _) = parse_search_query_with_context("time:today", context);
         assert_eq!(today, Some(SearchTimeFilter::ExactDay(context.current_day)));
 
-        let (_, yesterday, _) = parse_search_query_with_context("日期：昨天", context);
+        let (_, yesterday, _, _) = parse_search_query_with_context("日期：昨天", context);
         assert_eq!(
             yesterday,
             Some(SearchTimeFilter::ExactDay(context.current_day - 1))
         );
 
-        let (_, partial_date, _) = parse_search_query_with_context("date:02-03", context);
+        let (_, partial_date, _, _) = parse_search_query_with_context("date:02-03", context);
         assert_eq!(
             partial_date,
             Some(SearchTimeFilter::ExactDay(gregorian_to_days(2026, 2, 3)))
@@ -5855,11 +6000,11 @@ mod tests {
         ];
 
         assert_eq!(
-            main_group_filter_menu_plan(0, &groups).entries[0],
+            main_group_filter_menu_plan(0, &groups, false, ClipKindFilter::All, &[]).entries[0],
             MainGroupFilterMenuEntry::All { checked: true }
         );
 
-        let plan = main_group_filter_menu_plan(9, &groups);
+        let plan = main_group_filter_menu_plan(9, &groups, false, ClipKindFilter::All, &[]);
         assert_eq!(
             plan.entries,
             vec![

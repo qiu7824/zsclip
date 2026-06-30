@@ -46,7 +46,7 @@ fn is_hotkey_surface_control(id: isize) -> bool {
 fn is_group_surface_control(id: isize) -> bool {
     matches!(
         id,
-        IDC_SET_GROUP_ENABLE | IDC_SET_VV_SOURCE | IDC_SET_VV_GROUP
+        IDC_SET_GROUP_ENABLE | IDC_SET_GROUP_TYPE_FILTER | IDC_SET_VV_SOURCE | IDC_SET_VV_GROUP
     )
 }
 
