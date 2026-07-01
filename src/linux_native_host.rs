@@ -73,6 +73,14 @@ mod gtk_host {
     margin-bottom: 8px;
 }
 
+.main-toolbar {
+    margin-bottom: 8px;
+}
+
+.main-toolbar-actions {
+    margin-left: 8px;
+}
+
 .clip-row:hover {
     background: alpha(@theme_fg_color, 0.05);
 }
@@ -696,9 +704,8 @@ searchentry {
                 })
                 .collect();
             refresh_gtk_source_tab_buttons(&source_tab_buttons, current_source_category.get());
-            root.append(&source_tabs);
-            root.append(&clip_scroller);
             let row_actions = GtkBox::new(Orientation::Horizontal, 8);
+            row_actions.add_css_class("main-toolbar-actions");
             let row_menu = install_row_popup_menu(
                 app,
                 &status,
@@ -793,7 +800,14 @@ searchentry {
                     }
                 }
             }
-            root.append(&row_actions);
+            let main_toolbar = GtkBox::new(Orientation::Horizontal, 8);
+            main_toolbar.add_css_class("main-toolbar");
+            source_tabs.set_hexpand(true);
+            row_actions.set_halign(gtk::Align::End);
+            main_toolbar.append(&source_tabs);
+            main_toolbar.append(&row_actions);
+            root.append(&main_toolbar);
+            root.append(&clip_scroller);
             let search_rows = clip_rows.clone();
             let search_items = clip_items.clone();
             let search_selected_item_id = selected_item_id.clone();

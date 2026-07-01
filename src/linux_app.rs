@@ -5675,6 +5675,17 @@ mod tests {
         assert!(host_source.contains("window.set_titlebar(Some(&header))"));
         assert!(host_source.contains("search_button.connect_toggled"));
         assert!(host_source.contains("search_revealer_for_toggle.set_reveal_child(active)"));
+        assert!(host_source.contains("let main_toolbar = GtkBox::new(Orientation::Horizontal, 8)"));
+        assert!(host_source.contains("main_toolbar.add_css_class(\"main-toolbar\")"));
+        assert!(host_source.contains("row_actions.add_css_class(\"main-toolbar-actions\")"));
+        assert!(host_source.contains("main_toolbar.append(&source_tabs)"));
+        assert!(host_source.contains("main_toolbar.append(&row_actions)"));
+        assert!(host_source.contains("root.append(&main_toolbar)"));
+        assert!(
+            host_source.find("root.append(&main_toolbar)").unwrap()
+                < host_source.find("root.append(&clip_scroller)").unwrap(),
+            "GTK source tabs and group/action toolbar should stay above the list"
+        );
         assert!(host_source.contains("let clip_scroller = ScrolledWindow::builder()"));
         assert!(host_source.contains(".hscrollbar_policy(PolicyType::Never)"));
         assert!(host_source.contains(".vscrollbar_policy(PolicyType::Automatic)"));
@@ -5731,13 +5742,8 @@ mod tests {
         assert!(host_source.contains("presentation.kind_icon"));
         assert!(host_source.contains("Image::from_icon_name(gtk_clip_row_icon_name("));
         assert!(host_source.contains("fn gtk_clip_row_icon_name("));
-        assert!(
-            host_source.contains("NativeHostClipKindIcon::Image => \"image-x-generic-symbolic\"")
-        );
-        assert!(host_source.contains(
-            "NativeHostClipKindIcon::Files | NativeHostClipKindIcon::Folder => \"folder-symbolic\""
-        ));
-        assert!(host_source.contains("NativeHostClipKindIcon::Phrase => \"format-text-symbolic\""));
+        assert!(host_source.contains(".zsui_icon()"));
+        assert!(host_source.contains(".gtk_symbolic_name()"));
         assert!(host_source.contains("Image::from_icon_name(\"view-pin-symbolic\")"));
         assert!(host_source.contains("pin_icon.add_css_class(\"clip-row-pin\")"));
         assert!(host_source.contains("icon.set_pixel_size(24)"));
