@@ -113,7 +113,56 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Default.isl"
+
+          [Messages]
+          ButtonBack=< 上一步(&B)
+          ButtonNext=下一步(&N) >
+          ButtonInstall=安装(&I)
+          ButtonOK=确定
+          ButtonCancel=取消
+          ButtonYes=是(&Y)
+          ButtonNo=否(&N)
+          ButtonFinish=完成(&F)
+          ButtonBrowse=浏览(&B)...
+          ButtonWizardBrowse=浏览(&R)...
+          ClickNext=单击“下一步”继续，或单击“取消”退出安装程序。
+          WelcomeLabel1=欢迎使用 [name] 安装向导
+          WelcomeLabel2=这将在你的电脑上安装 [name/ver]。%n%n建议继续前关闭其他应用程序。
+          WizardSelectDir=选择安装位置
+          SelectDirDesc=要将 [name] 安装到哪里？
+          SelectDirLabel3=安装程序会将 [name] 安装到以下文件夹。
+          SelectDirBrowseLabel=单击“下一步”继续。如需选择其他文件夹，请单击“浏览”。
+          DiskSpaceMBLabel=至少需要 [mb] MB 可用磁盘空间。
+          DirExistsTitle=文件夹已存在
+          DirExists=文件夹：%n%n%1%n%n已经存在。是否仍安装到该文件夹？
+          DirDoesntExistTitle=文件夹不存在
+          DirDoesntExist=文件夹：%n%n%1%n%n不存在。是否创建该文件夹？
+          WizardSelectTasks=选择附加任务
+          SelectTasksDesc=要执行哪些附加任务？
+          SelectTasksLabel2=请选择安装 [name] 时要执行的附加任务，然后单击“下一步”。
+          WizardReady=准备安装
+          ReadyLabel1=安装程序已准备好开始将 [name] 安装到你的电脑。
+          ReadyLabel2a=单击“安装”继续，或单击“上一步”检查或修改设置。
+          ReadyLabel2b=单击“安装”继续。
+          ReadyMemoDir=安装位置：
+          ReadyMemoGroup=开始菜单文件夹：
+          ReadyMemoTasks=附加任务：
+          WizardPreparing=正在准备安装
+          PreparingDesc=安装程序正在准备将 [name] 安装到你的电脑。
+          WizardInstalling=正在安装
+          InstallingLabel=请稍候，安装程序正在将 [name] 安装到你的电脑。
+          FinishedHeadingLabel=[name] 安装向导完成
+          FinishedLabelNoIcons=安装程序已完成 [name] 的安装。
+          FinishedLabel=安装程序已完成 [name] 的安装。你可以通过已安装的快捷方式启动应用。
+          ClickFinish=单击“完成”退出安装程序。
+          RunEntryExec=运行 %1
+          StatusCreateDirs=正在创建目录...
+          StatusExtractFiles=正在解压文件...
+          StatusCreateIcons=正在创建快捷方式...
+          StatusCreateRegistryEntries=正在写入注册表...
+          StatusSavingUninstall=正在保存卸载信息...
+          StatusRunProgram=正在完成安装...
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
