@@ -66,7 +66,7 @@ jobs:
           '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
           Copy-Item dist\zsclip-windows-x86_64\INSTALL.txt dist\installer-source\INSTALL.txt
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
-          @'
+          $installerScript = @'
           #define MyAppName "剪贴板"
           #define MyAppVersion "0.9.9"
           #define MyAppPublisher "qiu7824"
@@ -113,7 +113,7 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimp"; MessagesFile: "compiler:Default.isl"
+          Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
@@ -157,7 +157,8 @@ jobs:
             else
               Result := ExpandConstant('{autopf}\{#MyAppInstallDirName}');
           end;
-          '@ | Set-Content -Encoding UTF8 installer.iss
+          '@
+          [System.IO.File]::WriteAllText((Resolve-Path .).Path + '\installer.iss', $installerScript, [System.Text.UTF8Encoding]::new($true))
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss 2>&1 | Tee-Object -FilePath inno-build.log
           if ($LASTEXITCODE -ne 0) {
             $message = (Get-Content inno-build.log -Tail 120) -join "`n"
