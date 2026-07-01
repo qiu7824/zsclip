@@ -1132,40 +1132,7 @@ mod appkit {
     }
 
     fn appkit_zsui_icon_png_bytes(icon: crate::zsui::ZsIcon) -> Option<&'static [u8]> {
-        match icon {
-            crate::zsui::ZsIcon::Text | crate::zsui::ZsIcon::Phrase => {
-                Some(include_bytes!("../assets/icons/text/text_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Image => {
-                Some(include_bytes!("../assets/icons/image/image_24x24.png"))
-            }
-            crate::zsui::ZsIcon::File => {
-                Some(include_bytes!("../assets/icons/file/file_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Folder | crate::zsui::ZsIcon::Group => {
-                Some(include_bytes!("../assets/icons/fold/fold_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Pin => Some(include_bytes!("../assets/icons/top/top_24x24.png")),
-            crate::zsui::ZsIcon::Delete => {
-                Some(include_bytes!("../assets/icons/del/del_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Search => {
-                Some(include_bytes!("../assets/icons/search/search_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Settings => {
-                Some(include_bytes!("../assets/icons/setting/setting_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Minimize => {
-                Some(include_bytes!("../assets/icons/min/min_24x24.png"))
-            }
-            crate::zsui::ZsIcon::Close => {
-                Some(include_bytes!("../assets/icons/exit/exit_24x24.png"))
-            }
-            crate::zsui::ZsIcon::App
-            | crate::zsui::ZsIcon::Copy
-            | crate::zsui::ZsIcon::Paste
-            | crate::zsui::ZsIcon::Edit => None,
-        }
+        icon.png_24_bytes()
     }
 
     fn appkit_status_menu_symbol_name(icon_name: &str) -> Option<&'static str> {

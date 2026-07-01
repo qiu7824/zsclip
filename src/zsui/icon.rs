@@ -56,4 +56,52 @@ impl ZsIcon {
             Self::Edit => "document-edit-symbolic",
         }
     }
+
+    pub const fn png_24_bytes(self) -> Option<&'static [u8]> {
+        match self {
+            Self::Search => Some(include_bytes!("../../assets/icons/search/search_24x24.png")),
+            Self::Settings => Some(include_bytes!("../../assets/icons/setting/setting_24x24.png")),
+            Self::Minimize => Some(include_bytes!("../../assets/icons/min/min_24x24.png")),
+            Self::Close => Some(include_bytes!("../../assets/icons/exit/exit_24x24.png")),
+            Self::Text | Self::Phrase => {
+                Some(include_bytes!("../../assets/icons/text/text_24x24.png"))
+            }
+            Self::Image => Some(include_bytes!("../../assets/icons/image/image_24x24.png")),
+            Self::File => Some(include_bytes!("../../assets/icons/file/file_24x24.png")),
+            Self::Folder | Self::Group => {
+                Some(include_bytes!("../../assets/icons/fold/fold_24x24.png"))
+            }
+            Self::Pin => Some(include_bytes!("../../assets/icons/top/top_24x24.png")),
+            Self::Delete => Some(include_bytes!("../../assets/icons/del/del_24x24.png")),
+            Self::App | Self::Copy | Self::Paste | Self::Edit => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ZsIcon;
+
+    #[test]
+    fn png_24_assets_cover_shared_clipboard_row_icons() {
+        for icon in [
+            ZsIcon::Text,
+            ZsIcon::Phrase,
+            ZsIcon::Image,
+            ZsIcon::File,
+            ZsIcon::Folder,
+            ZsIcon::Pin,
+            ZsIcon::Delete,
+        ] {
+            let bytes = icon.png_24_bytes().expect("row icon should have PNG asset");
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        }
+    }
+
+    #[test]
+    fn unavailable_png_assets_are_explicit() {
+        assert!(ZsIcon::Copy.png_24_bytes().is_none());
+        assert!(ZsIcon::Paste.png_24_bytes().is_none());
+        assert!(ZsIcon::Edit.png_24_bytes().is_none());
+    }
 }
