@@ -91,6 +91,10 @@ fn vv_popup_layout() -> MainVvPopupLayout {
     MainVvPopupLayout::default()
 }
 
+fn vv_popup_layout_for_window(hwnd: HWND) -> MainVvPopupLayout {
+    vv_popup_layout().scaled(unsafe { platform_dpi::layout_dpi_for_window(hwnd) })
+}
+
 unsafe fn draw_vv_popup_text_command(hdc: HDC, command: &MainVvPopupTextCommand, th: Theme) {
     let rect: RECT = command.rect.into();
     draw_text_ex(
@@ -146,7 +150,10 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
         })
         .into_owned(),
     );
-    let rect: RECT = vv_popup_layout().group_rect().into();
+    let layout = platform_window::client_rect(hwnd)
+        .map(|rc| vv_popup_layout_for_window(hwnd).with_width(rc.right - rc.left))
+        .unwrap_or_else(|| vv_popup_layout_for_window(hwnd));
+    let rect: RECT = layout.group_rect().into();
     let mut pt = POINT {
         x: rect.left,
         y: rect.bottom + 4,
@@ -171,7 +178,7 @@ unsafe fn vv_popup_show_group_menu(hwnd: HWND, state: &AppState) -> Option<i64> 
 
 unsafe fn vv_popup_hwnd(main_hwnd: HWND) -> HWND {
     let raw = *VV_POPUP_HWND.get_or_init(|| {
-        let layout = vv_popup_layout();
+        let layout = vv_popup_layout_for_window(main_hwnd);
         let mut host = WindowsTransientWindowHost::new(VV_POPUP_CLASS, Some(vv_popup_wnd_proc));
         match host.create_transient_window(NativeTransientWindowRequest {
             owner: main_hwnd,
@@ -342,7 +349,7 @@ unsafe fn vv_popup_move_near_target(state: &AppState, popup: HWND) -> bool {
     if focus_hwnd.is_null() {
         return false;
     }
-    let layout = vv_popup_layout();
+    let layout = vv_popup_layout_for_window(focus_hwnd);
     let mut wa = platform_monitor::nearest_work_rect_for_window(focus_hwnd);
     let height = layout.height(state.vv_popup_items.len());
     let caret_anchor = vv_accessible_caret_anchor(focus_hwnd, height, &wa)
@@ -431,7 +438,7 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
         false
     } else {
         let work_area = platform_monitor::nearest_work_rect_for_window(focus_hwnd);
-        let layout = vv_popup_layout();
+        let layout = vv_popup_layout_for_window(focus_hwnd);
         vv_imm_overlay_anchor(
             focus_hwnd,
             layout.height(state.vv_popup_items.len()),
@@ -468,7 +475,8 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                 let state = &*ptr;
                 let th = Theme::default();
                 let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
-                let layout = vv_popup_layout();
+                let layout =
+                    vv_popup_layout_for_window(hwnd).with_width((rc.right - rc.left).max(1));
                 let bg = platform_gdi::create_solid_brush(th.surface);
                 platform_gdi::fill_rect(hdc, &rc, bg);
                 platform_gdi::delete_object(bg as _);
@@ -533,7 +541,10 @@ unsafe extern "system" fn vv_popup_wnd_proc(
             let state = &mut *ptr;
             let x = get_x_lparam(lparam);
             let y = get_y_lparam(lparam);
-            match vv_popup_layout().hit_test(x, y, state.vv_popup_items.len()) {
+            let layout = platform_window::client_rect(hwnd)
+                .map(|rc| vv_popup_layout_for_window(hwnd).with_width(rc.right - rc.left))
+                .unwrap_or_else(|| vv_popup_layout_for_window(hwnd));
+            match layout.hit_test(x, y, state.vv_popup_items.len()) {
                 MainVvPopupHit::Group => {
                     if let Some(group_id) = vv_popup_show_group_menu(hwnd, state) {
                         state.vv_popup_group_id = vv_popup_resolved_group_id(state, group_id);
@@ -551,6 +562,10 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                 }
                 MainVvPopupHit::None => {}
             }
+            0
+        }
+        WM_SIZE => {
+            platform_gdi::invalidate_rect(hwnd, null(), 1);
             0
         }
         _ => platform_window::default_window_proc(hwnd, msg, wparam, lparam),
