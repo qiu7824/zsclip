@@ -5681,6 +5681,10 @@ mod tests {
         assert!(host_source.contains("main_toolbar.append(&source_tabs)"));
         assert!(host_source.contains("main_toolbar.append(&row_actions)"));
         assert!(host_source.contains("root.append(&main_toolbar)"));
+        assert!(host_source.contains("install_source_tab_group_context_menu("));
+        assert!(host_source.contains("gesture.set_button(3)"));
+        assert!(host_source.contains("PopoverMenu::from_model(Some(&menus.group_filter_menu))"));
+        assert!(host_source.contains("refresh_group_popup_menus(&menus)"));
         assert!(
             host_source.find("root.append(&main_toolbar)").unwrap()
                 < host_source.find("root.append(&clip_scroller)").unwrap(),

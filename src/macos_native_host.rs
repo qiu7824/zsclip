@@ -20,7 +20,7 @@ mod appkit {
     use block2::RcBlock;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject, Bool, ProtocolObject, Sel};
-    use objc2::{define_class, msg_send, sel, AnyThread, DefinedClass, MainThreadOnly, Message};
+    use objc2::{AnyThread, DefinedClass, MainThreadOnly, Message, define_class, msg_send, sel};
     use objc2_app_kit::{
         NSAccessibility, NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn,
         NSAlertStyle, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationPolicy,
@@ -37,19 +37,32 @@ mod appkit {
         NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
     };
     use objc2_core_foundation::{
-        kCFRunLoopCommonModes, CFMachPort, CFRetained, CFRunLoopAddSource, CFRunLoopGetCurrent,
-        CFRunLoopSource,
+        CFMachPort, CFRetained, CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopSource,
+        kCFRunLoopCommonModes,
     };
     use objc2_core_graphics::{
         CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventTapOptions,
         CGEventTapPlacement, CGEventTapProxy, CGEventType,
     };
     use objc2_foundation::{
-        ns_string, MainThreadMarker, NSData, NSIndexSet, NSInteger, NSNotification, NSObject,
-        NSObjectProtocol, NSPoint, NSPointInRect, NSRect, NSSize, NSString, NSUInteger,
+        MainThreadMarker, NSData, NSIndexSet, NSInteger, NSNotification, NSObject,
+        NSObjectProtocol, NSPoint, NSPointInRect, NSRect, NSSize, NSString, NSUInteger, ns_string,
     };
 
     use crate::app_core::{
+        ClipKindFilter, HostComponent, MainGroupFilterSelection, MainRowGroupSelection,
+        MainVvPopupTextRole, NATIVE_HOST_SOURCE_TABS, NativeButtonStyleRole, NativeClipRowSpec,
+        NativeComponentAction, NativeComponentInstanceSpec, NativeComponentSpec,
+        NativeDialogResponse, NativeDropdownSpec, NativeHostClipKindIcon,
+        NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
+        NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
+        NativeHostRowAction, NativeHostSearchTextAction, NativeHostSettingsAction,
+        NativeHostSettingsControlAction, NativeHostSettingsGroupAction,
+        NativeHostSettingsPlatformAction, NativeHostStatusMenuAction, NativeHostUiAction,
+        NativeHostVvTriggerAction, NativeHostVvTriggerInput, NativeHostVvTriggerKey,
+        NativeHostVvTriggerTransition, NativeMenuItemSpec, NativePopupMenuEntry,
+        NativeSettingsPageTabKind, ProductAdapterCommandResult,
+        REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS, SettingsControlRole,
         clip_kind_filter_options_for_tab, main_group_filter_selection_for_id,
         main_row_group_selection_for_id, menu_ids,
         native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
@@ -60,29 +73,16 @@ mod appkit {
         native_host_group_filter_label_for_groups,
         native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
         native_host_main_tool_button_specs, native_host_projected_clip_row_title,
-        native_host_reconciled_selected_item_id,
-        native_host_row_action_button_specs, native_host_row_popup_menu_input_for_projection,
-        native_host_search_input_specs, native_host_settings_action_button_specs,
-        native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
-        native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
-        native_host_settings_platform_button_specs, native_host_settings_section_label,
-        native_host_settings_toggle_specs, native_host_source_tab_for_category,
-        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
+        native_host_reconciled_selected_item_id, native_host_row_action_button_specs,
+        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
+        native_host_settings_action_button_specs, native_host_settings_control_button_specs,
+        native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
+        native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
+        native_host_settings_section_label, native_host_settings_toggle_specs,
+        native_host_source_tab_for_category, native_host_status_menu_item_specs,
+        native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_macos_key_equivalent,
-        native_popup_menu_command_macos_symbol_name, ClipKindFilter, HostComponent,
-        MainGroupFilterSelection,
-        MainRowGroupSelection, MainVvPopupTextRole, NativeButtonStyleRole, NativeClipRowSpec,
-        NativeComponentAction, NativeComponentInstanceSpec, NativeComponentSpec,
-        NativeDialogResponse, NativeDropdownSpec, NativeHostClipKindIcon,
-        NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
-        NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
-        NativeHostRowAction, NativeHostSearchTextAction, NativeHostSettingsAction,
-        NativeHostSettingsControlAction, NativeHostSettingsGroupAction,
-        NativeHostSettingsPlatformAction, NativeHostStatusMenuAction, NativeHostUiAction,
-        NativeHostVvTriggerAction, NativeHostVvTriggerInput, NativeHostVvTriggerKey,
-        NativeHostVvTriggerTransition, NativeMenuItemSpec, NativePopupMenuEntry,
-        NativeSettingsPageTabKind, ProductAdapterCommandResult, SettingsControlRole,
-        NATIVE_HOST_SOURCE_TABS, REQUIRED_NATIVE_HOST_STATUS_MENU_ACTIONS,
+        native_popup_menu_command_macos_symbol_name,
     };
     use crate::macos_app::MacosHostContractSummary;
     use crate::zsui::{HostCapabilities, Window};
@@ -2010,6 +2010,10 @@ mod appkit {
         }
 
         fn present_native_group_filter_popup_menu(&self) {
+            self.present_native_group_filter_popup_menu_at(NSPoint::new(4.0, 196.0));
+        }
+
+        fn present_native_group_filter_popup_menu_at(&self, location: NSPoint) {
             let Some(window) = self.ivars().window.get() else {
                 return;
             };
@@ -2032,11 +2036,8 @@ mod appkit {
                 ),
                 target,
             );
-            let shown = menu.popUpMenuPositioningItem_atLocation_inView(
-                None,
-                NSPoint::new(4.0, 196.0),
-                Some(&view),
-            );
+            let shown =
+                menu.popUpMenuPositioningItem_atLocation_inView(None, location, Some(&view));
             eprintln!("ZSClip AppKit group filter popup menu shown: {}", shown);
         }
 
@@ -3816,8 +3817,21 @@ mod appkit {
         }
 
         fn perform_native_row_context_event(&self, event: &NSEvent) -> bool {
+            let location = event.locationInWindow();
+            if let Some(buttons) = self.ivars().source_tab_buttons.get() {
+                for button in buttons {
+                    if NSPointInRect(location, button.frame()) {
+                        self.select_native_source_category(button.tag() as i64);
+                        self.present_native_group_filter_popup_menu_at(location);
+                        eprintln!(
+                            "ZSClip AppKit source tab group menu category={}",
+                            self.active_source_category()
+                        );
+                        return true;
+                    }
+                }
+            }
             if let Some(table_view) = self.ivars().clip_table_view.get() {
-                let location = event.locationInWindow();
                 let table_location = unsafe { table_view.convertPoint_fromView(location, None) };
                 let row = table_view.rowAtPoint(table_location);
                 if row >= 0 {
