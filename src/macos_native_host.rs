@@ -2899,7 +2899,8 @@ mod appkit {
             category: i64,
             deleted_group_id: Option<i64>,
         ) {
-            if category != 0 {
+            let changed_category = native_host_source_tab_for_category(category).category;
+            if changed_category != self.active_source_category() {
                 return;
             }
             if deleted_group_id == Some(self.ivars().current_group_filter.get()) {
