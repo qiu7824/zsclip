@@ -10701,6 +10701,19 @@ mod tests {
     }
 
     #[test]
+    fn macos_native_settings_group_refresh_is_active_source_tab_based() {
+        let host_source = include_str!("macos_native_host.rs").replace("\r\n", "\n");
+
+        assert!(host_source.contains("fn refresh_main_group_state_after_settings_change("));
+        assert!(host_source.contains(
+            "let changed_category = native_host_source_tab_for_category(category).category;"
+        ));
+        assert!(host_source.contains("if changed_category != self.active_source_category()"));
+        assert!(!host_source.contains("if category != 0 {\n                return;\n            }"));
+        assert!(host_source.contains("self.reload_native_clip_items();"));
+    }
+
+    #[test]
     fn macos_native_popup_menu_ids_enter_product_command_routes() {
         let copy = dispatch_macos_native_menu_command_id(crate::app_core::menu_ids::ROW_COPY);
         assert!(copy.accepted);
