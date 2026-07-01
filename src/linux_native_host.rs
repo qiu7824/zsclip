@@ -18,24 +18,8 @@ mod gtk_host {
     use gtk4 as gtk;
 
     use crate::app_core::{
-        main_group_filter_selection_for_id, main_row_group_selection_for_id, menu_ids,
-        native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
-        native_host_dialog_button_specs, native_host_edit_text_button_specs,
-        native_host_edit_text_close_plan, native_host_edit_text_plan_for_item,
-        clip_kind_filter_options_for_tab, native_host_filtered_projected_clip_item_ids,
-        native_host_full_row_popup_menu_entries_for_groups,
-        native_host_group_filter_label_for_groups,
-        native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
-        native_host_main_tool_button_specs, native_host_reconciled_selected_item_id,
-        native_host_row_popup_menu_input_for_projection,
-        native_host_search_input_specs, native_host_settings_action_button_specs,
-        native_host_settings_control_button_specs, native_host_settings_dropdown_specs,
-        native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
-        native_host_settings_platform_button_specs, native_host_settings_section_label,
-        native_host_settings_toggle_specs, native_host_source_tab_for_category,
-        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
-        native_popup_menu_command_accelerator_label, native_popup_menu_command_icon_name,
-        ClipKindFilter, MainGroupFilterSelection, MainRowGroupSelection, NativeButtonStyleRole,
+        ClipKindFilter, MainGroupFilterSelection, MainRowGroupSelection,
+        NATIVE_HOST_CLIP_ROW_CAPACITY, NATIVE_HOST_SOURCE_TABS, NativeButtonStyleRole,
         NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
         NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
         NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
@@ -44,10 +28,26 @@ mod gtk_host {
         NativeHostSettingsPlatformAction, NativeHostVvPasteExecution, NativeHostVvTriggerAction,
         NativeHostVvTriggerInput, NativeHostVvTriggerKey, NativeHostVvTriggerTransition,
         NativePopupMenuEntry, NativeSettingsPageTabKind, ProductAdapterCommandResult,
-        SettingsControlRole, NATIVE_HOST_CLIP_ROW_CAPACITY, NATIVE_HOST_SOURCE_TABS,
+        SettingsControlRole, clip_kind_filter_options_for_tab, main_group_filter_selection_for_id,
+        main_row_group_selection_for_id, menu_ids,
+        native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
+        native_host_dialog_button_specs, native_host_edit_text_button_specs,
+        native_host_edit_text_close_plan, native_host_edit_text_plan_for_item,
+        native_host_filtered_projected_clip_item_ids,
+        native_host_full_row_popup_menu_entries_for_groups,
+        native_host_group_filter_label_for_groups,
+        native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
+        native_host_main_tool_button_specs, native_host_reconciled_selected_item_id,
+        native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
+        native_host_settings_action_button_specs, native_host_settings_control_button_specs,
+        native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
+        native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
+        native_host_settings_section_label, native_host_settings_toggle_specs,
+        native_host_source_tab_for_category, native_host_status_menu_item_specs,
+        native_host_vv_popup_render_plan_for_projection,
+        native_popup_menu_command_accelerator_label, native_popup_menu_command_icon_name,
     };
     use gtk::prelude::*;
-    use gtk::{gdk, gio, glib};
     use gtk::{
         Application, ApplicationWindow, Box as GtkBox, Button, ButtonsType, DropDown, Entry,
         EventControllerKey, GestureClick, HeaderBar, Image, Label, ListBox, ListBoxRow, MenuButton,
@@ -55,6 +55,7 @@ mod gtk_host {
         RevealerTransitionType, ScrolledWindow, SearchEntry, SelectionMode, Switch, TextView,
         ToggleButton,
     };
+    use gtk::{gdk, gio, glib};
     use ksni::blocking::TrayMethods;
 
     use crate::linux_app::LinuxHostContractSummary;
@@ -746,6 +747,15 @@ searchentry {
                 clip_rows: clip_rows.clone(),
                 clip_items: clip_items.clone(),
             };
+            for button in &source_tab_buttons {
+                install_source_tab_group_context_menu(
+                    button,
+                    button.widget_name().as_str(),
+                    source_tab_buttons.clone(),
+                    group_popup_menus.clone(),
+                    clip_list.clone(),
+                );
+            }
             for spec in native_host_main_tool_button_specs() {
                 let action = spec.action;
                 match action {
@@ -1413,6 +1423,47 @@ searchentry {
             eprintln!("ZSClip GTK row context menu item_id={}", item_id);
         });
         row.add_controller(gesture);
+    }
+
+    fn install_source_tab_group_context_menu(
+        button: &ToggleButton,
+        tab_id: &str,
+        source_tab_buttons: Vec<ToggleButton>,
+        menus: GroupPopupMenus,
+        clip_list: ListBox,
+    ) {
+        let Some(tab_category) = NATIVE_HOST_SOURCE_TABS
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .map(|tab| tab.category)
+        else {
+            return;
+        };
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        let popover = PopoverMenu::from_model(Some(&menus.group_filter_menu));
+        popover.set_parent(button);
+        let button_for_pointing = button.clone();
+        gesture.connect_pressed(move |_, _n_press, x, y| {
+            let next_category = native_host_source_tab_for_category(tab_category).category;
+            if menus.current_source_category.get() != next_category {
+                menus.current_source_category.set(next_category);
+                menus.current_group_filter.set(0);
+                menus.current_kind_filter.set(ClipKindFilter::All);
+                menus.selected_item_id.set(0);
+                refresh_gtk_source_tab_buttons(&source_tab_buttons, next_category);
+                sync_clip_list_selection(&clip_list, &menus.clip_rows, 0);
+            }
+            refresh_group_popup_menus(&menus);
+            popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+            popover.popup();
+            eprintln!(
+                "ZSClip GTK source tab group menu category={}",
+                next_category
+            );
+            button_for_pointing.set_active(true);
+        });
+        button.add_controller(gesture);
     }
 
     fn install_main_window_keyboard_controller(

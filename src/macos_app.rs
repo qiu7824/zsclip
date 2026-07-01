@@ -10747,6 +10747,10 @@ mod tests {
         assert!(host_source.contains("install_row_context_event_monitor"));
         assert!(host_source.contains("NSEventMask::RightMouseDown"));
         assert!(host_source.contains("perform_native_row_context_event"));
+        assert!(host_source.contains("self.ivars().source_tab_buttons.get()"));
+        assert!(host_source.contains("NSPointInRect(location, button.frame())"));
+        assert!(host_source.contains("self.select_native_source_category(button.tag() as i64)"));
+        assert!(host_source.contains("self.present_native_group_filter_popup_menu_at(location)"));
         assert!(host_source.contains("table_view.rowAtPoint(table_location)"));
         assert!(host_source.contains("self.select_native_row(item.id)"));
         assert!(host_source.contains("self.present_native_row_popup_menu_at(location)"));
