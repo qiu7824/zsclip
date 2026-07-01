@@ -4416,6 +4416,7 @@ fn windows_vv_popup_window_presentation_uses_transient_host() {
     assert!(!create_block.contains("create_window_ex"));
     assert!(!create_block.contains("to_wide(VV_POPUP_CLASS)"));
     assert!(move_block.contains("present_vv_popup_window("));
+    assert!(move_block.contains("vv_popup_layout_for_window(focus_hwnd)"));
     assert!(hide_block.contains("hide_vv_popup_window("));
     assert!(show_block.contains("vv_popup_move_near_target(state, popup)"));
     assert!(thread_caret_block.contains("WindowsTextCaretHost::new().thread_caret_anchor(target)"));
@@ -4449,11 +4450,14 @@ fn windows_vv_popup_window_presentation_uses_transient_host() {
     assert!(!focus_handle_block.contains("GUITHREADINFO"));
     assert!(!proc_block.contains("platform_window::force_foreground(state.vv_popup_target)"));
     assert!(!destroy_block.contains("platform_window::destroy(popup)"));
+    assert!(proc_block.contains("vv_popup_layout_for_window(hwnd).with_width"));
+    assert!(proc_block.contains("WM_SIZE"));
     assert!(!hosts.contains("pub(super) struct WindowsTransientWindowHost"));
     assert!(transient_host.contains("pub(super) struct WindowsTransientWindowHost"));
     assert!(
         transient_host.contains("impl NativeTransientWindowHost for WindowsTransientWindowHost")
     );
+    assert!(transient_host.contains("WS_POPUP | WS_THICKFRAME"));
     assert!(transient_host.contains("fn destroy_transient_window(&mut self"));
     assert!(ime_host.contains("pub(crate) struct WindowsImeHost"));
     assert!(ime_host.contains("impl NativeImeHost for WindowsImeHost"));

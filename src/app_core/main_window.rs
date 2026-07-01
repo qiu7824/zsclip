@@ -2009,17 +2009,50 @@ impl Default for MainVvPopupLayout {
 }
 
 impl MainVvPopupLayout {
+    fn scale_value(self, value: i32) -> i32 {
+        ((value * self.row_h.max(1)) + 15) / 30
+    }
+
+    pub(crate) fn scaled(self, dpi: u32) -> Self {
+        fn scale(value: i32, dpi: u32) -> i32 {
+            let dpi = dpi.max(96) as i32;
+            ((value * dpi) + 48) / 96
+        }
+        Self {
+            width: scale(self.width, dpi),
+            header_h: scale(self.header_h, dpi),
+            row_h: scale(self.row_h, dpi),
+        }
+    }
+
+    pub(crate) fn with_width(self, width: i32) -> Self {
+        Self {
+            width: width.max(self.width),
+            ..self
+        }
+    }
+
     pub(crate) fn height(self, rows: usize) -> i32 {
-        self.header_h + 20 + rows.max(1) as i32 * self.row_h
+        self.header_h + self.scale_value(20) + rows.max(1) as i32 * self.row_h
     }
 
     pub(crate) fn row_rect(self, row: usize) -> UiRect {
-        let top = self.header_h + 10 + row as i32 * self.row_h;
-        UiRect::new(12, top, self.width - 12, top + self.row_h - 2)
+        let top = self.header_h + self.scale_value(10) + row as i32 * self.row_h;
+        UiRect::new(
+            self.scale_value(12),
+            top,
+            self.width - self.scale_value(12),
+            top + self.row_h - self.scale_value(2),
+        )
     }
 
     pub(crate) fn group_rect(self) -> UiRect {
-        UiRect::new(self.width - 150, 10, self.width - 14, 34)
+        UiRect::new(
+            self.width - self.scale_value(150),
+            self.scale_value(10),
+            self.width - self.scale_value(14),
+            self.scale_value(34),
+        )
     }
 
     pub(crate) fn hit_test(self, x: i32, y: i32, rows: usize) -> MainVvPopupHit {
@@ -2042,19 +2075,20 @@ impl MainVvPopupLayout {
         group_name: &str,
         items: &[MainVvPopupRenderItem],
     ) -> MainVvPopupRenderPlan {
+        let s = |value| self.scale_value(value);
         let mut paint_commands = vec![MainPaintCommand::RoundRect {
             rect: client_rect,
             fill: MainPaintFill::Theme(MainThemeRole::Surface),
             stroke: Some(MainThemeRole::Stroke),
-            radius: 12,
+            radius: s(12),
         }];
         let mut text_commands = vec![
             MainVvPopupTextCommand {
                 role: MainVvPopupTextRole::Title,
                 text: strings.title.clone(),
-                rect: UiRect::new(14, 10, 150, 30),
+                rect: UiRect::new(s(14), s(10), s(150), s(30)),
                 color: MainThemeRole::Text,
-                size: 13,
+                size: s(13),
                 bold: true,
                 horizontal_align: HorizontalAlign::Start,
                 font: MainFontRole::Display,
@@ -2062,9 +2096,9 @@ impl MainVvPopupLayout {
             MainVvPopupTextCommand {
                 role: MainVvPopupTextRole::Hint,
                 text: strings.hint.clone(),
-                rect: UiRect::new(14, 34, client_rect.right - 14, 52),
+                rect: UiRect::new(s(14), s(34), client_rect.right - s(14), s(52)),
                 color: MainThemeRole::TextMuted,
-                size: 11,
+                size: s(11),
                 bold: false,
                 horizontal_align: HorizontalAlign::Start,
                 font: MainFontRole::UiText,
@@ -2075,25 +2109,25 @@ impl MainVvPopupLayout {
         paint_commands.push(MainPaintCommand::RoundFill {
             rect: group_rect,
             fill: MainPaintFill::Theme(MainThemeRole::Background),
-            radius: 10,
+            radius: s(10),
         });
         paint_commands.push(MainPaintCommand::RoundRect {
             rect: group_rect,
             fill: MainPaintFill::Theme(MainThemeRole::Background),
             stroke: Some(MainThemeRole::Stroke),
-            radius: 10,
+            radius: s(10),
         });
         text_commands.push(MainVvPopupTextCommand {
             role: MainVvPopupTextRole::GroupName,
             text: group_name.to_string(),
             rect: UiRect::new(
-                group_rect.left + 10,
+                group_rect.left + s(10),
                 group_rect.top,
-                group_rect.right - 20,
+                group_rect.right - s(20),
                 group_rect.bottom,
             ),
             color: MainThemeRole::Text,
-            size: 11,
+            size: s(11),
             bold: false,
             horizontal_align: HorizontalAlign::Center,
             font: MainFontRole::UiText,
@@ -2102,13 +2136,13 @@ impl MainVvPopupLayout {
             role: MainVvPopupTextRole::GroupArrow,
             text: "v".to_string(),
             rect: UiRect::new(
-                group_rect.right - 18,
+                group_rect.right - s(18),
                 group_rect.top,
-                group_rect.right - 4,
+                group_rect.right - s(4),
                 group_rect.bottom,
             ),
             color: MainThemeRole::TextMuted,
-            size: 11,
+            size: s(11),
             bold: true,
             horizontal_align: HorizontalAlign::Center,
             font: MainFontRole::UiText,
@@ -2119,13 +2153,13 @@ impl MainVvPopupLayout {
                 role: MainVvPopupTextRole::Empty,
                 text: strings.empty.clone(),
                 rect: UiRect::new(
-                    16,
-                    self.header_h + 16,
-                    client_rect.right - 16,
-                    self.header_h + 48,
+                    s(16),
+                    self.header_h + s(16),
+                    client_rect.right - s(16),
+                    self.header_h + s(48),
                 ),
                 color: MainThemeRole::TextMuted,
-                size: 12,
+                size: s(12),
                 bold: true,
                 horizontal_align: HorizontalAlign::Center,
                 font: MainFontRole::UiText,
@@ -2135,21 +2169,21 @@ impl MainVvPopupLayout {
                 let row_rect = self.row_rect(row);
                 let bubble = UiRect::new(
                     row_rect.left,
-                    row_rect.top + 4,
-                    row_rect.left + 24,
-                    row_rect.top + 24,
+                    row_rect.top + s(4),
+                    row_rect.left + s(24),
+                    row_rect.top + s(24),
                 );
                 paint_commands.push(MainPaintCommand::RoundFill {
                     rect: bubble,
                     fill: MainPaintFill::Theme(MainThemeRole::Accent),
-                    radius: 8,
+                    radius: s(8),
                 });
                 text_commands.push(MainVvPopupTextCommand {
                     role: MainVvPopupTextRole::RowIndex,
                     text: item.index.to_string(),
                     rect: bubble,
                     color: MainThemeRole::OnAccent,
-                    size: 11,
+                    size: s(11),
                     bold: true,
                     horizontal_align: HorizontalAlign::Center,
                     font: MainFontRole::UiText,
@@ -2158,13 +2192,13 @@ impl MainVvPopupLayout {
                     role: MainVvPopupTextRole::RowPreview,
                     text: item.label.clone(),
                     rect: UiRect::new(
-                        row_rect.left + 34,
+                        row_rect.left + s(34),
                         row_rect.top,
                         row_rect.right,
                         row_rect.bottom,
                     ),
                     color: MainThemeRole::Text,
-                    size: 12,
+                    size: s(12),
                     bold: false,
                     horizontal_align: HorizontalAlign::Start,
                     font: MainFontRole::UiText,
@@ -5242,6 +5276,21 @@ mod tests {
         assert_eq!(layout.hit_test(1, 70, 3), MainVvPopupHit::Row(0));
         assert_eq!(layout.hit_test(50, 129, 3), MainVvPopupHit::Row(2));
         assert_eq!(layout.hit_test(50, 200, 3), MainVvPopupHit::None);
+    }
+
+    #[test]
+    fn main_vv_popup_layout_scales_for_high_dpi_and_resized_width() {
+        let layout = MainVvPopupLayout::default().scaled(192);
+        assert_eq!(layout.width, 720);
+        assert_eq!(layout.header_h, 116);
+        assert_eq!(layout.row_h, 60);
+        assert_eq!(layout.height(3), 336);
+        assert_eq!(layout.group_rect(), UiRect::new(420, 20, 692, 68));
+        assert_eq!(layout.row_rect(0), UiRect::new(24, 136, 696, 192));
+
+        let widened = layout.with_width(900);
+        assert_eq!(widened.group_rect(), UiRect::new(600, 20, 872, 68));
+        assert_eq!(widened.row_rect(0), UiRect::new(24, 136, 876, 192));
     }
 
     #[test]

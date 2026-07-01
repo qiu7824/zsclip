@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
         HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME,
     },
 };
 
@@ -62,7 +62,7 @@ impl NativeTransientWindowHost for WindowsTransientWindowHost {
                 WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
                 class_name.as_ptr(),
                 to_wide("").as_ptr(),
-                WS_POPUP,
+                WS_POPUP | WS_THICKFRAME,
                 request.bounds.left,
                 request.bounds.top,
                 request.bounds.right - request.bounds.left,
