@@ -2632,6 +2632,24 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_fil
     Vec::new()
 }
 
+pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_filter_search(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str,
+) -> Vec<NativeHostClipListItemProjection> {
+    if let Ok(items) = crate::db_runtime::native_clip_list_items_for_query(
+        category,
+        group_id,
+        kind_filter,
+        search_text,
+        64,
+    ) {
+        return items;
+    }
+    Vec::new()
+}
+
 fn run_linux_contract_scaffold() -> Result<(), String> {
     let _adapter_boundary =
         crate::linux_gtk_adapter::LinuxGtkAdapterBoundary::default_from_linux_contract();
@@ -5879,6 +5897,16 @@ mod tests {
         );
         assert!(gtk_result.accepted);
         assert_eq!(gtk_result.result_name, "zsclip.window.search_text_update");
+    }
+
+    #[test]
+    fn linux_native_search_reload_uses_database_query_path() {
+        let host_source = include_str!("linux_native_host.rs");
+        assert!(host_source.contains(
+            "linux_native_host_projected_clip_items_for_category_group_kind_filter_search"
+        ));
+        assert!(host_source.contains("reload_clip_items_for_group_search_with_selection"));
+        assert!(host_source.contains("search_entry.text().as_str()"));
     }
 
     #[test]

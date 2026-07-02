@@ -9890,6 +9890,24 @@ pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_fil
     Vec::new()
 }
 
+pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_filter_search(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str,
+) -> Vec<NativeHostClipListItemProjection> {
+    if let Ok(items) = crate::db_runtime::native_clip_list_items_for_query(
+        category,
+        group_id,
+        kind_filter,
+        search_text,
+        64,
+    ) {
+        return items;
+    }
+    Vec::new()
+}
+
 fn run_macos_contract_scaffold(summary: MacosHostContractSummary) -> Result<(), String> {
     let _adapter_boundary =
         crate::macos_appkit_adapter::MacosAppKitAdapterBoundary::default_from_macos_contract();
@@ -11162,6 +11180,16 @@ mod tests {
             appkit_result.result_name,
             "zsclip.window.search_text_update"
         );
+    }
+
+    #[test]
+    fn macos_native_search_reload_uses_database_query_path() {
+        let host_source = include_str!("macos_native_host.rs");
+        assert!(host_source.contains(
+            "macos_native_host_projected_clip_items_for_category_group_kind_filter_search"
+        ));
+        assert!(host_source.contains("fn native_search_text(&self) -> String"));
+        assert!(host_source.contains("&self.native_search_text()"));
     }
 
     #[test]

@@ -2,9 +2,12 @@
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params_from_iter, Connection, OptionalExtension};
+
+use crate::app_core::{parse_search_query_with_context, SearchDateContext, SearchTimeFilter};
+use crate::time_utils::{days_to_sqlite_date, utc_secs_to_local_parts};
 
 thread_local! {
     static DB_CONN: RefCell<Option<Connection>> = const { RefCell::new(None) };
@@ -805,6 +808,158 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
     })
 }
 
+pub(crate) fn native_clip_list_items_for_query(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str,
+    limit: usize,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    let date_context = current_native_search_date_context();
+    let (search_terms, time_filter, app_filter, near_query) =
+        parse_search_query_with_context(search_text.trim(), date_context);
+    with_db(|conn| {
+        let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at";
+        let mut sql = if near_query.is_some() {
+            format!(
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE category=?"
+            )
+        } else {
+            format!("SELECT {select_columns} FROM items WHERE category=?")
+        };
+        let mut values = vec![rusqlite::types::Value::from(category)];
+
+        append_native_clip_query_filters(
+            &mut sql,
+            &mut values,
+            category,
+            group_id,
+            kind_filter,
+            search_terms,
+            time_filter,
+            app_filter,
+            date_context,
+        );
+
+        if let Some(near_value) = near_query {
+            let like = format!("%{}%", near_value.to_lowercase());
+            sql.push_str(
+                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? \
+                 OR LOWER(source_app) LIKE ? \
+                 OR LOWER(searchable_data) LIKE ? \
+                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?), \
+                 near_rows AS (SELECT DISTINCT base.rn FROM base JOIN hits ON base.rn BETWEEN hits.rn - 3 AND hits.rn + 3) \
+                 SELECT id, kind, preview, source_app, pinned, searchable_data, created_at \
+                 FROM base WHERE rn IN (SELECT rn FROM near_rows)",
+            );
+            values.push(rusqlite::types::Value::from(like.clone()));
+            values.push(rusqlite::types::Value::from(like.clone()));
+            values.push(rusqlite::types::Value::from(like.clone()));
+            values.push(rusqlite::types::Value::from(like));
+        }
+
+        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
+        values.push(rusqlite::types::Value::from(limit.max(1) as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            let id: i64 = row.get(0)?;
+            let kind: String = row.get(1)?;
+            let preview: String = row.get(2)?;
+            let source_app: String = row.get(3)?;
+            let pinned = row.get::<_, i64>(4)? == 1;
+            let title = native_clip_list_title(&kind, &source_app);
+            Ok(
+                crate::app_core::NativeHostClipListItemProjection::with_metadata(
+                    id,
+                    title,
+                    preview,
+                    native_clip_kind(&kind),
+                    pinned,
+                ),
+            )
+        })?;
+        rows.collect()
+    })
+}
+
+fn current_native_search_date_context() -> SearchDateContext {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let (year, month, day, _, _, _) = utc_secs_to_local_parts(now_secs);
+    SearchDateContext::from_date(year, month, day)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_native_clip_query_filters(
+    sql: &mut String,
+    values: &mut Vec<rusqlite::types::Value>,
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_terms: Vec<String>,
+    time_filter: Option<SearchTimeFilter>,
+    app_filter: Option<String>,
+    date_context: SearchDateContext,
+) {
+    if group_id > 0 {
+        sql.push_str(" AND group_id=?");
+        values.push(rusqlite::types::Value::from(group_id));
+    }
+    let kind_values = kind_filter.db_kinds(category);
+    if !kind_values.is_empty() {
+        sql.push_str(" AND kind IN (");
+        for index in 0..kind_values.len() {
+            if index > 0 {
+                sql.push(',');
+            }
+            sql.push('?');
+        }
+        sql.push(')');
+        for kind in kind_values {
+            values.push(rusqlite::types::Value::from((*kind).to_string()));
+        }
+    }
+    for term in search_terms {
+        let like = format!("%{}%", term.to_lowercase());
+        sql.push_str(
+            " AND (LOWER(COALESCE(preview, '')) LIKE ? \
+             OR LOWER(COALESCE(source_app, '')) LIKE ? \
+             OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
+             OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
+        );
+        values.push(rusqlite::types::Value::from(like.clone()));
+        values.push(rusqlite::types::Value::from(like.clone()));
+        values.push(rusqlite::types::Value::from(like.clone()));
+        values.push(rusqlite::types::Value::from(like));
+    }
+    if let Some(app_value) = app_filter {
+        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
+        values.push(rusqlite::types::Value::from(format!(
+            "%{}%",
+            app_value.to_lowercase()
+        )));
+    }
+    match time_filter {
+        Some(SearchTimeFilter::ExactDay(day)) => {
+            sql.push_str(" AND date(created_at, 'localtime') = ?");
+            values.push(rusqlite::types::Value::from(days_to_sqlite_date(day)));
+        }
+        Some(SearchTimeFilter::RecentDays(days)) => {
+            let end_day = date_context.current_day;
+            let start_day = end_day - (days.max(1) - 1);
+            sql.push_str(
+                " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
+            );
+            values.push(rusqlite::types::Value::from(days_to_sqlite_date(start_day)));
+            values.push(rusqlite::types::Value::from(days_to_sqlite_date(end_day)));
+        }
+        None => {}
+    }
+}
+
 fn native_clip_list_title(kind: &str, source_app: &str) -> String {
     let source_app = source_app.trim();
     if !source_app.is_empty() {
@@ -1060,6 +1215,55 @@ mod tests {
             assert_eq!(phrases.len(), 1);
             assert_eq!(phrases[0].title, "Phrase");
             assert_eq!(phrases[0].kind, crate::app_core::ClipKind::Phrase);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn native_clip_list_items_for_query_supports_near_search_and_kind_filter() {
+        with_test_db(|| {
+            with_db_mut(|conn| {
+                for (preview, kind) in [
+                    ("alpha context", "text"),
+                    ("invoice needle", "text"),
+                    ("omega context", "text"),
+                    ("invoice image", "image"),
+                    ("outside row", "text"),
+                ] {
+                    conn.execute(
+                        "INSERT INTO items(category, kind, preview, signature, text_data, source_app, created_at) VALUES(0, ?, ?, ?, ?, 'Notes', datetime('now'))",
+                        rusqlite::params![kind, preview, preview, preview],
+                    )?;
+                }
+                Ok(())
+            })?;
+
+            let near = native_clip_list_items_for_query(
+                0,
+                0,
+                crate::app_core::ClipKindFilter::All,
+                "附近:needle",
+                10,
+            )?;
+            let previews = near
+                .iter()
+                .map(|item| item.preview.as_str())
+                .collect::<Vec<_>>();
+            assert!(previews.contains(&"invoice needle"));
+            assert!(previews.contains(&"alpha context"));
+            assert!(previews.contains(&"omega context"));
+
+            let images = native_clip_list_items_for_query(
+                0,
+                0,
+                crate::app_core::ClipKindFilter::Image,
+                "near::invoice",
+                10,
+            )?;
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].preview, "invoice image");
+            assert_eq!(images[0].kind, crate::app_core::ClipKind::Image);
             Ok(())
         })
         .unwrap();
