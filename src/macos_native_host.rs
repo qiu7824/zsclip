@@ -68,7 +68,6 @@ mod appkit {
         native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
         native_host_dialog_button_specs, native_host_edit_text_button_specs,
         native_host_edit_text_close_plan, native_host_edit_text_plan_for_item,
-        native_host_filtered_projected_clip_item_ids,
         native_host_full_row_popup_menu_entries_for_groups,
         native_host_group_filter_label_for_groups,
         native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
@@ -3266,13 +3265,22 @@ mod appkit {
 
         fn reload_native_clip_items(&self) {
             let items =
-                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter(
+                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter_search(
                     self.active_source_category(),
                     self.ivars().current_group_filter.get(),
                     self.ivars().current_kind_filter.get(),
+                    &self.native_search_text(),
                 );
             *self.ivars().clip_items.borrow_mut() = items;
             self.refresh_native_clip_rows();
+        }
+
+        fn native_search_text(&self) -> String {
+            self.ivars()
+                .search_field
+                .get()
+                .map(|field| field.stringValue().to_string())
+                .unwrap_or_default()
         }
 
         fn active_source_category(&self) -> i64 {
@@ -4135,18 +4143,19 @@ mod appkit {
         }
 
         fn update_clip_list_visibility(&self, query: &str) {
-            let items = self.ivars().clip_items.borrow();
-            let visible_ids = native_host_filtered_projected_clip_item_ids(&items, query);
-            let visible_items = items
-                .iter()
-                .filter(|item| visible_ids.contains(&item.id))
-                .cloned()
-                .collect::<Vec<_>>();
+            let visible_items =
+                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter_search(
+                    self.active_source_category(),
+                    self.ivars().current_group_filter.get(),
+                    self.ivars().current_kind_filter.get(),
+                    query,
+                );
             let selected_item_id = native_host_reconciled_selected_item_id(
                 self.ivars().selected_item_id.get(),
                 &visible_items,
             );
             self.ivars().selected_item_id.set(selected_item_id);
+            *self.ivars().clip_items.borrow_mut() = visible_items.clone();
             *self.ivars().clip_table_items.borrow_mut() = visible_items;
             if let Some(table_view) = self.ivars().clip_table_view.get() {
                 table_view.reloadData();

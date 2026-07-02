@@ -607,6 +607,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             refresh_clip_rows(&clip_rows, &clip_items.borrow());
             reconcile_selected_item_id(&selected_item_id, &clip_items.borrow());
@@ -679,6 +680,7 @@ searchentry {
                     let items = clip_items.clone();
                     let selected = selected_item_id.clone();
                     let list = clip_list.clone();
+                    let search = search_entry.clone();
                     button.connect_clicked(move |button| {
                         let next_category = native_host_source_tab_for_category(tab.category).category;
                         if category.get() == next_category {
@@ -689,13 +691,14 @@ searchentry {
                         group_filter.set(0);
                         kind_filter.set(ClipKindFilter::All);
                         selected.set(0);
-                        reload_clip_items_for_group_with_selection(
+                        reload_clip_items_for_group_search_with_selection(
                             &category,
                             &group_filter,
                             &kind_filter,
                             &rows,
                             items.clone(),
                             &selected,
+                            search.text().as_str(),
                         );
                         sync_clip_list_selection(&list, &rows, selected.get());
                         eprintln!("ZSClip GTK source tab category={} selected", next_category);
@@ -716,6 +719,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             for row in &clip_rows {
                 install_row_context_menu(
@@ -736,6 +740,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             let group_popup_menus = GroupPopupMenus {
                 row_menu: row_menu.clone(),
@@ -746,6 +751,7 @@ searchentry {
                 selected_item_id: selected_item_id.clone(),
                 clip_rows: clip_rows.clone(),
                 clip_items: clip_items.clone(),
+                search_entry: search_entry.clone(),
             };
             for button in &source_tab_buttons {
                 install_source_tab_group_context_menu(
@@ -825,9 +831,12 @@ searchentry {
             search_entry.connect_search_changed(move |entry| {
                 let action = NativeHostSearchTextAction::new(entry.text().to_string());
                 let _ = crate::linux_app::dispatch_linux_native_search_text_action(action);
-                update_clip_list_visibility(
+                reload_clip_items_for_group_search_with_selection(
+                    &current_source_category,
+                    &current_group_filter,
+                    &current_kind_filter,
                     &search_rows,
-                    &search_items.borrow(),
+                    search_items.clone(),
                     &search_selected_item_id,
                     entry.text().as_str(),
                 );
@@ -850,6 +859,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             install_vv_key_controller(
                 &window,
@@ -894,6 +904,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) {
         let last_sequence = Rc::new(Cell::new(
             <crate::linux_app::LinuxClipboardHost as crate::app_core::ClipboardHost>::sequence_number(
@@ -921,13 +932,14 @@ searchentry {
                 sequence, result.inserted, result.item_id, result.reason
             );
             if result.inserted {
-                reload_clip_items_for_group_with_selection(
+                reload_clip_items_for_group_search_with_selection(
                     &current_source_category,
                     &current_group_filter,
                     &current_kind_filter,
                     &clip_rows,
                     clip_items.clone(),
                     &selected_item_id,
+                    search_entry.text().as_str(),
                 );
                 status.set_text("Clipboard captured");
             }
@@ -1518,6 +1530,7 @@ searchentry {
                     &current_kind_filter,
                     &clip_rows,
                     clip_items.clone(),
+                    search_entry.text().as_str(),
                 );
                 return glib::Propagation::Stop;
             }
@@ -1540,6 +1553,7 @@ searchentry {
                     &current_kind_filter,
                     &clip_rows,
                     clip_items.clone(),
+                    search_entry.text().as_str(),
                 );
                 return glib::Propagation::Stop;
             }
@@ -1577,6 +1591,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) -> gio::Menu {
         let category = native_host_source_tab_for_category(current_source_category.get()).category;
         let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
@@ -1600,6 +1615,7 @@ searchentry {
             current_kind_filter,
             clip_rows,
             clip_items,
+            search_entry,
         )
     }
 
@@ -1612,6 +1628,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) -> gio::Menu {
         let category = native_host_source_tab_for_category(current_source_category.get()).category;
         let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
@@ -1631,6 +1648,7 @@ searchentry {
             current_kind_filter,
             clip_rows,
             clip_items,
+            search_entry,
         )
     }
 
@@ -1644,6 +1662,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) -> gio::Menu {
         for menu_id in popup_command_ids(&entries) {
             register_popup_command_action(
@@ -1656,6 +1675,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
         }
 
@@ -1671,6 +1691,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) {
         register_popup_command_action(
             app,
@@ -1682,6 +1703,7 @@ searchentry {
             current_kind_filter.clone(),
             clip_rows.clone(),
             clip_items.clone(),
+            search_entry.clone(),
         );
         for index in 0..menu_ids::DYNAMIC_GROUP_LIMIT {
             register_popup_command_action(
@@ -1694,6 +1716,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
         }
         for index in 0..menu_ids::DYNAMIC_GROUP_LIMIT {
@@ -1707,6 +1730,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             register_popup_command_action(
                 app,
@@ -1718,6 +1742,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
         }
     }
@@ -1732,6 +1757,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     ) {
         let action_name = popup_command_action_name(menu_id);
         if app.lookup_action(&action_name).is_some() {
@@ -1758,6 +1784,7 @@ searchentry {
                 current_kind_filter.clone(),
                 &clip_rows,
                 clip_items.clone(),
+                search_entry.text().as_str(),
             ) {
                 return;
             }
@@ -1771,6 +1798,7 @@ searchentry {
                     &current_kind_filter,
                     &clip_rows,
                     clip_items.clone(),
+                    search_entry.text().as_str(),
                 );
                 if !matches!(action, NativeHostRowAction::Edit) {
                     return;
@@ -1803,6 +1831,7 @@ searchentry {
         current_kind_filter: &Cell<ClipKindFilter>,
         clip_rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_text: &str,
     ) -> ProductAdapterCommandResult {
         let item_id = selected_item_id.get();
         let result = crate::linux_app::dispatch_linux_native_row_action_for_item(action, item_id);
@@ -1828,13 +1857,14 @@ searchentry {
                 NativeHostRowAction::Pin | NativeHostRowAction::Delete
             )
         {
-            reload_clip_items_for_group_with_selection(
+            reload_clip_items_for_group_search_with_selection(
                 current_source_category,
                 current_group_filter,
                 current_kind_filter,
                 clip_rows,
                 clip_items,
                 selected_item_id,
+                search_text,
             );
         }
         result
@@ -1848,6 +1878,7 @@ searchentry {
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
         clip_rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_text: &str,
     ) -> bool {
         let category = native_host_source_tab_for_category(current_source_category.get()).category;
         let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
@@ -1858,13 +1889,14 @@ searchentry {
                 "ZSClip GTK remove group item_id={} -> {}",
                 item_id, result.result_name
             );
-            reload_clip_items_for_group_with_selection(
+            reload_clip_items_for_group_search_with_selection(
                 &current_source_category,
                 &current_group_filter,
                 &current_kind_filter,
                 clip_rows,
                 clip_items,
                 &selected_item_id,
+                search_text,
             );
             return true;
         }
@@ -1880,13 +1912,14 @@ searchentry {
                 "ZSClip GTK assign group item_id={} group_id={} -> {}",
                 item_id, group.id, result.result_name
             );
-            reload_clip_items_for_group_with_selection(
+            reload_clip_items_for_group_search_with_selection(
                 &current_source_category,
                 &current_group_filter,
                 &current_kind_filter,
                 clip_rows,
                 clip_items,
                 &selected_item_id,
+                search_text,
             );
             return true;
         }
@@ -1897,13 +1930,14 @@ searchentry {
                 current_kind_filter.set(ClipKindFilter::All);
                 let result = crate::linux_app::dispatch_linux_native_group_filter(0);
                 eprintln!("ZSClip GTK group filter all -> {}", result.result_name);
-                reload_clip_items_for_group_with_selection(
+                reload_clip_items_for_group_search_with_selection(
                     &current_source_category,
                     &current_group_filter,
                     &current_kind_filter,
                     clip_rows,
                     clip_items,
                     &selected_item_id,
+                    search_text,
                 );
                 true
             }
@@ -1917,13 +1951,14 @@ searchentry {
                     "ZSClip GTK group filter group_id={} -> {}",
                     group.id, result.result_name
                 );
-                reload_clip_items_for_group_with_selection(
+                reload_clip_items_for_group_search_with_selection(
                     &current_source_category,
                     &current_group_filter,
                     &current_kind_filter,
                     clip_rows,
                     clip_items,
                     &selected_item_id,
+                    search_text,
                 );
                 true
             }
@@ -1931,13 +1966,14 @@ searchentry {
                 if let Some(filter) = clip_kind_filter_options_for_tab(category as usize).get(index)
                 {
                     current_kind_filter.set(*filter);
-                    reload_clip_items_for_group_with_selection(
+                    reload_clip_items_for_group_search_with_selection(
                         &current_source_category,
                         &current_group_filter,
                         &current_kind_filter,
                         clip_rows,
                         clip_items,
                         &selected_item_id,
+                        search_text,
                     );
                 }
                 true
@@ -1962,6 +1998,24 @@ searchentry {
         refresh_clip_rows(rows, &clip_items.borrow());
     }
 
+    fn reload_clip_items_for_group_search(
+        current_source_category: &Cell<i64>,
+        current_group_filter: &Cell<i64>,
+        current_kind_filter: &Cell<ClipKindFilter>,
+        rows: &[ListBoxRow],
+        clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_text: &str,
+    ) {
+        *clip_items.borrow_mut() =
+            crate::linux_app::linux_native_host_projected_clip_items_for_category_group_kind_filter_search(
+                native_host_source_tab_for_category(current_source_category.get()).category,
+                current_group_filter.get(),
+                current_kind_filter.get(),
+                search_text,
+            );
+        refresh_clip_rows(rows, &clip_items.borrow());
+    }
+
     fn reload_clip_items_for_group_with_selection(
         current_source_category: &Cell<i64>,
         current_group_filter: &Cell<i64>,
@@ -1976,6 +2030,26 @@ searchentry {
             current_kind_filter,
             rows,
             clip_items.clone(),
+        );
+        reconcile_selected_item_id(selected_item_id, &clip_items.borrow());
+    }
+
+    fn reload_clip_items_for_group_search_with_selection(
+        current_source_category: &Cell<i64>,
+        current_group_filter: &Cell<i64>,
+        current_kind_filter: &Cell<ClipKindFilter>,
+        rows: &[ListBoxRow],
+        clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        selected_item_id: &Cell<i64>,
+        search_text: &str,
+    ) {
+        reload_clip_items_for_group_search(
+            current_source_category,
+            current_group_filter,
+            current_kind_filter,
+            rows,
+            clip_items.clone(),
+            search_text,
         );
         reconcile_selected_item_id(selected_item_id, &clip_items.borrow());
     }
@@ -2042,6 +2116,7 @@ searchentry {
         selected_item_id: Rc<Cell<i64>>,
         clip_rows: Vec<ListBoxRow>,
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        search_entry: SearchEntry,
     }
 
     fn refresh_group_popup_menus(menus: &GroupPopupMenus) {
@@ -2077,13 +2152,14 @@ searchentry {
                 clip_kind_filter_options_for_tab(category as usize),
             ),
         );
-        reload_clip_items_for_group_with_selection(
+        reload_clip_items_for_group_search_with_selection(
             &menus.current_source_category,
             &menus.current_group_filter,
             &menus.current_kind_filter,
             &menus.clip_rows,
             menus.clip_items.clone(),
             &menus.selected_item_id,
+            menus.search_entry.text().as_str(),
         );
     }
 
