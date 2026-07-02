@@ -742,6 +742,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             let group_popup_menus = GroupPopupMenus {
                 row_menu: row_menu.clone(),
@@ -860,7 +861,6 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
-                search_entry.clone(),
             );
             install_vv_key_controller(
                 &window,
