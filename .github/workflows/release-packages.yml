@@ -113,7 +113,7 @@ jobs:
           SetupIconFile={#MySetupIcon}
 
           [Languages]
-          Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+          Name: "chinesesimplified"; MessagesFile: ".github\inno\ChineseSimplified.isl"
 
           [Messages]
           ButtonBack=< 上一步(&B)
