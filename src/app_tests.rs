@@ -1089,6 +1089,7 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_IMAGE_PREVIEW,
         IDC_SET_QUICK_DELETE,
         IDC_SET_GROUP_ENABLE,
+        IDC_SET_GROUP_TYPE_FILTER,
         IDC_SET_CLOUD_ENABLE,
         IDC_SET_LAN_ENABLE,
         6101,
