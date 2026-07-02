@@ -830,13 +830,16 @@ searchentry {
             let search_items = clip_items.clone();
             let search_selected_item_id = selected_item_id.clone();
             let search_clip_list = clip_list.clone();
+            let search_source_category = current_source_category.clone();
+            let search_group_filter = current_group_filter.clone();
+            let search_kind_filter = current_kind_filter.clone();
             search_entry.connect_search_changed(move |entry| {
                 let action = NativeHostSearchTextAction::new(entry.text().to_string());
                 let _ = crate::linux_app::dispatch_linux_native_search_text_action(action);
                 reload_clip_items_for_group_search_with_selection(
-                    &current_source_category,
-                    &current_group_filter,
-                    &current_kind_filter,
+                    &search_source_category,
+                    &search_group_filter,
+                    &search_kind_filter,
                     &search_rows,
                     search_items.clone(),
                     &search_selected_item_id,
