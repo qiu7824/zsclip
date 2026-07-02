@@ -644,6 +644,7 @@ searchentry {
             let current_kind_filter_for_activation = current_kind_filter.clone();
             let clip_rows_for_activation = clip_rows.clone();
             let clip_items_for_activation = clip_items.clone();
+            let search_entry_for_activation = search_entry.clone();
             clip_list.connect_row_activated(move |_, row| {
                 let item_id = row.widget_name().parse::<i64>().unwrap_or_default();
                 if item_id <= 0 {
@@ -659,6 +660,7 @@ searchentry {
                     &current_kind_filter_for_activation,
                     &clip_rows_for_activation,
                     clip_items_for_activation.clone(),
+                    search_entry_for_activation.text().as_str(),
                 );
             });
             sync_clip_list_selection(&clip_list, &clip_rows, selected_item_id.get());
@@ -719,7 +721,6 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
-                search_entry.clone(),
             );
             for row in &clip_rows {
                 install_row_context_menu(
@@ -876,6 +877,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             run_auto_smoke_if_requested(app, &status);
             window.set_child(Some(&root));
