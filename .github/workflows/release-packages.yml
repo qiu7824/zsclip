@@ -534,6 +534,7 @@ jobs:
           - macOS/Linux 当前仍是测试包，未完成正式验收前不要按 Windows 正式版标准承诺稳定性。
           NOTES
           ls -lah release-assets
+          gh release delete "$TAG_NAME" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           for stale in \
             zsclip-linux-x86_64 \
             zsclip-linux-x86_64.tar.gz \
@@ -603,6 +604,29 @@ jobs:
           do
             if ! grep -Fx "$required" release-verify.log >/dev/null; then
               echo "::error title=GitHub release verification failed::Missing release asset $required"
+              exit 1
+            fi
+          done
+          for required in \
+            zsclip-v0.9.9-setup.exe \
+            zsclip-v0.9.9-setup-no-lan.exe \
+            zsclip-windows-x86_64-portable.zip \
+            zsclip-macos-arm64.dmg \
+            zsclip-macos-x86_64.dmg \
+            zsclip-linux-x86_64.deb \
+            zsclip-linux-x86_64.tar.gz
+          do
+            url="https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${required}"
+            code="000"
+            for attempt in 1 2 3 4 5 6; do
+              code="$(curl -I -L -s -o /dev/null -w '%{http_code}' "$url")"
+              if [ "$code" = "200" ]; then
+                break
+              fi
+              sleep 10
+            done
+            if [ "$code" != "200" ]; then
+              echo "::error title=GitHub release public download failed::${required} returned HTTP ${code}"
               exit 1
             fi
           done
