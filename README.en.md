@@ -18,8 +18,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 ## Download
 
 - GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9>
-- Lanzou download: <https://tcnzy.lanzout.com/b01887awxg>
-- Password: `7dvb`
+
 
 ## What It Is
 
