@@ -533,6 +533,7 @@ jobs:
           - Windows 同时提供完整安装器、无局域网同步安装器和便携包。
           - macOS/Linux 当前仍是测试包，未完成正式验收前不要按 Windows 正式版标准承诺稳定性。
           NOTES
+          ls -lah release-assets
           for stale in \
             zsclip-linux-x86_64 \
             zsclip-linux-x86_64.tar.gz \
@@ -549,9 +550,9 @@ jobs:
             zsclip-v0.9.9-setup.exe \
             zsclip-v0.9.9-setup-no-lan.exe
           do
-            gh release delete-asset "$TAG_NAME" "$stale" -y >/dev/null 2>&1 || true
+            gh release delete-asset "$TAG_NAME" "$stale" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           done
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
               release-assets/zsclip-v0.9.9-setup.exe \
               release-assets/zsclip-v0.9.9-setup-no-lan.exe \
@@ -560,10 +561,11 @@ jobs:
               release-assets/zsclip-macos-x86_64.dmg \
               release-assets/zsclip-linux-x86_64.deb \
               release-assets/zsclip-linux-x86_64.tar.gz \
+              --repo "$GH_REPO" \
               --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
             if [ "$status" -eq 0 ]; then
-              gh release edit "$TAG_NAME" --target "$GITHUB_SHA" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
+              gh release edit "$TAG_NAME" --repo "$GH_REPO" --target "$GITHUB_SHA" --notes-file release-notes.md 2>&1 | tee -a release-upload.log
               status=${PIPESTATUS[0]}
             fi
           else
@@ -575,6 +577,7 @@ jobs:
               release-assets/zsclip-macos-x86_64.dmg \
               release-assets/zsclip-linux-x86_64.deb \
               release-assets/zsclip-linux-x86_64.tar.gz \
+              --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
               --notes-file release-notes.md 2>&1 | tee release-upload.log
@@ -588,3 +591,18 @@ jobs:
             echo "::error title=GitHub release upload failed::$message"
             exit "$status"
           fi
+          gh release view "$TAG_NAME" --repo "$GH_REPO" --json tagName,targetCommitish,assets --jq '.tagName + " " + (.targetCommitish // "") + "\n" + (.assets[].name)' | tee release-verify.log
+          for required in \
+            zsclip-v0.9.9-setup.exe \
+            zsclip-v0.9.9-setup-no-lan.exe \
+            zsclip-windows-x86_64-portable.zip \
+            zsclip-macos-arm64.dmg \
+            zsclip-macos-x86_64.dmg \
+            zsclip-linux-x86_64.deb \
+            zsclip-linux-x86_64.tar.gz
+          do
+            if ! grep -Fx "$required" release-verify.log >/dev/null; then
+              echo "::error title=GitHub release verification failed::Missing release asset $required"
+              exit 1
+            fi
+          done
