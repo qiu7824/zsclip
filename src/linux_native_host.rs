@@ -721,6 +721,7 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
+                search_entry.clone(),
             );
             for row in &clip_rows {
                 install_row_context_menu(
@@ -741,7 +742,6 @@ searchentry {
                 current_kind_filter.clone(),
                 clip_rows.clone(),
                 clip_items.clone(),
-                search_entry.clone(),
             );
             let group_popup_menus = GroupPopupMenus {
                 row_menu: row_menu.clone(),
