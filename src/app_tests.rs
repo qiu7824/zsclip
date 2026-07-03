@@ -2093,6 +2093,26 @@ fn windows_paste_target_host_owns_foreground_and_focus_restore() {
 }
 
 #[test]
+fn quick_window_explorer_rename_detection_checks_focus_and_caret_edit() {
+    let tray = include_str!("tray.rs").replace("\r\n", "\n");
+    let helper_start = tray
+        .find("unsafe fn explorer_rename_edit_from_focus_or_caret")
+        .unwrap();
+    let helper_end = tray[helper_start..]
+        .find("\nunsafe fn foreground_focus_snapshot")
+        .map(|offset| helper_start + offset)
+        .unwrap();
+    let helper = &tray[helper_start..helper_end];
+
+    assert!(tray.contains("explorer_rename_edit_from_focus_or_caret(fg, focus)"));
+    assert!(helper.contains("matches!(window_class_name(focus).as_str(), \"Edit\")"));
+    assert!(helper.contains("platform_window::gui_thread_info(thread_id, &mut info)"));
+    assert!(helper.contains("for candidate in [info.hwndFocus, info.hwndCaret]"));
+    assert!(helper.contains("platform_window::root_ancestor(candidate) != fg"));
+    assert!(helper.contains("matches!(window_class_name(candidate).as_str(), \"Edit\")"));
+}
+
+#[test]
 fn windows_file_dialog_host_owns_open_file_dialog_operations() {
     let file_dialog = include_str!("platform/file_dialog.rs");
     let app_shell = include_str!("shell.rs");
@@ -5219,6 +5239,21 @@ fn windows_main_window_appearance_uses_main_window_host() {
     assert!(main_window_host.contains("platform_appearance::set_rounded_corners(handle)"));
     assert!(main_window_host.contains("platform_appearance::apply_dark_mode_to_window(handle)"));
     assert!(main_window_host.contains("WM_SETICON"));
+}
+
+#[test]
+fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
+    let workflow = include_str!("../.github/workflows/release-packages.yml");
+
+    assert!(workflow.contains("iconutil -c icns"));
+    assert!(workflow.contains("AppIcon.icns"));
+    assert!(workflow.contains("<key>CFBundleIconFile</key>"));
+    assert!(workflow.contains("<string>AppIcon</string>"));
+    assert!(workflow.contains("codesign --force --deep --sign - dist/ZSClip.app"));
+    assert!(workflow.contains("codesign --verify --deep --strict dist/ZSClip.app"));
+    assert!(workflow.contains("xattr -dr com.apple.quarantine /Applications/ZSClip.app"));
+    assert!(workflow.contains("zsclip-windows-x86_64-no-lan-portable.zip"));
+    assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
 
 #[test]

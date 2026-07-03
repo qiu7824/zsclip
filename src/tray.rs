@@ -202,11 +202,34 @@ unsafe fn explorer_rename_target() -> Option<(HWND, HWND)> {
     ) {
         return None;
     }
-    if matches!(window_class_name(focus).as_str(), "Edit") {
-        Some((fg, focus))
-    } else {
-        None
+    explorer_rename_edit_from_focus_or_caret(fg, focus).map(|edit| (fg, edit))
+}
+
+unsafe fn explorer_rename_edit_from_focus_or_caret(fg: HWND, focus: HWND) -> Option<HWND> {
+    if !focus.is_null() && matches!(window_class_name(focus).as_str(), "Edit") {
+        return Some(focus);
     }
+
+    let thread_id = platform_window::window_thread_id(fg);
+    if thread_id == 0 {
+        return None;
+    }
+
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    if !platform_window::gui_thread_info(thread_id, &mut info) {
+        return None;
+    }
+
+    for candidate in [info.hwndFocus, info.hwndCaret] {
+        if candidate.is_null() || platform_window::root_ancestor(candidate) != fg {
+            continue;
+        }
+        if matches!(window_class_name(candidate).as_str(), "Edit") {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 unsafe fn foreground_focus_snapshot() -> Option<(HWND, HWND)> {
