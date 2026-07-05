@@ -20,8 +20,10 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
         let st_ptr = platform_window::user_data(app.settings_hwnd) as *mut SettingsWndState;
         if !st_ptr.is_null() {
             let next_dpi = settings_window_layout_dpi(app.settings_hwnd).max(96);
-            if (*st_ptr).ui_dpi.max(96) != next_dpi {
+            let old_dpi = (*st_ptr).ui_dpi.max(96);
+            if old_dpi != next_dpi {
                 (*st_ptr).ui_dpi = next_dpi;
+                resize_settings_window_for_dpi_transition(app.settings_hwnd, old_dpi, next_dpi);
                 refresh_settings_window_metrics(app.settings_hwnd, &mut *st_ptr);
             }
         }

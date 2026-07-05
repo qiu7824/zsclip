@@ -100,14 +100,78 @@ pub(super) fn unregister_clipboard_listener_for(hwnd: HWND, state: &mut AppState
 }
 
 pub(super) unsafe fn handle_global_hotkey(hwnd: HWND, id: i32) {
-    let plain_text = match id {
-        HOTKEY_ID => false,
-        HOTKEY_ID_PLAIN => true,
-        _ => return,
-    };
-    let ptr = get_state_ptr(hwnd);
-    if !ptr.is_null() {
-        (*ptr).plain_text_paste_mode = plain_text;
+    match id {
+        HOTKEY_ID => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                (*ptr).plain_text_paste_mode = false;
+            }
+            toggle_window_visibility_hotkey(hwnd);
+        }
+        HOTKEY_ID_PLAIN => {
+            let ptr = get_state_ptr(hwnd);
+            if ptr.is_null() {
+                return;
+            }
+            let state = &mut *ptr;
+            prepare_plain_paste_hotkey_target(hwnd, state);
+            state.plain_text_paste_mode = true;
+            paste_selected(hwnd, state);
+            if state.plain_text_paste_mode {
+                state.paste_target_override = null_mut();
+                clear_hotkey_passthrough_state(state);
+            }
+            state.plain_text_paste_mode = false;
+        }
+        _ => {}
     }
-    toggle_window_visibility_hotkey(hwnd);
+}
+
+unsafe fn prepare_plain_paste_hotkey_target(hwnd: HWND, state: &mut AppState) {
+    state.paste_target_override = null_mut();
+    clear_hotkey_passthrough_state(state);
+
+    let Some((target, focus)) = foreground_focus_snapshot_for_plain_paste(hwnd, state) else {
+        return;
+    };
+    state.paste_target_override = target;
+    state.hotkey_passthrough_active = true;
+    state.hotkey_passthrough_target = target;
+    state.hotkey_passthrough_focus = focus;
+}
+
+unsafe fn foreground_focus_snapshot_for_plain_paste(
+    hwnd: HWND,
+    state: &AppState,
+) -> Option<(HWND, HWND)> {
+    let foreground = WindowsWindowIdentityHost::new().foreground_handle();
+    if foreground.is_null() {
+        return None;
+    }
+    let target = platform_window::root_ancestor(foreground);
+    if !is_viable_paste_window(target, hwnd, paste_target_skip_classes(&state.settings)) {
+        return None;
+    }
+
+    let thread_id = platform_window::window_thread_id(target);
+    if thread_id == 0 {
+        return Some((target, null_mut()));
+    }
+
+    let mut info: GUITHREADINFO = zeroed();
+    info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+    if !platform_window::gui_thread_info(thread_id, &mut info) {
+        return Some((target, null_mut()));
+    }
+
+    let focus = if !info.hwndFocus.is_null() {
+        info.hwndFocus
+    } else {
+        info.hwndCaret
+    };
+    if !focus.is_null() && platform_window::root_ancestor(focus) == target {
+        Some((target, focus))
+    } else {
+        Some((target, null_mut()))
+    }
 }

@@ -2351,6 +2351,10 @@ fn windows_settings_window_layout_dpi_uses_settings_host() {
     assert!(settings_state.contains("ui_dpi,"));
     assert!(settings_paint.contains("let paint_dpi = settings_window_layout_dpi(hwnd)"));
     assert!(open_block.contains("settings_window_layout_dpi(app.settings_hwnd).max(96)"));
+    assert!(open_block.contains("let old_dpi = (*st_ptr).ui_dpi.max(96)"));
+    assert!(open_block.contains(
+        "resize_settings_window_for_dpi_transition(app.settings_hwnd, old_dpi, next_dpi)"
+    ));
     for block in [
         refresh_block,
         system_block,
@@ -5351,7 +5355,22 @@ fn windows_main_platform_bindings_lives_outside_app_rs() {
     assert!(bindings.contains("hotkey::unregister("));
     assert!(bindings.contains("clipboard_listener::register("));
     assert!(bindings.contains("clipboard_listener::unregister("));
-    assert!(bindings.contains("toggle_window_visibility_hotkey(hwnd)"));
+    assert!(bindings.contains("HOTKEY_ID => {"));
+    assert!(bindings.contains("HOTKEY_ID_PLAIN => {"));
+    assert!(bindings.contains("prepare_plain_paste_hotkey_target(hwnd, state)"));
+    assert!(bindings.contains("paste_selected(hwnd, state)"));
+    assert!(bindings.contains("state.paste_target_override = null_mut()"));
+
+    let normal_start = bindings.find("HOTKEY_ID => {").unwrap();
+    let plain_start = bindings.find("HOTKEY_ID_PLAIN => {").unwrap();
+    let normal_block = &bindings[normal_start..plain_start];
+    let plain_end = bindings[plain_start..]
+        .find("\n        _ => {}")
+        .map(|offset| plain_start + offset)
+        .unwrap();
+    let plain_block = &bindings[plain_start..plain_end];
+    assert!(normal_block.contains("toggle_window_visibility_hotkey(hwnd)"));
+    assert!(!plain_block.contains("toggle_window_visibility_hotkey(hwnd)"));
 }
 
 #[test]
