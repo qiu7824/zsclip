@@ -23,7 +23,7 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     settings_scrollbar_show(hwnd, st);
 
     let viewport = settings_viewport_rect(&crc);
-    settings_repos_controls(hwnd, st, false);
+    settings_repos_controls(hwnd, st, true);
 
     let mask = settings_viewport_mask_rect(&crc);
     platform_gdi::invalidate_rect(hwnd, &mask, 0);
