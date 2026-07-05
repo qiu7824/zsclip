@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "0.9.9.2"
+        default: "0.9.9.3"
   push:
     branches:
       - main
@@ -53,7 +53,7 @@ jobs:
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\剪贴板.exe
           Copy-Item target\release\zsclip.exe dist\installer-source\剪贴板.exe
           @'
-          剪贴板 0.9.9.2 - Windows
+          剪贴板 0.9.9.3 - Windows
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -68,7 +68,7 @@ jobs:
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           $installerScript = @'
           #define MyAppName "剪贴板"
-          #define MyAppVersion "0.9.9.2"
+          #define MyAppVersion "0.9.9.3"
           #define MyAppPublisher "qiu7824"
           #define MyAppURL "https://github.com/qiu7824/zsclip"
           #define MyAppExeName "剪贴板.exe"
@@ -166,7 +166,7 @@ jobs:
 
           [Tasks]
           Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
-          Name: "autostart"; Description: "启用开机自启"; GroupDescription: "启动选项:"; Flags: checkedonce
+          Name: "autostart"; Description: "启用开机自启"; GroupDescription: "启动选项:"; Flags: unchecked
 
           [Files]
           Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\Output\*,\.git\*,\.github\*,\target\*,\__pycache__\*,\build\*,\dist\*,\installer\*,\venv\*,\.venv\*,\node_modules\*,\*.iss,*.pyc,*.pyo"
@@ -186,6 +186,10 @@ jobs:
 
           [Registry]
           Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppAutoStartValueName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#MyAppAutoStartValueName}"; Flags: deletevalue; Check: ShouldDisableAutostart
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#MyAppName}"; Flags: deletevalue; Check: ShouldDisableAutostart
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Clipboard"; Flags: deletevalue; Check: ShouldDisableAutostart
+          Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "筑森剪贴"; Flags: deletevalue; Check: ShouldDisableAutostart
 
           [Run]
           Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
@@ -195,6 +199,9 @@ jobs:
           Type: filesandordirs; Name: "{app}\temp"
 
           [Code]
+          var
+            AutoStartTaskInitialized: Boolean;
+
           function GetDefaultInstallDir(Param: string): string;
           begin
             if DirExists('D:\') then
@@ -205,6 +212,56 @@ jobs:
               Result := 'F:\{#MyAppInstallDirName}'
             else
               Result := ExpandConstant('{autopf}\{#MyAppInstallDirName}');
+          end;
+
+          function RunValuePresent(ValueName: string): Boolean;
+          var
+            Value: string;
+          begin
+            Result := RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', ValueName, Value)
+              and (Trim(Value) <> '');
+          end;
+
+          function ExistingAutostartEnabled(): Boolean;
+          begin
+            Result :=
+              RunValuePresent('{#MyAppAutoStartValueName}') or
+              RunValuePresent('{#MyAppName}') or
+              RunValuePresent('Clipboard') or
+              RunValuePresent('筑森剪贴');
+          end;
+
+          function ShouldDisableAutostart(): Boolean;
+          begin
+            Result := not WizardIsTaskSelected('autostart');
+          end;
+
+          function FindTaskByCaption(Caption: string): Integer;
+          var
+            I: Integer;
+          begin
+            Result := -1;
+            for I := 0 to WizardForm.TasksList.Items.Count - 1 do
+            begin
+              if WizardForm.TasksList.ItemCaption[I] = Caption then
+              begin
+                Result := I;
+                Exit;
+              end;
+            end;
+          end;
+
+          procedure CurPageChanged(CurPageID: Integer);
+          var
+            TaskIndex: Integer;
+          begin
+            if (CurPageID = wpSelectTasks) and (not AutoStartTaskInitialized) then
+            begin
+              TaskIndex := FindTaskByCaption('启用开机自启');
+              if TaskIndex >= 0 then
+                WizardForm.TasksList.Checked[TaskIndex] := ExistingAutostartEnabled();
+              AutoStartTaskInitialized := True;
+            end;
           end;
           '@
           [System.IO.File]::WriteAllText((Resolve-Path .).Path + '\installer.iss', $installerScript, [System.Text.UTF8Encoding]::new($true))
@@ -236,7 +293,7 @@ jobs:
           Copy-Item dist\installer-source\INSTALL.txt dist\installer-source-no-lan\INSTALL.txt -Force
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64-no-lan\剪贴板.exe -Force
           @'
-          剪贴板 0.9.9.2 - Windows 无局域网同步便携版
+          剪贴板 0.9.9.3 - Windows 无局域网同步便携版
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -265,14 +322,14 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.2-setup.exe
-          path: dist/zsclip-v0.9.9.2-setup.exe
+          name: zsclip-v0.9.9.3-setup.exe
+          path: dist/zsclip-v0.9.9.3-setup.exe
           if-no-files-found: error
       - name: Upload Windows no-lan installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.2-setup-no-lan.exe
-          path: dist/zsclip-v0.9.9.2-setup-no-lan.exe
+          name: zsclip-v0.9.9.3-setup-no-lan.exe
+          path: dist/zsclip-v0.9.9.3-setup-no-lan.exe
           if-no-files-found: error
       - name: Upload Windows portable package
         uses: actions/upload-artifact@v7
@@ -285,6 +342,31 @@ jobs:
         with:
           name: zsclip-windows-x86_64-no-lan-portable.zip
           path: dist/zsclip-windows-x86_64-no-lan-portable.zip
+          if-no-files-found: error
+      - name: Package resource bundle
+        shell: pwsh
+        run: |
+          $resourceRoot = "dist\zsclip-v0.9.9.3-resources"
+          if (Test-Path $resourceRoot) {
+            Remove-Item -LiteralPath $resourceRoot -Recurse -Force
+          }
+          New-Item -ItemType Directory -Force $resourceRoot | Out-Null
+          foreach ($dir in @("assets", "docs", "locales", "integrations")) {
+            if (Test-Path $dir) {
+              Copy-Item -Path $dir -Destination $resourceRoot -Recurse -Force
+            }
+          }
+          foreach ($file in @("README.md", "README.en.md", "LICENSE", "Cargo.toml", "Cargo.lock")) {
+            if (Test-Path $file) {
+              Copy-Item -Path $file -Destination $resourceRoot -Force
+            }
+          }
+          Compress-Archive -Path "$resourceRoot\*" -DestinationPath "dist\zsclip-v0.9.9.3-resources.zip" -Force
+      - name: Upload resource bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: zsclip-v0.9.9.3-resources.zip
+          path: dist/zsclip-v0.9.9.3-resources.zip
           if-no-files-found: error
 
   macos:
@@ -368,9 +450,9 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
-            <string>0.9.9.2</string>
+            <string>0.9.9.3</string>
             <key>CFBundleVersion</key>
-            <string>0.9.9.2</string>
+            <string>0.9.9.3</string>
             <key>NSHighResolutionCapable</key>
             <true/>
           </dict>
@@ -382,7 +464,7 @@ jobs:
           cp -R dist/ZSClip.app dist/dmg-root/ZSClip.app
           ln -s /Applications dist/dmg-root/Applications
           cat > dist/dmg-root/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.2 - macOS ${{ matrix.display_arch }}
+          ZSClip 0.9.9.3 - macOS ${{ matrix.display_arch }}
 
           安装/运行:
           1. 打开 DMG。
@@ -395,7 +477,7 @@ jobs:
             xattr -dr com.apple.quarantine /Applications/ZSClip.app
           - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
           TXT
-          hdiutil create -volname "ZSClip 0.9.9.2 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
+          hdiutil create -volname "ZSClip 0.9.9.3 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
@@ -465,7 +547,7 @@ jobs:
           Categories=Utility;
           DESKTOP
           cat > dist/zsclip-linux-x86_64/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.2 - Linux x86_64
+          ZSClip 0.9.9.3 - Linux x86_64
 
           安装/运行:
           1. 解压: tar -xzf zsclip-linux-x86_64.tar.gz
@@ -488,7 +570,7 @@ jobs:
           cp dist/zsclip-linux-x86_64/share/applications/zsclip.desktop dist/deb/usr/share/applications/zsclip.desktop
           cat > dist/deb/DEBIAN/control <<'CONTROL'
           Package: zsclip
-          Version: 0.9.9.2
+          Version: 0.9.9.3
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -534,9 +616,9 @@ jobs:
         run: |
           set +e
           cat > release-notes.md <<'NOTES'
-          # ZSClip 0.9.9.2
+          # ZSClip 0.9.9.3
 
-          ## 从 0.9.0 到 0.9.9.2 的主要更新
+          ## 从 0.9.0 到 0.9.9.3 的主要更新
 
           ### 多端同步与移动端
           - 完善局域网同步链路，补齐设备发现、配对审批、信任设备保存、后台同步和能力协商。
@@ -557,10 +639,11 @@ jobs:
           - Windows 提供安装器、无局域网同步安装器和便携包。
           - macOS/Linux 原生 host 继续作为测试包上传，便于目标机验证原生 UI、剪贴板捕获和生命周期。
           - GitHub Actions 当前向 Release 上传 Windows 完整安装包、Windows 无局域网同步安装包、Windows 便携包、Windows 无局域网同步便携包，以及 macOS/Linux 测试包。
+          - 附带上传 `zsclip-v0.9.9.3-resources.zip`，用于检查图标、文档、语言和集成资源。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v0.9.9.2-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9.2-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v0.9.9.3-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9.3-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
           - macOS 测试包: Apple Silicon 下载 `zsclip-macos-arm64.dmg`，Intel 下载 `zsclip-macos-x86_64.dmg`。
           - Linux 测试包: Debian/Ubuntu 可试用 `zsclip-linux-x86_64.deb`，其他发行版可下载 `zsclip-linux-x86_64.tar.gz`。
 
@@ -584,17 +667,19 @@ jobs:
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
             zsclip-windows-x86_64-setup.exe \
-            zsclip-v0.9.9.2-setup.exe \
-            zsclip-v0.9.9.2-setup-no-lan.exe
+            zsclip-v0.9.9.3-setup.exe \
+            zsclip-v0.9.9.3-setup-no-lan.exe \
+            zsclip-v0.9.9.3-resources.zip
           do
             gh release delete-asset "$TAG_NAME" "$stale" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           done
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.2-setup.exe \
-              release-assets/zsclip-v0.9.9.2-setup-no-lan.exe \
+              release-assets/zsclip-v0.9.9.3-setup.exe \
+              release-assets/zsclip-v0.9.9.3-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
+              release-assets/zsclip-v0.9.9.3-resources.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
               release-assets/zsclip-linux-x86_64.deb \
@@ -608,10 +693,11 @@ jobs:
             fi
           else
             gh release create "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.2-setup.exe \
-              release-assets/zsclip-v0.9.9.2-setup-no-lan.exe \
+              release-assets/zsclip-v0.9.9.3-setup.exe \
+              release-assets/zsclip-v0.9.9.3-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
+              release-assets/zsclip-v0.9.9.3-resources.zip \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
               release-assets/zsclip-linux-x86_64.deb \
@@ -632,10 +718,11 @@ jobs:
           fi
           gh release view "$TAG_NAME" --repo "$GH_REPO" --json tagName,targetCommitish,assets --jq '.tagName + " " + (.targetCommitish // "") + "\n" + (.assets[].name)' | tee release-verify.log
           for required in \
-            zsclip-v0.9.9.2-setup.exe \
-            zsclip-v0.9.9.2-setup-no-lan.exe \
+            zsclip-v0.9.9.3-setup.exe \
+            zsclip-v0.9.9.3-setup-no-lan.exe \
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
+            zsclip-v0.9.9.3-resources.zip \
             zsclip-macos-arm64.dmg \
             zsclip-macos-x86_64.dmg \
             zsclip-linux-x86_64.deb \
@@ -647,10 +734,11 @@ jobs:
             fi
           done
           for required in \
-            zsclip-v0.9.9.2-setup.exe \
-            zsclip-v0.9.9.2-setup-no-lan.exe \
+            zsclip-v0.9.9.3-setup.exe \
+            zsclip-v0.9.9.3-setup-no-lan.exe \
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
+            zsclip-v0.9.9.3-resources.zip \
             zsclip-macos-arm64.dmg \
             zsclip-macos-x86_64.dmg \
             zsclip-linux-x86_64.deb \

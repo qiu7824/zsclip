@@ -35,6 +35,11 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
     st.ui_dpi = dpi;
     set_settings_ui_dpi(dpi);
     close_settings_dropdown_popup(st);
+    let Some(crc) = settings_window_client_bounds(hwnd).map(RECT::from) else {
+        return;
+    };
+    platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    set_settings_viewport_child_visible(st.viewport_hwnd, false);
     if !st.nav_font.is_null() {
         platform_gdi::delete_object(st.nav_font as _);
     }
@@ -50,9 +55,7 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
     st.ui_font = ui_font;
     st.title_font = title_font;
 
-    let Some(crc) = settings_window_client_bounds(hwnd).map(RECT::from) else {
-        return;
-    };
+    sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd);
     let content_y = settings_content_y_scaled();
     let view_h = (crc.bottom - crc.top - content_y).max(0);
     for page in 0..SETTINGS_PAGE_LABELS.len() {
@@ -111,7 +114,7 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
         settings_ensure_page(hwnd, st, current_page);
         settings_sync_page_state(st, current_page);
     }
-    st.content_scroll_y = if crate::settings_model::settings_page_scrollable(current_page) {
+    st.content_scroll_y = if settings_page_control_scrollable(st, current_page) {
         st.page_scroll_y[current_page]
     } else {
         0
@@ -123,8 +126,10 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
             }
         }
     }
-    if crate::settings_model::settings_page_scrollable(current_page) {
+    if settings_page_control_scrollable(st, current_page) {
         settings_repos_controls(hwnd, st, true);
     }
+    set_settings_viewport_child_visible(st.viewport_hwnd, true);
+    platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
     repaint_settings_window(hwnd, true);
 }

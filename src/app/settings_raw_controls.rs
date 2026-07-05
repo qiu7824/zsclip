@@ -10,9 +10,18 @@ impl SettingsPageBuilder {
         w: i32,
         h: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_label(self.hwnd, text, x, y, w, h, self.font),
+            settings_create_label(
+                placement.parent,
+                text,
+                placement.x,
+                placement.y,
+                w,
+                h,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -29,7 +38,16 @@ impl SettingsPageBuilder {
         w: i32,
         min_h: i32,
     ) -> (HWND, i32) {
-        let (hwnd, h) = settings_create_label_auto(self.hwnd, text, x, y, w, min_h, self.font);
+        let placement = self.control_placement(st, x, y);
+        let (hwnd, h) = settings_create_label_auto(
+            placement.parent,
+            text,
+            placement.x,
+            placement.y,
+            w,
+            min_h,
+            self.font,
+        );
         (self.add(st, hwnd, x, y, w, h), h)
     }
 
@@ -42,9 +60,18 @@ impl SettingsPageBuilder {
         y: i32,
         w: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font),
+            settings_create_small_btn(
+                placement.parent,
+                text,
+                id,
+                placement.x,
+                placement.y,
+                w,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -62,9 +89,18 @@ impl SettingsPageBuilder {
         w: i32,
         h: i32,
     ) -> HWND {
-        let hwnd = settings_create_small_btn(self.hwnd, text, id, x, y, w, self.font);
+        let placement = self.control_placement(st, x, y);
+        let hwnd = settings_create_small_btn(
+            placement.parent,
+            text,
+            id,
+            placement.x,
+            placement.y,
+            w,
+            self.font,
+        );
         if !hwnd.is_null() {
-            platform_window::move_window(hwnd, x, y, w, h, false);
+            platform_window::move_window(hwnd, placement.x, placement.y, w, h, false);
         }
         self.add(st, hwnd, x, y, w, h)
     }
@@ -78,9 +114,18 @@ impl SettingsPageBuilder {
         y: i32,
         w: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_dropdown_btn(self.hwnd, text, id, x, y, w, self.font),
+            settings_create_dropdown_btn(
+                placement.parent,
+                text,
+                id,
+                placement.x,
+                placement.y,
+                w,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -97,9 +142,18 @@ impl SettingsPageBuilder {
         y: i32,
         w: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_edit(self.hwnd, text, id, x, y, w, self.font),
+            settings_create_edit(
+                placement.parent,
+                text,
+                id,
+                placement.x,
+                placement.y,
+                w,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -116,9 +170,18 @@ impl SettingsPageBuilder {
         y: i32,
         w: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_password_edit(self.hwnd, text, id, x, y, w, self.font),
+            settings_create_password_edit(
+                placement.parent,
+                text,
+                id,
+                placement.x,
+                placement.y,
+                w,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -135,9 +198,18 @@ impl SettingsPageBuilder {
         w: i32,
         h: i32,
     ) -> HWND {
+        let placement = self.control_placement(st, x, y);
         self.add(
             st,
-            settings_create_listbox(self.hwnd, id, x, y, w, h, self.font),
+            settings_create_listbox(
+                placement.parent,
+                id,
+                placement.x,
+                placement.y,
+                w,
+                h,
+                self.font,
+            ),
             x,
             y,
             w,
@@ -154,22 +226,30 @@ impl SettingsPageBuilder {
         y: i32,
         w: i32,
     ) -> (HWND, HWND) {
-        let (label, btn, layout) =
-            settings_create_toggle_plain(self.hwnd, text, id, x, y, w, self.font);
+        let placement = self.control_placement(st, x, y);
+        let (label, btn, layout) = settings_create_toggle_plain(
+            placement.parent,
+            text,
+            id,
+            placement.x,
+            placement.y,
+            w,
+            self.font,
+        );
         (
             self.add(
                 st,
                 label,
-                layout.label_rect.left,
-                layout.label_rect.top,
+                layout.label_rect.left + placement.origin_dx,
+                layout.label_rect.top + placement.origin_dy,
                 layout.label_rect.right - layout.label_rect.left,
                 layout.label_rect.bottom - layout.label_rect.top,
             ),
             self.add(
                 st,
                 btn,
-                layout.toggle_rect.left,
-                layout.toggle_rect.top,
+                layout.toggle_rect.left + placement.origin_dx,
+                layout.toggle_rect.top + placement.origin_dy,
                 layout.toggle_rect.right - layout.toggle_rect.left,
                 layout.toggle_rect.bottom - layout.toggle_rect.top,
             ),

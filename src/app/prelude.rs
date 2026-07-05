@@ -280,6 +280,7 @@ pub(in crate::app) use crate::settings_model::{
     SettingsFlowLayout, SettingsPointerDownTarget, SettingsQrCache, SettingsScrollLayout,
     SettingsSection, SettingsUpdatePresentationInput, MULTI_SYNC_MODE_OPTIONS, SETTINGS_PAGE_COUNT,
 };
+pub(in crate::app) use crate::settings_ui_host::create_settings_viewport_child;
 pub(in crate::app) use crate::settings_ui_host::{
     WindowsSettingsDropdownHost, WindowsSettingsWindowHost,
 };
@@ -336,19 +337,20 @@ pub(in crate::app) use crate::win_system_ui::{
     create_settings_button as settings_create_btn, create_settings_fonts, draw_settings_chrome,
     draw_settings_content, draw_settings_nav_item, draw_settings_scrollbar,
     draw_settings_viewport_mask, get_x_lparam, get_y_lparam,
-    set_settings_font as settings_set_font, settings_action_for_control, settings_child_visible,
-    settings_command_for_control, settings_dropdown_index_for_max_items,
-    settings_dropdown_index_for_pos_mode, settings_dropdown_label_for_max_items,
-    settings_dropdown_label_for_pos_mode, settings_dropdown_max_items_from_label,
-    settings_dropdown_max_items_from_label_opt, settings_dropdown_max_items_labels,
-    settings_dropdown_popup_bounds, settings_dropdown_pos_mode_from_label,
-    settings_host_control_at_point, settings_host_exists, settings_host_request_repaint,
-    settings_host_screen_bounds, settings_host_set_bounds, settings_host_set_visible,
-    settings_host_text, settings_page_to_sync_after_toggle, settings_timer_task_for_id,
-    settings_viewport_rect, settings_window_bounds, settings_window_client_bounds,
-    settings_window_client_to_screen, settings_window_host_event_from_message,
-    settings_window_layout_dpi, settings_window_request_area_repaint,
-    settings_window_track_pointer_leave, SettingsCtrlReg, SettingsPage, SettingsTimerTask,
+    set_settings_font as settings_set_font, set_settings_viewport_child_visible,
+    settings_action_for_control, settings_child_visible, settings_command_for_control,
+    settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode,
+    settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode,
+    settings_dropdown_max_items_from_label, settings_dropdown_max_items_from_label_opt,
+    settings_dropdown_max_items_labels, settings_dropdown_popup_bounds,
+    settings_dropdown_pos_mode_from_label, settings_host_control_at_point, settings_host_exists,
+    settings_host_request_repaint, settings_host_screen_bounds, settings_host_set_bounds,
+    settings_host_set_visible, settings_host_text, settings_page_to_sync_after_toggle,
+    settings_timer_task_for_id, settings_viewport_child_control_bounds, settings_viewport_rect,
+    settings_window_bounds, settings_window_client_bounds, settings_window_client_to_screen,
+    settings_window_host_event_from_message, settings_window_layout_dpi,
+    settings_window_request_area_repaint, settings_window_track_pointer_leave,
+    sync_settings_viewport_child_bounds, SettingsCtrlReg, SettingsPage, SettingsTimerTask,
     SettingsUiRegistry,
 };
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use crate::app_version::APP_VERSION;
 use crate::i18n::tr;
 use crate::time_utils::utc_secs_to_local_parts;
 use serde::{Deserialize, Serialize};
@@ -183,7 +184,7 @@ fn sync_snapshot(
     let local_hash = local_state_hash(paths)?;
     let remote_manifest = download_remote_manifest(config, remote)?;
     if let Some(manifest) = remote_manifest {
-        let version_cmp = compare_versions(&manifest.version, env!("CARGO_PKG_VERSION"));
+        let version_cmp = compare_versions(&manifest.version, APP_VERSION);
         if !manifest.snapshot_hash.is_empty()
             && manifest.snapshot_hash == local_hash
             && !version_cmp.is_gt()
@@ -243,7 +244,7 @@ fn sync_snapshot(
     upload_file(config, &archive_path, &remote.backup_url)?;
     upload_file(config, &paths.settings_file, &remote.settings_url)?;
     let manifest = CloudSyncManifest {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: APP_VERSION.to_string(),
         updated_at: stamp,
         snapshot_hash: local_hash,
         backup_name: BACKUP_FILE_NAME.to_string(),
@@ -315,7 +316,7 @@ fn restore_remote_backup(
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
     if let Some(manifest) = download_remote_manifest(config, remote)? {
-        if compare_versions(&manifest.version, env!("CARGO_PKG_VERSION")).is_gt() {
+        if compare_versions(&manifest.version, APP_VERSION).is_gt() {
             return Err(format!(
                 "{}{}{}",
                 tr("云端备份版本较新（", "Cloud backup version is newer ("),

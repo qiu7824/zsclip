@@ -1,6 +1,7 @@
 use windows_sys::Win32::{
     Foundation::{HINSTANCE, HWND, POINT, RECT},
     Graphics::Gdi::{ClientToScreen, ScreenToClient},
+    Graphics::Gdi::{SetWindowRgn, HRGN},
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
         BeginDeferWindowPos, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
@@ -469,6 +470,13 @@ pub(crate) fn set_pos(
         return false;
     }
     unsafe { SetWindowPos(hwnd, insert_after, x, y, width, height, flags) != 0 }
+}
+
+pub(crate) fn set_window_region(hwnd: HWND, region: HRGN, redraw: bool) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    unsafe { SetWindowRgn(hwnd, region, if redraw { 1 } else { 0 }) != 0 }
 }
 
 pub(crate) fn screen_to_client(hwnd: HWND, pt: &mut POINT) -> bool {

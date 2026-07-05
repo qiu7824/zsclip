@@ -23,7 +23,9 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
             let old_dpi = (*st_ptr).ui_dpi.max(96);
             if old_dpi != next_dpi {
                 (*st_ptr).ui_dpi = next_dpi;
+                (*st_ptr).suppress_size_refresh = true;
                 resize_settings_window_for_dpi_transition(app.settings_hwnd, old_dpi, next_dpi);
+                (*st_ptr).suppress_size_refresh = false;
                 refresh_settings_window_metrics(app.settings_hwnd, &mut *st_ptr);
             }
         }

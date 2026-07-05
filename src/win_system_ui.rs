@@ -27,14 +27,15 @@ pub use crate::settings_ui_host::{
     settings_viewport_mask_rect, settings_viewport_rect, SettingsCtrlReg, SettingsUiRegistry,
 };
 pub(crate) use crate::settings_ui_host::{
-    settings_action_for_control, settings_command_for_control, settings_dropdown_popup_bounds,
-    settings_host_control_at_point, settings_host_exists, settings_host_request_repaint,
-    settings_host_screen_bounds, settings_host_set_bounds, settings_host_set_enabled,
-    settings_host_set_text, settings_host_set_visible, settings_host_set_visible_enabled,
-    settings_host_text, settings_page_to_sync_after_toggle, settings_window_bounds,
-    settings_window_client_bounds, settings_window_client_to_screen,
-    settings_window_host_event_from_message, settings_window_layout_dpi,
-    settings_window_request_area_repaint, settings_window_track_pointer_leave,
+    set_settings_viewport_child_visible, settings_action_for_control, settings_command_for_control,
+    settings_dropdown_popup_bounds, settings_host_control_at_point, settings_host_exists,
+    settings_host_request_repaint, settings_host_screen_bounds, settings_host_set_bounds,
+    settings_host_set_enabled, settings_host_set_text, settings_host_set_visible,
+    settings_host_set_visible_enabled, settings_host_text, settings_page_to_sync_after_toggle,
+    settings_viewport_child_control_bounds, settings_window_bounds, settings_window_client_bounds,
+    settings_window_client_to_screen, settings_window_host_event_from_message,
+    settings_window_layout_dpi, settings_window_request_area_repaint,
+    settings_window_track_pointer_leave, sync_settings_viewport_child_bounds,
 };
 use crate::win_ui_render::{
     DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,

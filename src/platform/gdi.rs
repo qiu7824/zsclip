@@ -2,12 +2,12 @@ use windows_sys::Win32::{
     Foundation::{HANDLE, HWND, POINT, RECT},
     Graphics::Gdi::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
-        CreateFontW, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect,
-        FrameRect, GetDC, GetDeviceCaps, GetStockObject, IntersectClipRect, InvalidateRect, PatBlt,
-        RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC, SelectObject, SetBkColor, SetBkMode,
-        SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ,
-        NULL_PEN, PAINTSTRUCT, SRCCOPY,
+        CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
+        FillRect, FrameRect, GetDC, GetDeviceCaps, GetStockObject, IntersectClipRect,
+        InvalidateRect, PatBlt, RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC,
+        SelectObject, SetBkColor, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor,
+        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HBITMAP,
+        HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
 };
@@ -30,6 +30,10 @@ pub(crate) fn release_dc(hwnd: HWND, dc: HDC) -> i32 {
 
 pub(crate) fn create_solid_brush(color: u32) -> HBRUSH {
     unsafe { CreateSolidBrush(color) }
+}
+
+pub(crate) fn create_rect_rgn(left: i32, top: i32, right: i32, bottom: i32) -> HRGN {
+    unsafe { CreateRectRgn(left, top, right, bottom) }
 }
 
 pub(crate) fn delete_object(obj: HGDIOBJ) -> bool {

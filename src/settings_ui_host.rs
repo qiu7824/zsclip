@@ -34,7 +34,7 @@ use crate::settings_model::{
     settings_viewport_mask_rect_for_window, settings_viewport_rect_for_window,
     SettingsControlState, SettingsDropdownInteractionState, SettingsDropdownPopupLayout,
     SettingsPage, SettingsScrollControlState, SettingsToggleRowLayout, SettingsUiModel,
-    SETTINGS_DROPDOWN_PAD, SETTINGS_PAGE_COUNT,
+    SETTINGS_DROPDOWN_PAD, SETTINGS_PAGE_COUNT, SETTINGS_VIEWPORT_MASK_H,
 };
 pub use crate::settings_model::{
     settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode,
@@ -55,21 +55,21 @@ use crate::win_system_params::{
     IDC_SET_DEDUPE_FILTER, IDC_SET_EDGEHIDE, IDC_SET_GROUP_ADD, IDC_SET_GROUP_DELETE,
     IDC_SET_GROUP_DOWN, IDC_SET_GROUP_ENABLE, IDC_SET_GROUP_LIST, IDC_SET_GROUP_RENAME,
     IDC_SET_GROUP_TYPE_FILTER, IDC_SET_GROUP_UP, IDC_SET_GROUP_VIEW_PHRASES,
-    IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD,
-    IDC_SET_HOTKEY_ENABLE, IDC_SET_HOTKEY_KEY, IDC_SET_HOTKEY_MOD, IDC_SET_HOVERPREVIEW,
-    IDC_SET_IMAGE_PREVIEW, IDC_SET_LAN_ACCEPT_PAIR, IDC_SET_LAN_COPY_PAIR, IDC_SET_LAN_COPY_SETUP,
-    IDC_SET_LAN_DOCS, IDC_SET_LAN_ENABLE, IDC_SET_LAN_PAIR, IDC_SET_LAN_RECEIVE_MODE,
-    IDC_SET_LAN_REFRESH, IDC_SET_LAN_REJECT_PAIR, IDC_SET_MAX, IDC_SET_MULTI_SYNC_MODE,
-    IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE,
-    IDC_SET_PASTE_MOVE_TOP, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND,
-    IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE,
-    IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_AI_CLEAN, IDC_SET_PLUGIN_MAILMERGE,
-    IDC_SET_PLUGIN_QR_QUICK, IDC_SET_PLUGIN_SEARCH, IDC_SET_PLUGIN_SUPER_MAIL_MERGE,
-    IDC_SET_PLUGIN_WPS_TASKPANE, IDC_SET_POSMODE, IDC_SET_QUICK_DELETE, IDC_SET_RESTART_EXPLORER,
-    IDC_SET_SAVE, IDC_SET_SEARCH_ENGINE, IDC_SET_SEARCH_ENGINE_RESET, IDC_SET_SILENTSTART,
-    IDC_SET_SKIP_WINDOW_CAPTURE, IDC_SET_SKIP_WINDOW_ENABLE, IDC_SET_TRANSLATE_PROVIDER,
-    IDC_SET_TRANSLATE_TARGET, IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE,
-    IDC_SET_VV_SOURCE, IDC_SET_WPS_TASKPANE_DOCS, SETTINGS_CLASS,
+    IDC_SET_GROUP_VIEW_RECORDS, IDC_SET_HK_RECORD, IDC_SET_HOTKEY_ENABLE, IDC_SET_HOTKEY_KEY,
+    IDC_SET_HOTKEY_MOD, IDC_SET_HOVERPREVIEW, IDC_SET_IMAGE_PREVIEW, IDC_SET_LAN_ACCEPT_PAIR,
+    IDC_SET_LAN_COPY_PAIR, IDC_SET_LAN_COPY_SETUP, IDC_SET_LAN_DOCS, IDC_SET_LAN_ENABLE,
+    IDC_SET_LAN_PAIR, IDC_SET_LAN_RECEIVE_MODE, IDC_SET_LAN_REFRESH, IDC_SET_LAN_REJECT_PAIR,
+    IDC_SET_MAX, IDC_SET_MULTI_SYNC_MODE, IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT,
+    IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE, IDC_SET_PASTE_MOVE_TOP, IDC_SET_PASTE_SOUND_ENABLE,
+    IDC_SET_PASTE_SOUND_KIND, IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH,
+    IDC_SET_PLAIN_HK_ENABLE, IDC_SET_PLAIN_HK_KEY, IDC_SET_PLAIN_HK_MOD, IDC_SET_PLUGIN_AI_CLEAN,
+    IDC_SET_PLUGIN_MAILMERGE, IDC_SET_PLUGIN_QR_QUICK, IDC_SET_PLUGIN_SEARCH,
+    IDC_SET_PLUGIN_SUPER_MAIL_MERGE, IDC_SET_PLUGIN_WPS_TASKPANE, IDC_SET_POSMODE,
+    IDC_SET_QUICK_DELETE, IDC_SET_RESTART_EXPLORER, IDC_SET_SAVE, IDC_SET_SEARCH_ENGINE,
+    IDC_SET_SEARCH_ENGINE_RESET, IDC_SET_SILENTSTART, IDC_SET_SKIP_WINDOW_CAPTURE,
+    IDC_SET_SKIP_WINDOW_ENABLE, IDC_SET_TRANSLATE_PROVIDER, IDC_SET_TRANSLATE_TARGET,
+    IDC_SET_TRAYICON, IDC_SET_VV_GROUP, IDC_SET_VV_MODE, IDC_SET_VV_SOURCE,
+    IDC_SET_WPS_TASKPANE_DOCS, SETTINGS_CLASS,
 };
 use crate::win_system_ui::create_font_px;
 use crate::win_ui_render::{
@@ -77,6 +77,7 @@ use crate::win_ui_render::{
 };
 
 pub const WM_SETTINGS_DROPDOWN_SELECTED: u32 = WM_APP + 91;
+const VIEWPORT_CHILD_WINDOW_CLASS: &str = "ZsClipSettingsViewportChildWindow";
 const DROPDOWN_CLASS: &str = "ZsClipDropdownPopup";
 const DT_CALCRECT_FLAG: u32 = 0x0400;
 const DT_EDITCONTROL_FLAG: u32 = 0x2000;
@@ -129,6 +130,128 @@ unsafe fn ensure_settings_window_class(window_proc: WNDPROC) {
     window_class.hbrBackground = null_mut();
     window_class.lpszClassName = class_name.as_ptr();
     platform_window::register_class_ex(&window_class);
+}
+
+unsafe extern "system" fn settings_viewport_child_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_COMMAND | WM_NOTIFY | WM_DRAWITEM | WM_CTLCOLORSTATIC | WM_CTLCOLOREDIT
+        | WM_CTLCOLORLISTBOX | WM_CTLCOLORBTN | WM_MOUSEWHEEL => {
+            let parent = platform_window::parent(hwnd);
+            if parent.is_null() {
+                0
+            } else {
+                platform_window::send_message(parent, msg, wparam, lparam)
+            }
+        }
+        WM_ERASEBKGND => 1,
+        _ => platform_window::default_window_proc(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn ensure_settings_viewport_child_class() {
+    let module = platform_window::module_handle();
+    let class_name = to_wide(VIEWPORT_CHILD_WINDOW_CLASS);
+    let mut window_class: WNDCLASSEXW = std::mem::zeroed();
+    window_class.cbSize = core::mem::size_of::<WNDCLASSEXW>() as u32;
+    window_class.lpfnWndProc = Some(settings_viewport_child_proc);
+    window_class.hInstance = module;
+    window_class.hCursor = platform_window::arrow_cursor();
+    window_class.hbrBackground = null_mut();
+    window_class.lpszClassName = class_name.as_ptr();
+    platform_window::register_class_ex(&window_class);
+}
+
+pub unsafe fn create_settings_viewport_child(parent: HWND) -> HWND {
+    if parent.is_null() {
+        return null_mut();
+    }
+    ensure_settings_viewport_child_class();
+    let Some(client) = platform_window::client_rect(parent) else {
+        return null_mut();
+    };
+    let viewport = settings_viewport_rect(&client);
+    let hwnd = platform_window::create_window_ex(
+        WS_EX_TRANSPARENT,
+        to_wide(VIEWPORT_CHILD_WINDOW_CLASS).as_ptr(),
+        to_wide("").as_ptr(),
+        WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+        viewport.left,
+        viewport.top,
+        viewport.right - viewport.left,
+        viewport.bottom - viewport.top,
+        parent,
+        null_mut(),
+        platform_window::module_handle(),
+        null(),
+    );
+    sync_settings_viewport_child_bounds(parent, hwnd);
+    hwnd
+}
+
+fn apply_settings_viewport_child_region(viewport_child: HWND, width: i32, height: i32) -> bool {
+    if viewport_child.is_null() {
+        return false;
+    }
+    let mask_h = settings_scale(SETTINGS_VIEWPORT_MASK_H).clamp(0, height.max(0));
+    let region = platform_gdi::create_rect_rgn(0, mask_h, width.max(0), height.max(mask_h));
+    if region.is_null() {
+        return false;
+    }
+    if platform_window::set_window_region(viewport_child, region, false) {
+        true
+    } else {
+        platform_gdi::delete_object(region as _);
+        false
+    }
+}
+
+pub(crate) fn sync_settings_viewport_child_bounds(parent: HWND, viewport_child: HWND) -> bool {
+    if parent.is_null() || viewport_child.is_null() {
+        return false;
+    }
+    let Some(client) = platform_window::client_rect(parent) else {
+        return false;
+    };
+    let viewport = settings_viewport_rect(&client);
+    let width = viewport.right - viewport.left;
+    let height = viewport.bottom - viewport.top;
+    let moved = platform_window::set_pos(
+        viewport_child,
+        null_mut(),
+        viewport.left,
+        viewport.top,
+        width,
+        height,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
+    );
+    let clipped = apply_settings_viewport_child_region(viewport_child, width, height);
+    moved && clipped
+}
+
+pub(crate) fn set_settings_viewport_child_visible(viewport_child: HWND, visible: bool) {
+    platform_window::set_visible(viewport_child, visible);
+}
+
+pub(crate) fn settings_viewport_child_control_bounds(
+    original: UiRect,
+    scroll_y: i32,
+    viewport: RECT,
+) -> UiRect {
+    UiRect::new(
+        original.left - viewport.left,
+        original.top - viewport.top - scroll_y,
+        original.right - viewport.left,
+        original.bottom - viewport.top - scroll_y,
+    )
+}
+
+pub(crate) fn settings_control_is_viewport_child(hwnd: HWND) -> bool {
+    !hwnd.is_null() && platform_window::class_name(hwnd) == VIEWPORT_CHILD_WINDOW_CLASS
 }
 
 pub unsafe fn present_settings_window(
@@ -778,7 +901,29 @@ impl NativeSettingsControlHost for WindowsSettingsControlHost {
             platform_window::CHILD_FROM_POINT_SKIP_DISABLED
                 | platform_window::CHILD_FROM_POINT_SKIP_INVISIBLE,
         );
-        (!handle.is_null() && handle != self.parent).then_some(handle)
+        if handle.is_null() || handle == self.parent {
+            return None;
+        }
+        if settings_control_is_viewport_child(handle) {
+            let mut child_point = POINT {
+                x: point.x,
+                y: point.y,
+            };
+            if platform_window::client_to_screen(self.parent, &mut child_point)
+                && platform_window::screen_to_client(handle, &mut child_point)
+            {
+                let nested = platform_window::child_from_point_ex(
+                    handle,
+                    child_point,
+                    platform_window::CHILD_FROM_POINT_SKIP_DISABLED
+                        | platform_window::CHILD_FROM_POINT_SKIP_INVISIBLE,
+                );
+                if !nested.is_null() && nested != handle {
+                    return Some(nested);
+                }
+            }
+        }
+        Some(handle)
     }
 
     fn control_screen_bounds(&self, handle: Self::Handle) -> Option<UiRect> {

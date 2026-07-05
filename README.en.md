@@ -17,7 +17,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 
 ## Download
 
-- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.1>
+- GitHub release: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.3>
 
 
 ## What It Is

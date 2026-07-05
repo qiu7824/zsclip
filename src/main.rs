@@ -2,6 +2,7 @@
 
 #[cfg(target_os = "windows")]
 mod app;
+mod app_version;
 mod app_core;
 mod cloud_sync;
 mod db_runtime;

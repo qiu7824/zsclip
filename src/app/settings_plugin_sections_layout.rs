@@ -42,7 +42,7 @@ pub(super) unsafe fn settings_refresh_plugin_host_after_relayout(st: &mut Settin
             if parent.is_null() {
                 None
             } else {
-                Some(parent)
+                Some(platform_window::root_ancestor(parent))
             }
         }
     })
