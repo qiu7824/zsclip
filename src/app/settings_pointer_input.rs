@@ -4,7 +4,7 @@ pub(super) unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWn
     if st.scroll_dragging {
         st.scroll_dragging = false;
         release_settings_pointer(hwnd);
-        repaint_settings_window(hwnd, false);
+        invalidate_settings_scrollbar_and_mask(hwnd);
     }
 }
 
@@ -139,7 +139,7 @@ pub(super) unsafe fn handle_settings_lbutton_down(
             st.scroll_drag_start_scroll = drag_start_scroll;
             settings_scrollbar_show(hwnd, st);
             capture_settings_pointer(hwnd);
-            repaint_settings_window(hwnd, false);
+            invalidate_settings_scrollbar_and_mask(hwnd);
             return 0;
         }
         SettingsPointerDownTarget::ScrollbarTrack { scroll_y } => {

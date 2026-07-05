@@ -2825,7 +2825,8 @@ fn windows_settings_window_repaint_uses_settings_host() {
     assert!(!toggle_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 1)"));
     assert!(command_block.contains("repaint_settings_window(hwnd, true)"));
     assert!(!command_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 1)"));
-    assert!(timer_block.contains("repaint_settings_window(hwnd, false)"));
+    assert!(timer_block.contains("invalidate_settings_scrollbar_and_mask(hwnd)"));
+    assert!(!timer_block.contains("repaint_settings_window(hwnd, false)"));
     assert!(!timer_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 0)"));
     assert!(action_block.contains("repaint_settings_window(hwnd, true)"));
     assert!(!action_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 1)"));
@@ -3682,7 +3683,14 @@ fn windows_settings_page_builder_lives_outside_hosts_rs() {
     assert!(form_actions.contains("action_row_rects"));
     assert!(form_actions.contains("qr_action_layout"));
     assert!(control_registry.contains("SettingsCtrlReg::new"));
+    assert!(control_registry.contains("fn settings_page_control_scrollable("));
     assert!(control_registry.contains("settings_page_scrollable"));
+    assert!(page_builder.contains("fn control_placement("));
+    assert!(page_builder.contains("settings_page_control_scrollable(st, self.page)"));
+    assert!(page_builder.contains("parent: st.viewport_hwnd"));
+    assert!(raw_controls.contains("placement.parent"));
+    assert!(raw_controls.contains("placement.x"));
+    assert!(raw_controls.contains("placement.y"));
     assert!(control_factory.contains("create_settings_dropdown_button"));
     assert!(control_factory.contains("create_settings_toggle_plain"));
 }
@@ -3733,11 +3741,16 @@ fn windows_settings_page_navigation_lives_outside_hosts_rs() {
     }
 
     assert!(navigation_controls.contains("platform_window::defer_move_windows"));
+    assert!(navigation_controls.contains("settings_viewport_child_control_bounds("));
     assert!(navigation_scroll.contains("settings_scroll_update_for_target"));
-    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
-    assert!(!navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
+    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
+    assert!(navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(!navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
     assert!(navigation_switch.contains("settings_page_switch_plan"));
     assert!(navigation_switch.contains("settings_host_set_visible"));
+    assert!(
+        navigation_switch.contains("sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd)")
+    );
     assert!(navigation_switch.contains("settings_sync_page_state(st, page)"));
     for old_detail in [
         "settings_page_switch_plan",
@@ -3746,6 +3759,112 @@ fn windows_settings_page_navigation_lives_outside_hosts_rs() {
         "platform_window::defer_move_windows",
     ] {
         assert!(!navigation.contains(old_detail));
+    }
+}
+
+#[test]
+fn windows_settings_scrollable_controls_use_viewport_child_parent() {
+    let settings_host = include_str!("settings_ui_host.rs").replace("\r\n", "\n");
+    let win_system_ui = include_str!("win_system_ui.rs").replace("\r\n", "\n");
+    let prelude = app_prelude_source();
+    let create = settings_window_create_source();
+    let metrics = settings_window_metrics_source();
+    let paint = settings_window_paint_source();
+    let builder = settings_page_builder_source();
+    let raw_controls = settings_raw_controls_source();
+    let navigation_controls = settings_page_navigation_controls_source();
+    let navigation_scroll = settings_page_navigation_scroll_source();
+    let navigation_switch = settings_page_navigation_switch_source();
+
+    assert!(settings_host.contains("ZsClipSettingsViewportChildWindow"));
+    assert!(settings_host.contains("pub unsafe fn create_settings_viewport_child("));
+    assert!(settings_host.contains("fn settings_viewport_child_proc("));
+    assert!(settings_host.contains("WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS"));
+    assert!(!settings_host.contains("WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN"));
+    assert!(settings_host.contains("| WS_CLIPCHILDREN"));
+    assert!(settings_host.contains("| WS_CLIPSIBLINGS"));
+    assert!(settings_host.contains("SETTINGS_VIEWPORT_MASK_H"));
+    assert!(settings_host.contains("fn apply_settings_viewport_child_region("));
+    assert!(settings_host.contains("platform_gdi::create_rect_rgn(0, mask_h"));
+    assert!(
+        settings_host.contains("platform_window::set_window_region(viewport_child, region, false)")
+    );
+    assert!(settings_host.contains("set_settings_viewport_child_visible"));
+    assert!(settings_host.contains("pub(crate) fn settings_viewport_child_control_bounds("));
+    assert!(settings_host.contains("pub(crate) fn sync_settings_viewport_child_bounds("));
+    assert!(win_system_ui.contains("settings_viewport_child_control_bounds"));
+    assert!(win_system_ui.contains("sync_settings_viewport_child_bounds"));
+    assert!(win_system_ui.contains("set_settings_viewport_child_visible"));
+    assert!(prelude.contains("create_settings_viewport_child"));
+    assert!(prelude.contains("set_settings_viewport_child_visible"));
+
+    assert!(create.contains("st.viewport_hwnd = create_settings_viewport_child(hwnd)"));
+    assert!(create.contains("sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd)"));
+    assert!(metrics.contains("sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd)"));
+    assert!(metrics.contains("set_settings_viewport_child_visible(st.viewport_hwnd, false)"));
+    assert!(metrics.contains("set_settings_viewport_child_visible(st.viewport_hwnd, true)"));
+    assert!(
+        navigation_switch.contains("sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd)")
+    );
+    assert!(
+        navigation_switch.contains("set_settings_viewport_child_visible(st.viewport_hwnd, false)")
+    );
+    assert!(
+        navigation_switch.contains("set_settings_viewport_child_visible(st.viewport_hwnd, true)")
+    );
+
+    assert!(builder.contains("settings_page_control_scrollable(st, self.page)"));
+    assert!(builder.contains("parent: st.viewport_hwnd"));
+    assert!(builder.contains("x: x - viewport.left"));
+    assert!(builder.contains("y: y - viewport.top - scroll_y"));
+    assert!(raw_controls.contains("placement.parent"));
+    assert!(raw_controls.contains("placement.origin_dy"));
+    for forbidden in [
+        "settings_create_label(self.hwnd",
+        "settings_create_label_auto(self.hwnd",
+        "settings_create_small_btn(self.hwnd",
+        "settings_create_dropdown_btn(self.hwnd",
+        "settings_create_edit(self.hwnd",
+        "settings_create_password_edit(self.hwnd",
+        "settings_create_listbox(self.hwnd",
+        "settings_create_toggle_plain(self.hwnd",
+    ] {
+        assert!(
+            !raw_controls.contains(forbidden),
+            "scrollable raw controls must not create children directly under main settings hwnd: {forbidden}"
+        );
+    }
+
+    assert!(navigation_controls.contains("settings_viewport_child_control_bounds(original"));
+    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
+    assert!(navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(paint.contains("let viewport_clip = settings_viewport_rect(&rc);"));
+    assert!(paint.contains("platform_gdi::intersect_clip_rect("));
+    assert!(paint.contains("draw_settings_content(memdc as _, &content_plan, theme);"));
+}
+
+#[test]
+fn windows_settings_dpi_and_rebuild_paths_hide_viewport_child_during_refresh() {
+    let settings_state = settings_state_source();
+    let window_events = settings_window_events_source();
+    let window_lifecycle = settings_window_lifecycle_source();
+    let metrics = settings_window_metrics_source();
+    let navigation_switch = settings_page_navigation_switch_source();
+    let multi_sync_sections = settings_multi_sync_sections_source();
+
+    assert!(settings_state.contains("suppress_size_refresh: bool"));
+    assert!(settings_state.contains("suppress_size_refresh: false"));
+    assert!(window_events.contains("(*st_ptr).suppress_size_refresh = true"));
+    assert!(window_events.contains("(*st_ptr).suppress_size_refresh = false"));
+    assert!(window_events.contains("st.suppress_size_refresh || st.dpi_comp.is_applying()"));
+    assert!(window_lifecycle.contains("(*st_ptr).suppress_size_refresh = true"));
+    assert!(window_lifecycle.contains("(*st_ptr).suppress_size_refresh = false"));
+
+    for source in [metrics, navigation_switch, multi_sync_sections] {
+        assert!(source.contains("platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0)"));
+        assert!(source.contains("set_settings_viewport_child_visible(st.viewport_hwnd, false)"));
+        assert!(source.contains("set_settings_viewport_child_visible(st.viewport_hwnd, true)"));
+        assert!(source.contains("platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0)"));
     }
 }
 
@@ -4197,6 +4316,14 @@ fn windows_settings_scroll_capture_uses_settings_host() {
         .map(|offset| down_start + offset)
         .unwrap();
     let down_block = &settings_input[down_start..down_end];
+    let thumb_start = down_block
+        .find("SettingsPointerDownTarget::ScrollbarThumb")
+        .unwrap();
+    let track_start = down_block[thumb_start..]
+        .find("SettingsPointerDownTarget::ScrollbarTrack")
+        .map(|offset| thumb_start + offset)
+        .unwrap();
+    let thumb_block = &down_block[thumb_start..track_start];
     let move_start = settings_input
         .find("unsafe fn handle_settings_pointer_move")
         .unwrap();
@@ -4224,7 +4351,8 @@ fn windows_settings_scroll_capture_uses_settings_host() {
     let helper_block = &settings_window[helper_start..helper_end];
 
     assert!(cancel_block.contains("release_settings_pointer(hwnd)"));
-    assert!(cancel_block.contains("repaint_settings_window(hwnd, false)"));
+    assert!(cancel_block.contains("invalidate_settings_scrollbar_and_mask(hwnd)"));
+    assert!(!cancel_block.contains("repaint_settings_window(hwnd, false)"));
     assert!(!cancel_block.contains("platform_input::release_capture()"));
     assert!(!cancel_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 0)"));
     assert!(move_block.contains("settings_window_client_bounds(hwnd)"));
@@ -4244,6 +4372,9 @@ fn windows_settings_scroll_capture_uses_settings_host() {
         down_block.contains("repaint_settings_window_area(hwnd, Some((&viewport).into()), false)")
     );
     assert!(down_block.contains("repaint_settings_window(hwnd, false)"));
+    assert!(down_block.contains("invalidate_settings_scrollbar_and_mask(hwnd)"));
+    assert!(thumb_block.contains("invalidate_settings_scrollbar_and_mask(hwnd)"));
+    assert!(!thumb_block.contains("repaint_settings_window(hwnd, false)"));
     assert!(!down_block.contains("platform_input::set_capture(hwnd)"));
     assert!(!down_block.contains("platform_window::client_rect(hwnd)"));
     assert!(!down_block.contains("platform_gdi::invalidate_rect(hwnd, null(), 0)"));
@@ -5259,6 +5390,13 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains("codesign --verify --deep --strict dist/ZSClip.app"));
     assert!(workflow.contains("xattr -dr com.apple.quarantine /Applications/ZSClip.app"));
     assert!(workflow.contains("zsclip-windows-x86_64-no-lan-portable.zip"));
+    assert!(workflow.contains("ExistingAutostartEnabled()"));
+    assert!(workflow.contains("WizardForm.TasksList.Checked[TaskIndex]"));
+    assert!(workflow.contains("Check: ShouldDisableAutostart"));
+    assert!(workflow.contains("Flags: deletevalue"));
+    assert!(workflow.contains("zsclip-v0.9.9.3-resources.zip"));
+    assert!(workflow.contains("Package resource bundle"));
+    assert!(workflow.contains("release-assets/zsclip-v0.9.9.3-resources.zip"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
 

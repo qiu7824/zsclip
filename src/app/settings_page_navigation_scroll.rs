@@ -3,6 +3,22 @@ use crate::platform::gdi as platform_gdi;
 use crate::settings_model::settings_scroll_update_for_target;
 use crate::win_system_ui::settings_viewport_mask_rect;
 
+pub(super) unsafe fn invalidate_settings_scrollbar_and_mask(hwnd: HWND) {
+    let Some(crc) = platform_window::client_rect(hwnd) else {
+        return;
+    };
+    let content_y = settings_content_y_scaled();
+    let mask = settings_viewport_mask_rect(&crc);
+    platform_gdi::invalidate_rect(hwnd, &mask, 0);
+    let scroll_strip = RECT {
+        left: crc.right - SCROLL_BAR_W_ACTIVE - SCROLL_BAR_MARGIN - 4,
+        top: content_y,
+        right: crc.right,
+        bottom: crc.bottom,
+    };
+    platform_gdi::invalidate_rect(hwnd, &scroll_strip, 0);
+}
+
 pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, new_y: i32) {
     let Some(crc) = platform_window::client_rect(hwnd) else {
         return;
@@ -23,17 +39,12 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     settings_scrollbar_show(hwnd, st);
 
     let viewport = settings_viewport_rect(&crc);
-    settings_repos_controls(hwnd, st, true);
+    settings_repos_controls(hwnd, st, false);
+    if !st.viewport_hwnd.is_null() {
+        platform_gdi::invalidate_rect(st.viewport_hwnd, null(), 0);
+    }
 
-    let mask = settings_viewport_mask_rect(&crc);
-    platform_gdi::invalidate_rect(hwnd, &mask, 0);
-    let scroll_strip = RECT {
-        left: crc.right - SCROLL_BAR_W_ACTIVE - SCROLL_BAR_MARGIN - 4,
-        top: content_y,
-        right: crc.right,
-        bottom: crc.bottom,
-    };
-    platform_gdi::invalidate_rect(hwnd, &scroll_strip, 0);
+    invalidate_settings_scrollbar_and_mask(hwnd);
     platform_gdi::redraw_window(hwnd, &viewport, null_mut(), RDW_INVALIDATE);
 }
 

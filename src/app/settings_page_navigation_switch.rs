@@ -52,12 +52,14 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
     }
 
     platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    set_settings_viewport_child_visible(st.viewport_hwnd, false);
     st.cur_page = page;
     if let Some(scroll_state) = plan.scroll_state {
         st.content_scroll_y = scroll_state.content_scroll_y;
         st.page_scroll_y[scroll_state.page] = scroll_state.page_scroll_y;
         st.scroll_bar_visible = scroll_state.scroll_bar_visible;
     }
+    sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd);
     settings_ensure_page(hwnd, st, page);
 
     for other_page in 0..SETTINGS_PAGE_LABELS.len() {
@@ -74,6 +76,7 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
     }
 
     settings_sync_page_state(st, page);
+    set_settings_viewport_child_visible(st.viewport_hwnd, true);
     platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
     platform_gdi::invalidate_rect(hwnd, null(), 1);
     platform_gdi::redraw_window(

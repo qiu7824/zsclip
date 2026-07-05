@@ -25,8 +25,33 @@ pub(super) unsafe fn settings_plugin_move_control(
         return;
     }
     st.ui.set_control_bounds(hwnd, x, y, w, h);
-    let top = y - st.content_scroll_y;
-    settings_host_set_bounds(hwnd, UiRect::new(x, top, x + w, top + h));
+    let original = UiRect::new(x, y, x + w, y + h);
+    let parent = platform_window::parent(hwnd);
+    let bounds = if !st.viewport_hwnd.is_null() && parent == st.viewport_hwnd {
+        let settings_hwnd = platform_window::root_ancestor(parent);
+        if let Some(crc) = settings_window_client_bounds(settings_hwnd).map(RECT::from) {
+            settings_viewport_child_control_bounds(
+                original,
+                st.content_scroll_y,
+                settings_viewport_rect(&crc),
+            )
+        } else {
+            UiRect::new(
+                x,
+                y - st.content_scroll_y,
+                x + w,
+                y - st.content_scroll_y + h,
+            )
+        }
+    } else {
+        UiRect::new(
+            x,
+            y - st.content_scroll_y,
+            x + w,
+            y - st.content_scroll_y + h,
+        )
+    };
+    settings_host_set_bounds(hwnd, bounds);
 }
 
 pub(super) unsafe fn settings_plugin_move_toggle_row(

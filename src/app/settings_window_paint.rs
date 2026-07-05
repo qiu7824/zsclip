@@ -46,8 +46,16 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         draw_settings_nav_item(memdc as _, item, theme);
     }
 
+    let viewport_clip = settings_viewport_rect(&rc);
     let content_clip: RECT = chrome_plan.content_clip_rect.into();
     platform_gdi::save_dc(memdc);
+    platform_gdi::intersect_clip_rect(
+        memdc,
+        viewport_clip.left,
+        viewport_clip.top,
+        viewport_clip.right,
+        viewport_clip.bottom,
+    );
     platform_gdi::intersect_clip_rect(
         memdc,
         content_clip.left,

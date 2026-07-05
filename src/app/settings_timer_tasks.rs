@@ -8,7 +8,7 @@ pub(super) unsafe fn handle_settings_timer_task(hwnd: HWND, task: SettingsTimerT
                 let st = &mut *st_ptr;
                 stop_flagged_timer(hwnd, ID_TIMER_SETTINGS_SCROLLBAR, &mut st.scroll_hide_timer);
                 st.scroll_bar_visible = false;
-                repaint_settings_window(hwnd, false);
+                invalidate_settings_scrollbar_and_mask(hwnd);
             }
         }
         SettingsTimerTask::ClearSaveHint => {

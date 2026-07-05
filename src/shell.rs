@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::app::{ClipItem, Icons};
 use crate::app_core::{NativeFileDialogHost, NativeFileDialogRequest, NativeShellOpenHost};
+use crate::app_version::APP_VERSION;
 use crate::i18n::tr;
 use crate::platform::file_dialog as platform_file_dialog;
 use crate::platform::library::DynamicLibrary;
@@ -1286,7 +1287,7 @@ where
                         .unwrap_or(next.latest_url.as_str())
                         .to_string();
                     next.available = !next.latest_tag.trim().is_empty()
-                        && version_is_newer(&next.latest_tag, env!("CARGO_PKG_VERSION"));
+                        && version_is_newer(&next.latest_tag, APP_VERSION);
                 } else {
                     next.error = "invalid response".to_string();
                 }

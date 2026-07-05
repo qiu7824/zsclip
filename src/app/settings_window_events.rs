@@ -27,10 +27,16 @@ pub(super) unsafe fn apply_dpi_suggested_rect(hwnd: HWND, lparam: LPARAM) {
 }
 
 pub(super) unsafe fn handle_settings_dpi_changed(hwnd: HWND, lparam: LPARAM, dpi: u32) -> LRESULT {
+    let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
+    if !st_ptr.is_null() {
+        (*st_ptr).suppress_size_refresh = true;
+    }
     apply_dpi_suggested_rect(hwnd, lparam);
     set_settings_ui_dpi(dpi);
     ensure_settings_window_in_work_area(hwnd);
-    let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
+    if !st_ptr.is_null() {
+        (*st_ptr).suppress_size_refresh = false;
+    }
     if !st_ptr.is_null() {
         reset_settings_dpi_compensation(&mut *st_ptr);
         (*st_ptr).ui_dpi = dpi;
@@ -47,6 +53,9 @@ pub(super) unsafe fn handle_settings_window_size(
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
     if !st_ptr.is_null() && !minimized {
         let st = &mut *st_ptr;
+        if st.suppress_size_refresh || st.dpi_comp.is_applying() {
+            return 0;
+        }
         if !platform_dpi::is_per_monitor_aware() && !st.dpi_comp.is_applying() {
             update_settings_dpi_compensation_base(hwnd, st);
         }
@@ -59,8 +68,10 @@ pub(super) unsafe fn handle_settings_system_metrics_changed(hwnd: HWND) -> LRESU
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
     if !st_ptr.is_null() {
         set_settings_ui_dpi(settings_window_layout_dpi(hwnd).max(96));
+        (*st_ptr).suppress_size_refresh = true;
         let _ = apply_settings_system_dpi_compensation(hwnd, &mut *st_ptr);
         ensure_settings_window_in_work_area(hwnd);
+        (*st_ptr).suppress_size_refresh = false;
         refresh_settings_window_metrics(hwnd, &mut *st_ptr);
     }
     0
@@ -74,7 +85,9 @@ pub(super) unsafe fn handle_settings_window_move_completed(hwnd: HWND) -> LRESUL
         match settings_dpi_move_action(old_dpi, next_dpi, platform_dpi::is_per_monitor_aware()) {
             SettingsDpiMoveAction::ResizeForDpi => {
                 (*st_ptr).ui_dpi = next_dpi;
+                (*st_ptr).suppress_size_refresh = true;
                 resize_settings_window_for_dpi_transition(hwnd, old_dpi, next_dpi);
+                (*st_ptr).suppress_size_refresh = false;
                 refresh_settings_window_metrics(hwnd, &mut *st_ptr);
             }
             SettingsDpiMoveAction::SyncOnly => {

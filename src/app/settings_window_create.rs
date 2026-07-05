@@ -14,6 +14,8 @@ pub(super) unsafe fn create_settings_window_state(
         title_font,
     ));
 
+    st.viewport_hwnd = create_settings_viewport_child(hwnd);
+    sync_settings_viewport_child_bounds(hwnd, st.viewport_hwnd);
     settings_refresh_theme_resources(&mut st);
     st.btn_save = settings_create_btn(hwnd, "保存", IDC_SET_SAVE, 984, 24, 72, st.ui_font);
     st.btn_close = settings_create_btn(hwnd, "关闭", IDC_SET_CLOSE, 900, 24, 64, st.ui_font);

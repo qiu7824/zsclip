@@ -6,7 +6,11 @@ pub(super) unsafe fn settings_create_about_metadata_section(
     sec: SettingsFormSectionLayout,
     flow: &mut SettingsFlowLayout,
 ) {
-    let version_text = format!("{}{}", tr("版本：", "Version: "), env!("CARGO_PKG_VERSION"));
+    let version_text = format!(
+        "{}{}",
+        tr("版本：", "Version: "),
+        crate::app_version::APP_VERSION
+    );
     let version_rect = flow.full_rect(settings_scale(28));
     let (_, version_h) = b.label_auto(
         st,
