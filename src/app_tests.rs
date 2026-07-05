@@ -3734,6 +3734,8 @@ fn windows_settings_page_navigation_lives_outside_hosts_rs() {
 
     assert!(navigation_controls.contains("platform_window::defer_move_windows"));
     assert!(navigation_scroll.contains("settings_scroll_update_for_target"));
+    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
+    assert!(!navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
     assert!(navigation_switch.contains("settings_page_switch_plan"));
     assert!(navigation_switch.contains("settings_host_set_visible"));
     assert!(navigation_switch.contains("settings_sync_page_state(st, page)"));
