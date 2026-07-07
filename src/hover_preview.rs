@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::mem::zeroed;
 use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
@@ -25,6 +26,7 @@ const PREVIEW_W_TEXT: i32 = 420;
 const PREVIEW_H_TEXT: i32 = 220;
 const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
+const MARKDOWN_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 const WM_HOVER_IMAGE_READY: u32 = WM_APP + 41;
 
 struct HoverPreviewImageResult {
@@ -272,6 +274,25 @@ fn limit_file_preview(paths: &[String], max_items: usize) -> String {
     out
 }
 
+fn markdown_file_preview_text(paths: &[String]) -> Option<String> {
+    if paths.len() != 1 {
+        return None;
+    }
+    let path = std::path::Path::new(&paths[0]);
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(ext.as_str(), "md" | "markdown") {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut text = String::new();
+    file.by_ref()
+        .take(MARKDOWN_PREVIEW_MAX_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
+    let preview = limit_preview_text(&text, 10, 420);
+    (!preview.is_empty()).then_some(preview)
+}
+
 pub(crate) unsafe fn hide_hover_preview() {
     let hwnd = preview_hwnd();
     if platform_window::exists(hwnd) {
@@ -314,8 +335,18 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         return;
     }
 
+    let markdown_file_preview = if item.kind == ClipKind::Files {
+        item.file_paths
+            .as_ref()
+            .and_then(|paths| markdown_file_preview_text(paths))
+    } else {
+        None
+    };
     let header = match item.kind {
         ClipKind::Image => tr("图片预览", "Image Preview").to_string(),
+        ClipKind::Files if markdown_file_preview.is_some() => {
+            tr("Markdown 预览", "Markdown Preview").to_string()
+        }
         ClipKind::Files => tr("文件预览", "File Preview").to_string(),
         ClipKind::Phrase => tr("短语预览", "Phrase Preview").to_string(),
         ClipKind::Text if item.rich_text_html.is_some() => {
@@ -340,11 +371,12 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
                 )
             }
         }
-        ClipKind::Files => item
-            .file_paths
-            .as_ref()
-            .map(|paths| limit_file_preview(paths, 8))
-            .unwrap_or_else(|| item.preview.clone()),
+        ClipKind::Files => markdown_file_preview.unwrap_or_else(|| {
+            item.file_paths
+                .as_ref()
+                .map(|paths| limit_file_preview(paths, 8))
+                .unwrap_or_else(|| item.preview.clone())
+        }),
         ClipKind::Image => String::new(),
     };
     let image_shape = if item.kind == ClipKind::Image {

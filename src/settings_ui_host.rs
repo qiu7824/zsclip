@@ -43,6 +43,7 @@ pub use crate::settings_model::{
     settings_dropdown_max_items_labels, settings_dropdown_pos_mode_from_label,
 };
 use crate::ui::{draw_round_fill, draw_round_rect, draw_text_ex};
+use crate::win_system_params::IDC_SET_RICH_TEXT;
 use crate::win_native_style::{
     rgb, ui_display_font_family, ui_icon_font_family, ui_text_font_family, Theme,
     WindowsNativeControlMapper,
@@ -629,6 +630,7 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_PERSIST_SEARCH
         | IDC_SET_PASTE_SOUND_ENABLE
         | IDC_SET_SKIP_WINDOW_ENABLE
+        | IDC_SET_RICH_TEXT
         | IDC_SET_AUTOHIDE_BLUR
         | IDC_SET_EDGEHIDE
         | IDC_SET_HOVERPREVIEW
@@ -2042,10 +2044,21 @@ mod tests {
             Some(SettingsControlRole::Toggle)
         );
         assert_eq!(
+            settings_control_role_for_control(IDC_SET_RICH_TEXT),
+            Some(SettingsControlRole::Toggle)
+        );
+        assert_eq!(
             settings_command_for_control(IDC_SET_PLUGIN_WPS_TASKPANE),
             Some(crate::app_core::Command::window_with_payload(
                 crate::app_core::command_ids::TOGGLE_SETTINGS_CONTROL,
                 crate::app_core::CommandPayload::ControlId(IDC_SET_PLUGIN_WPS_TASKPANE as i64)
+            ))
+        );
+        assert_eq!(
+            settings_command_for_control(IDC_SET_RICH_TEXT),
+            Some(crate::app_core::Command::window_with_payload(
+                crate::app_core::command_ids::TOGGLE_SETTINGS_CONTROL,
+                crate::app_core::CommandPayload::ControlId(IDC_SET_RICH_TEXT as i64)
             ))
         );
         assert_eq!(

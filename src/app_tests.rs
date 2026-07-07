@@ -585,6 +585,10 @@ fn main_hover_preview_source() -> String {
     include_str!("app/main_hover_preview.rs").replace("\r\n", "\n")
 }
 
+fn hover_preview_source() -> String {
+    include_str!("hover_preview.rs").replace("\r\n", "\n")
+}
+
 fn main_entry_source() -> String {
     include_str!("app/main_entry.rs").replace("\r\n", "\n")
 }
@@ -1032,6 +1036,18 @@ fn rich_text_summary_items_trigger_full_payload_resolution() {
 }
 
 #[test]
+fn markdown_files_have_hover_text_preview() {
+    let hover = hover_preview_source();
+
+    assert!(hover.contains("MARKDOWN_PREVIEW_MAX_BYTES"));
+    assert!(hover.contains("fn markdown_file_preview_text(paths: &[String]) -> Option<String>"));
+    assert!(hover.contains("\"md\" | \"markdown\""));
+    assert!(hover.contains("read_to_string(&mut text)"));
+    assert!(hover.contains("tr(\"Markdown 预览\", \"Markdown Preview\")"));
+    assert!(hover.contains("markdown_file_preview.unwrap_or_else"));
+}
+
+#[test]
 fn canceled_issue_23_memory_only_mode_is_not_present() {
     let sources = [
         include_str!("app/state.rs"),
@@ -1203,6 +1219,7 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_PERSIST_SEARCH,
         IDC_SET_PASTE_SOUND_ENABLE,
         IDC_SET_SKIP_WINDOW_ENABLE,
+        IDC_SET_RICH_TEXT,
         IDC_SET_AUTOHIDE_BLUR,
         IDC_SET_EDGEHIDE,
         IDC_SET_HOVERPREVIEW,
@@ -5018,12 +5035,16 @@ fn windows_paste_target_discovery_lives_outside_hosts_rs() {
     }
     for required in [
         "fn paste_skip_class_tokens",
+        "fn paste_window_class_is_zsclip",
+        "pub(super) unsafe fn paste_window_is_zsclip",
         "pub(super) unsafe fn is_viable_paste_window",
         "pub(super) unsafe fn find_next_paste_target(",
         "pub(super) unsafe fn find_next_paste_target_after(",
         "pub(super) fn append_unique_skip_class_name",
         "platform_window::visible_enabled_top_level_windows",
         "platform_window::root_ancestor",
+        "CLASS_NAME",
+        "QUICK_CLASS_NAME",
         "WS_EX_TOOLWINDOW",
     ] {
         assert!(
@@ -5031,6 +5052,33 @@ fn windows_paste_target_discovery_lives_outside_hosts_rs() {
             "main_paste_target_discovery.rs should contain {required}"
         );
     }
+}
+
+#[test]
+fn quick_window_is_never_reused_as_paste_target() {
+    let discovery = main_paste_target_discovery_source();
+    let main_paste = main_paste_source();
+    let viable_start = discovery
+        .find("pub(super) unsafe fn is_viable_paste_window")
+        .unwrap();
+    let viable_end = discovery[viable_start..]
+        .find("\nunsafe fn paste_window_title_is_ignored")
+        .map(|offset| viable_start + offset)
+        .unwrap();
+    let viable_block = &discovery[viable_start..viable_end];
+    let effective_start = main_paste.find("unsafe fn effective_paste_target").unwrap();
+    let effective_end = main_paste[effective_start..]
+        .find("\npub(super) unsafe fn paste_after_clipboard_ready")
+        .map(|offset| effective_start + offset)
+        .unwrap();
+    let effective_block = &main_paste[effective_start..effective_end];
+
+    assert!(discovery.contains("paste_window_class_is_zsclip"));
+    assert!(discovery.contains("class_name.eq_ignore_ascii_case(CLASS_NAME)"));
+    assert!(discovery.contains("class_name.eq_ignore_ascii_case(QUICK_CLASS_NAME)"));
+    assert!(viable_block.contains("paste_window_is_zsclip(hwnd)"));
+    assert!(effective_block.contains("!paste_window_is_zsclip(state.paste_target_override)"));
+    assert!(effective_block.contains("!paste_window_is_zsclip(state.hotkey_passthrough_target)"));
 }
 
 #[test]
@@ -5555,13 +5603,13 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains("WizardForm.TasksList.Checked[TaskIndex]"));
     assert!(workflow.contains("Check: ShouldDisableAutostart"));
     assert!(workflow.contains("Flags: deletevalue"));
-    assert!(workflow.contains("zsclip-v0.9.9.4-resources.zip"));
+    assert!(workflow.contains("zsclip-v0.9.9.5-resources.zip"));
     assert!(workflow.contains("name: Android test APK"));
     assert!(workflow.contains("gradle assembleDebug"));
     assert!(workflow.contains("zsclip-android-test.apk"));
     assert!(workflow.contains("- android"));
     assert!(workflow.contains("Package resource bundle"));
-    assert!(workflow.contains("release-assets/zsclip-v0.9.9.4-resources.zip"));
+    assert!(workflow.contains("release-assets/zsclip-v0.9.9.5-resources.zip"));
     assert!(workflow.contains("release-assets/zsclip-android-test.apk"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }

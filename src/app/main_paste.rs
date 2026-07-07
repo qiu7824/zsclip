@@ -462,11 +462,14 @@ pub(super) unsafe fn show_clipboard_write_failure_message(hwnd: HWND) {
 
 pub(super) unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
     let skip_class_names = paste_target_skip_classes(&state.settings);
-    if !state.paste_target_override.is_null() {
+    if !state.paste_target_override.is_null()
+        && !paste_window_is_zsclip(state.paste_target_override)
+    {
         return state.paste_target_override;
     }
     if state.hotkey_passthrough_active
         && !state.hotkey_passthrough_target.is_null()
+        && !paste_window_is_zsclip(state.hotkey_passthrough_target)
         && !paste_window_class_is_skipped(state.hotkey_passthrough_target, skip_class_names)
     {
         return state.hotkey_passthrough_target;
