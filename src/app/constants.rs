@@ -2,10 +2,6 @@ use crate::app_core::{MainTimerIds, MainUiLayout};
 use crate::win_system_ui::SettingsTimerIds;
 use std::io;
 
-pub(in crate::app) const CF_BITMAP: u32 = 2;
-pub(in crate::app) const CF_DIB: u32 = 8;
-pub(in crate::app) const CF_DIBV5: u32 = 17;
-
 pub(in crate::app) const CLASS_NAME: &str = "ZsClipMain";
 pub(in crate::app) const QUICK_CLASS_NAME: &str = "ZsClipQuick";
 
@@ -59,6 +55,8 @@ pub(in crate::app) const EDGE_AUTO_HIDE_DELAY_MS: u64 = 650;
 pub(in crate::app) const EDGE_AUTO_HIDE_RESTORE_GRACE_MS: u64 = 450;
 pub(in crate::app) const EDGE_AUTO_HIDE_ANIM_MS: u64 = 180;
 pub(in crate::app) const EDGE_AUTO_HIDE_ANIM_TIMER_MS: u32 = 16;
+pub(in crate::app) const CLIPBOARD_RETRY_DELAY_FAST_MS: u32 = 30;
+pub(in crate::app) const CLIPBOARD_RETRY_DELAY_MEDIUM_MS: u32 = 80;
 pub(in crate::app) const CLIPBOARD_RETRY_DELAY_MS: u32 = 140;
 pub(in crate::app) const CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 5;
 pub(in crate::app) const PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS: u8 = 18;

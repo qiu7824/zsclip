@@ -6,6 +6,7 @@ struct DbItem {
     kind: String,
     preview: String,
     text: Option<String>,
+    rich_text_html: Option<String>,
     source_app: String,
     file_paths: Option<String>,
     image_bytes: Option<Vec<u8>>,
@@ -66,6 +67,11 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
         kind,
         preview,
         text: if summary_only { None } else { row.text },
+        rich_text_html: if summary_only {
+            None
+        } else {
+            row.rich_text_html
+        },
         source_app: row.source_app,
         file_paths,
         image_bytes: if summary_only { None } else { row.image_bytes },
@@ -184,6 +190,7 @@ pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
         kind: item.kind,
         preview,
         text: None,
+        rich_text_html: None,
         source_app: item.source_app.clone(),
         file_paths,
         image_bytes: None,
@@ -210,6 +217,132 @@ pub(super) fn build_preview(text: &str) -> String {
         s
     } else {
         one_line
+    }
+}
+
+fn count_html_tag(lower_html: &str, tag: &str) -> usize {
+    let open = format!("<{tag}");
+    lower_html.match_indices(&open).count()
+}
+
+fn html_table_shape(html: &str) -> Option<(usize, usize)> {
+    let lower = html.to_ascii_lowercase();
+    if !lower.contains("<table") {
+        return None;
+    }
+    let row_count = count_html_tag(&lower, "tr").max(1);
+    let mut max_cols = 0usize;
+    let mut search_from = 0usize;
+    while let Some(start_rel) = lower[search_from..].find("<tr") {
+        let start = search_from + start_rel;
+        let end = lower[start..]
+            .find("</tr")
+            .map(|end_rel| start + end_rel)
+            .unwrap_or(lower.len());
+        let row = &lower[start..end];
+        let cols = count_html_tag(row, "td") + count_html_tag(row, "th");
+        max_cols = max_cols.max(cols);
+        search_from = end.saturating_add(4).min(lower.len());
+        if search_from >= lower.len() {
+            break;
+        }
+    }
+    Some((row_count, max_cols.max(1)))
+}
+
+fn html_tag_separator(tag: &str) -> &'static str {
+    let tag = tag.trim_start_matches('/').trim();
+    let name = tag
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '/' || ch == '>')
+        .next()
+        .unwrap_or_default();
+    match name {
+        "br" | "p" | "div" | "section" | "article" | "header" | "footer" | "li" | "ul" | "ol"
+        | "table" | "thead" | "tbody" | "tfoot" | "tr" => "\n",
+        "td" | "th" => "\t",
+        _ => "",
+    }
+}
+
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len().min(4096));
+    let mut index = 0usize;
+    while index < html.len() {
+        let Some(start_rel) = html[index..].find('<') else {
+            out.push_str(&html[index..]);
+            break;
+        };
+        let start = index + start_rel;
+        out.push_str(&html[index..start]);
+        let Some(end_rel) = html[start..].find('>') else {
+            break;
+        };
+        let end = start + end_rel;
+        out.push_str(html_tag_separator(
+            &html[start + 1..end].to_ascii_lowercase(),
+        ));
+        index = end + 1;
+    }
+    decode_html_entities(&out)
+}
+
+fn normalize_rich_text_preview_text(text: &str, max_lines: usize, max_chars: usize) -> String {
+    let mut lines = Vec::new();
+    let mut used_chars = 0usize;
+    for line in text
+        .replace('\r', "\n")
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+    {
+        if lines.len() >= max_lines || used_chars >= max_chars {
+            break;
+        }
+        let remaining = max_chars.saturating_sub(used_chars);
+        let clipped = line.chars().take(remaining).collect::<String>();
+        used_chars += clipped.chars().count();
+        lines.push(clipped);
+    }
+    lines.join("\n")
+}
+
+pub(crate) fn rich_text_preview_text(
+    html: &str,
+    fallback_text: &str,
+    max_lines: usize,
+    max_chars: usize,
+) -> String {
+    let extracted = normalize_rich_text_preview_text(&html_to_text(html), max_lines, max_chars);
+    if extracted.is_empty() {
+        normalize_rich_text_preview_text(fallback_text, max_lines, max_chars)
+    } else {
+        extracted
+    }
+}
+
+pub(super) fn build_rich_text_preview(html: &str, fallback_text: &str) -> String {
+    let text = rich_text_preview_text(html, fallback_text, 2, 96).replace('\n', " ");
+    if let Some((rows, cols)) = html_table_shape(html) {
+        if text.is_empty() {
+            format!("HTML 表格 {rows}x{cols}")
+        } else {
+            format!("HTML 表格 {rows}x{cols}: {}", build_preview(&text))
+        }
+    } else if text.is_empty() {
+        "HTML 富文本".to_string()
+    } else {
+        format!("HTML: {}", build_preview(&text))
     }
 }
 
@@ -243,6 +376,20 @@ pub(super) fn text_content_signature(text: &str) -> String {
         String::new()
     } else {
         crc32_signature([b"text".as_slice(), normalized.as_bytes()])
+    }
+}
+
+pub(super) fn rich_text_content_signature(text: &str, html: &str) -> String {
+    let normalized = normalize_captured_text(text);
+    let html = html.trim();
+    if normalized.is_empty() && html.is_empty() {
+        String::new()
+    } else {
+        crc32_signature([
+            b"rich-text".as_slice(),
+            normalized.as_bytes(),
+            html.as_bytes(),
+        ])
     }
 }
 
@@ -298,7 +445,13 @@ pub(super) fn dedupe_signature_for_item(item: &ClipItem, fallback_signature: &st
         ClipKind::Text | ClipKind::Phrase => item
             .text
             .as_deref()
-            .map(text_content_signature)
+            .map(|text| {
+                item.rich_text_html
+                    .as_deref()
+                    .filter(|html| !html.trim().is_empty())
+                    .map(|html| rich_text_content_signature(text, html))
+                    .unwrap_or_else(|| text_content_signature(text))
+            })
             .unwrap_or_default(),
         ClipKind::Files => item
             .file_paths
@@ -376,6 +529,7 @@ pub(super) fn build_qr_clip_item(text: &str) -> Option<(ClipItem, String)> {
             kind: ClipKind::Image,
             preview: format!("{} {}", tr("二维码", "QR"), preview_text),
             text: None,
+            rich_text_html: None,
             source_app: String::new(),
             file_paths: None,
             image_bytes: Some(bytes),
@@ -663,6 +817,7 @@ pub(super) fn db_load_items_page(
                 kind: row.get(1)?,
                 preview: row.get(2)?,
                 text: row.get(3)?,
+                rich_text_html: None,
                 source_app: row.get(4)?,
                 file_paths: row.get(5)?,
                 image_path: row.get(6)?,
@@ -778,7 +933,7 @@ pub(super) unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
 pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
+            "SELECT id, kind, preview, text_data, rich_text_html, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
              COALESCE(created_at, '') as created_at \
              FROM items WHERE id=?",
             params![id],
@@ -788,15 +943,16 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
                     kind: row.get(1)?,
                     preview: row.get(2)?,
                     text: row.get(3)?,
-                    source_app: row.get(4)?,
-                    file_paths: row.get(5)?,
-                    image_bytes: row.get(6)?,
-                    image_path: row.get(11)?,
-                    image_width: row.get(7)?,
-                    image_height: row.get(8)?,
-                    pinned: row.get(9)?,
-                    group_id: row.get(10)?,
-                    created_at: row.get(12)?,
+                    rich_text_html: row.get(4)?,
+                    source_app: row.get(5)?,
+                    file_paths: row.get(6)?,
+                    image_bytes: row.get(7)?,
+                    image_path: row.get(12)?,
+                    image_width: row.get(8)?,
+                    image_height: row.get(9)?,
+                    pinned: row.get(10)?,
+                    group_id: row.get(11)?,
+                    created_at: row.get(13)?,
                 }))
             },
         )
@@ -807,7 +963,7 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
 pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipItem, String)> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
+            "SELECT id, kind, preview, text_data, rich_text_html, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
              COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
              FROM items WHERE category=? ORDER BY id DESC LIMIT 1",
             params![category],
@@ -817,17 +973,18 @@ pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipI
                     kind: row.get(1)?,
                     preview: row.get(2)?,
                     text: row.get(3)?,
-                    source_app: row.get(4)?,
-                    file_paths: row.get(5)?,
-                    image_bytes: row.get(6)?,
-                    image_path: row.get(11)?,
-                    image_width: row.get(7)?,
-                    image_height: row.get(8)?,
-                    pinned: row.get(9)?,
-                    group_id: row.get(10)?,
-                    created_at: row.get(12)?,
+                    rich_text_html: row.get(4)?,
+                    source_app: row.get(5)?,
+                    file_paths: row.get(6)?,
+                    image_bytes: row.get(7)?,
+                    image_path: row.get(12)?,
+                    image_width: row.get(8)?,
+                    image_height: row.get(9)?,
+                    pinned: row.get(10)?,
+                    group_id: row.get(11)?,
+                    created_at: row.get(13)?,
                 });
-                Ok((item, row.get::<_, String>(13)?))
+                Ok((item, row.get::<_, String>(14)?))
             },
         )
     })
@@ -911,20 +1068,22 @@ pub(super) fn db_insert_item(
     let preview = item.preview.clone();
     let signature = signature.unwrap_or_default().trim().to_string();
     let text_data = item.text.clone();
+    let rich_text_html = item.rich_text_html.clone();
     let source_app = item.source_app.clone();
     let file_paths = item.file_paths.as_ref().map(|paths| paths.join("\n"));
     let image_data = item.image_bytes.clone();
     let image_path = item.image_path.clone();
     with_db(|conn| {
         conn.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, rich_text_html, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
                 preview,
                 signature,
                 text_data,
+                rich_text_html,
                 source_app,
                 file_paths,
                 image_data,
@@ -1041,6 +1200,7 @@ pub(super) fn db_reconcile_dedupe_signatures(
                 kind: row.get(1)?,
                 preview: row.get(2)?,
                 text: row.get(3)?,
+                rich_text_html: None,
                 source_app: row.get(4)?,
                 file_paths: row.get(5)?,
                 image_bytes: row.get(6)?,
@@ -1120,6 +1280,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             preview,
             signature,
             text_data,
+            rich_text_html,
             source_app,
             file_paths,
             image_data,
@@ -1130,7 +1291,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             group_id,
             created_at,
         ) = tx.query_row(
-            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, COALESCE(source_app, ''), file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
+            "SELECT category, kind, preview, COALESCE(signature, ''), text_data, rich_text_html, COALESCE(source_app, ''), file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
              FROM items WHERE id=?",
             params![item_id],
             |row| {
@@ -1140,28 +1301,30 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
-                    row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<Vec<u8>>>(7)?,
-                    row.get::<_, Option<String>>(8)?,
-                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<Vec<u8>>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                     row.get::<_, i64>(10)?,
                     row.get::<_, i64>(11)?,
                     row.get::<_, i64>(12)?,
-                    row.get::<_, String>(13)?,
+                    row.get::<_, i64>(13)?,
+                    row.get::<_, String>(14)?,
                 ))
             },
         )?;
 
         tx.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, created_at)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items(category, kind, preview, signature, text_data, rich_text_html, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, created_at)
+             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
                 category,
                 kind,
                 preview,
                 signature,
                 text_data,
+                rich_text_html,
                 source_app,
                 file_paths,
                 image_data,

@@ -9,7 +9,7 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, ClipItem, ClipKind},
+    app::{ensure_item_image_bytes, rich_text_preview_text, ClipItem, ClipKind},
     i18n::tr,
     platform::{
         appearance as platform_appearance, gdi as platform_gdi, monitor as platform_monitor,
@@ -318,14 +318,28 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         ClipKind::Image => tr("图片预览", "Image Preview").to_string(),
         ClipKind::Files => tr("文件预览", "File Preview").to_string(),
         ClipKind::Phrase => tr("短语预览", "Phrase Preview").to_string(),
+        ClipKind::Text if item.rich_text_html.is_some() => {
+            tr("富文本预览", "Rich Text Preview").to_string()
+        }
         ClipKind::Text => tr("文本预览", "Text Preview").to_string(),
     };
     let body = match item.kind {
-        ClipKind::Text | ClipKind::Phrase => limit_preview_text(
-            item.text.as_deref().unwrap_or(item.preview.as_str()),
-            10,
-            420,
-        ),
+        ClipKind::Text | ClipKind::Phrase => {
+            if let Some(html) = item.rich_text_html.as_deref() {
+                rich_text_preview_text(
+                    html,
+                    item.text.as_deref().unwrap_or(item.preview.as_str()),
+                    10,
+                    420,
+                )
+            } else {
+                limit_preview_text(
+                    item.text.as_deref().unwrap_or(item.preview.as_str()),
+                    10,
+                    420,
+                )
+            }
+        }
         ClipKind::Files => item
             .file_paths
             .as_ref()

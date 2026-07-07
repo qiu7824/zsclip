@@ -9877,14 +9877,12 @@ pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_fil
     group_id: i64,
     kind_filter: crate::app_core::ClipKindFilter,
 ) -> Vec<NativeHostClipListItemProjection> {
-    if let Ok(items) =
-        crate::db_runtime::native_clip_list_items_for_group_kind_filter(
-            category,
-            group_id,
-            kind_filter,
-            64,
-        )
-    {
+    if let Ok(items) = crate::db_runtime::native_clip_list_items_for_group_kind_filter(
+        category,
+        group_id,
+        kind_filter,
+        64,
+    ) {
         return items;
     }
     Vec::new()
@@ -11499,6 +11497,7 @@ mod tests {
             kind: ClipKind::Text,
             preview: "first".to_string(),
             text: Some("first".to_string()),
+            rich_text_html: None,
             source_app: String::new(),
             file_paths: None,
             image_bytes: None,
@@ -11804,6 +11803,7 @@ mod tests {
             kind: ClipKind::Text,
             preview: "hello".to_string(),
             text: Some("hello".to_string()),
+            rich_text_html: None,
             source_app: String::new(),
             file_paths: None,
             image_bytes: None,
@@ -11819,6 +11819,7 @@ mod tests {
             kind: ClipKind::Image,
             preview: "image".to_string(),
             text: None,
+            rich_text_html: None,
             source_app: String::new(),
             file_paths: None,
             image_bytes: Some(vec![255, 0, 0, 255]),
@@ -12094,6 +12095,7 @@ mod tests {
             kind: ClipKind::Text,
             preview: "hello macOS".to_string(),
             text: Some("hello macOS".to_string()),
+            rich_text_html: None,
             source_app: "test".to_string(),
             file_paths: None,
             image_bytes: None,
@@ -12118,6 +12120,7 @@ mod tests {
             kind: ClipKind::Files,
             preview: "report.pdf".to_string(),
             text: None,
+            rich_text_html: None,
             source_app: "test".to_string(),
             file_paths: Some(vec!["/tmp/report.pdf".to_string()]),
             image_bytes: None,
@@ -12141,6 +12144,7 @@ mod tests {
             kind: ClipKind::Image,
             preview: "image payload".to_string(),
             text: None,
+            rich_text_html: None,
             source_app: "test".to_string(),
             file_paths: None,
             image_bytes: Some(vec![255, 255, 255, 255]),

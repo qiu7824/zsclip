@@ -6,6 +6,17 @@ pub(super) fn reload_state_from_db_persisting(state: &mut AppState) {
     }
 }
 
+fn item_payload_missing(item: &ClipItem) -> bool {
+    match item.kind {
+        ClipKind::Text | ClipKind::Phrase => {
+            item.text.is_none()
+                || (item.rich_text_html.is_none() && item.preview.trim_start().starts_with("HTML"))
+        }
+        ClipKind::Files => item.file_paths.is_none() && item.text.is_none(),
+        ClipKind::Image => item.image_bytes.is_none() && item.image_path.is_none(),
+    }
+}
+
 impl AppState {
     pub(super) fn should_skip_transient_duplicate_capture(
         &mut self,
@@ -221,12 +232,7 @@ impl AppState {
         if item.id <= 0 {
             return Some(item.clone());
         }
-        let payload_missing = match item.kind {
-            ClipKind::Text | ClipKind::Phrase => item.text.is_none(),
-            ClipKind::Files => item.file_paths.is_none() && item.text.is_none(),
-            ClipKind::Image => item.image_bytes.is_none() && item.image_path.is_none(),
-        };
-        if payload_missing {
+        if item_payload_missing(item) {
             self.load_item_full_cached(item.id)
         } else {
             Some(item.clone())

@@ -12,6 +12,7 @@ pub(super) fn settings_toggle_general_get(st: &SettingsWndState, cid: isize) -> 
         IDC_SET_PERSIST_SEARCH => Some(st.draft.persistent_search_box),
         IDC_SET_PASTE_SOUND_ENABLE => Some(st.draft.paste_success_sound_enabled),
         IDC_SET_SKIP_WINDOW_ENABLE => Some(st.draft.paste_target_skip_enabled),
+        IDC_SET_RICH_TEXT => Some(st.draft.rich_text_clipboard_enabled),
         IDC_SET_AUTOHIDE_BLUR => Some(st.draft.auto_hide_on_blur),
         IDC_SET_EDGEHIDE => Some(st.draft.edge_auto_hide),
         IDC_SET_HOVERPREVIEW => Some(st.draft.hover_preview),
@@ -39,6 +40,9 @@ pub(super) fn settings_toggle_general_flip(st: &mut SettingsWndState, cid: isize
         }
         IDC_SET_SKIP_WINDOW_ENABLE => {
             st.draft.paste_target_skip_enabled = !st.draft.paste_target_skip_enabled
+        }
+        IDC_SET_RICH_TEXT => {
+            st.draft.rich_text_clipboard_enabled = !st.draft.rich_text_clipboard_enabled
         }
         IDC_SET_AUTOHIDE_BLUR => st.draft.auto_hide_on_blur = !st.draft.auto_hide_on_blur,
         IDC_SET_EDGEHIDE => st.draft.edge_auto_hide = !st.draft.edge_auto_hide,

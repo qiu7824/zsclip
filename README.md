@@ -17,7 +17,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.3>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.4>
 
 ## 项目定位
 

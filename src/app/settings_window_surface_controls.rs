@@ -22,6 +22,7 @@ fn is_general_surface_control(id: isize) -> bool {
             | IDC_SET_PERSIST_SEARCH
             | IDC_SET_PASTE_SOUND_ENABLE
             | IDC_SET_SKIP_WINDOW_ENABLE
+            | IDC_SET_RICH_TEXT
             | IDC_SET_AUTOHIDE_BLUR
             | IDC_SET_EDGEHIDE
             | IDC_SET_HOVERPREVIEW

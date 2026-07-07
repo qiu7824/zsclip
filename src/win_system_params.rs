@@ -51,6 +51,7 @@ pub const IDC_SET_LAN_RECEIVE_MODE: isize = 5092;
 pub const IDC_SET_LAN_QR_IOS: isize = 5093;
 pub const IDC_SET_LAN_COPY_PAIR: isize = 5094;
 pub const IDC_SET_LAN_COPY_SETUP: isize = 5095;
+pub const IDC_SET_RICH_TEXT: isize = 5096;
 pub const IDC_SET_PLUGIN_MAILMERGE: isize = 5050;
 pub const IDC_SET_IMAGE_PREVIEW: isize = 5051;
 pub const IDC_SET_QUICK_DELETE: isize = 5052;

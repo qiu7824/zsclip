@@ -13,6 +13,7 @@ fn text_item(text: &str) -> ClipItem {
         kind: ClipKind::Text,
         preview: build_preview(text),
         text: Some(text.to_string()),
+        rich_text_html: None,
         source_app: String::new(),
         file_paths: None,
         image_bytes: None,
@@ -709,6 +710,7 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let prelude = app_prelude_source();
     let capture = main_clipboard_capture_source();
+    let main_events = main_events_source();
 
     assert!(app.contains("mod main_clipboard_capture;"));
     assert!(prelude.contains("use super::main_clipboard_capture::*;"));
@@ -730,7 +732,20 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(capture.contains("WindowsClipboardHost::read_text"));
     assert!(capture.contains("WindowsClipboardHost::read_image_rgba"));
     assert!(capture.contains("WindowsClipboardHost::read_file_paths"));
-    assert!(capture.contains("platform_clipboard::url_format_payloads"));
+    assert!(capture.contains("platform_clipboard::snapshot_formats()"));
+    assert!(capture.contains("snapshot.has_only_custom_formats"));
+    assert!(capture.contains("snapshot.has_files"));
+    assert!(capture.contains("snapshot.has_text"));
+    assert!(capture.contains("snapshot.has_image"));
+    assert!(capture.contains("platform_clipboard::url_format_payloads_from_snapshot(&snapshot)"));
+    assert!(capture.contains("platform_clipboard::html_format_payload_from_snapshot(&snapshot)"));
+    assert!(capture.contains("pub(super) unsafe fn capture_clipboard_guarded("));
+    assert!(
+        main_events.contains("MainTimerTask::ClipboardRetry => capture_clipboard_guarded(hwnd)")
+    );
+    assert!(main_events.contains("UiEvent::ClipboardChanged => capture_clipboard_guarded(hwnd)"));
+    assert!(main_events
+        .contains("ApplicationEvent::ClipboardChanged { .. } => capture_clipboard_guarded(hwnd)"));
 }
 
 #[test]
@@ -936,6 +951,112 @@ fn item_signature_prefers_computed_payload() {
         dedupe_signature_for_item(&item, "legacy:signature"),
         text_content_signature("same text")
     );
+}
+
+#[test]
+fn rich_text_preview_summarizes_html_tables_and_decodes_entities() {
+    let html =
+        "<table><tr><th>Name</th><th>Qty</th></tr><tr><td>A&amp;B</td><td>2</td></tr></table>";
+
+    let preview = build_rich_text_preview(html, "");
+    assert!(preview.starts_with("HTML 表格 2x2"));
+    assert!(preview.contains("A&B"));
+
+    let body = rich_text_preview_text(html, "", 4, 120);
+    assert!(body.contains("Name"));
+    assert!(body.contains("Qty"));
+    assert!(body.contains("A&B"));
+}
+
+#[test]
+fn rich_text_signature_includes_html_payload() {
+    let mut item = text_item("same text");
+    item.rich_text_html = Some("<b>same text</b>".to_string());
+
+    assert_eq!(
+        dedupe_signature_for_item(&item, "legacy:signature"),
+        rich_text_content_signature("same text", "<b>same text</b>")
+    );
+    assert_ne!(
+        dedupe_signature_for_item(&item, "legacy:signature"),
+        text_content_signature("same text")
+    );
+}
+
+#[test]
+fn rich_text_html_persists_and_loads_with_full_clip_payload() {
+    crate::db_runtime::with_test_db(|| {
+        let html =
+            "<table><tr><th>Name</th><th>Qty</th></tr><tr><td>A&amp;B</td><td>2</td></tr></table>";
+        let mut item = text_item("Name\tQty\nA&B\t2");
+        item.preview = build_rich_text_preview(html, item.text.as_deref().unwrap());
+        item.rich_text_html = Some(html.to_string());
+
+        let id = db_insert_item(0, &item, None)?;
+        let loaded = db_load_item_full(id).unwrap();
+
+        assert!(loaded.preview.starts_with("HTML 表格 2x2"));
+        assert_eq!(loaded.rich_text_html.as_deref(), Some(html));
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn rich_text_setting_defaults_off_and_is_bound_to_native_settings_ui() {
+    let settings_model = include_str!("settings_model.rs");
+    let startup = settings_general_page_startup_source();
+    let toggle_general = settings_toggle_state_general_source();
+    let owner_draw_roles = settings_owner_draw_roles_source();
+    let surface_controls = settings_window_surface_controls_source();
+
+    assert!(!AppSettings::default().rich_text_clipboard_enabled);
+    assert!(settings_model.contains("(\"rich_text\", \"富文本支持\", Toggle)"));
+    assert!(settings_model
+        .contains("\"rich_text\" => native_setting_binding(\"rich_text_clipboard_enabled\")"));
+    assert!(settings_model.contains("\"rich_text\" => native_toggle_route(5096)"));
+    assert!(startup.contains("IDC_SET_RICH_TEXT"));
+    assert!(toggle_general.contains("IDC_SET_RICH_TEXT"));
+    assert!(owner_draw_roles.contains("IDC_SET_RICH_TEXT"));
+    assert!(surface_controls.contains("IDC_SET_RICH_TEXT"));
+}
+
+#[test]
+fn rich_text_summary_items_trigger_full_payload_resolution() {
+    let state_runtime = app_state_runtime_source();
+
+    assert!(state_runtime.contains("fn item_payload_missing(item: &ClipItem)"));
+    assert!(state_runtime.contains("item.rich_text_html.is_none()"));
+    assert!(state_runtime.contains("item.preview.trim_start().starts_with(\"HTML\")"));
+    assert!(state_runtime.contains("self.load_item_full_cached(item.id)"));
+}
+
+#[test]
+fn canceled_issue_23_memory_only_mode_is_not_present() {
+    let sources = [
+        include_str!("app/state.rs"),
+        include_str!("settings_model.rs"),
+        include_str!("win_system_params.rs"),
+        include_str!("app/main_clipboard_capture.rs"),
+        include_str!("app/settings_general_page_startup.rs"),
+        include_str!("app/settings_toggle_state_general.rs"),
+    ]
+    .join("\n");
+
+    let forbidden_terms = vec![
+        ["history", "_memory"].concat(),
+        ["private", "_capture"].concat(),
+        ["IDC_SET", "_PRIVATE_CAPTURE"].concat(),
+        ["next", "_memory_item_id"].concat(),
+        ["memory", "_only_capture"].concat(),
+        ["只驻留", "内存"].concat(),
+    ];
+    for forbidden in forbidden_terms {
+        assert!(
+            !sources.contains(&forbidden),
+            "canceled issue #23 memory-only mode residue found: {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -1732,6 +1853,42 @@ fn windows_clipboard_host_implements_clipboard_trait_contract() {
     assert!(
         clipboard_host.contains("pub(crate) fn set_file_paths"),
         "missing CF_HDROP write host"
+    );
+    assert!(
+        clipboard_host.contains("pub(crate) struct ClipboardFormatSnapshot"),
+        "missing delayed-render safe clipboard format snapshot"
+    );
+    assert!(
+        clipboard_host.contains("pub(crate) fn snapshot_formats()"),
+        "missing delayed-render safe snapshot entry point"
+    );
+    assert!(
+        clipboard_host.contains("pub(crate) fn should_ignore_capture_by_snapshot"),
+        "capture ignore logic should consume the safe snapshot"
+    );
+    assert!(
+        clipboard_host.contains("pub(crate) fn html_format_payload_from_snapshot"),
+        "missing CF_HTML payload reader for rich text capture"
+    );
+    assert!(
+        clipboard_host.contains("pub(crate) fn url_format_payloads_from_snapshot"),
+        "URL payload reads should happen after safe enumeration"
+    );
+    let snapshot_start = clipboard_host
+        .find("pub(crate) fn snapshot_formats()")
+        .unwrap();
+    let snapshot_end = clipboard_host[snapshot_start..]
+        .find("\nfn hdrop_paths")
+        .map(|offset| snapshot_start + offset)
+        .unwrap();
+    let snapshot_block = &clipboard_host[snapshot_start..snapshot_end];
+    assert!(
+        !snapshot_block.contains("data_handle("),
+        "snapshot_formats must not call GetClipboardData through data_handle"
+    );
+    assert!(
+        !snapshot_block.contains("GetClipboardData("),
+        "snapshot_formats must not trigger delayed rendering while enumerating formats"
     );
     assert!(
         clipboard_host.contains("pub(crate) fn sequence_number"),
@@ -3257,6 +3414,8 @@ fn windows_settings_general_page_lives_outside_hosts_rs() {
         .contains("pub(super) unsafe fn settings_create_general_startup_behavior_page("));
     assert!(general_startup.contains("IDC_SET_AUTOSTART"));
     assert!(general_startup.contains("IDC_SET_MAX"));
+    assert!(general_startup.contains("IDC_SET_RICH_TEXT"));
+    assert!(general_startup.contains("富文本支持"));
     assert!(general_startup.contains("IDC_SET_PASTE_SOUND_KIND"));
     assert!(general_window
         .contains("pub(super) unsafe fn settings_create_general_window_position_page("));
@@ -4001,6 +4160,8 @@ fn windows_settings_toggle_state_lives_outside_hosts_rs() {
     assert!(toggle_general.contains("pub(super) fn settings_toggle_general_get"));
     assert!(toggle_general.contains("pub(super) fn settings_toggle_general_flip"));
     assert!(toggle_general.contains("IDC_SET_AUTOSTART"));
+    assert!(toggle_general.contains("IDC_SET_RICH_TEXT"));
+    assert!(toggle_general.contains("rich_text_clipboard_enabled"));
     assert!(toggle_general.contains("st.draft.quick_delete_button"));
     assert!(toggle_cloud.contains("pub(super) fn settings_toggle_cloud_get"));
     assert!(toggle_cloud.contains("pub(super) fn settings_toggle_cloud_flip"));
@@ -5394,9 +5555,14 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains("WizardForm.TasksList.Checked[TaskIndex]"));
     assert!(workflow.contains("Check: ShouldDisableAutostart"));
     assert!(workflow.contains("Flags: deletevalue"));
-    assert!(workflow.contains("zsclip-v0.9.9.3-resources.zip"));
+    assert!(workflow.contains("zsclip-v0.9.9.4-resources.zip"));
+    assert!(workflow.contains("name: Android test APK"));
+    assert!(workflow.contains("gradle assembleDebug"));
+    assert!(workflow.contains("zsclip-android-test.apk"));
+    assert!(workflow.contains("- android"));
     assert!(workflow.contains("Package resource bundle"));
-    assert!(workflow.contains("release-assets/zsclip-v0.9.9.3-resources.zip"));
+    assert!(workflow.contains("release-assets/zsclip-v0.9.9.4-resources.zip"));
+    assert!(workflow.contains("release-assets/zsclip-android-test.apk"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
 

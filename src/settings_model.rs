@@ -514,7 +514,7 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 1,
+        rows: 2,
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -2848,6 +2848,7 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "hover_preview" => native_setting_binding("hover_preview"),
         "vv_mode" => native_setting_binding("vv_mode_enabled"),
         "image_preview" => native_setting_binding("image_preview_enabled"),
+        "rich_text" => native_setting_binding("rich_text_clipboard_enabled"),
         "quick_delete" => native_setting_binding("quick_delete_button"),
         "max_items" => native_setting_binding("max_items"),
         "click_hide" => native_setting_binding("click_hide"),
@@ -2964,6 +2965,7 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "vv_mode" => native_toggle_route(5054),
         "image_preview" => native_toggle_route(5051),
         "quick_delete" => native_toggle_route(5052),
+        "rich_text" => native_toggle_route(5096),
         "max_items" => native_dropdown_route(5015),
         "click_hide" => native_toggle_route(5038),
         "paste_move_top" => native_toggle_route(5063),
@@ -3093,7 +3095,10 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         &sections,
         SettingsPage::General,
         1,
-        &[("max_items", "最大保存条数", Dropdown)],
+        &[
+            ("max_items", "最大保存条数", Dropdown),
+            ("rich_text", "富文本支持", Toggle),
+        ],
     );
     push_native_controls(
         &mut controls,

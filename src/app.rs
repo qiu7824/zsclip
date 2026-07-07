@@ -144,7 +144,7 @@ mod vv_popup;
 mod windows_messages;
 
 pub(crate) use self::constants::TRAY_UID;
-pub(crate) use self::data::ensure_item_image_bytes;
+pub(crate) use self::data::{ensure_item_image_bytes, rich_text_preview_text};
 pub(crate) use self::main_edge_auto_hide::{
     clear_edge_dock_state, note_window_moved_for_edge_hide, try_restore_edge_hidden_window,
 };

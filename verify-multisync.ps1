@@ -139,8 +139,8 @@ function Assert-AndroidSmokeDryRun {
 }
 
 function Assert-AndroidReleaseContract {
-    $readmePath = "release/0.9.1/android/README.md"
-    $apkPath = "release/0.9.1/android/zsclip-lan-debug.apk"
+    $readmePath = "release/0.9.9.4/android/README.md"
+    $apkPath = "release/0.9.9.4/android/zsclip-lan-debug.apk"
     if (-not (Test-Path -LiteralPath $readmePath)) {
         throw "Missing Android release README: $readmePath"
     }
@@ -155,8 +155,8 @@ function Assert-AndroidReleaseContract {
     foreach ($needle in @(
             'ZSClip Android Debug APK',
             'com.zsclip.lan',
-            'Version: `0.9.1`',
-            'Version code: `901`',
+            'Version: `0.9.9.4`',
+            'Version code: `9094`',
             'zsclip-lan-debug.apk',
             "SHA256: ``$apkHash``",
             '.\verify-multisync.ps1',
@@ -223,7 +223,7 @@ Invoke-Step "UTF-8 source and docs scan" {
         "mobile/android/app/src/test",
         "mobile/android/smoke-adb.ps1",
         "integrations/wps-taskpane",
-        "release/0.9.1/android/README.md"
+        "release/0.9.9.4/android/README.md"
     )
 }
 
@@ -260,8 +260,8 @@ if (-not $SkipAndroid) {
 Invoke-Step "Android APK metadata" {
     $metadataPath = "mobile/android/app/build/outputs/apk/debug/output-metadata.json"
     Assert-FileContains $metadataPath '"applicationId": "com.zsclip.lan"'
-    Assert-FileContains $metadataPath '"versionCode": 901'
-    Assert-FileContains $metadataPath '"versionName": "0.9.1"'
+    Assert-FileContains $metadataPath '"versionCode": 9094'
+    Assert-FileContains $metadataPath '"versionName": "0.9.9.4"'
 }
 
 Invoke-Step "Android smoke command dry-run" {
@@ -275,7 +275,7 @@ Invoke-Step "Android release package contract" {
 if (-not $SkipReleaseHash) {
     Invoke-Step "Release APK matches current build" {
         $buildApk = "mobile/android/app/build/outputs/apk/debug/app-debug.apk"
-        $releaseApk = "release/0.9.1/android/zsclip-lan-debug.apk"
+        $releaseApk = "release/0.9.9.4/android/zsclip-lan-debug.apk"
         if (-not (Test-Path -LiteralPath $buildApk)) {
             throw "Missing build APK: $buildApk"
         }

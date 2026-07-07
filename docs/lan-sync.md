@@ -37,7 +37,7 @@ gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-安装后应用名显示为 `ZSClip 多端同步`，APK 版本名为 `0.9.9`，系统快捷开关名称为 `推送到电脑`、`拉取到手机`、`多端自动同步`。Android 端支持 `zsclip://pair?host=<ip:port>` 深链，扫码后会自动填入 Windows 地址并发起配对请求；系统 `选中文本` 菜单会显示 `同步到电脑`。
+安装后应用名显示为 `ZSClip 多端同步`，APK 版本名为 `0.9.9.4`，系统快捷开关名称为 `推送到电脑`、`拉取到手机`、`多端自动同步`。Android 端支持 `zsclip://pair?host=<ip:port>` 深链，扫码后会自动填入 Windows 地址并发起配对请求；系统 `选中文本` 菜单会显示 `同步到电脑`。
 
 安装后可先用脚本做 adb 入口烟测：
 
