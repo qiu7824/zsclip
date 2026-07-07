@@ -507,7 +507,7 @@ class SettingsActivity : Activity() {
     }
 
     private fun showAbout() {
-        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.9.9"
+        val version = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.9.9.4"
         AlertDialog.Builder(this)
             .setTitle("剪贴板同步")
             .setMessage(

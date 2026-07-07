@@ -11,8 +11,8 @@ android {
         applicationId "com.zsclip.lan"
         minSdk 26
         targetSdk 35
-        versionCode 909
-        versionName "0.9.9"
+        versionCode 9094
+        versionName "0.9.9.4"
     }
 
     compileOptions {

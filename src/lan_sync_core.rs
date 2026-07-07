@@ -2302,6 +2302,7 @@ mod tests {
             kind: crate::app_core::ClipKind::Text,
             preview: "hello".to_string(),
             text: Some("hello".to_string()),
+            rich_text_html: None,
             source_app: "test".to_string(),
             file_paths: None,
             image_bytes: None,

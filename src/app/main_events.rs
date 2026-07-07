@@ -205,7 +205,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 }
             }
         }
-        MainTimerTask::ClipboardRetry => capture_clipboard(hwnd),
+        MainTimerTask::ClipboardRetry => capture_clipboard_guarded(hwnd),
         MainTimerTask::DpiFit => {
             timer::stop(hwnd, ID_TIMER_DPI_FIT);
             let ptr = get_state_ptr(hwnd);
@@ -320,7 +320,7 @@ pub(super) unsafe fn dispatch_main_ui_event(hwnd: HWND, event: UiEvent) -> bool 
         UiEvent::WindowMoved => handle_main_window_moved(hwnd),
         UiEvent::WindowMoveCompleted => handle_main_window_move_completed(hwnd),
         UiEvent::DpiChanged { dpi } => handle_main_dpi_changed(hwnd, dpi),
-        UiEvent::ClipboardChanged => capture_clipboard(hwnd),
+        UiEvent::ClipboardChanged => capture_clipboard_guarded(hwnd),
         _ => return false,
     }
     drain_main_ui_commands(hwnd);
@@ -369,7 +369,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
                 handle_vv_select(hwnd, &mut *ptr, index);
             }
         }
-        ApplicationEvent::ClipboardChanged { .. } => capture_clipboard(hwnd),
+        ApplicationEvent::ClipboardChanged { .. } => capture_clipboard_guarded(hwnd),
         ApplicationEvent::ItemsPageReady => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
@@ -497,6 +497,7 @@ pub(super) unsafe fn handle_text_processing_result(
                 kind: ClipKind::Text,
                 preview,
                 text: Some(normalized),
+                rich_text_html: None,
                 source_app: String::new(),
                 file_paths: None,
                 image_bytes: None,

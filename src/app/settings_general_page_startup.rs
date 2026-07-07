@@ -114,6 +114,14 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
     if !st.cb_max.is_null() {
         st.ownerdraw_ctrls.push(st.cb_max);
     }
+    let _ = b.own_toggle_row(
+        st,
+        "富文本支持（HTML / 表格预览）",
+        IDC_SET_RICH_TEXT,
+        sec1.left(),
+        sec1.row_y(1),
+        sec1.full_w(),
+    );
 
     let (_, btn) = b.own_toggle_row(
         st,

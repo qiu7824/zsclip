@@ -131,12 +131,10 @@ pub(super) fn browser_download_selection_should_skip(
         })
 }
 
-unsafe fn clipboard_has_image_payload_format() -> bool {
-    platform_clipboard::is_format_available(CF_BITMAP)
-        || platform_clipboard::is_format_available(CF_DIB)
-        || platform_clipboard::is_format_available(CF_DIBV5)
-        || platform_clipboard::has_named_format("PNG")
-        || platform_clipboard::has_named_format("image/png")
+fn clipboard_has_image_payload_format(
+    snapshot: &platform_clipboard::ClipboardFormatSnapshot,
+) -> bool {
+    snapshot.has_image
 }
 
 fn path_has_image_extension(path: &str) -> bool {
@@ -179,9 +177,10 @@ pub(super) fn paths_look_like_windows_screen_clip(paths: &[String]) -> bool {
             .any(|path| path_looks_like_windows_screen_clip(path))
 }
 
-unsafe fn clipboard_file_paths_should_yield_to_image(
+fn clipboard_file_paths_should_yield_to_image(
     paths: &[String],
     pixpin_format: bool,
+    snapshot: &platform_clipboard::ClipboardFormatSnapshot,
 ) -> bool {
     if paths.is_empty() {
         return false;
@@ -190,7 +189,7 @@ unsafe fn clipboard_file_paths_should_yield_to_image(
     if pixpin_format && all_image_paths {
         return true;
     }
-    clipboard_has_image_payload_format() && (pixpin_format || all_image_paths)
+    clipboard_has_image_payload_format(snapshot) && (pixpin_format || all_image_paths)
 }
 
 fn normalized_image_payload_from_paths(paths: &[String]) -> Option<(Vec<u8>, usize, usize)> {
@@ -206,6 +205,14 @@ fn normalized_image_payload_from_paths(paths: &[String]) -> Option<(Vec<u8>, usi
         }
     }
     None
+}
+
+fn clipboard_retry_delay_for_attempt(attempt: u8) -> u32 {
+    match attempt {
+        0 | 1 => CLIPBOARD_RETRY_DELAY_FAST_MS,
+        2 => CLIPBOARD_RETRY_DELAY_MEDIUM_MS,
+        _ => CLIPBOARD_RETRY_DELAY_MS,
+    }
 }
 
 unsafe fn schedule_clipboard_retry_with_limit(
@@ -226,13 +233,14 @@ unsafe fn schedule_clipboard_retry_with_limit(
         return false;
     }
     state.clipboard_retry_attempts += 1;
+    let delay_ms = clipboard_retry_delay_for_attempt(state.clipboard_retry_attempts);
     if state.clipboard_retry_timer {
-        timer::start(hwnd, ID_TIMER_CLIPBOARD_RETRY, CLIPBOARD_RETRY_DELAY_MS);
+        timer::start(hwnd, ID_TIMER_CLIPBOARD_RETRY, delay_ms);
     } else {
         start_flagged_timer(
             hwnd,
             ID_TIMER_CLIPBOARD_RETRY,
-            CLIPBOARD_RETRY_DELAY_MS,
+            delay_ms,
             &mut state.clipboard_retry_timer,
         );
     }
@@ -418,6 +426,7 @@ unsafe fn add_captured_image_item(
         kind: ClipKind::Image,
         preview,
         text: None,
+        rich_text_html: None,
         source_app: source_app.to_string(),
         file_paths: None,
         image_bytes,
@@ -438,22 +447,29 @@ pub(super) fn clipboard_capture_allowed(settings: &AppSettings) -> bool {
     settings.clipboard_capture_enabled
 }
 
+fn remember_clipboard_sequence(state: &mut AppState, sequence: u32) {
+    if sequence != 0 {
+        state.last_clipboard_seq = sequence;
+    }
+}
+
 pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
         return;
     }
     let state = &mut *ptr;
-    let sequence = platform_clipboard::WindowsClipboardHost::sequence_number();
+    let mut sequence = platform_clipboard::WindowsClipboardHost::sequence_number();
     if !clipboard_capture_allowed(&state.settings) {
-        if sequence != 0 {
-            state.last_clipboard_seq = sequence;
-        }
+        remember_clipboard_sequence(state, sequence);
         reset_clipboard_retry(hwnd, state);
         return;
     }
-    let ignore_capture_format =
-        platform_clipboard::WindowsClipboardHost::should_ignore_capture_by_named_format();
+
+    let snapshot = platform_clipboard::snapshot_formats();
+    if snapshot.sequence != 0 {
+        sequence = snapshot.sequence;
+    }
     if sequence != 0
         && state.clipboard_retry_sequence != 0
         && state.clipboard_retry_sequence != sequence
@@ -466,34 +482,44 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
     }
     if let Some(until) = state.ignore_clipboard_until {
         if Instant::now() < until {
-            if sequence != 0 {
-                state.last_clipboard_seq = sequence;
-            }
+            remember_clipboard_sequence(state, sequence);
             reset_clipboard_retry(hwnd, state);
             return;
         }
         state.ignore_clipboard_until = None;
     }
-    if ignore_capture_format {
-        if sequence != 0 {
-            state.last_clipboard_seq = sequence;
-        }
+    if snapshot.open_failed {
+        let _ = schedule_clipboard_retry_with_limit(
+            hwnd,
+            state,
+            sequence,
+            CLIPBOARD_RETRY_MAX_ATTEMPTS,
+        );
+        return;
+    }
+    if snapshot.has_ignore_capture_format
+        || snapshot.has_only_custom_formats
+        || platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)
+    {
+        remember_clipboard_sequence(state, sequence);
         reset_clipboard_retry(hwnd, state);
         return;
     }
-    let pixpin_format = platform_clipboard::has_named_format("PixPinData");
+    let pixpin_format = snapshot.has_named_format("PixPinData");
     let source_app = clipboard_source_app_name();
     let foreground_app = foreground_source_app_name();
     let mut prefer_long_retry = source_app_prefers_long_clipboard_retry(&source_app);
     if is_self_clipboard_source_app(&source_app) {
-        if sequence != 0 {
-            state.last_clipboard_seq = sequence;
-        }
+        remember_clipboard_sequence(state, sequence);
         reset_clipboard_retry(hwnd, state);
         return;
     }
 
-    let file_paths = platform_clipboard::WindowsClipboardHost::read_file_paths();
+    let file_paths = if snapshot.has_files {
+        platform_clipboard::WindowsClipboardHost::read_file_paths()
+    } else {
+        None
+    };
     let windows_screenshot_image_paths = file_paths
         .as_ref()
         .map(|paths| {
@@ -510,7 +536,7 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
         .as_ref()
         .map(|paths| {
             windows_screenshot_image_paths
-                || unsafe { clipboard_file_paths_should_yield_to_image(paths, pixpin_format) }
+                || clipboard_file_paths_should_yield_to_image(paths, pixpin_format, &snapshot)
         })
         .unwrap_or(false);
     if file_paths_yield_to_image {
@@ -529,7 +555,7 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
             }
             if (windows_screenshot_image_paths
                 || source_app_is_windows_screenshot_tool(&source_app))
-                && unsafe { !clipboard_has_image_payload_format() }
+                && !clipboard_has_image_payload_format(&snapshot)
             {
                 let scheduled = schedule_clipboard_retry_with_limit(
                     hwnd,
@@ -561,6 +587,7 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
             kind: ClipKind::Files,
             preview,
             text: Some(paths.join("\n")),
+            rich_text_html: None,
             source_app: source_app.clone(),
             file_paths: Some(paths),
             image_bytes: None,
@@ -577,109 +604,146 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
         return;
     }
 
-    if let Some(text) = platform_clipboard::WindowsClipboardHost::read_text() {
-        let normalized = normalize_captured_text(&text);
-        if !normalized.is_empty() {
-            let url_payloads = if source_app_is_browser(&source_app)
-                || source_app_is_browser(&foreground_app)
-                || source_app_is_clipboard_proxy(&source_app)
+    if snapshot.has_text {
+        if let Some(text) = platform_clipboard::WindowsClipboardHost::read_text() {
+            let normalized = normalize_captured_text(&text);
+            if !normalized.is_empty() {
+                let url_payloads = if source_app_is_browser(&source_app)
+                    || source_app_is_browser(&foreground_app)
+                    || source_app_is_clipboard_proxy(&source_app)
+                {
+                    platform_clipboard::url_format_payloads_from_snapshot(&snapshot)
+                } else {
+                    Vec::new()
+                };
+                if browser_download_selection_should_skip(
+                    &source_app,
+                    &foreground_app,
+                    &normalized,
+                    &url_payloads,
+                ) {
+                    reset_clipboard_retry(hwnd, state);
+                    return;
+                }
+                let rich_text_html = if state.settings.rich_text_clipboard_enabled {
+                    platform_clipboard::html_format_payload_from_snapshot(&snapshot)
+                        .filter(|html| !html.trim().is_empty())
+                } else {
+                    None
+                };
+                let preview = rich_text_html
+                    .as_deref()
+                    .map(|html| build_rich_text_preview(html, &normalized))
+                    .unwrap_or_else(|| build_preview(&normalized));
+                let sig = rich_text_html
+                    .as_deref()
+                    .map(|html| rich_text_content_signature(&normalized, html))
+                    .unwrap_or_else(|| text_content_signature(&normalized));
+                if state.consume_recent_programmatic_clipboard_signature(&sig) {
+                    reset_clipboard_retry(hwnd, state);
+                    return;
+                }
+                if state.should_skip_transient_duplicate_capture(
+                    &sig,
+                    source_app.as_str(),
+                    sequence,
+                ) {
+                    reset_clipboard_retry(hwnd, state);
+                    return;
+                }
+                let candidate = ClipItem {
+                    id: 0,
+                    kind: ClipKind::Text,
+                    preview,
+                    text: Some(normalized),
+                    rich_text_html,
+                    source_app: source_app.clone(),
+                    file_paths: None,
+                    image_bytes: None,
+                    image_path: None,
+                    image_width: 0,
+                    image_height: 0,
+                    pinned: false,
+                    group_id: 0,
+                    created_at: String::new(),
+                };
+                state.add_clip_item(candidate, sig);
+                reset_clipboard_retry(hwnd, state);
+                repaint_main_window(hwnd, true);
+                return;
+            }
+        }
+    }
+
+    if snapshot.has_image {
+        if let Some((bytes, width, height)) =
+            platform_clipboard::WindowsClipboardHost::read_image_rgba()
+        {
+            if let Some((bytes, norm_w, norm_h)) =
+                normalize_captured_image_rgba(bytes, width, height)
             {
-                platform_clipboard::url_format_payloads()
-            } else {
-                Vec::new()
-            };
-            if browser_download_selection_should_skip(
-                &source_app,
-                &foreground_app,
-                &normalized,
-                &url_payloads,
+                let _ = add_captured_image_item(
+                    hwnd,
+                    state,
+                    bytes,
+                    norm_w,
+                    norm_h,
+                    source_app.as_str(),
+                    sequence,
+                );
+                return;
+            } else if schedule_clipboard_retry_with_limit(
+                hwnd,
+                state,
+                sequence,
+                if prefer_long_retry || pixpin_format {
+                    PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
+                } else {
+                    CLIPBOARD_RETRY_MAX_ATTEMPTS
+                },
             ) {
-                reset_clipboard_retry(hwnd, state);
                 return;
-            }
-            let preview = build_preview(&normalized);
-            let sig = text_content_signature(&normalized);
-            if state.consume_recent_programmatic_clipboard_signature(&sig) {
-                reset_clipboard_retry(hwnd, state);
-                return;
-            }
-            if state.should_skip_transient_duplicate_capture(&sig, source_app.as_str(), sequence) {
-                reset_clipboard_retry(hwnd, state);
-                return;
-            }
-            let candidate = ClipItem {
-                id: 0,
-                kind: ClipKind::Text,
-                preview,
-                text: Some(normalized),
-                source_app: source_app.clone(),
-                file_paths: None,
-                image_bytes: None,
-                image_path: None,
-                image_width: 0,
-                image_height: 0,
-                pinned: false,
-                group_id: 0,
-                created_at: String::new(),
-            };
-            state.add_clip_item(candidate, sig);
-            reset_clipboard_retry(hwnd, state);
-            repaint_main_window(hwnd, true);
-            return;
-        }
-    }
-
-    if let Some((bytes, width, height)) =
-        platform_clipboard::WindowsClipboardHost::read_image_rgba()
-    {
-        if let Some((bytes, norm_w, norm_h)) = normalize_captured_image_rgba(bytes, width, height) {
-            let _ = add_captured_image_item(
-                hwnd,
-                state,
-                bytes,
-                norm_w,
-                norm_h,
-                source_app.as_str(),
-                sequence,
-            );
-            return;
-        } else if schedule_clipboard_retry_with_limit(
-            hwnd,
-            state,
-            sequence,
-            if prefer_long_retry || pixpin_format {
-                PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
             } else {
-                CLIPBOARD_RETRY_MAX_ATTEMPTS
-            },
-        ) {
-            return;
-        } else {
-            reset_clipboard_retry(hwnd, state);
+                reset_clipboard_retry(hwnd, state);
+            }
+        }
+
+        if let Some((bytes, width, height)) = read_windows_clipboard_bitmap_rgba() {
+            if let Some((bytes, norm_w, norm_h)) =
+                normalize_captured_image_rgba(bytes, width, height)
+            {
+                let _ = add_captured_image_item(
+                    hwnd,
+                    state,
+                    bytes,
+                    norm_w,
+                    norm_h,
+                    source_app.as_str(),
+                    sequence,
+                );
+                return;
+            }
         }
     }
 
-    if let Some((bytes, width, height)) = read_windows_clipboard_bitmap_rgba() {
-        if let Some((bytes, norm_w, norm_h)) = normalize_captured_image_rgba(bytes, width, height) {
-            let _ = add_captured_image_item(
-                hwnd,
-                state,
-                bytes,
-                norm_w,
-                norm_h,
-                source_app.as_str(),
-                sequence,
-            );
-            return;
-        }
-    }
-
-    if sequence != 0 {
+    if sequence != 0 && snapshot.has_any_standard_format {
         let retry_limit = if prefer_long_retry || pixpin_format {
             PIXPIN_CLIPBOARD_RETRY_MAX_ATTEMPTS
         } else {
             CLIPBOARD_RETRY_MAX_ATTEMPTS
         };
         let _ = schedule_clipboard_retry_with_limit(hwnd, state, sequence, retry_limit);
+    }
+}
+
+pub(super) unsafe fn capture_clipboard_guarded(hwnd: HWND) {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        capture_clipboard(hwnd);
+    }));
+    if result.is_err() {
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() {
+            reset_clipboard_retry(hwnd, &mut *ptr);
+        }
     }
 }

@@ -70,6 +70,7 @@ fn validate_schema_column_definition(
             Ok("signature TEXT NOT NULL DEFAULT ''")
         }
         ("items", "text_data", "text_data TEXT") => Ok("text_data TEXT"),
+        ("items", "rich_text_html", "rich_text_html TEXT") => Ok("rich_text_html TEXT"),
         ("items", "source_app", "source_app TEXT NOT NULL DEFAULT ''") => {
             Ok("source_app TEXT NOT NULL DEFAULT ''")
         }
@@ -152,6 +153,7 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
         "signature TEXT NOT NULL DEFAULT ''",
     )?;
     ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
+    ensure_table_column(conn, "items", "rich_text_html", "rich_text_html TEXT")?;
     ensure_table_column(
         conn,
         "items",
@@ -269,6 +271,7 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             preview TEXT NOT NULL,
             signature TEXT NOT NULL DEFAULT '',
             text_data TEXT,
+            rich_text_html TEXT,
             source_app TEXT NOT NULL DEFAULT '',
             file_paths TEXT,
             image_data BLOB,
@@ -698,7 +701,7 @@ pub(crate) fn native_clip_item(
 ) -> rusqlite::Result<Option<crate::app_core::ClipItem>> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id, kind, COALESCE(preview, ''), text_data, COALESCE(source_app, ''), \
+            "SELECT id, kind, COALESCE(preview, ''), text_data, rich_text_html, COALESCE(source_app, ''), \
              file_paths, image_data, COALESCE(image_path, ''), image_width, image_height, \
              pinned, group_id, COALESCE(created_at, '') FROM items WHERE id=?",
             [item_id],
@@ -706,27 +709,28 @@ pub(crate) fn native_clip_item(
                 let kind_raw: String = row.get(1)?;
                 let kind = native_clip_kind(&kind_raw);
                 let text: Option<String> = row.get(3)?;
-                let file_paths_raw: Option<String> = row.get(5)?;
+                let file_paths_raw: Option<String> = row.get(6)?;
                 let file_paths = if kind == crate::app_core::ClipKind::Files {
                     split_native_paths_blob(file_paths_raw.or_else(|| text.clone()))
                 } else {
                     split_native_paths_blob(file_paths_raw)
                 };
-                let image_path: String = row.get(7)?;
+                let image_path: String = row.get(8)?;
                 Ok(crate::app_core::ClipItem {
                     id: row.get(0)?,
                     kind,
                     preview: row.get(2)?,
                     text,
-                    source_app: row.get(4)?,
+                    rich_text_html: row.get(4)?,
+                    source_app: row.get(5)?,
                     file_paths,
-                    image_bytes: row.get(6)?,
+                    image_bytes: row.get(7)?,
                     image_path: (!image_path.trim().is_empty()).then_some(image_path),
-                    image_width: row.get::<_, i64>(8)?.max(0) as usize,
-                    image_height: row.get::<_, i64>(9)?.max(0) as usize,
-                    pinned: row.get::<_, i64>(10)? == 1,
-                    group_id: row.get(11)?,
-                    created_at: row.get(12)?,
+                    image_width: row.get::<_, i64>(9)?.max(0) as usize,
+                    image_height: row.get::<_, i64>(10)?.max(0) as usize,
+                    pinned: row.get::<_, i64>(11)? == 1,
+                    group_id: row.get(12)?,
+                    created_at: row.get(13)?,
                 })
             },
         )

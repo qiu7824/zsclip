@@ -1,1 +1,1 @@
-pub(crate) const APP_VERSION: &str = "0.9.9.3";
+pub(crate) const APP_VERSION: &str = "0.9.9.4";

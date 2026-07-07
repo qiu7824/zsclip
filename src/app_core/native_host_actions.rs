@@ -1263,6 +1263,7 @@ pub(crate) fn native_host_clip_item_from_projection(
         kind: item.kind,
         preview: item.preview.clone(),
         text: Some(item.preview.clone()),
+        rich_text_html: None,
         source_app: item.title.clone(),
         file_paths: None,
         image_bytes: None,

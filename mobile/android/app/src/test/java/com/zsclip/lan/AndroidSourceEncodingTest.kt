@@ -106,8 +106,8 @@ class AndroidSourceEncodingTest {
         val gitignore = File(androidRoot, ".gitignore").readText(Charsets.UTF_8)
         val smokeScript = File(androidRoot, "smoke-adb.ps1").readText(Charsets.UTF_8)
 
-        assertTrue(appGradle.contains("versionCode 909"))
-        assertTrue(appGradle.contains("versionName \"0.9.9\""))
+        assertTrue(appGradle.contains("versionCode 9094"))
+        assertTrue(appGradle.contains("versionName \"0.9.9.4\""))
         assertTrue(appGradle.contains("androidx.core:core-ktx"))
         assertTrue(appGradle.contains("androidx.work:work-runtime-ktx"))
         assertTrue(gradleProperties.lines().contains("android.useAndroidX=true"))
