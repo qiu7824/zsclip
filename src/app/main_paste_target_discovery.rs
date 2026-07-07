@@ -14,6 +14,11 @@ unsafe fn paste_window_class_name(hwnd: HWND) -> String {
     platform_window::class_name(hwnd)
 }
 
+fn paste_window_class_is_zsclip(class_name: &str) -> bool {
+    class_name.eq_ignore_ascii_case(CLASS_NAME)
+        || class_name.eq_ignore_ascii_case(QUICK_CLASS_NAME)
+}
+
 pub(super) fn paste_target_skip_classes(settings: &AppSettings) -> &str {
     if settings.paste_target_skip_enabled {
         &settings.paste_target_skip_class_names
@@ -33,6 +38,14 @@ pub(super) unsafe fn paste_window_class_is_skipped(hwnd: HWND, skip_class_names:
     paste_skip_class_tokens(skip_class_names)
         .iter()
         .any(|item| item == &class_name)
+}
+
+pub(super) unsafe fn paste_window_is_zsclip(hwnd: HWND) -> bool {
+    if hwnd.is_null() || is_app_window(hwnd) {
+        return !hwnd.is_null();
+    }
+    let class_name = paste_window_class_name(hwnd);
+    paste_window_class_is_zsclip(class_name.trim())
 }
 
 pub(super) fn append_unique_skip_class_name(class_names: &str, class_name: &str) -> String {
@@ -60,7 +73,7 @@ pub(super) unsafe fn is_viable_paste_window(
     app_hwnd: HWND,
     skip_class_names: &str,
 ) -> bool {
-    if hwnd.is_null() || hwnd == app_hwnd || is_app_window(hwnd) {
+    if hwnd.is_null() || hwnd == app_hwnd || paste_window_is_zsclip(hwnd) {
         return false;
     }
     if !platform_window::is_visible(hwnd)

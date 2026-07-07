@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "0.9.9.4"
+        default: "0.9.9.5"
   push:
     branches:
       - main
@@ -53,7 +53,7 @@ jobs:
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\剪贴板.exe
           Copy-Item target\release\zsclip.exe dist\installer-source\剪贴板.exe
           @'
-          剪贴板 0.9.9.4 - Windows
+          剪贴板 0.9.9.5 - Windows
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -68,7 +68,7 @@ jobs:
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           $installerScript = @'
           #define MyAppName "剪贴板"
-          #define MyAppVersion "0.9.9.4"
+          #define MyAppVersion "0.9.9.5"
           #define MyAppPublisher "qiu7824"
           #define MyAppURL "https://github.com/qiu7824/zsclip"
           #define MyAppExeName "剪贴板.exe"
@@ -293,7 +293,7 @@ jobs:
           Copy-Item dist\installer-source\INSTALL.txt dist\installer-source-no-lan\INSTALL.txt -Force
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64-no-lan\剪贴板.exe -Force
           @'
-          剪贴板 0.9.9.4 - Windows 无局域网同步便携版
+          剪贴板 0.9.9.5 - Windows 无局域网同步便携版
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -322,14 +322,14 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.4-setup.exe
-          path: dist/zsclip-v0.9.9.4-setup.exe
+          name: zsclip-v0.9.9.5-setup.exe
+          path: dist/zsclip-v0.9.9.5-setup.exe
           if-no-files-found: error
       - name: Upload Windows no-lan installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.4-setup-no-lan.exe
-          path: dist/zsclip-v0.9.9.4-setup-no-lan.exe
+          name: zsclip-v0.9.9.5-setup-no-lan.exe
+          path: dist/zsclip-v0.9.9.5-setup-no-lan.exe
           if-no-files-found: error
       - name: Upload Windows portable package
         uses: actions/upload-artifact@v7
@@ -346,7 +346,7 @@ jobs:
       - name: Package resource bundle
         shell: pwsh
         run: |
-          $resourceRoot = "dist\zsclip-v0.9.9.4-resources"
+          $resourceRoot = "dist\zsclip-v0.9.9.5-resources"
           if (Test-Path $resourceRoot) {
             Remove-Item -LiteralPath $resourceRoot -Recurse -Force
           }
@@ -361,12 +361,12 @@ jobs:
               Copy-Item -Path $file -Destination $resourceRoot -Force
             }
           }
-          Compress-Archive -Path "$resourceRoot\*" -DestinationPath "dist\zsclip-v0.9.9.4-resources.zip" -Force
+          Compress-Archive -Path "$resourceRoot\*" -DestinationPath "dist\zsclip-v0.9.9.5-resources.zip" -Force
       - name: Upload resource bundle
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.4-resources.zip
-          path: dist/zsclip-v0.9.9.4-resources.zip
+          name: zsclip-v0.9.9.5-resources.zip
+          path: dist/zsclip-v0.9.9.5-resources.zip
           if-no-files-found: error
 
   macos:
@@ -450,9 +450,9 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
-            <string>0.9.9.4</string>
+            <string>0.9.9.5</string>
             <key>CFBundleVersion</key>
-            <string>0.9.9.4</string>
+            <string>0.9.9.5</string>
             <key>NSHighResolutionCapable</key>
             <true/>
           </dict>
@@ -464,7 +464,7 @@ jobs:
           cp -R dist/ZSClip.app dist/dmg-root/ZSClip.app
           ln -s /Applications dist/dmg-root/Applications
           cat > dist/dmg-root/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.4 - macOS ${{ matrix.display_arch }}
+          ZSClip 0.9.9.5 - macOS ${{ matrix.display_arch }}
 
           安装/运行:
           1. 打开 DMG。
@@ -477,7 +477,7 @@ jobs:
             xattr -dr com.apple.quarantine /Applications/ZSClip.app
           - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
           TXT
-          hdiutil create -volname "ZSClip 0.9.9.4 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
+          hdiutil create -volname "ZSClip 0.9.9.5 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
@@ -547,7 +547,7 @@ jobs:
           Categories=Utility;
           DESKTOP
           cat > dist/zsclip-linux-x86_64/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.4 - Linux x86_64
+          ZSClip 0.9.9.5 - Linux x86_64
 
           安装/运行:
           1. 解压: tar -xzf zsclip-linux-x86_64.tar.gz
@@ -570,7 +570,7 @@ jobs:
           cp dist/zsclip-linux-x86_64/share/applications/zsclip.desktop dist/deb/usr/share/applications/zsclip.desktop
           cat > dist/deb/DEBIAN/control <<'CONTROL'
           Package: zsclip
-          Version: 0.9.9.4
+          Version: 0.9.9.5
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -643,9 +643,9 @@ jobs:
         run: |
           set +e
           cat > release-notes.md <<'NOTES'
-          # ZSClip 0.9.9.4
+          # ZSClip 0.9.9.5
 
-          ## 从 0.9.0 到 0.9.9.4 的主要更新
+          ## 从 0.9.0 到 0.9.9.5 的主要更新
 
           ### 多端同步与移动端
           - 完善局域网同步链路，补齐设备发现、配对审批、信任设备保存、后台同步和能力协商。
@@ -666,11 +666,11 @@ jobs:
           - Windows 提供安装器、无局域网同步安装器和便携包。
           - macOS/Linux 原生 host 继续作为测试包上传，便于目标机验证原生 UI、剪贴板捕获和生命周期。
           - GitHub Actions 当前向 Release 上传 Windows 完整安装包、Windows 无局域网同步安装包、Windows 便携包、Windows 无局域网同步便携包，以及 Android/macOS/Linux 测试包。
-          - 附带上传 `zsclip-v0.9.9.4-resources.zip`，用于检查图标、文档、语言和集成资源。
+          - 附带上传 `zsclip-v0.9.9.5-resources.zip`，用于检查图标、文档、语言和集成资源。
           - 发布流程会自动上传 Release assets，并同步更新本 Release notes。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v0.9.9.4-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9.4-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v0.9.9.5-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9.5-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
           - Android 测试包: 下载 `zsclip-android-test.apk`。
           - macOS 测试包: Apple Silicon 下载 `zsclip-macos-arm64.dmg`，Intel 下载 `zsclip-macos-x86_64.dmg`。
           - Linux 测试包: Debian/Ubuntu 可试用 `zsclip-linux-x86_64.deb`，其他发行版可下载 `zsclip-linux-x86_64.tar.gz`。
@@ -696,19 +696,19 @@ jobs:
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
             zsclip-windows-x86_64-setup.exe \
-            zsclip-v0.9.9.4-setup.exe \
-            zsclip-v0.9.9.4-setup-no-lan.exe \
-            zsclip-v0.9.9.4-resources.zip
+            zsclip-v0.9.9.5-setup.exe \
+            zsclip-v0.9.9.5-setup-no-lan.exe \
+            zsclip-v0.9.9.5-resources.zip
           do
             gh release delete-asset "$TAG_NAME" "$stale" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           done
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.4-setup.exe \
-              release-assets/zsclip-v0.9.9.4-setup-no-lan.exe \
+              release-assets/zsclip-v0.9.9.5-setup.exe \
+              release-assets/zsclip-v0.9.9.5-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
-              release-assets/zsclip-v0.9.9.4-resources.zip \
+              release-assets/zsclip-v0.9.9.5-resources.zip \
               release-assets/zsclip-android-test.apk \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
@@ -723,11 +723,11 @@ jobs:
             fi
           else
             gh release create "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.4-setup.exe \
-              release-assets/zsclip-v0.9.9.4-setup-no-lan.exe \
+              release-assets/zsclip-v0.9.9.5-setup.exe \
+              release-assets/zsclip-v0.9.9.5-setup-no-lan.exe \
               release-assets/zsclip-windows-x86_64-portable.zip \
               release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
-              release-assets/zsclip-v0.9.9.4-resources.zip \
+              release-assets/zsclip-v0.9.9.5-resources.zip \
               release-assets/zsclip-android-test.apk \
               release-assets/zsclip-macos-arm64.dmg \
               release-assets/zsclip-macos-x86_64.dmg \
@@ -749,11 +749,11 @@ jobs:
           fi
           gh release view "$TAG_NAME" --repo "$GH_REPO" --json tagName,targetCommitish,assets --jq '.tagName + " " + (.targetCommitish // "") + "\n" + (.assets[].name)' | tee release-verify.log
           for required in \
-            zsclip-v0.9.9.4-setup.exe \
-            zsclip-v0.9.9.4-setup-no-lan.exe \
+            zsclip-v0.9.9.5-setup.exe \
+            zsclip-v0.9.9.5-setup-no-lan.exe \
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
-            zsclip-v0.9.9.4-resources.zip \
+            zsclip-v0.9.9.5-resources.zip \
             zsclip-android-test.apk \
             zsclip-macos-arm64.dmg \
             zsclip-macos-x86_64.dmg \
@@ -766,11 +766,11 @@ jobs:
             fi
           done
           for required in \
-            zsclip-v0.9.9.4-setup.exe \
-            zsclip-v0.9.9.4-setup-no-lan.exe \
+            zsclip-v0.9.9.5-setup.exe \
+            zsclip-v0.9.9.5-setup-no-lan.exe \
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
-            zsclip-v0.9.9.4-resources.zip \
+            zsclip-v0.9.9.5-resources.zip \
             zsclip-android-test.apk \
             zsclip-macos-arm64.dmg \
             zsclip-macos-x86_64.dmg \
