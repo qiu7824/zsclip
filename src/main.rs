@@ -63,7 +63,7 @@ mod windows_text_input_dialog;
 #[cfg(any(target_os = "windows", test))]
 mod windows_win32_adapter;
 mod zsclip_product_adapter;
-pub mod zsui;
+pub use zsui;
 
 #[cfg(target_os = "windows")]
 fn main() {

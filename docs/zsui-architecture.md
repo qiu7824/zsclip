@@ -7,7 +7,9 @@ declaration into native Windows, macOS and Linux capabilities.
 
 ## Module Shape
 
-The public API lives in `src/zsui/`:
+The public API lives in the standalone `zsui` crate (`E:\rust\zsui/src/`).
+ZSClip keeps `zsclip::zsui` as a crate re-export so existing product and host
+code can migrate without changing every call site at once:
 
 - `mod.rs`: public exports.
 - `core.rs`: ids, `Command`, `AppEvent`, dialogs, file picker specs and
@@ -23,9 +25,9 @@ The public API lives in `src/zsui/`:
 - `host.rs`: `ZsuiHost`, `MemoryHost` and the current `PlatformHost` scaffold.
 
 `src/app_core/*` remains the richer current ZSClip protocol layer. It already
-contains many native host contracts and product adapter plans. `src/zsui` is
-the smaller public facade that application authors and AI agents can use as the
-stable starting point.
+contains many native host contracts and product adapter plans. The external
+`zsui` crate is the smaller public facade that application authors and AI
+agents can use as the stable starting point.
 
 ## Host Trait Boundary
 
@@ -49,6 +51,13 @@ Window capabilities are split into the general native window surface plus
 feature-level support for resize policy, native decorations, always-on-top and
 transparent windows, so a host can accept the declaration and still report the
 native fallback it used.
+
+The standalone crate also includes `NativeWindowHost` plus the convenience
+`native_window("Title").run()` builder for a minimal real native window on
+Windows, macOS and Linux. Full product hosts still own native controls, menus,
+dialogs and product event routing.
+Android and Harmony are present as explicit mobile capability scaffolds, not
+complete runtime hosts yet.
 
 ## Data Model Rules
 
@@ -83,7 +92,7 @@ capability model.
 
 1. Keep the existing Windows main flow running through `src/app/*` and
    `src/platform/*`.
-2. Use `src/zsui` for new declaration tests and examples.
+2. Use the standalone `zsui` crate for new declaration tests and examples.
 3. Gradually adapt Windows platform modules to implement `ZsuiHost` operations
    for real windows, tray menus, hotkeys, clipboard, file picker and dialogs.
 4. Keep macOS and Linux conforming to the same trait with partial or stub
