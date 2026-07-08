@@ -2,10 +2,12 @@
 
 ## Current API Snapshot
 
-The new public framework-shaped entry point is `src/zsui/`. It is intentionally
-small and declaration-first, so application code and AI tools can read or
-generate one Rust UI description without importing Win32, AppKit, GTK or
-ZSClip product modules.
+The public framework-shaped entry point now lives in the standalone
+`zsui` crate at `E:\rust\zsui` / `https://github.com/qiu7824/zsui`.
+ZSClip re-exports that crate as `zsclip::zsui` for compatibility. The API is
+intentionally small and declaration-first, so application code and AI tools can
+read or generate one Rust UI description without importing Win32, AppKit, GTK
+or ZSClip product modules.
 
 Minimal declaration:
 
@@ -38,7 +40,21 @@ let runtime = app("ZSClip")
     .run_with_host(&mut host)?;
 ```
 
-The first version exports these stable declaration types:
+For a minimal real native OS window on Windows, macOS or Linux, the standalone
+crate now exposes:
+
+```rust
+zsui::native_window("ZSUI").size(900, 620).run()?;
+```
+
+This path uses the crate's `NativeWindowHost` to create an actual platform
+window event loop while keeping the richer product UI hosts in ZSClip.
+Android and Harmony are now named in the standalone crate's capability model
+as mobile scaffolds; they still need dedicated Activity/Ability runtime hosts
+before they can create mobile native surfaces.
+
+The first standalone version exports these stable declaration and protocol
+types:
 
 - `WindowSpec`
 - `Window`
@@ -52,6 +68,9 @@ The first version exports these stable declaration types:
 - `Command`
 - `AppEvent`
 - `HostCapabilities`
+- shared geometry / command / event / layout / component / render protocols
+- required host surfaces for main/settings/dialog ingress
+- native settings control specs, mappers and control host contracts
 
 The central backend trait is `ZsuiHost`. It covers creating a main window,
 showing/hiding a window, creating a tray/status menu, registering global
@@ -807,7 +826,7 @@ Windows message handling, class names or drawing helpers.
 ## Naming
 
 - Framework name: `ZSUI`
-- Current public API source of truth: `src/zsui/`
+- Current public API source of truth: standalone `zsui` crate (`E:\rust\zsui/src/`)
 - Framework manifest source: `src/app_core/zsui.rs`
 - UI surface protocol source: `src/app_core/ui_surface_protocol.rs`
 - Command protocol source: `src/app_core/command_protocol.rs`

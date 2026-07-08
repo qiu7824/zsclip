@@ -18,6 +18,7 @@ arboard = "3.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+zsui = { path = "../zsui" }
 png = "0.17"
 image = { version = "0.25", default-features = false, features = ["bmp"] }
 base64 = "0.22"

@@ -1,6 +1,6 @@
 # ZSUI Platform Matrix
 
-This matrix describes the new `src/zsui` public API, the recording
+This matrix describes the standalone `zsui` public API, the recording
 `ZsuiHost` scaffold and the native main-window bridge used by current
 Win32/AppKit/GTK startup paths. It does not remove or downgrade the existing
 Windows ZSClip implementation. Windows still runs through the current
@@ -58,7 +58,7 @@ effective native options and any `degraded_capabilities`.
 
 Windows is the reference implementation for existing ZSClip behavior. Native
 windowing, tray, menus, hotkeys, clipboard, dialogs, file picker and paste
-target code already exist in `src/app/*` and `src/platform/*`; `src/zsui` now
+target code already exist in `src/app/*` and `src/platform/*`; the standalone `zsui` crate now
 defines the smaller trait those pieces can gradually implement.
 
 macOS has AppKit host work in `src/macos_app.rs`, `src/macos_appkit_adapter.rs`
