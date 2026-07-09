@@ -728,6 +728,7 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
 
     assert!(capture.contains("pub(super) unsafe fn capture_clipboard("));
     assert!(capture.contains("pub(super) fn browser_download_selection_should_skip("));
+    assert!(capture.contains("fn source_app_uses_fragile_delayed_clipboard_rendering("));
     assert!(capture.contains("pub(super) fn paths_look_like_windows_screen_clip("));
     assert!(capture.contains("pub(super) fn normalize_captured_text("));
     assert!(capture.contains("pub(super) fn normalize_captured_image_rgba("));
@@ -750,6 +751,43 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(main_events.contains("UiEvent::ClipboardChanged => capture_clipboard_guarded(hwnd)"));
     assert!(main_events
         .contains("ApplicationEvent::ClipboardChanged { .. } => capture_clipboard_guarded(hwnd)"));
+}
+
+#[test]
+fn fragile_delayed_rendering_apps_are_skipped_before_data_reads() {
+    let capture = main_clipboard_capture_source();
+    let capture_start = capture
+        .find("pub(super) unsafe fn capture_clipboard(")
+        .unwrap();
+    let capture_end = capture[capture_start..]
+        .find("\npub(super) unsafe fn capture_clipboard_guarded")
+        .map(|offset| capture_start + offset)
+        .unwrap();
+    let capture_block = &capture[capture_start..capture_end];
+    let skip_start = capture_block
+        .find("source_app_uses_fragile_delayed_clipboard_rendering(&source_app)")
+        .unwrap();
+
+    assert!(capture.contains("\"cnext\""));
+    assert!(capture.contains("\"catia\""));
+    assert!(capture.contains("\"3dexperience\""));
+    assert!(capture_block[skip_start..].contains("remember_clipboard_sequence(state, sequence)"));
+    assert!(capture_block[skip_start..].contains("reset_clipboard_retry(hwnd, state)"));
+    for read_call in [
+        "platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)",
+        "WindowsClipboardHost::read_file_paths()",
+        "WindowsClipboardHost::read_text()",
+        "guarded_read_clipboard_image_rgba()",
+        "guarded_read_windows_clipboard_bitmap_rgba()",
+        "html_format_payload_from_snapshot",
+        "url_format_payloads_from_snapshot",
+    ] {
+        let read_start = capture_block.find(read_call).unwrap();
+        assert!(
+            skip_start < read_start,
+            "fragile delayed rendering skip must happen before {read_call}"
+        );
+    }
 }
 
 #[test]

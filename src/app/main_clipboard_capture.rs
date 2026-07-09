@@ -80,6 +80,23 @@ fn source_app_is_clipboard_proxy(source_app: &str) -> bool {
     source.contains("doubao") || source.contains("豆包")
 }
 
+fn source_app_uses_fragile_delayed_clipboard_rendering(source_app: &str) -> bool {
+    let source = source_app.trim().to_ascii_lowercase();
+    [
+        "cnext",
+        "catia",
+        "3dexperience",
+        "3dexperience launcher",
+        "3dswym",
+        "enovia",
+        "delmia",
+        "simulia",
+        "netvibes",
+    ]
+    .iter()
+    .any(|name| source.contains(name))
+}
+
 fn text_line_is_url(line: &str) -> bool {
     let value = line.trim();
     value.starts_with("http://")
@@ -361,6 +378,22 @@ fn read_windows_clipboard_bitmap_rgba() -> Option<(Vec<u8>, usize, usize)> {
     Some((rgba.into_raw(), width as usize, height as usize))
 }
 
+fn guarded_read_clipboard_image_rgba() -> Option<(Vec<u8>, usize, usize)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        platform_clipboard::WindowsClipboardHost::read_image_rgba()
+    }))
+    .ok()
+    .flatten()
+}
+
+fn guarded_read_windows_clipboard_bitmap_rgba() -> Option<(Vec<u8>, usize, usize)> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+        read_windows_clipboard_bitmap_rgba,
+    ))
+    .ok()
+    .flatten()
+}
+
 fn clipboard_bitmap_dimensions(bytes: &[u8]) -> Option<(usize, usize)> {
     if bytes.len() < 16 {
         return None;
@@ -497,6 +530,15 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
         );
         return;
     }
+    let source_app = clipboard_source_app_name();
+    let foreground_app = foreground_source_app_name();
+    if source_app_uses_fragile_delayed_clipboard_rendering(&source_app)
+        || source_app_uses_fragile_delayed_clipboard_rendering(&foreground_app)
+    {
+        remember_clipboard_sequence(state, sequence);
+        reset_clipboard_retry(hwnd, state);
+        return;
+    }
     if snapshot.has_ignore_capture_format
         || snapshot.has_only_custom_formats
         || platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)
@@ -506,8 +548,6 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
         return;
     }
     let pixpin_format = snapshot.has_named_format("PixPinData");
-    let source_app = clipboard_source_app_name();
-    let foreground_app = foreground_source_app_name();
     let mut prefer_long_retry = source_app_prefers_long_clipboard_retry(&source_app);
     if is_self_clipboard_source_app(&source_app) {
         remember_clipboard_sequence(state, sequence);
@@ -676,9 +716,7 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
     }
 
     if snapshot.has_image {
-        if let Some((bytes, width, height)) =
-            platform_clipboard::WindowsClipboardHost::read_image_rgba()
-        {
+        if let Some((bytes, width, height)) = guarded_read_clipboard_image_rgba() {
             if let Some((bytes, norm_w, norm_h)) =
                 normalize_captured_image_rgba(bytes, width, height)
             {
@@ -708,7 +746,7 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
             }
         }
 
-        if let Some((bytes, width, height)) = read_windows_clipboard_bitmap_rgba() {
+        if let Some((bytes, width, height)) = guarded_read_windows_clipboard_bitmap_rgba() {
             if let Some((bytes, norm_w, norm_h)) =
                 normalize_captured_image_rgba(bytes, width, height)
             {
