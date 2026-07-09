@@ -25,10 +25,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: qiu7824/zsui
-          path: ../zsui
+      - name: Checkout zsui dependency
+        shell: pwsh
+        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
       - uses: dtolnay/rust-toolchain@stable
       - name: Build Windows release
         shell: pwsh
@@ -390,10 +389,8 @@ jobs:
             display_arch: Apple Silicon
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: qiu7824/zsui
-          path: ../zsui
+      - name: Checkout zsui dependency
+        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -498,10 +495,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: qiu7824/zsui
-          path: ../zsui
+      - name: Checkout zsui dependency
+        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GTK build dependencies
         run: |

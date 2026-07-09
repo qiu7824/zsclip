@@ -34,10 +34,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: qiu7824/zsui
-          path: ../zsui
+      - name: Checkout zsui dependency
+        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
       - uses: dtolnay/rust-toolchain@stable
       - name: Check AppKit host
         env:
@@ -92,10 +90,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/checkout@v5
-        with:
-          repository: qiu7824/zsui
-          path: ../zsui
+      - name: Checkout zsui dependency
+        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GTK smoke dependencies
         run: |
