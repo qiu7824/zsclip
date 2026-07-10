@@ -18,7 +18,7 @@ use crate::app_core::{
     settings_lan_device_projection, settings_lan_mobile_link_projection_from_json,
     settings_lan_pair_request_projection_from_json, settings_lan_pair_request_response_projection,
     settings_lan_pair_status_projection, settings_lan_sync_action_support_plan,
-    zsui_native_feature_status_for, ApplicationEvent, ClipItem, ClipboardHost,
+    ApplicationEvent, ClipItem, ClipboardHost,
     ClipboardMonitorState, Color, ColorRole, Command, CommandQueue, ComponentPhase, LifecycleEvent,
     LifecycleState, MainRowExternalActionPlan, MainRowMenuAction, NativeAiActionMenuRequest,
     NativeAiActionPresenter, NativeAiSettingsSurfaceRequest, NativeAppIconResource,
@@ -44,7 +44,7 @@ use crate::app_core::{
     NativeSettingsWindowRequest, NativeShellOpenHost, NativeStyleResolver, NativeTextCaretAnchor,
     NativeTextCaretHost, NativeTextInputDialogHost, NativeTextInputDialogRequest,
     NativeTransientWindowHost, NativeTransientWindowPresentation, NativeTransientWindowRequest,
-    NativeUiPlatform, NativeUiToolkit, NativeWindowIdentityHost, NativeWindowOptions,
+    NativeUiToolkit, NativeWindowIdentityHost, NativeWindowOptions,
     NativeWindowToken, PasteTargetFocusStatus, PasteTargetTextInputCapabilities, Point,
     ProductAdapterAsyncBridgeResult, ProductAdapterCommandResult, ProductAdapterHost,
     ProductAiExecutionPlan, ProductAiInvocation, ProductAiUiSurface, Rect, Renderer,
@@ -1699,10 +1699,7 @@ pub(crate) fn dispatch_linux_native_settings_route_action(
             if let Some(result) = dispatch_linux_native_settings_lan_pair_action(action) {
                 return result;
             }
-            let support_status_name =
-                zsui_native_feature_status_for(NativeUiPlatform::Linux, "sync_lan")
-                    .map(|status| status.support_status_name)
-                    .unwrap_or("unknown_support_status");
+            let support_status_name = "code_level_ready_pending_target_smoke";
             if let Some(plan) = settings_lan_sync_action_support_plan(
                 action,
                 "linux_native_host",
