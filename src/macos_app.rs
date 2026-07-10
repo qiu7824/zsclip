@@ -10,7 +10,7 @@ use crate::app_core::{
     settings_lan_device_projection, settings_lan_mobile_link_projection_from_json,
     settings_lan_pair_request_projection_from_json, settings_lan_pair_request_response_projection,
     settings_lan_pair_status_projection, settings_lan_sync_action_support_plan,
-    zsui_native_feature_status_for, ApplicationEvent, ClipItem, ClipKind, ClipboardHost,
+    ApplicationEvent, ClipItem, ClipKind, ClipboardHost,
     ClipboardMonitorState, Color, Command, CommandQueue, ComponentPhase, LifecycleEvent,
     LifecycleState, MainAsyncEvent, MainHoverTarget, MainPointerDownTarget, MainRenderInput,
     MainRowExternalActionPlan, MainRowMenuAction, MainShortcutAction, MainShortcutEscapePlan,
@@ -38,7 +38,7 @@ use crate::app_core::{
     NativeSettingsDropdownRequest, NativeSettingsWindowHost, NativeSettingsWindowPresentation,
     NativeSettingsWindowRequest, NativeShellOpenHost, NativeTextCaretAnchor, NativeTextCaretHost,
     NativeTextInputDialogHost, NativeTextInputDialogRequest, NativeTransientWindowHost,
-    NativeTransientWindowPresentation, NativeTransientWindowRequest, NativeUiPlatform,
+    NativeTransientWindowPresentation, NativeTransientWindowRequest,
     NativeUiToolkit, NativeWindowIdentityHost, NativeWindowOptions, NativeWindowToken,
     PasteTargetFocusStatus, PasteTargetTextInputCapabilities, Point,
     ProductAdapterAsyncBridgeResult, ProductAdapterCommandResult, ProductAdapterHost,
@@ -8980,10 +8980,7 @@ pub(crate) fn dispatch_macos_native_settings_route_action(
             if let Some(result) = dispatch_macos_native_settings_lan_pair_action(action) {
                 return result;
             }
-            let support_status_name =
-                zsui_native_feature_status_for(NativeUiPlatform::Macos, "sync_lan")
-                    .map(|status| status.support_status_name)
-                    .unwrap_or("unknown_support_status");
+            let support_status_name = "code_level_ready_pending_target_smoke";
             if let Some(plan) = settings_lan_sync_action_support_plan(
                 action,
                 "macos_native_host",
