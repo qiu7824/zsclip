@@ -79,32 +79,6 @@ impl SettingsPageBuilder {
         )
     }
 
-    pub(super) unsafe fn button_sized(
-        &self,
-        st: &mut SettingsWndState,
-        text: &str,
-        id: isize,
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-    ) -> HWND {
-        let placement = self.control_placement(st, x, y);
-        let hwnd = settings_create_small_btn(
-            placement.parent,
-            text,
-            id,
-            placement.x,
-            placement.y,
-            w,
-            self.font,
-        );
-        if !hwnd.is_null() {
-            platform_window::move_window(hwnd, placement.x, placement.y, w, h, false);
-        }
-        self.add(st, hwnd, x, y, w, h)
-    }
-
     pub(super) unsafe fn dropdown(
         &self,
         st: &mut SettingsWndState,

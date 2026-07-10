@@ -1160,6 +1160,7 @@ fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
                 }
                 NativeUiPlatform::Macos => path.starts_with("src/macos_"),
                 NativeUiPlatform::Linux => path.starts_with("src/linux_"),
+                NativeUiPlatform::Android | NativeUiPlatform::Harmony => false,
             }
         })));
 
@@ -5760,6 +5761,7 @@ fn native_main_window_host_operations_are_explicit_porting_contract() {
             height: 614,
         },
         options: NativeWindowOptions::standard(),
+        icon_path: None,
         main_visible: true,
         degraded_capabilities: Vec::new(),
     };
@@ -9054,10 +9056,13 @@ fn native_runtime_driver_trait_executes_platform_entry_path() {
                 height: 240,
             },
             options: NativeWindowOptions::standard(),
+            icon_path: None,
             main_visible: true,
             degraded_capabilities: Vec::new(),
         },
         status_item_tooltip: Some("Demo Tool".to_string()),
+        status_item: None,
+        settings_pages: Vec::new(),
     });
     assert_eq!(
         startup,
@@ -9204,10 +9209,13 @@ fn reusable_runtime_harness_connects_native_driver_and_product_adapter() {
                 height: 240,
             },
             options: NativeWindowOptions::standard(),
+            icon_path: None,
             main_visible: true,
             degraded_capabilities: Vec::new(),
         },
         status_item_tooltip: Some("Harness Tool".to_string()),
+        status_item: None,
+        settings_pages: Vec::new(),
     });
     assert_eq!(
         startup,
@@ -9527,10 +9535,13 @@ fn settings_control_host_operations_are_explicit_porting_contract() {
 
 #[test]
 fn clipboard_host_contract_is_the_trait_not_a_parallel_operation_registry() {
-    let source =
+    let shim =
         std::fs::read_to_string("src/app_core/host_protocol.rs").expect("host protocol source");
+    let source = std::fs::read_to_string("../zsui/src/host_protocol.rs")
+        .expect("standalone zsui host protocol source");
 
-    assert!(source.contains("pub(crate) trait ClipboardHost"));
+    assert!(shim.contains("pub(crate) use zsui::{"));
+    assert!(source.contains("pub trait ClipboardHost"));
     for method_name in [
         "fn read_text()",
         "fn write_text(text: &str)",

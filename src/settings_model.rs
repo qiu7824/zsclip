@@ -2432,8 +2432,10 @@ pub struct SettingsQrCache {
     pub payload: String,
     pub size: i32,
     pub runs: Vec<SettingsQrRun>,
+    pub bgra_pixels: Vec<u8>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingsQrRenderPlan {
     pub white_rect: UiRect,
@@ -2447,10 +2449,13 @@ pub fn settings_qr_cache_for_payload(payload: &str) -> Option<SettingsQrCache> {
     let qr = QrCode::encode_text(payload, QrCodeEcc::Medium).ok()?;
     let size = qr.size();
     let mut runs = Vec::new();
+    let mut bgra_pixels = vec![255; (size * size * 4) as usize];
     for y in 0..size {
         let mut run_start: Option<i32> = None;
         for x in 0..size {
             if qr.get_module(x, y) {
+                let pixel = ((y * size + x) * 4) as usize;
+                bgra_pixels[pixel..pixel + 3].fill(17);
                 if run_start.is_none() {
                     run_start = Some(x);
                 }
@@ -2475,19 +2480,20 @@ pub fn settings_qr_cache_for_payload(payload: &str) -> Option<SettingsQrCache> {
         payload: payload.to_string(),
         size,
         runs,
+        bgra_pixels,
     })
 }
 
-pub fn settings_qr_render_plan(
+pub fn settings_qr_raster_layout(
     bounds: UiRect,
-    qr: &SettingsQrCache,
+    qr_size: i32,
     border_modules: i32,
     inner_padding: i32,
-) -> Option<SettingsQrRenderPlan> {
-    if qr.size <= 0 || bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+) -> Option<(UiRect, i32)> {
+    if qr_size <= 0 || bounds.right <= bounds.left || bounds.bottom <= bounds.top {
         return None;
     }
-    let view_modules = qr.size + border_modules.max(0) * 2;
+    let view_modules = qr_size + border_modules.max(0) * 2;
     if view_modules <= 0 {
         return None;
     }
@@ -2496,13 +2502,27 @@ pub fn settings_qr_render_plan(
     let qr_side = module_size * view_modules;
     let left = bounds.left + ((bounds.right - bounds.left - qr_side) / 2);
     let top = bounds.top + ((bounds.bottom - bounds.top - qr_side) / 2);
-    let white_rect = UiRect::new(left, top, left + qr_side, top + qr_side);
+    Some((
+        UiRect::new(left, top, left + qr_side, top + qr_side),
+        module_size,
+    ))
+}
+
+#[cfg(test)]
+pub fn settings_qr_render_plan(
+    bounds: UiRect,
+    qr: &SettingsQrCache,
+    border_modules: i32,
+    inner_padding: i32,
+) -> Option<SettingsQrRenderPlan> {
+    let (white_rect, module_size) =
+        settings_qr_raster_layout(bounds, qr.size, border_modules, inner_padding)?;
     let module_rects = qr
         .runs
         .iter()
         .map(|run| {
-            let x = left + (run.x + border_modules) * module_size;
-            let y = top + (run.y + border_modules) * module_size;
+            let x = white_rect.left + (run.x + border_modules) * module_size;
+            let y = white_rect.top + (run.y + border_modules) * module_size;
             UiRect::new(x, y, x + run.len * module_size, y + module_size)
         })
         .collect();
@@ -6601,6 +6621,7 @@ mod tests {
                 SettingsQrRun { x: 0, y: 0, len: 2 },
                 SettingsQrRun { x: 2, y: 1, len: 1 },
             ],
+            bgra_pixels: vec![255; 3 * 3 * 4],
         };
         let plan =
             settings_qr_render_plan(UiRect::new(0, 0, 100, 80), &qr, 1, 10).expect("render plan");

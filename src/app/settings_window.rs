@@ -6,6 +6,9 @@ pub(super) unsafe extern "system" fn settings_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_SETTINGS_SCROLL_FRAME {
+        return handle_settings_scroll_frame(hwnd);
+    }
     if let Some(event) = settings_window_host_event_from_message(msg, wparam, lparam) {
         if let Some(result) = dispatch_settings_ui_event(hwnd, msg, wparam, lparam, event) {
             return result;

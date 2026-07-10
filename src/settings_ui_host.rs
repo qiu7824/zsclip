@@ -43,11 +43,11 @@ pub use crate::settings_model::{
     settings_dropdown_max_items_labels, settings_dropdown_pos_mode_from_label,
 };
 use crate::ui::{draw_round_fill, draw_round_rect, draw_text_ex};
-use crate::win_system_params::IDC_SET_RICH_TEXT;
 use crate::win_native_style::{
     rgb, ui_display_font_family, ui_icon_font_family, ui_text_font_family, Theme,
     WindowsNativeControlMapper,
 };
+use crate::win_system_params::IDC_SET_RICH_TEXT;
 use crate::win_system_params::{
     IDC_SET_AUTOHIDE_BLUR, IDC_SET_AUTOSTART, IDC_SET_BTN_OPENCFG, IDC_SET_CLICK_HIDE,
     IDC_SET_CLIPBOARD_HISTORY_DISABLE, IDC_SET_CLIPBOARD_HISTORY_ENABLE, IDC_SET_CLOSE,

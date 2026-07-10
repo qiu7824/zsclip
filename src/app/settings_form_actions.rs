@@ -33,21 +33,11 @@ impl SettingsPageBuilder {
         sec: &SettingsFormSectionLayout,
         row: i32,
         label: &str,
-        qr_id: isize,
         action_text: &str,
         action_id: isize,
-    ) -> (HWND, HWND) {
+    ) -> (UiRect, HWND) {
         let layout = sec.qr_action_layout(row);
         self.form_label(st, sec, row, label);
-        let qr = self.button_sized(
-            st,
-            "",
-            qr_id,
-            layout.qr_rect.left,
-            layout.qr_rect.top,
-            layout.qr_rect.right - layout.qr_rect.left,
-            layout.qr_rect.bottom - layout.qr_rect.top,
-        );
         let action = self.button(
             st,
             action_text,
@@ -56,7 +46,7 @@ impl SettingsPageBuilder {
             layout.action_rect.top,
             layout.action_rect.right - layout.action_rect.left,
         );
-        (self.own_button(st, qr), self.own_button(st, action))
+        (layout.qr_rect, self.own_button(st, action))
     }
 
     pub(super) unsafe fn own_toggle_row(

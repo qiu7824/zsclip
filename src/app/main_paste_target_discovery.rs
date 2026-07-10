@@ -15,8 +15,7 @@ unsafe fn paste_window_class_name(hwnd: HWND) -> String {
 }
 
 fn paste_window_class_is_zsclip(class_name: &str) -> bool {
-    class_name.eq_ignore_ascii_case(CLASS_NAME)
-        || class_name.eq_ignore_ascii_case(QUICK_CLASS_NAME)
+    class_name.eq_ignore_ascii_case(CLASS_NAME) || class_name.eq_ignore_ascii_case(QUICK_CLASS_NAME)
 }
 
 pub(super) fn paste_target_skip_classes(settings: &AppSettings) -> &str {

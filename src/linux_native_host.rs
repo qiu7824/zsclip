@@ -18,17 +18,7 @@ mod gtk_host {
     use gtk4 as gtk;
 
     use crate::app_core::{
-        ClipKindFilter, MainGroupFilterSelection, MainRowGroupSelection,
-        NATIVE_HOST_CLIP_ROW_CAPACITY, NATIVE_HOST_SOURCE_TABS, NativeButtonStyleRole,
-        NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
-        NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
-        NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
-        NativeHostRowAction, NativeHostSearchTextAction, NativeHostSettingsAction,
-        NativeHostSettingsControlAction, NativeHostSettingsGroupAction,
-        NativeHostSettingsPlatformAction, NativeHostVvPasteExecution, NativeHostVvTriggerAction,
-        NativeHostVvTriggerInput, NativeHostVvTriggerKey, NativeHostVvTriggerTransition,
-        NativePopupMenuEntry, NativeSettingsPageTabKind, ProductAdapterCommandResult,
-        SettingsControlRole, clip_kind_filter_options_for_tab, main_group_filter_selection_for_id,
+        clip_kind_filter_options_for_tab, main_group_filter_selection_for_id,
         main_row_group_selection_for_id, menu_ids,
         native_host_clip_row_presentation_for_projection, native_host_clip_row_specs,
         native_host_dialog_button_specs, native_host_edit_text_button_specs,
@@ -39,15 +29,25 @@ mod gtk_host {
         native_host_group_filter_popup_menu_entries_for_groups_kind_filter,
         native_host_main_tool_button_specs, native_host_reconciled_selected_item_id,
         native_host_row_popup_menu_input_for_projection, native_host_search_input_specs,
-        native_host_settings_action_button_specs, native_host_settings_control_button_specs,
-        native_host_settings_dropdown_specs, native_host_settings_group_button_specs,
-        native_host_settings_page_tab_specs, native_host_settings_platform_button_specs,
-        native_host_settings_section_label, native_host_settings_toggle_specs,
-        native_host_source_tab_for_category, native_host_status_menu_item_specs,
-        native_host_vv_popup_render_plan_for_projection,
+        native_host_settings_action_button_specs, native_host_settings_dropdown_specs,
+        native_host_settings_group_button_specs, native_host_settings_page_tab_specs,
+        native_host_settings_platform_button_specs, native_host_settings_section_label,
+        native_host_settings_toggle_specs, native_host_source_tab_for_category,
+        native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_accelerator_label, native_popup_menu_command_icon_name,
+        ClipKindFilter, MainGroupFilterSelection, MainRowGroupSelection, NativeButtonStyleRole,
+        NativeComponentAction, NativeDialogResponse, NativeHostClipKindIcon,
+        NativeHostClipListItemProjection, NativeHostClipRowPresentation, NativeHostDialogAction,
+        NativeHostEditTextAction, NativeHostEditTextPlan, NativeHostMainToolAction,
+        NativeHostRowAction, NativeHostSearchTextAction, NativeHostSettingsAction,
+        NativeHostSettingsControlAction, NativeHostSettingsGroupAction,
+        NativeHostSettingsPlatformAction, NativeHostVvPasteExecution, NativeHostVvTriggerAction,
+        NativeHostVvTriggerInput, NativeHostVvTriggerKey, NativeHostVvTriggerTransition,
+        NativePopupMenuEntry, NativeSettingsPageTabKind, ProductAdapterCommandResult,
+        SettingsControlRole, NATIVE_HOST_CLIP_ROW_CAPACITY, NATIVE_HOST_SOURCE_TABS,
     };
     use gtk::prelude::*;
+    use gtk::{gdk, gio, glib};
     use gtk::{
         Application, ApplicationWindow, Box as GtkBox, Button, ButtonsType, DropDown, Entry,
         EventControllerKey, GestureClick, HeaderBar, Image, Label, ListBox, ListBoxRow, MenuButton,
@@ -55,7 +55,6 @@ mod gtk_host {
         RevealerTransitionType, ScrolledWindow, SearchEntry, SelectionMode, Switch, TextView,
         ToggleButton,
     };
-    use gtk::{gdk, gio, glib};
     use ksni::blocking::TrayMethods;
 
     use crate::linux_app::LinuxHostContractSummary;
@@ -3483,7 +3482,6 @@ searchentry {
         group_page.append(&group_actions);
 
         let controls = GtkBox::new(Orientation::Horizontal, 8);
-        let _settings_control_compat_specs = native_host_settings_control_button_specs();
         for spec in native_host_settings_toggle_specs() {
             let action = spec.action;
             let row = GtkBox::new(Orientation::Horizontal, 6);

@@ -109,24 +109,23 @@ pub(super) unsafe fn settings_create_cloud_lan_page(
         2,
         "Android 扫码请求绑定；iOS/浏览器扫码打开手机连接页。",
     );
-    (st.qr_lan_android, st.btn_lan_copy_pair) = b.form_qr_action(
+    (st.qr_lan_android_bounds, st.btn_lan_copy_pair) = b.form_qr_action(
         st,
         &sec3,
         3,
         "Android 配对：",
-        IDC_SET_LAN_QR_ANDROID,
         "复制配对链接",
         IDC_SET_LAN_COPY_PAIR,
     );
-    (st.qr_lan_ios, st.btn_lan_copy_setup) = b.form_qr_action(
+    (st.qr_lan_ios_bounds, st.btn_lan_copy_setup) = b.form_qr_action(
         st,
         &sec3,
         6,
         "iOS/浏览器：",
-        IDC_SET_LAN_QR_IOS,
         "复制入口地址",
         IDC_SET_LAN_COPY_SETUP,
     );
+    prepare_settings_lan_qr_caches(st);
     b.form_label(st, &sec3, 9, "辅助操作：");
     let lan_docs = b.form_button(st, &sec3, 9, "打开扫码绑定页", IDC_SET_LAN_DOCS, lan_btn_w);
     st.btn_lan_docs = b.own_button(st, lan_docs);

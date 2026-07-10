@@ -52,6 +52,9 @@ pub(crate) fn run() -> AppResult<()> {
             if code == 0 {
                 break;
             }
+            if route_settings_child_mouse_wheel(&msg) {
+                continue;
+            }
             platform_window::translate_message(&msg);
             platform_window::dispatch_message(&msg);
         }

@@ -164,10 +164,6 @@ pub(crate) fn next_origin_seq() -> u64 {
     ORIGIN_SEQ.fetch_add(1, Ordering::Relaxed)
 }
 
-pub(crate) fn now_ms_public() -> u64 {
-    now_ms()
-}
-
 pub(crate) fn set_latest_clip(clip: Option<LanClipEnvelope>) {
     if let Some(clip) = clip {
         if let Ok(mut latest) = latest_clip_slot().lock() {
@@ -220,10 +216,11 @@ pub(crate) fn refresh_service(hwnd: HWND, settings: &AppSettings) {
         windows_lan_runtime_context(LanRuntimeEventSink::platform_main_window(hwnd as isize)),
         core_config,
     );
+    let host_refresh_sink = config.platform.event_sink.clone();
     match start_handle(config) {
         Ok(handle) => {
             if handle.state.lan_enabled {
-                refresh_lan_host_cache_in_background();
+                refresh_lan_host_cache_in_background(host_refresh_sink);
                 let firewall_note =
                     ensure_firewall_rules(handle.state.tcp_port, handle.state.udp_port)
                         .err()
@@ -321,6 +318,14 @@ pub(crate) fn trigger_discovery(settings: &AppSettings) {
 }
 
 pub(crate) fn mobile_setup_url(settings: &AppSettings) -> Option<String> {
+    mobile_setup_url_for_host(settings, local_lan_host())
+}
+
+pub(crate) fn mobile_setup_url_cached(settings: &AppSettings) -> Option<String> {
+    mobile_setup_url_for_host(settings, cached_local_lan_host()?)
+}
+
+fn mobile_setup_url_for_host(settings: &AppSettings, host: String) -> Option<String> {
     let runtime_settings = lan_runtime_settings_from_app(settings);
     if !runtime_settings.lan_sync_enabled {
         return None;
@@ -330,11 +335,18 @@ pub(crate) fn mobile_setup_url(settings: &AppSettings) -> Option<String> {
         .ok()
         .and_then(|guard| guard.as_ref().map(|handle| handle.state.tcp_port))
         .unwrap_or(runtime_settings.normalized_tcp_port());
-    Some(format!("http://{}:{port}/mobile/setup", local_lan_host()))
+    Some(format!("http://{host}:{port}/mobile/setup"))
 }
 
 pub(crate) fn mobile_pair_url(settings: &AppSettings) -> Option<String> {
-    let setup_url = mobile_setup_url(settings)?;
+    mobile_pair_url_for_setup(mobile_setup_url(settings)?)
+}
+
+pub(crate) fn mobile_pair_url_cached(settings: &AppSettings) -> Option<String> {
+    mobile_pair_url_for_setup(mobile_setup_url_cached(settings)?)
+}
+
+fn mobile_pair_url_for_setup(setup_url: String) -> Option<String> {
     let host = setup_url
         .trim()
         .trim_start_matches("http://")
@@ -363,13 +375,23 @@ fn clear_lan_host_cache() {
     }
 }
 
-fn refresh_lan_host_cache_in_background() {
-    thread::spawn(|| {
+fn refresh_lan_host_cache_in_background(event_sink: LanRuntimeEventSink) {
+    thread::spawn(move || {
         let host = probe_local_lan_host();
         if let Ok(mut cached) = lan_host_cache_slot().lock() {
             *cached = Some(host);
         }
+        post_ready(&event_sink);
     });
+}
+
+fn cached_local_lan_host() -> Option<String> {
+    lan_host_cache_slot().lock().ok().and_then(|cached| {
+        cached
+            .as_ref()
+            .filter(|host| !host.trim().is_empty())
+            .cloned()
+    })
 }
 
 fn probe_local_lan_host() -> String {
@@ -817,13 +839,13 @@ fn ensure_firewall_rules(tcp_port: u16, udp_port: u16) -> Result<(), String> {
         .to_string();
     let exe_key = lan_hash_string(&exe).chars().take(8).collect::<String>();
     ensure_firewall_rule(
-        &format!("ZSClip LAN Sync TCP {tcp_port} {exe_key}"),
+        &format!("ZSClip LAN Sync TCP {tcp_port} {exe_key} LocalSubnetV2"),
         "TCP",
         tcp_port,
         &exe,
     )?;
     ensure_firewall_rule(
-        &format!("ZSClip LAN Discovery UDP {udp_port} {exe_key}"),
+        &format!("ZSClip LAN Discovery UDP {udp_port} {exe_key} LocalSubnetV2"),
         "UDP",
         udp_port,
         &exe,
@@ -852,14 +874,15 @@ fn ensure_firewall_rule(
         &format!("program={exe}"),
         &format!("protocol={protocol}"),
         &format!("localport={port}"),
-        "profile=private,domain",
+        "profile=any",
+        "remoteip=localsubnet",
         "enable=yes",
     ])?;
     if output.status.success() || firewall_rule_exists(name) {
         Ok(())
     } else {
         Err(format!(
-            "{}；请以管理员身份运行一次，或在 Windows 防火墙中允许 ZSClip 专用网络访问",
+            "{}；请以管理员身份运行一次，或在 Windows 防火墙中允许 ZSClip 局域子网访问",
             command_output_summary(&output)
         ))
     }
@@ -2954,12 +2977,33 @@ mod tests {
         settings.lan_sync_enabled = true;
         settings.lan_tcp_port = 38473;
 
-        let setup = mobile_setup_url(&settings).unwrap();
-        let pair = mobile_pair_url(&settings).unwrap();
+        let setup = mobile_setup_url_cached(&settings).unwrap();
+        let pair = mobile_pair_url_cached(&settings).unwrap();
 
         assert_eq!(setup, "http://192.168.66.7:38473/mobile/setup");
         assert_eq!(pair, "zsclip://pair?host=192.168.66.7%3A38473");
         clear_lan_host_cache();
+    }
+
+    #[test]
+    fn bdd_settings_qr_urls_never_probe_network_when_host_cache_is_empty() {
+        let _guard = lan_host_cache_test_guard();
+        clear_lan_host_cache();
+        let mut settings = AppSettings::default();
+        settings.lan_sync_enabled = true;
+
+        assert_eq!(mobile_setup_url_cached(&settings), None);
+        assert_eq!(mobile_pair_url_cached(&settings), None);
+    }
+
+    #[test]
+    fn bdd_firewall_allow_rules_cover_local_subnet_on_every_profile() {
+        let source = include_str!("lan_sync.rs");
+
+        assert!(source.contains("LocalSubnetV2"));
+        assert!(source.contains("\"profile=any\""));
+        assert!(source.contains("\"remoteip=localsubnet\""));
+        assert!(!source.contains("\"profile=private,domain\""));
     }
 
     #[test]

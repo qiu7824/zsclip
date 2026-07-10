@@ -4,6 +4,7 @@ pub(super) unsafe fn handle_settings_destroy(hwnd: HWND) -> LRESULT {
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
     if !st_ptr.is_null() {
         cancel_settings_scroll_drag(hwnd, &mut *st_ptr);
+        cancel_settings_scroll_frame(hwnd, &mut *st_ptr);
         timer::stop(hwnd, ID_TIMER_SETTINGS_SCROLLBAR);
         timer::stop(hwnd, ID_TIMER_SETTINGS_SAVE_HINT);
         timer::stop(hwnd, ID_TIMER_SETTINGS_DPI_FIT);

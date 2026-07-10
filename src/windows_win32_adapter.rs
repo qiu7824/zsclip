@@ -1,10 +1,8 @@
 #![allow(dead_code)]
 
 use crate::app_core::{
-    zsui_reuse_bootstrap_plan, ApplicationEvent, Command, NativeMainWindowHandles,
-    NativeRuntimeDriver, NativeRuntimeStartupRequest, NativeRuntimeStartupResult,
-    NativeUiAdapterBindingPlan, NativeUiAdapterManifest, NativeUiAdapterReusePackage,
-    NativeUiBackendStatus, NativeUiPlatform, NativeUiToolkit, NativeWindowToken,
+    zsui_reuse_bootstrap_plan, NativeUiAdapterBindingPlan, NativeUiAdapterManifest,
+    NativeUiAdapterReusePackage, NativeUiBackendStatus, NativeUiPlatform, NativeUiToolkit,
     SettingsComponentKind, ZsuiReuseBootstrapPlan, REQUIRED_MAIN_HOST_EXECUTION_PLAN_KINDS,
     SHARED_NON_HOST_UI_PROTOCOLS,
 };
@@ -151,42 +149,6 @@ pub(crate) struct WindowsWin32AdapterBoundary {
     bindings: Vec<WindowsWin32HostBinding>,
     main_execution_plans: usize,
     shared_non_host_protocols: usize,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct WindowsWin32RuntimeDriver {
-    started_app_name: Option<String>,
-    commands: Vec<Command>,
-    events: Vec<ApplicationEvent>,
-    shutdown_requested: bool,
-}
-
-impl NativeRuntimeDriver for WindowsWin32RuntimeDriver {
-    type WindowHandle = NativeWindowToken;
-
-    fn start_runtime(
-        &mut self,
-        request: NativeRuntimeStartupRequest,
-    ) -> NativeRuntimeStartupResult<Self::WindowHandle> {
-        self.started_app_name = Some(request.app_name);
-        NativeRuntimeStartupResult::Started(NativeMainWindowHandles {
-            main: NativeWindowToken(1),
-            quick: NativeWindowToken(2),
-        })
-    }
-
-    fn dispatch_ui_command(&mut self, command: Command) {
-        self.commands.push(command);
-        self.events.push(ApplicationEvent::ItemsPageReady);
-    }
-
-    fn poll_application_event(&mut self) -> Option<ApplicationEvent> {
-        self.events.pop()
-    }
-
-    fn request_shutdown(&mut self) {
-        self.shutdown_requested = true;
-    }
 }
 
 impl WindowsWin32AdapterBoundary {
@@ -337,44 +299,6 @@ mod tests {
         assert!(package
             .binding_plan
             .has_binding_name("win32_message_loop_lifecycle"));
-    }
-
-    #[test]
-    fn windows_win32_runtime_driver_exposes_common_runtime_path() {
-        let mut driver = WindowsWin32RuntimeDriver::default();
-        let started = driver.start_runtime(NativeRuntimeStartupRequest {
-            app_name: "Demo Windows".to_string(),
-            main_window: crate::app_core::NativeMainWindowRequest {
-                title: "Demo Windows".to_string(),
-                size: crate::app_core::Size {
-                    width: 640,
-                    height: 420,
-                },
-                options: crate::app_core::NativeWindowOptions::standard(),
-                main_visible: true,
-                degraded_capabilities: Vec::new(),
-            },
-            status_item_tooltip: Some("Demo Windows".to_string()),
-        });
-
-        assert_eq!(
-            started,
-            NativeRuntimeStartupResult::Started(NativeMainWindowHandles {
-                main: NativeWindowToken(1),
-                quick: NativeWindowToken(2)
-            })
-        );
-        assert_eq!(driver.started_app_name.as_deref(), Some("Demo Windows"));
-
-        driver.dispatch_ui_command(Command::window(crate::app_core::command_ids::OPEN_SETTINGS));
-        assert_eq!(driver.commands.len(), 1);
-        assert_eq!(
-            driver.poll_application_event(),
-            Some(ApplicationEvent::ItemsPageReady)
-        );
-
-        driver.request_shutdown();
-        assert!(driver.shutdown_requested);
     }
 
     #[test]

@@ -2436,6 +2436,7 @@ fn windows_edit_text_dialog_host_owns_row_edit_action() {
 fn windows_settings_window_open_path_uses_settings_ui_host() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let settings_window = settings_window_source();
+    let main_input = include_str!("app/main_input.rs");
     let production = app
         .split("\n#[cfg(test)]\nmod tests")
         .next()
@@ -2453,6 +2454,12 @@ fn windows_settings_window_open_path_uses_settings_ui_host() {
     assert!(open_block.contains("present_settings_window("));
     assert!(open_block.contains("NativeSettingsWindowRequest"));
     assert!(open_block.contains("NativeSettingsWindowPresentation::Created"));
+    assert_eq!(
+        open_block.matches("hide_main_window(owner_hwnd)").count(),
+        2
+    );
+    assert!(main_input.contains("MainWindowCommandIntent::OpenSettings"));
+    assert!(main_input.contains("hide_main_window(hwnd)"));
     assert!(!open_block.contains("WindowsSettingsWindowRequest"));
     assert!(!open_block.contains("WindowsSettingsWindowPresentation::Created"));
     assert!(!open_block.contains("register_class_ex"));
@@ -3051,6 +3058,7 @@ fn lan_sync_ready_cloud_settings_refresh_uses_hosts() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let lan_sync = main_lan_sync_source();
     let settings_window = settings_window_source();
+    let lan_devices = include_str!("app/settings_cloud_page_lan_devices.rs");
     let production = app
         .split("\n#[cfg(test)]\nmod tests")
         .next()
@@ -3071,12 +3079,54 @@ fn lan_sync_ready_cloud_settings_refresh_uses_hosts() {
     assert!(production.contains("mod main_lan_sync;"));
     assert!(!production.contains("unsafe fn handle_lan_sync_ready"));
     assert!(ready_block.contains("refresh_settings_cloud_page_after_lan_sync(state.settings_hwnd)"));
+    assert!(ready_block.contains("lan_sync::drain_pair_prompts()"));
+    assert!(!ready_block.contains("confirm_native_dialog("));
+    assert!(!ready_block.contains("confirm_foreground_native_dialog("));
+    assert!(lan_devices.contains("crate::lan_sync::pending_pair_requests()"));
+    assert!(lan_devices.contains("[待允许]"));
     assert!(!ready_block.contains("platform_window::exists(state.settings_hwnd)"));
     assert!(!ready_block.contains("platform_gdi::invalidate_rect(state.settings_hwnd"));
     assert!(helper_block.contains("WindowsWindowIdentityHost::new().exists(settings_hwnd)"));
-    assert!(helper_block
-        .contains("settings_sync_page_state(&mut *st_ptr, SettingsPage::Cloud.index())"));
+    assert!(helper_block.contains("settings_refresh_cloud_lan_runtime_state(&mut *st_ptr)"));
     assert!(helper_block.contains("request_settings_window_repaint(settings_hwnd)"));
+}
+
+#[test]
+fn windows_lan_qr_is_prepared_before_scrolling_into_view() {
+    let lan_page = include_str!("app/settings_cloud_page_lan.rs");
+    let qr_owner_draw = include_str!("app/settings_owner_draw_qr.rs");
+    let lan_sync_state = include_str!("app/settings_page_sync_cloud_lan.rs");
+    let form_actions = settings_form_actions_source();
+    let draw_start = qr_owner_draw.find("fn draw_settings_qr_slot(").unwrap();
+    let draw_end = qr_owner_draw[draw_start..]
+        .find("fn draw_settings_lan_qr_blocks(")
+        .map(|offset| draw_start + offset)
+        .unwrap();
+    let draw_block = &qr_owner_draw[draw_start..draw_end];
+    let form_start = form_actions.find("fn form_qr_action(").unwrap();
+    let form_end = form_actions[form_start..]
+        .find("fn own_toggle_row(")
+        .map(|offset| form_start + offset)
+        .unwrap();
+    let form_block = &form_actions[form_start..form_end];
+
+    assert!(lan_page.contains("prepare_settings_lan_qr_caches(st)"));
+    assert!(lan_sync_state.contains("prepare_settings_lan_qr_caches(st)"));
+    assert!(qr_owner_draw.contains("fn prepare_settings_lan_qr_caches("));
+    assert!(qr_owner_draw.contains("mobile_pair_url_cached"));
+    assert!(qr_owner_draw.contains("mobile_setup_url_cached"));
+    assert!(qr_owner_draw.contains("st.qr_lan_android_cache"));
+    assert!(qr_owner_draw.contains("st.qr_lan_ios_cache"));
+    assert!(qr_owner_draw.contains("fn draw_settings_lan_qr_blocks("));
+    assert!(qr_owner_draw.contains("st.cur_page != SettingsPage::Cloud.index()"));
+    assert!(lan_page.contains("st.qr_lan_android_bounds"));
+    assert!(lan_page.contains("st.qr_lan_ios_bounds"));
+    assert!(!lan_page.contains("IDC_SET_LAN_QR_ANDROID,"));
+    assert!(!lan_page.contains("IDC_SET_LAN_QR_IOS,"));
+    assert!(!form_block.contains("button_sized("));
+    assert!(!draw_block.contains("settings_qr_cache_for_payload("));
+    assert!(qr_owner_draw.contains("stretch_top_down_32bpp_nearest("));
+    assert!(!qr_owner_draw.contains("for rect in plan.module_rects"));
 }
 
 #[test]
@@ -3668,7 +3718,8 @@ fn windows_settings_cloud_page_lives_outside_hosts_rs() {
     assert!(cloud_webdav.contains("IDC_SET_CLOUD_RESTORE_BACKUP"));
     assert!(cloud_lan.contains("pub(super) unsafe fn settings_create_cloud_lan_page("));
     assert!(cloud_lan.contains("IDC_SET_LAN_DISCOVERED_LIST"));
-    assert!(cloud_lan.contains("IDC_SET_LAN_QR_ANDROID"));
+    assert!(cloud_lan.contains("st.qr_lan_android_bounds"));
+    assert!(cloud_lan.contains("st.qr_lan_ios_bounds"));
 }
 
 #[test]
@@ -3735,7 +3786,7 @@ fn windows_settings_owner_draw_lives_outside_hosts_rs() {
     assert!(owner_draw.contains("settings_owner_draw_button_kind(st, cid)"));
     assert!(owner_draw.contains("draw_settings_toggle_component"));
     assert!(owner_draw.contains("draw_settings_button_component"));
-    assert!(owner_draw_qr.contains("settings_qr_render_plan"));
+    assert!(owner_draw_qr.contains("settings_qr_raster_layout"));
     assert!(owner_draw_qr.contains("IDC_SET_LAN_QR_ANDROID"));
     assert!(owner_draw_qr.contains("qr_payload_cache_reuses_same_payload_and_rebuilds_on_change"));
     assert!(owner_draw_link.contains("pub(super) unsafe fn draw_settings_source_link_item"));
@@ -3841,7 +3892,6 @@ fn windows_settings_page_builder_lives_outside_hosts_rs() {
         "fn label(",
         "fn label_auto(",
         "fn button(",
-        "fn button_sized(",
         "fn dropdown(",
         "fn edit(",
         "fn password_edit(",
@@ -3958,7 +4008,8 @@ fn windows_settings_page_navigation_lives_outside_hosts_rs() {
     assert!(navigation_controls.contains("settings_viewport_child_control_bounds("));
     assert!(navigation_scroll.contains("settings_scroll_update_for_target"));
     assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
-    assert!(navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(!navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(navigation_scroll.contains("RDW_INVALIDATE | RDW_UPDATENOW"));
     assert!(!navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
     assert!(navigation_switch.contains("settings_page_switch_plan"));
     assert!(navigation_switch.contains("settings_host_set_visible"));
@@ -4029,6 +4080,11 @@ fn windows_settings_scrollable_controls_use_viewport_child_parent() {
 
     assert!(builder.contains("settings_page_control_scrollable(st, self.page)"));
     assert!(builder.contains("parent: st.viewport_hwnd"));
+    assert!(!builder.contains(
+        "settings_page_control_scrollable(st, self.page) && !st.viewport_hwnd.is_null()"
+    ));
+    assert_eq!(builder.matches("parent: st.viewport_hwnd").count(), 2);
+    assert_eq!(builder.matches("parent: self.hwnd").count(), 1);
     assert!(builder.contains("x: x - viewport.left"));
     assert!(builder.contains("y: y - viewport.top - scroll_y"));
     assert!(raw_controls.contains("placement.parent"));
@@ -4051,10 +4107,50 @@ fn windows_settings_scrollable_controls_use_viewport_child_parent() {
 
     assert!(navigation_controls.contains("settings_viewport_child_control_bounds(original"));
     assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
-    assert!(navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(!navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
+    assert!(navigation_scroll.contains("platform_gdi::redraw_window(hwnd, &viewport"));
     assert!(paint.contains("let viewport_clip = settings_viewport_rect(&rc);"));
     assert!(paint.contains("platform_gdi::intersect_clip_rect("));
     assert!(paint.contains("draw_settings_content(memdc as _, &content_plan, theme);"));
+}
+
+#[test]
+fn windows_settings_scroll_moves_do_not_reshow_visible_controls() {
+    let window_host = include_str!("platform/window.rs");
+    let navigation_controls = settings_page_navigation_controls_source();
+
+    assert!(window_host.contains("match (item.visible, item.was_visible)"));
+    assert!(window_host.contains("(true, false) => SWP_SHOWWINDOW"));
+    assert!(window_host.contains("(false, true) => SWP_HIDEWINDOW"));
+    assert!(window_host.contains("_ => 0"));
+    assert!(navigation_controls.contains("if !visible && !was_visible"));
+    assert!(!navigation_controls.contains("qr_lan_android"));
+    assert!(!navigation_controls.contains("qr_lan_ios"));
+    assert!(navigation_controls.contains("st.scroll_moves.clear()"));
+    assert!(!navigation_controls.contains("let slots: Vec<_>"));
+    assert!(navigation_controls.contains("let intersects_viewport = settings_child_visible("));
+    assert!(navigation_controls
+        .contains("slot.visible && (!st.viewport_hwnd.is_null() || intersects_viewport)"));
+}
+
+#[test]
+fn windows_settings_paint_uses_the_window_compositor_as_its_single_buffer() {
+    let paint = settings_window_paint_source();
+
+    assert!(paint.contains("let paint_rc = if ps.rcPaint.right > ps.rcPaint.left"));
+    assert!(paint.contains("let memdc = hdc"));
+    assert!(!paint.contains("begin_buffered_paint("));
+    assert!(!paint.contains("end_buffered_paint("));
+    assert!(paint.contains("platform_gdi::fill_rect(memdc, &paint_rc, bg)"));
+}
+
+#[test]
+fn windows_settings_window_preserves_composited_dpi_surface_and_child_clipping() {
+    let settings_host = include_str!("settings_ui_host.rs");
+
+    assert!(settings_host.contains("WS_EX_APPWINDOW | WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED"));
+    assert!(settings_host.contains("| WS_CLIPCHILDREN"));
+    assert!(settings_host.contains("| WS_CLIPSIBLINGS"));
 }
 
 #[test]
@@ -6038,6 +6134,14 @@ fn windows_settings_input_executes_shared_input_plans_outside_app_rs() {
     assert!(!app.contains("unsafe fn dispatch_settings_ui_event"));
 
     assert!(settings_input.contains("pub(super) unsafe fn dispatch_settings_ui_event"));
+    assert!(settings_input.contains("pub(super) unsafe fn route_settings_child_mouse_wheel"));
+    assert!(settings_input.contains("platform_window::root_ancestor(message.hwnd)"));
+    assert!(settings_input.contains("settings_dropdown_popup_exists((*st_ptr).dropdown_popup)"));
+    assert!(settings_input.contains("platform_window::send_message("));
+    assert!(
+        settings_window_source().contains("route_settings_child_mouse_wheel(&msg)")
+            || main_entry_source().contains("route_settings_child_mouse_wheel(&msg)")
+    );
     assert!(settings_input.contains("settings_pointer_move_transition"));
     assert!(settings_input.contains("settings_pointer_down_target"));
     assert!(settings_input.contains("settings_scroll_delta_for_wheel(delta)"));
@@ -6845,6 +6949,21 @@ fn settings_timer_ids_map_to_settings_tasks() {
         settings_timer_task_for_id(usize::MAX, SETTINGS_TIMER_IDS),
         None
     );
+}
+
+#[test]
+fn windows_settings_wheel_input_is_batched_to_one_scroll_update_per_frame() {
+    let pointer_input = settings_pointer_input_source();
+    let settings_window = settings_window_source();
+    let destroy = settings_window_destroy_source();
+
+    assert!(pointer_input.contains("pending_scroll_delta.saturating_add(scroll_delta)"));
+    assert!(pointer_input.contains("platform_window::post_message("));
+    assert!(pointer_input.contains("WM_SETTINGS_SCROLL_FRAME"));
+    assert!(pointer_input.contains("handle_settings_scroll_frame"));
+    assert!(pointer_input.contains("std::mem::take(&mut st.pending_scroll_delta)"));
+    assert!(settings_window.contains("msg == WM_SETTINGS_SCROLL_FRAME"));
+    assert!(destroy.contains("cancel_settings_scroll_frame(hwnd, &mut *st_ptr)"));
 }
 
 #[test]

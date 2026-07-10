@@ -253,13 +253,13 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
                 return;
             }
 
-            queue_main_window_command_intent(
-                hwnd,
-                state,
-                main_title_button_window_command_for_key(key),
-            );
+            let window_command = main_title_button_window_command_for_key(key);
+            queue_main_window_command_intent(hwnd, state, window_command);
             state.hover_btn = "";
             repaint_main_window(hwnd, false);
+            if matches!(window_command, MainWindowCommandIntent::OpenSettings) {
+                hide_main_window(hwnd);
+            }
             return;
         }
         MainPointerUpTarget::ScrollToTop { activated } => {

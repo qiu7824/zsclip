@@ -8,6 +8,25 @@ pub(super) unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWn
     }
 }
 
+pub(super) fn cancel_settings_scroll_frame(_hwnd: HWND, st: &mut SettingsWndState) {
+    st.scroll_frame_posted = false;
+    st.pending_scroll_delta = 0;
+}
+
+pub(super) unsafe fn handle_settings_scroll_frame(hwnd: HWND) -> LRESULT {
+    let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
+    if st_ptr.is_null() {
+        return 0;
+    }
+    let st = &mut *st_ptr;
+    st.scroll_frame_posted = false;
+    let delta = std::mem::take(&mut st.pending_scroll_delta);
+    if delta != 0 {
+        settings_scroll(hwnd, st, delta);
+    }
+    0
+}
+
 pub(super) unsafe fn handle_settings_pointer_move(hwnd: HWND, position: UiPoint) -> LRESULT {
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
     if st_ptr.is_null() {
@@ -177,6 +196,15 @@ pub(super) unsafe fn handle_settings_mouse_wheel(hwnd: HWND, delta: i32) -> LRES
     if st_ptr.is_null() {
         return 0;
     }
-    settings_scroll(hwnd, &mut *st_ptr, settings_scroll_delta_for_wheel(delta));
+    let st = &mut *st_ptr;
+    let scroll_delta = settings_scroll_delta_for_wheel(delta);
+    if scroll_delta == 0 {
+        return 0;
+    }
+    st.pending_scroll_delta = st.pending_scroll_delta.saturating_add(scroll_delta);
+    if !st.scroll_frame_posted {
+        st.scroll_frame_posted = true;
+        platform_window::post_message(hwnd as isize, WM_SETTINGS_SCROLL_FRAME, 0, 0);
+    }
     0
 }

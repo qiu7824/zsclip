@@ -22,14 +22,14 @@ impl SettingsPageBuilder {
         x: i32,
         y: i32,
     ) -> SettingsControlPlacement {
-        if settings_page_control_scrollable(st, self.page) && !st.viewport_hwnd.is_null() {
+        if settings_page_control_scrollable(st, self.page) {
+            let scroll_y = if self.page == st.cur_page {
+                st.content_scroll_y
+            } else {
+                st.page_scroll_y.get(self.page).copied().unwrap_or(0)
+            };
             if let Some(crc) = settings_window_client_bounds(self.hwnd).map(RECT::from) {
                 let viewport = settings_viewport_rect(&crc);
-                let scroll_y = if self.page == st.cur_page {
-                    st.content_scroll_y
-                } else {
-                    st.page_scroll_y.get(self.page).copied().unwrap_or(0)
-                };
                 return SettingsControlPlacement {
                     parent: st.viewport_hwnd,
                     x: x - viewport.left,
@@ -38,6 +38,13 @@ impl SettingsPageBuilder {
                     origin_dy: viewport.top + scroll_y,
                 };
             }
+            return SettingsControlPlacement {
+                parent: st.viewport_hwnd,
+                x,
+                y: y - scroll_y,
+                origin_dx: 0,
+                origin_dy: scroll_y,
+            };
         }
         SettingsControlPlacement {
             parent: self.hwnd,
