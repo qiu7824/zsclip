@@ -30,8 +30,8 @@ unsafe fn settings_reset_cloud_page_handles(st: &mut SettingsWndState) {
     st.btn_lan_pair = null_mut();
     st.btn_lan_refresh = null_mut();
     st.btn_lan_docs = null_mut();
-    st.qr_lan_android = null_mut();
-    st.qr_lan_ios = null_mut();
+    st.qr_lan_android_bounds = UiRect::new(0, 0, 0, 0);
+    st.qr_lan_ios_bounds = UiRect::new(0, 0, 0, 0);
     st.btn_lan_copy_pair = null_mut();
     st.btn_lan_copy_setup = null_mut();
     st.lb_lan_devices = null_mut();

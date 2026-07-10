@@ -12,11 +12,15 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
     crate::win_system_ui::set_paint_dpi_override(paint_dpi);
     let theme = Theme::default();
     let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
-    let paint_target = begin_buffered_paint(hdc, &rc);
-    let memdc = paint_target.map_or(hdc, |(_, target)| target);
+    let paint_rc = if ps.rcPaint.right > ps.rcPaint.left && ps.rcPaint.bottom > ps.rcPaint.top {
+        ps.rcPaint
+    } else {
+        rc
+    };
+    let memdc = hdc;
 
     let bg = platform_gdi::create_solid_brush(theme.bg);
-    platform_gdi::fill_rect(memdc, &rc, bg);
+    platform_gdi::fill_rect(memdc, &paint_rc, bg);
     platform_gdi::delete_object(bg as _);
 
     let cur_page = if st_ptr.is_null() {
@@ -74,6 +78,9 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         )
     };
     draw_settings_content(memdc as _, &content_plan, theme);
+    if !st_ptr.is_null() {
+        draw_settings_lan_qr_blocks(&mut *st_ptr, memdc as _, scroll_y, viewport_clip);
+    }
     platform_gdi::restore_dc(memdc, -1);
     draw_settings_viewport_mask(memdc as _, &chrome_plan, theme);
 
@@ -93,9 +100,6 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         }
     }
 
-    if let Some((paint_buf, _)) = paint_target {
-        end_buffered_paint(paint_buf, true);
-    }
     crate::win_system_ui::clear_paint_dpi_override();
     platform_gdi::end_paint(hwnd, &ps);
 }

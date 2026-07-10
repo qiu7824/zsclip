@@ -18,6 +18,7 @@ pub(super) const WM_TEXT_TRANSLATE_READY: u32 = WM_APP + 36;
 pub(super) const WM_IMAGE_THUMB_READY: u32 = WM_APP + 37;
 pub(crate) const WM_LAN_SYNC_READY: u32 = WM_APP + 38;
 pub(super) const WM_STARTUP_DATA_RECONCILED: u32 = WM_APP + 39;
+pub(super) const WM_SETTINGS_SCROLL_FRAME: u32 = WM_APP + 92;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 
 pub(super) enum MainWindowHostEvent {

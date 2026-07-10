@@ -44,6 +44,7 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
     if plan.cancel_scroll_drag {
         cancel_settings_scroll_drag(hwnd, st);
     }
+    cancel_settings_scroll_frame(hwnd, st);
     if plan.close_dropdown {
         if platform_window::exists(st.dropdown_popup) {
             platform_window::destroy(st.dropdown_popup);

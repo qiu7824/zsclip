@@ -1193,6 +1193,9 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
                             }
                             NativeUiPlatform::Macos => "real macOS AppKit build/run smoke verification",
                             NativeUiPlatform::Linux => "real Ubuntu GTK build/run smoke verification",
+                            NativeUiPlatform::Android | NativeUiPlatform::Harmony => {
+                                "unsupported mobile target in ZSClip desktop host"
+                            }
                         });
                     }
                     ZsuiNativeFeatureParityStatus {
@@ -2140,6 +2143,9 @@ pub(crate) fn zsui_lan_sync_capability_matrix() -> Vec<ZsuiLanSyncCapabilityStat
                         NativeUiPlatform::Windows => "Windows LAN sync release smoke",
                         NativeUiPlatform::Macos => "real macOS AppKit LAN sync smoke",
                         NativeUiPlatform::Linux => "real Ubuntu GTK LAN sync smoke",
+                        NativeUiPlatform::Android | NativeUiPlatform::Harmony => {
+                            "unsupported mobile target in ZSClip desktop host"
+                        }
                     });
 
                     ZsuiLanSyncCapabilityStatus {
@@ -2178,6 +2184,7 @@ fn zsui_lan_sync_capability_code_ready(platform: NativeUiPlatform, capability_na
                 | "image_payload_transfer"
                 | "file_payload_transfer"
         ),
+        NativeUiPlatform::Android | NativeUiPlatform::Harmony => false,
     }
 }
 
@@ -2352,6 +2359,7 @@ pub(crate) fn zsui_window_system_backend_work_items() -> Vec<ZsuiWindowSystemBac
                 NativeUiPlatform::Windows => vec!["src/app", "src/platform"],
                 NativeUiPlatform::Macos => vec!["src/macos_native_host.rs", "src/macos_app.rs"],
                 NativeUiPlatform::Linux => vec!["src/linux_native_host.rs", "src/linux_app.rs"],
+                NativeUiPlatform::Android | NativeUiPlatform::Harmony => Vec::new(),
             };
             let (backend_trait_name, default_backend_name, backend_option_names) =
                 match status.platform {
@@ -2374,6 +2382,11 @@ pub(crate) fn zsui_window_system_backend_work_items() -> Vec<ZsuiWindowSystemBac
                             "gtk_layer_shell",
                             "compositor_specific_adapter",
                         ],
+                    ),
+                    NativeUiPlatform::Android | NativeUiPlatform::Harmony => (
+                        "UnsupportedMobileWindowSystemBackend",
+                        "UnsupportedMobileWindowSystemBackend",
+                        Vec::new(),
                     ),
                 };
             ZsuiWindowSystemBackendWorkItem {
@@ -3081,6 +3094,7 @@ pub(crate) fn zsui_native_ui_protocol_host_statuses() -> Vec<ZsuiNativeUiProtoco
                         NativeUiPlatform::Macos | NativeUiPlatform::Linux => {
                             all_builder_names.clone()
                         }
+                        NativeUiPlatform::Android | NativeUiPlatform::Harmony => Vec::new(),
                     };
                     let missing_protocol_builder_names = all_builder_names
                         .into_iter()
@@ -3098,6 +3112,9 @@ pub(crate) fn zsui_native_ui_protocol_host_statuses() -> Vec<ZsuiNativeUiProtoco
                             }
                             NativeUiPlatform::Macos => "src/macos_native_host.rs",
                             NativeUiPlatform::Linux => "src/linux_native_host.rs",
+                            NativeUiPlatform::Android | NativeUiPlatform::Harmony => {
+                                "unsupported_mobile_host"
+                            }
                         },
                         surface_name: surface.surface_name(),
                         protocol_builder_names: surface.protocol_builder_names.to_vec(),
@@ -3184,6 +3201,7 @@ fn zsui_primary_host_module_for_platform(platform: NativeUiPlatform) -> &'static
         NativeUiPlatform::Windows => "src/app/* + src/settings_ui_host.rs",
         NativeUiPlatform::Macos => "src/macos_native_host.rs",
         NativeUiPlatform::Linux => "src/linux_native_host.rs",
+        NativeUiPlatform::Android | NativeUiPlatform::Harmony => "unsupported_mobile_host",
     }
 }
 
@@ -3294,6 +3312,12 @@ fn zsui_host_private_ui_ingress_audit_payload(
             ProtocolAnchoredNeedsExtraction,
             Some("move list row visual states and VV popup animation policy into dynamic control specs"),
         ),
+        (NativeUiPlatform::Android | NativeUiPlatform::Harmony, _) => (
+            Vec::new(),
+            Vec::new(),
+            PrivateIngressNeedsProtocol,
+            Some("mobile UI hosts are outside the ZSClip desktop runtime"),
+        ),
     }
 }
 
@@ -3376,6 +3400,9 @@ const fn zsui_native_target_smoke_environment_name(platform: NativeUiPlatform) -
         NativeUiPlatform::Windows => "real Windows Win32/GDI host smoke verification",
         NativeUiPlatform::Macos => "real macOS AppKit host smoke verification",
         NativeUiPlatform::Linux => "real Ubuntu GTK host smoke verification",
+        NativeUiPlatform::Android | NativeUiPlatform::Harmony => {
+            "unsupported mobile target in ZSClip desktop host"
+        }
     }
 }
 
@@ -3860,6 +3887,7 @@ fn zsui_completed_native_runtime_gate_names(
     match platform {
         NativeUiPlatform::Windows => Vec::new(),
         NativeUiPlatform::Macos | NativeUiPlatform::Linux => zsui_native_runtime_gate_names(),
+        NativeUiPlatform::Android | NativeUiPlatform::Harmony => Vec::new(),
     }
 }
 

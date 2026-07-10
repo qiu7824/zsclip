@@ -32,6 +32,7 @@ pub(crate) struct DeferredWindowPos {
     pub width: i32,
     pub height: i32,
     pub visible: bool,
+    pub was_visible: bool,
 }
 
 #[link(name = "user32")]
@@ -430,14 +431,12 @@ pub(crate) fn defer_move_windows(moves: &[DeferredWindowPos]) -> bool {
         if item.hwnd.is_null() {
             continue;
         }
-        let flags = SWP_NOZORDER
-            | SWP_NOACTIVATE
-            | SWP_NOREDRAW
-            | if item.visible {
-                SWP_SHOWWINDOW
-            } else {
-                SWP_HIDEWINDOW
-            };
+        let visibility_flag = match (item.visible, item.was_visible) {
+            (true, false) => SWP_SHOWWINDOW,
+            (false, true) => SWP_HIDEWINDOW,
+            _ => 0,
+        };
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | visibility_flag;
         let next = unsafe {
             DeferWindowPos(
                 hdwp,

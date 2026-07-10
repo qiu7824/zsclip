@@ -1,0 +1,17 @@
+{
+  "version": "0.9.9.5",
+  "description": "Local clipboard history, snippets and quick paste tool.",
+  "homepage": "https://github.com/qiu7824/zsclip",
+  "license": "GPL-3.0-or-later",
+  "url": "https://github.com/qiu7824/zsclip/releases/download/0.9.9.5/zsclip-windows-x86_64-portable.zip",
+  "hash": "a01555b6b98329c96bbbfbc6573e3e85eca2466e2325ddcb562aee45e8381be3",
+  "bin": [["剪贴板.exe", "zsclip"]],
+  "shortcuts": [["剪贴板.exe", "ZSClip"]],
+  "persist": "data",
+  "checkver": {
+    "github": "https://github.com/qiu7824/zsclip"
+  },
+  "autoupdate": {
+    "url": "https://github.com/qiu7824/zsclip/releases/download/$version/zsclip-windows-x86_64-portable.zip"
+  }
+}

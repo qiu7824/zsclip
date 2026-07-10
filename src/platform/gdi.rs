@@ -6,8 +6,8 @@ use windows_sys::Win32::{
         FillRect, FrameRect, GetDC, GetDeviceCaps, GetStockObject, IntersectClipRect,
         InvalidateRect, PatBlt, RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC,
         SelectObject, SetBkColor, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor,
-        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HBITMAP,
-        HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
+        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS,
+        HALFTONE, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
 };
@@ -200,6 +200,51 @@ pub(crate) fn stretch_top_down_32bpp(
     info.bmiHeader.biCompression = BI_RGB;
     set_stretch_blt_mode(dc, HALFTONE);
     set_brush_org_ex(dc, 0, 0, core::ptr::null_mut());
+    stretch_dibits(
+        dc,
+        x_dest,
+        y_dest,
+        dest_width,
+        dest_height,
+        0,
+        0,
+        src_width,
+        src_height,
+        bgra_bits.as_ptr() as _,
+        &info,
+        DIB_RGB_COLORS,
+        SRCCOPY,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn stretch_top_down_32bpp_nearest(
+    dc: HDC,
+    x_dest: i32,
+    y_dest: i32,
+    dest_width: i32,
+    dest_height: i32,
+    src_width: i32,
+    src_height: i32,
+    bgra_bits: &[u8],
+) -> i32 {
+    if dc.is_null()
+        || dest_width <= 0
+        || dest_height <= 0
+        || src_width <= 0
+        || src_height <= 0
+        || bgra_bits.is_empty()
+    {
+        return 0;
+    }
+    let mut info: BITMAPINFO = unsafe { core::mem::zeroed() };
+    info.bmiHeader.biSize = core::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = src_width;
+    info.bmiHeader.biHeight = -src_height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    set_stretch_blt_mode(dc, COLORONCOLOR);
     stretch_dibits(
         dc,
         x_dest,

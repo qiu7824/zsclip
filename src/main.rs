@@ -2,8 +2,8 @@
 
 #[cfg(target_os = "windows")]
 mod app;
-mod app_version;
 mod app_core;
+mod app_version;
 mod cloud_sync;
 mod db_runtime;
 #[cfg(target_os = "windows")]
@@ -15,13 +15,13 @@ mod lan_sync;
 mod lan_sync_core;
 #[cfg(any(target_os = "linux", test))]
 mod linux_app;
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 mod linux_gtk_adapter;
 #[cfg(any(target_os = "linux", test))]
 mod linux_native_host;
 #[cfg(any(target_os = "macos", test))]
 mod macos_app;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(test)]
 mod macos_appkit_adapter;
 #[cfg(any(target_os = "macos", test))]
 mod macos_native_host;
@@ -60,15 +60,13 @@ mod win_ui_render;
 mod windows_edit_text_dialog;
 #[cfg(target_os = "windows")]
 mod windows_text_input_dialog;
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 mod windows_win32_adapter;
 mod zsclip_product_adapter;
 pub use zsui;
 
 #[cfg(target_os = "windows")]
 fn main() {
-    let _adapter_boundary =
-        windows_win32_adapter::WindowsWin32AdapterBoundary::default_from_core_contract();
     if let Some(code) = shell::maybe_run_wechat_ocr_helper_from_args() {
         std::process::exit(code);
     }
@@ -247,19 +245,14 @@ mod source_encoding_tests {
             fs::read_to_string(root.join(".github/workflows/native-hosts.yml")).unwrap();
 
         assert!(main_rs.contains("#[cfg(target_os = \"windows\")]\nmod app;"));
-        assert!(main_rs
-            .contains("#[cfg(any(target_os = \"windows\", test))]\nmod windows_win32_adapter;"));
+        assert!(main_rs.contains("#[cfg(test)]\nmod windows_win32_adapter;"));
         assert!(main_rs.contains("#[cfg(any(target_os = \"macos\", test))]\nmod macos_app;"));
-        assert!(
-            main_rs.contains("#[cfg(any(target_os = \"macos\", test))]\nmod macos_appkit_adapter;")
-        );
+        assert!(main_rs.contains("#[cfg(test)]\nmod macos_appkit_adapter;"));
         assert!(
             main_rs.contains("#[cfg(any(target_os = \"macos\", test))]\nmod macos_native_host;")
         );
         assert!(main_rs.contains("#[cfg(any(target_os = \"linux\", test))]\nmod linux_app;"));
-        assert!(
-            main_rs.contains("#[cfg(any(target_os = \"linux\", test))]\nmod linux_gtk_adapter;")
-        );
+        assert!(main_rs.contains("#[cfg(test)]\nmod linux_gtk_adapter;"));
         assert!(
             main_rs.contains("#[cfg(any(target_os = \"linux\", test))]\nmod linux_native_host;")
         );
@@ -267,8 +260,6 @@ mod source_encoding_tests {
         assert!(main_rs.contains("\nmod settings_model;"));
         assert!(!main_rs.contains("#[cfg(target_os = \"windows\")]\n#[path = \"i18n_runtime.rs\"]"));
         assert!(!main_rs.contains("#[cfg(target_os = \"windows\")]\nmod settings_model;"));
-        assert!(main_rs.contains("WindowsWin32AdapterBoundary::default_from_core_contract"));
-        assert!(main_rs.contains("fn main() {\n    let _adapter_boundary ="));
         assert!(
             main_rs.contains("if let Some(code) = shell::maybe_run_wechat_ocr_helper_from_args()")
         );

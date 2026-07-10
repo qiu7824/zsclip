@@ -844,12 +844,20 @@ impl Default for LinuxSettingsDropdownHost {
 }
 
 pub(crate) fn run() -> Result<(), String> {
-    let summary = linux_host_contract_summary();
-    let launch_plan = linux_native_host_launch_plan();
-    if launch_plan.enters_real_event_loop() {
-        return crate::linux_native_host::run_real_gtk_host(summary);
+    #[cfg(target_os = "linux")]
+    {
+        return crate::linux_native_host::run_real_gtk_host(linux_host_contract_summary());
     }
-    run_linux_contract_scaffold()
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let summary = linux_host_contract_summary();
+        let launch_plan = linux_native_host_launch_plan();
+        if launch_plan.enters_real_event_loop() {
+            return crate::linux_native_host::run_real_gtk_host(summary);
+        }
+        run_linux_contract_scaffold()
+    }
 }
 
 pub(crate) fn dispatch_linux_native_host_action(
@@ -2619,14 +2627,12 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_fil
     group_id: i64,
     kind_filter: crate::app_core::ClipKindFilter,
 ) -> Vec<NativeHostClipListItemProjection> {
-    if let Ok(items) =
-        crate::db_runtime::native_clip_list_items_for_group_kind_filter(
-            category,
-            group_id,
-            kind_filter,
-            64,
-        )
-    {
+    if let Ok(items) = crate::db_runtime::native_clip_list_items_for_group_kind_filter(
+        category,
+        group_id,
+        kind_filter,
+        64,
+    ) {
         return items;
     }
     Vec::new()
@@ -2650,6 +2656,7 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_fil
     Vec::new()
 }
 
+#[cfg(not(target_os = "linux"))]
 fn run_linux_contract_scaffold() -> Result<(), String> {
     let _adapter_boundary =
         crate::linux_gtk_adapter::LinuxGtkAdapterBoundary::default_from_linux_contract();
@@ -3741,12 +3748,14 @@ impl NativeStyleResolver for LinuxNativeStyleResolver {
                 a: 255,
             },
         };
+        #[allow(unreachable_patterns)]
         let size = match style.role {
             TextRole::Caption => 12.0,
             TextRole::Title => 18.0,
             TextRole::Button => 14.0,
             TextRole::Monospace => 13.0,
             TextRole::Body => 14.0,
+            _ => 14.0,
         };
         TextStyle {
             font_family: if matches!(style.role, TextRole::Monospace) {
@@ -6131,10 +6140,13 @@ mod tests {
                     height: 420,
                 },
                 options: NativeWindowOptions::standard(),
+                icon_path: None,
                 main_visible: true,
                 degraded_capabilities: Vec::new(),
             },
             status_item_tooltip: Some("Demo Linux".to_string()),
+            status_item: None,
+            settings_pages: Vec::new(),
         });
 
         let NativeRuntimeStartupResult::Started(handles) = startup else {

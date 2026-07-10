@@ -35,6 +35,7 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
             existing: Some(app.settings_hwnd),
             bounds: UiRect::new(0, 0, 0, 0),
         });
+        WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(owner_hwnd);
         refresh_low_level_input_hooks();
         return;
     }
@@ -70,6 +71,7 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
         app.settings_hwnd = settings_hwnd;
         app.edge_hide_pending_until = None;
         app.edge_hide_grace_until = None;
+        WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(owner_hwnd);
         refresh_low_level_input_hooks();
     }
 }
@@ -114,7 +116,12 @@ pub(super) unsafe fn refresh_settings_cloud_page_after_lan_sync(settings_hwnd: H
     }
     let st_ptr = platform_window::user_data(settings_hwnd) as *mut SettingsWndState;
     if !st_ptr.is_null() && (*st_ptr).ui.is_built(SettingsPage::Cloud.index()) {
-        settings_sync_page_state(&mut *st_ptr, SettingsPage::Cloud.index());
+        if settings_refresh_cloud_lan_runtime_state(&mut *st_ptr) {
+            if let Some(client) = settings_window_client_bounds(settings_hwnd).map(RECT::from) {
+                let viewport = settings_viewport_rect(&client);
+                repaint_settings_window_area(settings_hwnd, Some(viewport.into()), false);
+            }
+        }
     } else {
         request_settings_window_repaint(settings_hwnd);
     }

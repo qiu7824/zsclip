@@ -1,4 +1,27 @@
 use super::prelude::*;
+use crate::win_system_params::SETTINGS_CLASS;
+
+pub(super) unsafe fn route_settings_child_mouse_wheel(message: &MSG) -> bool {
+    if message.message != WM_MOUSEWHEEL || message.hwnd.is_null() {
+        return false;
+    }
+    let root = platform_window::root_ancestor(message.hwnd);
+    if root.is_null() || root == message.hwnd || platform_window::class_name(root) != SETTINGS_CLASS
+    {
+        return false;
+    }
+    let st_ptr = platform_window::user_data(root) as *mut SettingsWndState;
+    if !st_ptr.is_null() && settings_dropdown_popup_exists((*st_ptr).dropdown_popup) {
+        return false;
+    }
+    platform_window::send_message(
+        root,
+        WM_MOUSEWHEEL,
+        message.wParam as WPARAM,
+        message.lParam as LPARAM,
+    );
+    true
+}
 
 pub(super) unsafe fn dispatch_settings_ui_event(
     hwnd: HWND,

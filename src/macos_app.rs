@@ -8115,12 +8115,20 @@ impl MacosSettingsDropdownHost {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn run() -> Result<(), String> {
-    let summary = MacosUiHost::contract_summary();
-    let launch_plan = macos_native_host_launch_plan();
-    if launch_plan.enters_real_event_loop() {
-        return crate::macos_native_host::run_real_appkit_host(summary);
+    #[cfg(target_os = "macos")]
+    {
+        return crate::macos_native_host::run_real_appkit_host(MacosUiHost::contract_summary());
     }
-    run_macos_contract_scaffold(summary)
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let summary = MacosUiHost::contract_summary();
+        let launch_plan = macos_native_host_launch_plan();
+        if launch_plan.enters_real_event_loop() {
+            return crate::macos_native_host::run_real_appkit_host(summary);
+        }
+        run_macos_contract_scaffold(summary)
+    }
 }
 
 pub(crate) fn dispatch_macos_native_host_action(
@@ -9906,6 +9914,7 @@ pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_fil
     Vec::new()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn run_macos_contract_scaffold(summary: MacosHostContractSummary) -> Result<(), String> {
     let _adapter_boundary =
         crate::macos_appkit_adapter::MacosAppKitAdapterBoundary::default_from_macos_contract();
@@ -11629,6 +11638,7 @@ mod tests {
                 height: 614,
             },
             options: NativeWindowOptions::tool_window(),
+            icon_path: None,
             main_visible: true,
             degraded_capabilities: Vec::new(),
         });
@@ -11962,10 +11972,13 @@ mod tests {
                     height: 420,
                 },
                 options: NativeWindowOptions::standard(),
+                icon_path: None,
                 main_visible: true,
                 degraded_capabilities: Vec::new(),
             },
             status_item_tooltip: Some("Demo Mac".to_string()),
+            status_item: None,
+            settings_pages: Vec::new(),
         });
 
         let NativeRuntimeStartupResult::Started(handles) = startup else {

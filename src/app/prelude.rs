@@ -242,9 +242,6 @@ pub(in crate::app) use crate::lan_sync::{self, LanClipEnvelope, LanFileMeta};
 #[cfg(feature = "mail-merge")]
 pub(in crate::app) use crate::mail_merge_native::WindowsMailMergeWindowHost;
 pub(in crate::app) use crate::platform::appearance as platform_appearance;
-pub(in crate::app) use crate::platform::buffered_paint::{
-    begin_buffered_paint, end_buffered_paint,
-};
 pub(in crate::app) use crate::platform::clipboard as platform_clipboard;
 pub(in crate::app) use crate::platform::clipboard_listener;
 pub(in crate::app) use crate::platform::dialog as platform_dialog;
@@ -273,7 +270,7 @@ pub(in crate::app) use crate::settings_model::{
     settings_content_render_plan, settings_dpi_move_action, settings_group_overview_text,
     settings_nav_hover_transition, settings_nav_render_plan,
     settings_page_content_total_h_for_dynamic_sections, settings_page_max_scroll,
-    settings_pointer_down_target, settings_pointer_move_transition, settings_qr_render_plan,
+    settings_pointer_down_target, settings_pointer_move_transition,
     settings_scroll_delta_for_wheel, settings_scroll_layout_for_window,
     settings_scrollbar_render_plan, settings_update_presentation,
     settings_window_dpi_transition_plan, settings_window_fit_plan, SettingsDpiMoveAction,

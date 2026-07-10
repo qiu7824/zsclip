@@ -40,12 +40,8 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
 
     let viewport = settings_viewport_rect(&crc);
     settings_repos_controls(hwnd, st, false);
-    if !st.viewport_hwnd.is_null() {
-        platform_gdi::invalidate_rect(st.viewport_hwnd, null(), 0);
-    }
-
     invalidate_settings_scrollbar_and_mask(hwnd);
-    platform_gdi::redraw_window(hwnd, &viewport, null_mut(), RDW_INVALIDATE);
+    platform_gdi::redraw_window(hwnd, &viewport, null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
 }
 
 pub(super) unsafe fn settings_scrollbar_show(hwnd: HWND, st: &mut SettingsWndState) {

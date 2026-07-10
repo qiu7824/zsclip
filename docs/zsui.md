@@ -71,6 +71,8 @@ types:
 - shared geometry / command / event / layout / component / render protocols
 - required host surfaces for main/settings/dialog ingress
 - native settings control specs, mappers and control host contracts
+- native adapter manifest, timer routing and reusable platform service host
+  contracts now come from the standalone crate
 
 The central backend trait is `ZsuiHost`. It covers creating a main window,
 showing/hiding a window, creating a tray/status menu, registering global

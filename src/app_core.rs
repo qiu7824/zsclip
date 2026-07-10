@@ -12,6 +12,7 @@ pub(crate) mod component_protocol;
 pub(crate) mod components;
 pub(crate) mod control_protocol;
 pub(crate) mod event_protocol;
+#[cfg(test)]
 pub(crate) mod framework_manifest;
 pub(crate) mod host_protocol;
 pub(crate) mod layout_protocol;
@@ -37,6 +38,7 @@ pub(crate) use command_protocol::*;
 pub(crate) use component_protocol::*;
 pub(crate) use control_protocol::*;
 pub(crate) use event_protocol::*;
+#[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use framework_manifest::*;
 pub(crate) use host_protocol::*;
@@ -71,6 +73,7 @@ pub(crate) use main_window::{
     TitleButtonVisibility, MAIN_EMPTY_GROUP_MENU_ID, MAIN_VV_POPUP_MAX_ITEMS,
 };
 pub(crate) use main_window_protocol::*;
+#[allow(unused_imports)]
 pub(crate) use native_adapter_manifest::*;
 #[allow(unused_imports)]
 pub(crate) use native_component_protocol::*;

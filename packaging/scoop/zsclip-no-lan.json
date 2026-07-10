@@ -1,0 +1,17 @@
+{
+  "version": "0.9.9.5",
+  "description": "Local clipboard history, snippets and quick paste tool without LAN sync.",
+  "homepage": "https://github.com/qiu7824/zsclip",
+  "license": "GPL-3.0-or-later",
+  "url": "https://github.com/qiu7824/zsclip/releases/download/0.9.9.5/zsclip-windows-x86_64-no-lan-portable.zip",
+  "hash": "4faee9c3e2d656a38130de0ac091e38dd2b180e7345d49431723841a3a2c7efe",
+  "bin": [["剪贴板.exe", "zsclip-no-lan"]],
+  "shortcuts": [["剪贴板.exe", "ZSClip no-LAN"]],
+  "persist": "data",
+  "checkver": {
+    "github": "https://github.com/qiu7824/zsclip"
+  },
+  "autoupdate": {
+    "url": "https://github.com/qiu7824/zsclip/releases/download/$version/zsclip-windows-x86_64-no-lan-portable.zip"
+  }
+}

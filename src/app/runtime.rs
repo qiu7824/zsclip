@@ -512,8 +512,14 @@ mod tests {
 
         migrate_dir_contents(&source, &target, &target).unwrap();
 
-        assert_eq!(fs::read_to_string(target.join("settings.json")).unwrap(), "{}");
-        assert_eq!(fs::read(target.join("images").join("clip.png")).unwrap(), b"png");
+        assert_eq!(
+            fs::read_to_string(target.join("settings.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            fs::read(target.join("images").join("clip.png")).unwrap(),
+            b"png"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
