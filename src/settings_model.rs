@@ -4125,7 +4125,7 @@ pub fn settings_update_presentation(
     let button_text = if state.checking {
         tr("检测中…", "Checking...")
     } else if state.available {
-        tr("点击下载最新版本", "Click to download latest version")
+        tr("点击下载", "Download")
     } else if state.started {
         tr("再次检查", "Check again")
     } else {
@@ -6346,10 +6346,7 @@ mod tests {
             ..Default::default()
         });
         assert!(available.status_text.contains("v9.9.9"));
-        assert_eq!(
-            available.button_text,
-            tr("点击下载最新版本", "Click to download latest version")
-        );
+        assert_eq!(available.button_text, tr("点击下载", "Download"));
 
         let error = settings_update_presentation(&SettingsUpdatePresentationInput {
             started: true,

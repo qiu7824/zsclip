@@ -5724,6 +5724,7 @@ fn windows_main_window_appearance_uses_main_window_host() {
 #[test]
 fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     let workflow = include_str!("../.github/workflows/release-packages.yml");
+    let app_version = crate::app_version::APP_VERSION;
 
     assert!(workflow.contains("iconutil -c icns"));
     assert!(workflow.contains("AppIcon.icns"));
@@ -5737,13 +5738,16 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains("WizardForm.TasksList.Checked[TaskIndex]"));
     assert!(workflow.contains("Check: ShouldDisableAutostart"));
     assert!(workflow.contains("Flags: deletevalue"));
-    assert!(workflow.contains("zsclip-v0.9.9.5-resources.zip"));
+    assert!(workflow.contains(&format!("default: \"{app_version}\"")));
+    assert!(workflow.contains(&format!("zsclip-v{app_version}-resources.zip")));
     assert!(workflow.contains("name: Android test APK"));
     assert!(workflow.contains("gradle assembleDebug"));
     assert!(workflow.contains("zsclip-android-test.apk"));
     assert!(workflow.contains("- android"));
     assert!(workflow.contains("Package resource bundle"));
-    assert!(workflow.contains("release-assets/zsclip-v0.9.9.5-resources.zip"));
+    assert!(workflow.contains(&format!(
+        "release-assets/zsclip-v{app_version}-resources.zip"
+    )));
     assert!(workflow.contains("release-assets/zsclip-android-test.apk"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
