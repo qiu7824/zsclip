@@ -1615,3 +1615,15 @@ unsafe fn try_create_icon(data: &[u8], base: usize, w: i32, h: i32) -> Option<is
     let slice = &data[offset..offset + size];
     platform_shell::create_icon_from_resource(slice, w, h)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_check_does_not_report_current_four_part_version_as_newer() {
+        assert!(!version_is_newer("0.9.9.6", APP_VERSION));
+        assert!(!version_is_newer("v0.9.9.6", APP_VERSION));
+        assert!(version_is_newer("0.9.9.7", APP_VERSION));
+    }
+}
