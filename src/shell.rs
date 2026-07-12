@@ -159,9 +159,7 @@ impl IconAssetKind {
             crate::zsui::ZsIcon::Folder | crate::zsui::ZsIcon::Group => Some(Self::Folder),
             crate::zsui::ZsIcon::Pin => Some(Self::Pin),
             crate::zsui::ZsIcon::Delete => Some(Self::Delete),
-            crate::zsui::ZsIcon::Copy | crate::zsui::ZsIcon::Paste | crate::zsui::ZsIcon::Edit => {
-                None
-            }
+            _ => None,
         }
     }
 }
@@ -1625,5 +1623,11 @@ mod tests {
         assert!(!version_is_newer("0.9.9.6", APP_VERSION));
         assert!(!version_is_newer("v0.9.9.6", APP_VERSION));
         assert!(version_is_newer("0.9.9.7", APP_VERSION));
+    }
+
+    #[test]
+    fn unsupported_zsui_icons_do_not_require_local_assets() {
+        assert_eq!(IconAssetKind::from_zsui(crate::zsui::ZsIcon::Add), None);
+        assert_eq!(IconAssetKind::from_zsui(crate::zsui::ZsIcon::More), None);
     }
 }

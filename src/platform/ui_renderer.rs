@@ -191,6 +191,7 @@ fn font_weight(weight: TextWeight) -> i32 {
     match weight {
         TextWeight::Regular => 400,
         TextWeight::Medium => 500,
+        TextWeight::Semibold => 600,
         TextWeight::Bold => 700,
     }
 }
@@ -352,6 +353,7 @@ mod tests {
     fn font_weights_are_stable() {
         assert_eq!(font_weight(TextWeight::Regular), 400);
         assert_eq!(font_weight(TextWeight::Medium), 500);
+        assert_eq!(font_weight(TextWeight::Semibold), 600);
         assert_eq!(font_weight(TextWeight::Bold), 700);
     }
 }

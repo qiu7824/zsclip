@@ -35,7 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Checkout zsui dependency
-        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
+        run: |
+          revision="$(tr -d '\r\n' < zsui-revision.txt)"
+          git init ../zsui
+          git -C ../zsui remote add origin https://github.com/qiu7824/zsui
+          git -C ../zsui fetch --depth 1 origin "$revision"
+          git -C ../zsui checkout --detach FETCH_HEAD
       - uses: dtolnay/rust-toolchain@stable
       - name: Check AppKit host
         env:
@@ -91,7 +96,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Checkout zsui dependency
-        run: git clone --depth 1 https://github.com/qiu7824/zsui ../zsui
+        run: |
+          revision="$(tr -d '\r\n' < zsui-revision.txt)"
+          git init ../zsui
+          git -C ../zsui remote add origin https://github.com/qiu7824/zsui
+          git -C ../zsui fetch --depth 1 origin "$revision"
+          git -C ../zsui checkout --detach FETCH_HEAD
       - uses: dtolnay/rust-toolchain@stable
       - name: Install GTK smoke dependencies
         run: |

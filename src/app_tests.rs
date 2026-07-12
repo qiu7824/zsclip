@@ -5724,6 +5724,8 @@ fn windows_main_window_appearance_uses_main_window_host() {
 #[test]
 fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     let workflow = include_str!("../.github/workflows/release-packages.yml");
+    let native_hosts = include_str!("../.github/workflows/native-hosts.yml");
+    let zsui_revision = include_str!("../zsui-revision.txt").trim();
     let app_version = crate::app_version::APP_VERSION;
 
     assert!(workflow.contains("iconutil -c icns"));
@@ -5748,6 +5750,12 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains(&format!(
         "release-assets/zsclip-v{app_version}-resources.zip"
     )));
+    assert_eq!(zsui_revision.len(), 40);
+    assert!(zsui_revision.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(workflow.matches("checkout --detach FETCH_HEAD").count(), 3);
+    assert_eq!(native_hosts.matches("checkout --detach FETCH_HEAD").count(), 2);
+    assert!(!workflow.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
+    assert!(!native_hosts.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
     assert!(workflow.contains("release-assets/zsclip-android-test.apk"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
