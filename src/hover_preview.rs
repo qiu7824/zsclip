@@ -26,8 +26,8 @@ const PREVIEW_W_TEXT: i32 = 420;
 const PREVIEW_H_TEXT: i32 = 220;
 const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
-// 392x164 的正文区使用 12px 字体时可显示约 10 行、420 个中英文混排字符。
-const PREVIEW_TEXT_MAX_LINES: usize = 10;
+// 392x164 的正文区使用 12px 字体时约有 10 行空间，正文保留 9 行以容纳截断提示。
+const PREVIEW_TEXT_MAX_LINES: usize = 9;
 const PREVIEW_TEXT_MAX_CHARS: usize = 420;
 const PREVIEW_FILE_MAX_ITEMS: usize = 8;
 const MARKDOWN_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
@@ -500,8 +500,8 @@ mod tests {
             .join("\n");
         let preview = limit_preview_text(&source, PREVIEW_TEXT_MAX_LINES, PREVIEW_TEXT_MAX_CHARS);
 
-        assert!(preview.contains("line 10"));
-        assert!(!preview.contains("line 11"));
+        assert!(preview.contains("line 9"));
+        assert!(!preview.contains("line 10"));
         assert!(preview.ends_with("......"));
     }
 

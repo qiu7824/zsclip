@@ -995,16 +995,24 @@ fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
     let main_window = main_window_source();
     let refresh = main_window_refresh_source();
     let events = main_events_source();
+    let host = main_window_host_source();
     let show_start = refresh
         .find("pub(crate) unsafe fn refresh_window_for_show")
         .unwrap();
     let show_block = &refresh[show_start..];
 
     assert!(!main_window.contains("release_list_memory"));
-    assert!(!main_window.contains("trim_current_working_set"));
+    assert!(main_window.contains("trim_current_working_set"));
     assert!(!show_block.contains("reload_state_from_db_persisting"));
+    assert!(!show_block.contains("load_settings()"));
+    assert!(!show_block.contains("sync_main_tray_icon"));
+    assert!(!show_block.contains("register_hotkey_for"));
+    assert!(!show_block.contains("update_vv_mode_hook"));
+    assert!(show_block.contains("cancel_hidden_memory_reclaim"));
     assert!(show_block.contains("state.refilter()"));
     assert!(events.contains("apply_ready_page_loads(hwnd, &mut *ptr)"));
+    assert!(events.contains("trim_hidden_process_working_set()"));
+    assert!(host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW"));
 }
 
 #[test]

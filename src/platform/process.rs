@@ -2,6 +2,7 @@ use std::path::Path;
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
+    fn GetCurrentProcess() -> *mut core::ffi::c_void;
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
@@ -22,6 +23,11 @@ unsafe extern "system" {
         lpdwsize: *mut u32,
     ) -> i32;
     fn CloseHandle(hobject: *mut core::ffi::c_void) -> i32;
+}
+
+#[link(name = "psapi")]
+unsafe extern "system" {
+    fn EmptyWorkingSet(hprocess: *mut core::ffi::c_void) -> i32;
 }
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
@@ -64,5 +70,14 @@ pub(crate) fn process_image_name(pid: u32) -> String {
             .file_name()
             .map(|name| name.to_string_lossy().to_lowercase())
             .unwrap_or_default()
+    }
+}
+
+pub(crate) fn trim_current_working_set() {
+    unsafe {
+        let process = GetCurrentProcess();
+        if !process.is_null() {
+            let _ = EmptyWorkingSet(process);
+        }
     }
 }

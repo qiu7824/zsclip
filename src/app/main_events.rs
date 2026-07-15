@@ -202,6 +202,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 cancel_hidden_memory_reclaim(hwnd, state);
                 if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
                     reclaim_hidden_window_memory(hwnd, state);
+                    trim_hidden_process_working_set();
                 }
             }
         }
