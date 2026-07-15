@@ -107,24 +107,8 @@ pub(crate) unsafe fn refresh_window_for_show(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
-    state.settings = load_settings();
-    state.settings.auto_start = is_autostart_enabled();
-    #[cfg(not(feature = "lan-sync"))]
-    {
-        state.settings.lan_sync_enabled = false;
-    }
-    settings_normalize_multi_sync_mode(&mut state.settings);
-    schedule_cloud_sync(state, false);
-    if state.role == WindowRole::Main {
-        sync_main_tray_icon(hwnd, state);
-        register_hotkey_for(hwnd, state);
-        register_plain_paste_hotkey_for(hwnd, state);
-        let _ = update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
-        register_clipboard_listener_for(hwnd, state);
-        arm_startup_recovery_if_needed(state);
-    }
+    cancel_hidden_memory_reclaim(hwnd, state);
     state.refilter();
     layout_children(hwnd);
     platform_gdi::invalidate_rect(hwnd, null(), 1);
-    refresh_low_level_input_hooks();
 }

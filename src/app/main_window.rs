@@ -30,6 +30,28 @@ pub(super) unsafe fn reclaim_hidden_window_memory(hwnd: HWND, state: &mut AppSta
     reclaim_hidden_peer_window_memory(hwnd);
 }
 
+fn window_counts_as_visible_for_memory_reclaim(hwnd: HWND) -> bool {
+    platform_window::exists(hwnd)
+        && platform_window::is_visible(hwnd)
+        && !platform_window::is_minimized(hwnd)
+}
+
+pub(super) unsafe fn trim_hidden_process_working_set() {
+    for hwnd in window_host_hwnds() {
+        if window_counts_as_visible_for_memory_reclaim(hwnd) {
+            return;
+        }
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && window_counts_as_visible_for_memory_reclaim((*ptr).settings_hwnd) {
+            return;
+        }
+    }
+    if window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd()) {
+        return;
+    }
+    platform_process::trim_current_working_set();
+}
+
 pub(super) unsafe fn schedule_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
     start_flagged_timer(
         hwnd,

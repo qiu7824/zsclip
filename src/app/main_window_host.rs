@@ -299,6 +299,12 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
+                platform_gdi::redraw_window(
+                    handle,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                );
                 platform_window::set_foreground(handle);
                 platform_input::set_focus(handle);
             }
@@ -312,6 +318,12 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                     0,
                     0,
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
+                platform_gdi::redraw_window(
+                    handle,
+                    null(),
+                    null_mut(),
+                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
                 );
             }
         }
