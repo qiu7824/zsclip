@@ -19,12 +19,12 @@ pub(super) unsafe fn hover_preview_blocked_at_point(state: &AppState, x: i32, y:
         .unwrap_or(false)
 }
 
-unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
+unsafe fn refresh_hover_preview(hwnd: HWND, state: &mut AppState, x: i32, y: i32) {
     if !state.settings.hover_preview || state.edge_hidden {
         hide_hover_preview();
         return;
     }
-    let Some(item) = hovered_item_clone(state) else {
+    let Some(item_summary) = hovered_item_clone(state) else {
         hide_hover_preview();
         return;
     };
@@ -35,6 +35,13 @@ unsafe fn refresh_hover_preview(hwnd: HWND, state: &AppState, x: i32, y: i32) {
         hide_hover_preview();
         return;
     };
+    let item = if matches!(item_summary.kind, ClipKind::Text | ClipKind::Phrase) {
+        state
+            .load_item_full_cached(item_summary.id)
+            .unwrap_or(item_summary)
+    } else {
+        item_summary
+    };
     show_hover_preview(&item, win_rc.left + x, win_rc.top + y);
 }
 
@@ -43,7 +50,7 @@ pub(super) unsafe fn handle_mouse_hover_main(hwnd: HWND, position: UiPoint) {
     if ptr.is_null() {
         return;
     }
-    let state = &*ptr;
+    let state = &mut *ptr;
     refresh_hover_preview(hwnd, state, position.x, position.y);
 }
 
