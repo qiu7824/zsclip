@@ -252,10 +252,29 @@ pub(super) fn load_settings() -> AppSettings {
 }
 
 pub(crate) fn save_settings(settings: &AppSettings) {
+    let mut merged = settings.clone();
+    if let Ok(text) = fs::read_to_string(settings_file()) {
+        let persisted = load_settings_from_text(&text);
+        merged.sticker_x = persisted.sticker_x;
+        merged.sticker_y = persisted.sticker_y;
+        merged.sticker_zoom_pct = persisted.sticker_zoom_pct;
+    }
+    write_settings(&merged);
+}
+
+fn write_settings(settings: &AppSettings) {
     let _ = fs::create_dir_all(data_dir());
     if let Ok(text) = serialize_settings(settings) {
         let _ = fs::write(settings_file(), text);
     }
+}
+
+pub(crate) fn persist_sticker_layout(x: i32, y: i32, zoom_pct: i32) {
+    let mut settings = load_settings();
+    settings.sticker_x = x;
+    settings.sticker_y = y;
+    settings.sticker_zoom_pct = zoom_pct.clamp(20, 400);
+    write_settings(&settings);
 }
 
 pub(super) fn current_cloud_sync_paths() -> CloudSyncPaths {
@@ -499,6 +518,18 @@ mod tests {
         let loaded = load_settings_from_text(&text);
 
         assert_eq!(loaded.max_items, 3000);
+    }
+
+    #[test]
+    fn sticker_layout_defaults_and_round_trips() {
+        let defaults = load_settings_from_text("{}");
+        assert_eq!((defaults.sticker_x, defaults.sticker_y), (-1, -1));
+        assert_eq!(defaults.sticker_zoom_pct, 100);
+
+        let loaded =
+            load_settings_from_text(r#"{"sticker_x":320,"sticker_y":180,"sticker_zoom_pct":170}"#);
+        assert_eq!((loaded.sticker_x, loaded.sticker_y), (320, 180));
+        assert_eq!(loaded.sticker_zoom_pct, 170);
     }
 
     #[test]

@@ -4,24 +4,20 @@ use std::ptr::{null, null_mut};
 use std::sync::OnceLock;
 
 use windows_sys::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{PAINTSTRUCT, WHITE_BRUSH},
     UI::{
-        Input::KeyboardAndMouse::{
-            VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_OEM_MINUS, VK_OEM_PLUS, VK_UP,
-        },
+        Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_OEM_MINUS, VK_OEM_PLUS, VK_UP},
         WindowsAndMessaging::*,
     },
 };
 
 use crate::{
-    app::{ensure_item_image_bytes, image_input_for_ocr, ClipItem},
-    app_core::{NativeDialogHost, NativeDialogLevel},
+    app::{ensure_item_image_bytes, ClipItem},
     i18n::tr,
     platform::{
-        appearance as platform_appearance, clipboard as platform_clipboard,
-        dialog as platform_dialog, gdi as platform_gdi, input as platform_input,
-        memory as platform_memory,
+        appearance as platform_appearance, gdi as platform_gdi, input as platform_input,
+        monitor as platform_monitor,
         string::to_wide,
         window::{self as platform_window, post_boxed_message},
     },
@@ -29,10 +25,6 @@ use crate::{
     win_native_style::{rgb, Theme},
     win_system_ui::{get_x_lparam, get_y_lparam},
 };
-
-const CF_UNICODETEXT: u32 = 13;
-const GMEM_MOVEABLE_FLAG: u32 = 0x0002;
-const DSTINVERT: u32 = 0x00550009;
 
 const WM_MOUSELEAVE_MSG: u32 = 0x02A3;
 const STICKER_CLASS: &str = "ZsClipSticker";
@@ -43,20 +35,13 @@ const STICKER_BTN_GAP: i32 = 6;
 const STICKER_ZOOM_IN_KEY: u32 = VK_OEM_PLUS as u32;
 const STICKER_ZOOM_OUT_KEY: u32 = VK_OEM_MINUS as u32;
 const WM_STICKER_IMAGE_READY: u32 = WM_APP + 52;
-const WM_STICKER_OCR_READY: u32 = WM_APP + 53;
 
 struct StickerImageResult {
     image: Option<(Vec<u8>, usize, usize)>,
 }
 
-struct StickerOcrResult {
-    lines: Vec<crate::shell::OcrLine>,
-    plain_text: String,
-    error: bool,
-    error_message: String,
-}
-
 struct StickerData {
+    settings_owner: HWND,
     width: i32,
     height: i32,
     bgra: Vec<u8>,
@@ -64,120 +49,6 @@ struct StickerData {
     hover_btn: i32,
     down_btn: i32,
     loading: bool,
-    // OCR support
-    item: ClipItem,
-    ocr_enabled: bool,
-    ocr_provider: String,
-    ocr_cloud_url: String,
-    ocr_cloud_token: String,
-    ocr_wechat_dir: String,
-    ocr_loading: bool,
-    ocr_error: bool,
-    ocr_error_message: String,
-    // Structured OCR results
-    ocr_lines: Vec<crate::shell::OcrLine>,
-    ocr_plain_text: String,
-    // Selection state
-    ocr_sel_anchor: i32, // -1 = none
-    ocr_sel_cursor: i32, // -1 = none
-    ocr_hover_line: i32, // -1 = none
-    ocr_mouse_selecting: bool,
-}
-
-impl StickerData {
-    fn has_ocr_result(&self) -> bool {
-        !self.ocr_plain_text.is_empty() || !self.ocr_lines.is_empty()
-    }
-}
-
-// Maps image coordinates to window client coordinates
-struct ImgToScreen {
-    dx: i32,
-    dy: i32,
-    scale_x: f32,
-    scale_y: f32,
-}
-
-impl ImgToScreen {
-    fn from_data(data: &StickerData, client_rc: &RECT) -> Option<Self> {
-        if data.bgra.is_empty() || data.width <= 0 || data.height <= 0 {
-            return None;
-        }
-        let content = RECT {
-            left: 12,
-            top: STICKER_BAR_H + 2,
-            right: client_rc.right - 12,
-            bottom: client_rc.bottom - 12,
-        };
-        let avail_w = max(1, content.right - content.left);
-        let avail_h = max(1, content.bottom - content.top);
-        let zoom = data.zoom_pct.clamp(20, 400) as f32 / 100.0;
-        let iw = max(1, (data.width as f32 * zoom).round() as i32);
-        let ih = max(1, (data.height as f32 * zoom).round() as i32);
-        let scale = (avail_w as f32 / iw as f32)
-            .min(avail_h as f32 / ih as f32)
-            .min(1.0);
-        let dw = max(1, (iw as f32 * scale).round() as i32);
-        let dh = max(1, (ih as f32 * scale).round() as i32);
-        Some(ImgToScreen {
-            dx: content.left + (avail_w - dw) / 2,
-            dy: content.top + (avail_h - dh) / 2,
-            scale_x: dw as f32 / data.width as f32,
-            scale_y: dh as f32 / data.height as f32,
-        })
-    }
-
-    fn line_rect(&self, line: &crate::shell::OcrLine) -> RECT {
-        RECT {
-            left: self.dx + (line.left as f32 * self.scale_x) as i32,
-            top: self.dy + (line.top as f32 * self.scale_y) as i32,
-            right: self.dx + ((line.left + line.width) as f32 * self.scale_x) as i32,
-            bottom: self.dy + ((line.top + line.height) as f32 * self.scale_y) as i32,
-        }
-    }
-
-    fn hit_test(&self, lines: &[crate::shell::OcrLine], x: i32, y: i32) -> i32 {
-        for (i, line) in lines.iter().enumerate() {
-            let rc = self.line_rect(line);
-            if x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom {
-                return i as i32;
-            }
-        }
-        -1
-    }
-}
-
-fn line_is_selected(anchor: i32, cursor: i32, idx: i32) -> bool {
-    if anchor < 0 || cursor < 0 {
-        return false;
-    }
-    let lo = anchor.min(cursor);
-    let hi = anchor.max(cursor);
-    idx >= lo && idx <= hi
-}
-
-fn get_ocr_copy_text(data: &StickerData) -> String {
-    if data.ocr_lines.is_empty() {
-        return data.ocr_plain_text.clone();
-    }
-    let lo;
-    let hi;
-    if data.ocr_sel_anchor >= 0 && data.ocr_sel_cursor >= 0 {
-        lo = data.ocr_sel_anchor.min(data.ocr_sel_cursor) as usize;
-        hi = data.ocr_sel_anchor.max(data.ocr_sel_cursor) as usize;
-    } else {
-        lo = 0;
-        hi = data.ocr_lines.len().saturating_sub(1);
-    }
-    let hi = hi.min(data.ocr_lines.len().saturating_sub(1));
-    if lo > hi {
-        return String::new();
-    }
-    data.ocr_lines[lo..=hi]
-        .iter()
-        .map(|l| l.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn sticker_btn_rect(hwnd: HWND, index: i32) -> RECT {
@@ -194,13 +65,29 @@ fn sticker_btn_rect(hwnd: HWND, index: i32) -> RECT {
 }
 
 fn sticker_hit_btn(hwnd: HWND, x: i32, y: i32) -> i32 {
-    for idx in 0..5i32 {
+    for idx in 0..3i32 {
         let rc = sticker_btn_rect(hwnd, idx);
         if x >= rc.left && x < rc.right && y >= rc.top && y < rc.bottom {
             return idx + 1;
         }
     }
     0
+}
+
+unsafe fn persist_sticker_layout(hwnd: HWND, data: &StickerData) {
+    if let Some(rc) = platform_window::window_rect(hwnd) {
+        let zoom_pct = data.zoom_pct.clamp(20, 400);
+        crate::app::persist_sticker_layout(rc.left, rc.top, zoom_pct);
+        let main_hwnd = crate::app::main_window_hwnd();
+        for owner in [main_hwnd, data.settings_owner] {
+            let state_ptr = crate::app::get_state_ptr(owner);
+            if !state_ptr.is_null() {
+                (*state_ptr).settings.sticker_x = rc.left;
+                (*state_ptr).settings.sticker_y = rc.top;
+                (*state_ptr).settings.sticker_zoom_pct = zoom_pct;
+            }
+        }
+    }
 }
 
 unsafe fn sticker_apply_zoom(hwnd: HWND, data: &StickerData) {
@@ -222,121 +109,12 @@ unsafe fn sticker_track_mouse(hwnd: HWND) {
     platform_input::track_mouse_leave(hwnd);
 }
 
-unsafe fn copy_text_to_clipboard(hwnd: HWND, text: &str) {
-    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-    let byte_len = wide.len() * 2;
-    let hmem = platform_memory::global_alloc(GMEM_MOVEABLE_FLAG, byte_len);
-    if hmem.is_null() {
-        return;
-    }
-    let ptr = platform_memory::global_lock(hmem);
-    if ptr.is_null() {
-        platform_memory::global_free(hmem);
-        return;
-    }
-    std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr as *mut u16, wide.len());
-    platform_memory::global_unlock(hmem);
-    if platform_clipboard::open(hwnd) {
-        platform_clipboard::empty();
-        platform_clipboard::set_data(CF_UNICODETEXT, hmem);
-        platform_clipboard::close();
-    } else {
-        platform_memory::global_free(hmem);
-    }
-}
-
-unsafe fn sticker_spawn_ocr(
-    hwnd: HWND,
-    provider: String,
-    cloud_url: String,
-    cloud_token: String,
-    wechat_dir: String,
-    item: ClipItem,
-) {
-    let hwnd_val = hwnd as isize;
-    std::thread::spawn(move || {
-        let result: Result<StickerOcrResult, String> = match provider.as_str() {
-            "baidu" => image_input_for_ocr(&item)
-                .ok_or_else(|| {
-                    tr("当前记录没有可识别的图片文件", "No recognizable image file").to_string()
-                })
-                .and_then(|input| {
-                    let res = std::fs::read(&input.path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|bytes| {
-                            crate::shell::run_baidu_ocr_api_lines(&cloud_url, &cloud_token, &bytes)
-                        });
-                    if input.delete_after {
-                        let _ = std::fs::remove_file(&input.path);
-                    }
-                    res.map(|lines| {
-                        let plain_text = lines
-                            .iter()
-                            .map(|l| l.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        StickerOcrResult {
-                            lines,
-                            plain_text,
-                            error: false,
-                            error_message: String::new(),
-                        }
-                    })
-                }),
-            "winocr" => image_input_for_ocr(&item)
-                .ok_or_else(|| {
-                    tr("当前记录没有可识别的图片文件", "No recognizable image file").to_string()
-                })
-                .and_then(|input| {
-                    let res = crate::shell::run_winocr_dll_ocr(&input.path, &wechat_dir);
-                    if input.delete_after {
-                        let _ = std::fs::remove_file(&input.path);
-                    }
-                    res.map(|text| StickerOcrResult {
-                        lines: vec![],
-                        plain_text: text,
-                        error: false,
-                        error_message: String::new(),
-                    })
-                }),
-            _ => Err(tr(
-                "请先在设置-插件中启用图片 OCR",
-                "Please enable Image OCR in Settings > Plugins first",
-            )
-            .to_string()),
-        };
-        let payload = Box::new(match result {
-            Ok(r) => r,
-            Err(err) => StickerOcrResult {
-                lines: vec![],
-                plain_text: String::new(),
-                error: true,
-                error_message: err,
-            },
-        });
-        unsafe {
-            let _ = post_boxed_message(hwnd_val, WM_STICKER_OCR_READY, 0, payload);
-        }
-    });
-}
-
 unsafe extern "system" fn sticker_wnd_proc(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    unsafe fn sticker_cancel_ocr_selection(hwnd: HWND, data: &mut StickerData, invalidate: bool) {
-        data.ocr_mouse_selecting = false;
-        data.ocr_sel_anchor = -1;
-        data.ocr_sel_cursor = -1;
-        let _ = hwnd;
-        platform_input::release_capture();
-        if invalidate {
-            platform_gdi::invalidate_rect(hwnd, null(), 0);
-        }
-    }
-
     match msg {
         WM_NCCREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
@@ -349,7 +127,6 @@ unsafe extern "system" fn sticker_wnd_proc(
             if !ptr.is_null() {
                 (*ptr).hover_btn = 0;
                 (*ptr).down_btn = 0;
-                (*ptr).ocr_hover_line = -1;
                 platform_gdi::invalidate_rect(hwnd, null(), 0);
             }
             0
@@ -365,22 +142,6 @@ unsafe extern "system" fn sticker_wnd_proc(
                     (*ptr).hover_btn = hover;
                     changed = true;
                 }
-                // Update OCR hover / selection cursor
-                if !(*ptr).ocr_lines.is_empty() {
-                    let rc_client = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
-                    if let Some(ims) = ImgToScreen::from_data(&*ptr, &rc_client) {
-                        let hit_line = ims.hit_test(&(*ptr).ocr_lines, x, y);
-                        if (*ptr).ocr_mouse_selecting {
-                            if hit_line >= 0 && (*ptr).ocr_sel_cursor != hit_line {
-                                (*ptr).ocr_sel_cursor = hit_line;
-                                changed = true;
-                            }
-                        } else if (*ptr).ocr_hover_line != hit_line {
-                            (*ptr).ocr_hover_line = hit_line;
-                            changed = true;
-                        }
-                    }
-                }
                 if changed {
                     platform_gdi::invalidate_rect(hwnd, null(), 0);
                 }
@@ -394,36 +155,10 @@ unsafe extern "system" fn sticker_wnd_proc(
             let y = get_y_lparam(lparam);
             if !ptr.is_null() {
                 let hit = sticker_hit_btn(hwnd, x, y);
-                let active = match hit {
-                    1 | 2 | 3 => true,
-                    4 => (*ptr).ocr_enabled,
-                    5 => (*ptr).has_ocr_result(),
-                    _ => false,
-                };
-                if active {
+                if matches!(hit, 1..=3) {
                     (*ptr).down_btn = hit;
                     platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
-                }
-                // OCR text selection in image area
-                if !(*ptr).ocr_lines.is_empty() && hit == 0 {
-                    let rc_client = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
-                    if let Some(ims) = ImgToScreen::from_data(&*ptr, &rc_client) {
-                        let hit_line = ims.hit_test(&(*ptr).ocr_lines, x, y);
-                        if hit_line >= 0 {
-                            (*ptr).ocr_sel_anchor = hit_line;
-                            (*ptr).ocr_sel_cursor = hit_line;
-                            (*ptr).ocr_mouse_selecting = true;
-                            platform_input::set_capture(hwnd);
-                            platform_gdi::invalidate_rect(hwnd, null(), 0);
-                            return 0;
-                        } else if (*ptr).ocr_sel_anchor >= 0 {
-                            // Click in image but not on a line — clear selection
-                            (*ptr).ocr_sel_anchor = -1;
-                            (*ptr).ocr_sel_cursor = -1;
-                            platform_gdi::invalidate_rect(hwnd, null(), 0);
-                        }
-                    }
                 }
             }
             if y <= STICKER_BAR_H {
@@ -435,11 +170,6 @@ unsafe extern "system" fn sticker_wnd_proc(
         WM_LBUTTONUP => {
             let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
-                // End selection drag
-                if (*ptr).ocr_mouse_selecting {
-                    sticker_cancel_ocr_selection(hwnd, &mut *ptr, true);
-                    return 0;
-                }
                 let x = get_x_lparam(lparam);
                 let y = get_y_lparam(lparam);
                 let hit = sticker_hit_btn(hwnd, x, y);
@@ -453,36 +183,12 @@ unsafe extern "system" fn sticker_wnd_proc(
                         2 => {
                             (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
                             sticker_apply_zoom(hwnd, &*ptr);
+                            persist_sticker_layout(hwnd, &*ptr);
                         }
                         3 => {
                             (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10);
                             sticker_apply_zoom(hwnd, &*ptr);
-                        }
-                        4 => {
-                            if (*ptr).ocr_enabled && !(*ptr).ocr_loading {
-                                (*ptr).ocr_loading = true;
-                                (*ptr).ocr_lines = Vec::new();
-                                (*ptr).ocr_plain_text = String::new();
-                                (*ptr).ocr_error = false;
-                                (*ptr).ocr_sel_anchor = -1;
-                                (*ptr).ocr_sel_cursor = -1;
-                                platform_gdi::invalidate_rect(hwnd, null(), 0);
-                                let d = &*ptr;
-                                sticker_spawn_ocr(
-                                    hwnd,
-                                    d.ocr_provider.clone(),
-                                    d.ocr_cloud_url.clone(),
-                                    d.ocr_cloud_token.clone(),
-                                    d.ocr_wechat_dir.clone(),
-                                    d.item.clone(),
-                                );
-                            }
-                        }
-                        5 => {
-                            let text = get_ocr_copy_text(&*ptr);
-                            if !text.is_empty() {
-                                copy_text_to_clipboard(hwnd, &text);
-                            }
+                            persist_sticker_layout(hwnd, &*ptr);
                         }
                         _ => {}
                     }
@@ -491,13 +197,6 @@ unsafe extern "system" fn sticker_wnd_proc(
                 return 0;
             }
             platform_window::default_window_proc(hwnd, msg, wparam, lparam)
-        }
-        WM_CAPTURECHANGED | WM_CANCELMODE => {
-            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
-            if !ptr.is_null() && (*ptr).ocr_mouse_selecting {
-                sticker_cancel_ocr_selection(hwnd, &mut *ptr, true);
-            }
-            0
         }
         WM_MOUSEWHEEL => {
             let ptr = platform_window::user_data(hwnd) as *mut StickerData;
@@ -509,16 +208,13 @@ unsafe extern "system" fn sticker_wnd_proc(
                     (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10);
                 }
                 sticker_apply_zoom(hwnd, &*ptr);
+                persist_sticker_layout(hwnd, &*ptr);
                 platform_gdi::invalidate_rect(hwnd, null(), 0);
                 return 0;
             }
             platform_window::default_window_proc(hwnd, msg, wparam, lparam)
         }
         WM_RBUTTONUP => {
-            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
-            if !ptr.is_null() && (*ptr).ocr_mouse_selecting {
-                sticker_cancel_ocr_selection(hwnd, &mut *ptr, false);
-            }
             platform_window::destroy(hwnd);
             0
         }
@@ -543,32 +239,6 @@ unsafe extern "system" fn sticker_wnd_proc(
             }
             0
         }
-        WM_STICKER_OCR_READY => {
-            if lparam == 0 {
-                return 0;
-            }
-            let payload = Box::from_raw(lparam as *mut StickerOcrResult);
-            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
-            if !ptr.is_null() {
-                (*ptr).ocr_loading = false;
-                (*ptr).ocr_error = payload.error;
-                (*ptr).ocr_error_message = payload.error_message;
-                (*ptr).ocr_lines = payload.lines;
-                (*ptr).ocr_plain_text = payload.plain_text;
-                (*ptr).ocr_sel_anchor = -1;
-                (*ptr).ocr_sel_cursor = -1;
-                platform_gdi::invalidate_rect(hwnd, null(), 0);
-                if (*ptr).ocr_error && !(*ptr).ocr_error_message.trim().is_empty() {
-                    platform_dialog::WindowsDialogHost::new().show_message(
-                        hwnd,
-                        tr("图片转文字", "Image OCR"),
-                        &(*ptr).ocr_error_message,
-                        NativeDialogLevel::Error,
-                    );
-                }
-            }
-            0
-        }
         WM_KEYDOWN => {
             let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if (wparam as u32) == VK_ESCAPE as u32 {
@@ -579,41 +249,26 @@ unsafe extern "system" fn sticker_wnd_proc(
                 if (wparam as u32) == STICKER_ZOOM_IN_KEY || (wparam as u32) == VK_UP as u32 {
                     (*ptr).zoom_pct = min(400, (*ptr).zoom_pct + 10);
                     sticker_apply_zoom(hwnd, &*ptr);
+                    persist_sticker_layout(hwnd, &*ptr);
                     platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
                 }
                 if (wparam as u32) == STICKER_ZOOM_OUT_KEY || (wparam as u32) == VK_DOWN as u32 {
                     (*ptr).zoom_pct = max(20, (*ptr).zoom_pct - 10);
                     sticker_apply_zoom(hwnd, &*ptr);
+                    persist_sticker_layout(hwnd, &*ptr);
                     platform_gdi::invalidate_rect(hwnd, null(), 0);
                     return 0;
                 }
-                // Ctrl+C / Ctrl+A for OCR selection
-                let ctrl = platform_input::is_key_state_down(VK_CONTROL as u32);
-                if ctrl {
-                    match wparam as u32 {
-                        0x43 => {
-                            // Ctrl+C: copy selected lines (or all)
-                            let text = get_ocr_copy_text(&*ptr);
-                            if !text.is_empty() {
-                                copy_text_to_clipboard(hwnd, &text);
-                            }
-                            return 0;
-                        }
-                        0x41 => {
-                            // Ctrl+A: select all OCR lines
-                            if !(*ptr).ocr_lines.is_empty() {
-                                (*ptr).ocr_sel_anchor = 0;
-                                (*ptr).ocr_sel_cursor = (*ptr).ocr_lines.len() as i32 - 1;
-                                platform_gdi::invalidate_rect(hwnd, null(), 0);
-                            }
-                            return 0;
-                        }
-                        _ => {}
-                    }
-                }
             }
             platform_window::default_window_proc(hwnd, msg, wparam, lparam)
+        }
+        WM_EXITSIZEMOVE => {
+            let ptr = platform_window::user_data(hwnd) as *mut StickerData;
+            if !ptr.is_null() {
+                persist_sticker_layout(hwnd, &*ptr);
+            }
+            0
         }
         WM_NCHITTEST => {
             let x = get_x_lparam(lparam);
@@ -730,57 +385,6 @@ unsafe extern "system" fn sticker_wnd_proc(
                 );
             }
 
-            // OCR button (index 3): shown when OCR is enabled
-            if data.ocr_enabled {
-                let brc = sticker_btn_rect(hwnd, 3);
-                let hover = data.hover_btn == 4;
-                let down = data.down_btn == 4;
-                let is_error = data.ocr_error && !data.ocr_loading;
-                let fill = if is_error && hover {
-                    rgb(180, 50, 50)
-                } else if is_error {
-                    rgb(100, 30, 30)
-                } else if down {
-                    th.button_pressed
-                } else if hover {
-                    th.button_hover
-                } else {
-                    th.button_bg
-                };
-                draw_round_rect(memdc as _, &brc, fill, th.control_stroke, 4);
-                let label = if data.ocr_loading {
-                    "…"
-                } else if is_error {
-                    "!"
-                } else {
-                    "文"
-                };
-                let txt_color = if is_error {
-                    rgb(255, 150, 150)
-                } else if data.ocr_loading {
-                    th.text_muted
-                } else {
-                    th.text
-                };
-                draw_text(memdc as _, label, &brc, txt_color, 12, false, true);
-            }
-
-            // Copy button (index 4): shown when OCR has results
-            if data.has_ocr_result() {
-                let brc = sticker_btn_rect(hwnd, 4);
-                let hover = data.hover_btn == 5;
-                let down = data.down_btn == 5;
-                let fill = if down {
-                    th.button_pressed
-                } else if hover {
-                    th.button_hover
-                } else {
-                    th.button_bg
-                };
-                draw_round_rect(memdc as _, &brc, fill, th.control_stroke, 4);
-                draw_text(memdc as _, "复", &brc, th.text, 12, false, true);
-            }
-
             // Image content area
             let content = RECT {
                 left: 12,
@@ -822,38 +426,6 @@ unsafe extern "system" fn sticker_wnd_proc(
                     data.height,
                     &data.bgra,
                 );
-
-                // Draw OCR text region overlays
-                if !data.ocr_lines.is_empty() {
-                    let client_rc = rc;
-                    if let Some(ims) = ImgToScreen::from_data(data, &client_rc) {
-                        let sel_anchor = data.ocr_sel_anchor;
-                        let sel_cursor = data.ocr_sel_cursor;
-                        let hover_line = data.ocr_hover_line;
-                        for (i, line) in data.ocr_lines.iter().enumerate() {
-                            let lrc = ims.line_rect(line);
-                            let selected = line_is_selected(sel_anchor, sel_cursor, i as i32);
-                            let hovering = hover_line == i as i32 && !selected;
-                            if selected {
-                                // Invert pixels to indicate selection
-                                platform_gdi::pat_blt(
-                                    memdc,
-                                    lrc.left,
-                                    lrc.top,
-                                    lrc.right - lrc.left,
-                                    lrc.bottom - lrc.top,
-                                    DSTINVERT,
-                                );
-                            } else if hovering {
-                                // Blue border for hover hint
-                                let border_brush =
-                                    platform_gdi::create_solid_brush(rgb(80, 140, 255));
-                                platform_gdi::frame_rect(memdc, &lrc, border_brush);
-                                platform_gdi::delete_object(border_brush as _);
-                            }
-                        }
-                    }
-                }
             }
             platform_gdi::copy_bits(
                 hdc,
@@ -874,9 +446,7 @@ unsafe extern "system" fn sticker_wnd_proc(
         WM_NCDESTROY => {
             let ptr = platform_window::user_data(hwnd) as *mut StickerData;
             if !ptr.is_null() {
-                if (*ptr).ocr_mouse_selecting {
-                    sticker_cancel_ocr_selection(hwnd, &mut *ptr, false);
-                }
+                persist_sticker_layout(hwnd, &*ptr);
                 drop(Box::from_raw(ptr));
                 platform_window::set_user_data(hwnd, 0);
             }
@@ -904,45 +474,54 @@ unsafe fn ensure_sticker_class() {
 }
 
 pub(crate) unsafe fn show_image_sticker(
+    settings_owner: HWND,
     item: &ClipItem,
     settings: &crate::app::state::AppSettings,
 ) {
     ensure_sticker_class();
-    let ocr_enabled = settings.image_ocr_provider != "off";
     let data = Box::new(StickerData {
+        settings_owner,
         width: item.image_width.max(1) as i32,
         height: item.image_height.max(1) as i32,
         bgra: Vec::new(),
-        zoom_pct: 100,
+        zoom_pct: settings.sticker_zoom_pct.clamp(20, 400),
         hover_btn: 0,
         down_btn: 0,
         loading: true,
-        item: item.clone(),
-        ocr_enabled,
-        ocr_provider: settings.image_ocr_provider.clone(),
-        ocr_cloud_url: settings.image_ocr_cloud_url.clone(),
-        ocr_cloud_token: settings.image_ocr_cloud_token.clone(),
-        ocr_wechat_dir: settings.image_ocr_wechat_dir.clone(),
-        ocr_loading: false,
-        ocr_error: false,
-        ocr_error_message: String::new(),
-        ocr_lines: Vec::new(),
-        ocr_plain_text: String::new(),
-        ocr_sel_anchor: -1,
-        ocr_sel_cursor: -1,
-        ocr_hover_line: -1,
-        ocr_mouse_selecting: false,
     });
     let pt = platform_input::cursor_pos().unwrap_or_else(|| zeroed());
-    let w = min(760, max(260, data.width + 24));
-    let h = min(760, max(180, data.height + STICKER_BAR_H + 24));
+    let zoom = data.zoom_pct as f32 / 100.0;
+    let w = min(
+        960,
+        max(180, (data.width as f32 * zoom).round() as i32 + 24),
+    );
+    let h = min(
+        960,
+        max(
+            120,
+            (data.height as f32 * zoom).round() as i32 + STICKER_BAR_H + 24,
+        ),
+    );
+    let mut x = if settings.sticker_x >= 0 {
+        settings.sticker_x
+    } else {
+        pt.x + 16
+    };
+    let mut y = if settings.sticker_y >= 0 {
+        settings.sticker_y
+    } else {
+        pt.y + 16
+    };
+    let work = platform_monitor::nearest_work_rect_for_point(POINT { x, y });
+    x = x.clamp(work.left, (work.right - w).max(work.left));
+    y = y.clamp(work.top, (work.bottom - h).max(work.top));
     let hwnd = platform_window::create_window_ex(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         to_wide(STICKER_CLASS).as_ptr(),
         to_wide("").as_ptr(),
         WS_POPUP | WS_VISIBLE | WS_THICKFRAME,
-        pt.x + 16,
-        pt.y + 16,
+        x,
+        y,
         w,
         h,
         null_mut(),

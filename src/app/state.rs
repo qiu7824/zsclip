@@ -83,6 +83,9 @@ pub(crate) struct AppSettings {
     pub(crate) qr_quick_enabled: bool,
     pub(crate) last_window_x: i32,
     pub(crate) last_window_y: i32,
+    pub(crate) sticker_x: i32,
+    pub(crate) sticker_y: i32,
+    pub(crate) sticker_zoom_pct: i32,
     pub(crate) edit_dialog_w: i32,
     pub(crate) edit_dialog_h: i32,
 }
@@ -159,6 +162,9 @@ impl Default for AppSettings {
             qr_quick_enabled: false,
             last_window_x: -1,
             last_window_y: -1,
+            sticker_x: -1,
+            sticker_y: -1,
+            sticker_zoom_pct: 100,
             edit_dialog_w: 0,
             edit_dialog_h: 0,
         }
@@ -434,11 +440,6 @@ impl ItemPayloadCache {
         self.order.clear();
     }
 
-    pub(super) fn shrink_to_fit(&mut self) {
-        self.entries.shrink_to_fit();
-        self.order.shrink_to_fit();
-    }
-
     pub(super) fn remove(&mut self, id: i64) {
         self.entries.remove(&id);
         self.order.retain(|cached| *cached != id);
@@ -480,11 +481,6 @@ impl ImageThumbnailCache {
     pub(super) fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
-    }
-
-    pub(super) fn shrink_to_fit(&mut self) {
-        self.entries.shrink_to_fit();
-        self.order.shrink_to_fit();
     }
 
     pub(super) fn remove(&mut self, id: i64) {
@@ -760,47 +756,6 @@ impl AppState {
         } else {
             &self.phrase_groups
         }
-    }
-
-    pub(super) fn release_list_memory(&mut self) {
-        self.invalidate_all_queries();
-        self.records.clear();
-        self.phrases.clear();
-        self.record_groups.clear();
-        self.phrase_groups.clear();
-        self.vv_popup_items.clear();
-        self.recent_capture_signatures.clear();
-        self.recent_lan_message_keys.clear();
-        self.last_capture_signature.clear();
-        self.last_capture_source_app.clear();
-        self.hover_btn = "";
-        self.down_btn = "";
-        self.vv_popup_pending_target = null_mut();
-        self.vv_popup_target = null_mut();
-        self.paste_target_override = null_mut();
-        self.paste_backspace_count = 0;
-        self.hotkey_passthrough_active = false;
-        self.hotkey_passthrough_target = null_mut();
-        self.hotkey_passthrough_focus = null_mut();
-        self.hotkey_passthrough_edit = null_mut();
-        self.clear_payload_cache();
-        self.clear_selection();
-        self.scroll_y = 0;
-        self.list.apply_visible_len(0);
-        self.record_groups.shrink_to_fit();
-        self.phrase_groups.shrink_to_fit();
-        self.records.shrink_to_fit();
-        self.phrases.shrink_to_fit();
-        self.vv_popup_items.shrink_to_fit();
-        self.recent_capture_signatures.shrink_to_fit();
-        self.recent_lan_message_keys.shrink_to_fit();
-        self.last_capture_signature.shrink_to_fit();
-        self.last_capture_source_app.shrink_to_fit();
-        self.list.search_text.shrink_to_fit();
-        self.list.selected_rows.clear();
-        self.payload_cache.shrink_to_fit();
-        self.image_thumb_cache.shrink_to_fit();
-        self.image_thumb_loading.shrink_to_fit();
     }
 
     pub(super) fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {

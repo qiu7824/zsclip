@@ -373,12 +373,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
         ApplicationEvent::ItemsPageReady => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
-                if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
-                    clear_page_load_results_for_hwnd(hwnd);
-                    platform_process::trim_current_working_set();
-                } else {
-                    apply_ready_page_loads(hwnd, &mut *ptr);
-                }
+                apply_ready_page_loads(hwnd, &mut *ptr);
             }
         }
         ApplicationEvent::StartupDataReconciled { deleted } => {
