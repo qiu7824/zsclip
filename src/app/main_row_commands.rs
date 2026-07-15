@@ -194,7 +194,7 @@ unsafe fn execute_row_current_item_action(
     match plan {
         #[cfg(feature = "sticker")]
         MainRowCurrentItemActionPlan::Sticker { item } => {
-            show_image_sticker(&item, &state.settings);
+            show_image_sticker(hwnd, &item, &state.settings);
         }
         #[cfg(not(feature = "sticker"))]
         MainRowCurrentItemActionPlan::Sticker { .. } => {

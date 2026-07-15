@@ -984,6 +984,27 @@ fn qq_vv_targets_do_not_backspace_existing_text() {
         vv_backspace_count_for_target_identity("notepad.exe", "", "", false),
         2
     );
+    assert_eq!(
+        vv_backspace_count_for_target_identity("Telegram.exe", "", "", false),
+        2
+    );
+}
+
+#[test]
+fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
+    let main_window = main_window_source();
+    let refresh = main_window_refresh_source();
+    let events = main_events_source();
+    let show_start = refresh
+        .find("pub(crate) unsafe fn refresh_window_for_show")
+        .unwrap();
+    let show_block = &refresh[show_start..];
+
+    assert!(!main_window.contains("release_list_memory"));
+    assert!(!main_window.contains("trim_current_working_set"));
+    assert!(!show_block.contains("reload_state_from_db_persisting"));
+    assert!(show_block.contains("state.refilter()"));
+    assert!(events.contains("apply_ready_page_loads(hwnd, &mut *ptr)"));
 }
 
 #[test]
@@ -2183,7 +2204,7 @@ fn windows_dialog_host_owns_non_host_message_boxes() {
     assert!(!dialog_host.contains("pub(crate) fn message_box("));
     assert!(!dialog_host.contains("message_box_wide"));
     assert!(platform_helpers.contains("show_native_dialog_message("));
-    assert!(sticker.contains("WindowsDialogHost::new().show_message"));
+    assert!(!sticker.contains("WindowsDialogHost"));
 }
 
 #[test]

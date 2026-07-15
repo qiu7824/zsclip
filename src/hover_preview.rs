@@ -22,8 +22,8 @@ use crate::{
 };
 
 const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";
-const PREVIEW_W_TEXT: i32 = 420;
-const PREVIEW_H_TEXT: i32 = 220;
+const PREVIEW_W_TEXT: i32 = 520;
+const PREVIEW_H_TEXT: i32 = 360;
 const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
 const MARKDOWN_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
@@ -289,7 +289,7 @@ fn markdown_file_preview_text(paths: &[String]) -> Option<String> {
         .take(MARKDOWN_PREVIEW_MAX_BYTES)
         .read_to_string(&mut text)
         .ok()?;
-    let preview = limit_preview_text(&text, 10, 420);
+    let preview = limit_preview_text(&text, 24, 2_000);
     (!preview.is_empty()).then_some(preview)
 }
 
@@ -360,21 +360,21 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
                 rich_text_preview_text(
                     html,
                     item.text.as_deref().unwrap_or(item.preview.as_str()),
-                    10,
-                    420,
+                    24,
+                    2_000,
                 )
             } else {
                 limit_preview_text(
                     item.text.as_deref().unwrap_or(item.preview.as_str()),
-                    10,
-                    420,
+                    24,
+                    2_000,
                 )
             }
         }
         ClipKind::Files => markdown_file_preview.unwrap_or_else(|| {
             item.file_paths
                 .as_ref()
-                .map(|paths| limit_file_preview(paths, 8))
+                .map(|paths| limit_file_preview(paths, 18))
                 .unwrap_or_else(|| item.preview.clone())
         }),
         ClipKind::Image => String::new(),
@@ -471,5 +471,23 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     );
     if !same_content {
         platform_gdi::invalidate_rect(hwnd, null(), 0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::limit_preview_text;
+
+    #[test]
+    fn text_preview_can_keep_more_than_ten_lines() {
+        let source = (1..=30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview = limit_preview_text(&source, 24, 2_000);
+
+        assert!(preview.contains("line 24"));
+        assert!(!preview.contains("line 25"));
+        assert!(preview.ends_with("......"));
     }
 }

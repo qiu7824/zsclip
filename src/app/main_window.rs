@@ -1,10 +1,8 @@
 use super::prelude::*;
 
-unsafe fn reclaim_window_state_memory(hwnd: HWND, state: &mut AppState) {
+unsafe fn reclaim_window_state_memory(_hwnd: HWND, state: &mut AppState) {
     hide_hover_preview();
-    clear_page_load_results_for_hwnd(hwnd);
-    clear_cloud_sync_results_for_hwnd(hwnd);
-    state.release_list_memory();
+    state.clear_payload_cache();
     crate::win_ui_render::release_idle_memory();
     #[cfg(feature = "lan-sync")]
     if !state.settings.lan_sync_enabled {
@@ -30,7 +28,6 @@ unsafe fn reclaim_hidden_peer_window_memory(current_hwnd: HWND) {
 pub(super) unsafe fn reclaim_hidden_window_memory(hwnd: HWND, state: &mut AppState) {
     reclaim_window_state_memory(hwnd, state);
     reclaim_hidden_peer_window_memory(hwnd);
-    platform_process::trim_current_working_set();
 }
 
 pub(super) unsafe fn schedule_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
@@ -156,7 +153,6 @@ pub(super) unsafe fn handle_main_lifecycle_event(hwnd: HWND, event: LifecycleEve
         state.ui_lifecycle.apply(event);
         match event {
             LifecycleEvent::Suspend => {
-                reclaim_hidden_window_memory(hwnd, state);
                 schedule_hidden_memory_reclaim(hwnd, state);
             }
             LifecycleEvent::Resume => {

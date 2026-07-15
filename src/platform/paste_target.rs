@@ -60,6 +60,14 @@ fn is_qq_wps_process(process_name: &str) -> bool {
         || process.contains("wpp")
 }
 
+fn is_telegram_process(process_name: &str) -> bool {
+    let process = process_name.trim().to_ascii_lowercase();
+    matches!(
+        process.as_str(),
+        "telegram.exe" | "telegram" | "telegramdesktop.exe" | "telegramdesktop"
+    ) || process.contains("telegram")
+}
+
 fn is_word_document_class(class_name: &str) -> bool {
     let class_name = class_name.trim().to_ascii_lowercase();
     class_name.starts_with("_ww")
@@ -193,6 +201,9 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
         let process_name = identity_host.process_name(target);
         let thread_id = platform_window::window_thread_id(target);
         if thread_id == 0 {
+            if is_telegram_process(&process_name) {
+                return true;
+            }
             if is_qq_wps_process(&process_name) {
                 return has_default_ime_window(target) || has_accessible_caret(target);
             }
@@ -202,6 +213,9 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
         let mut info: GUITHREADINFO = unsafe { zeroed() };
         info.cbSize = size_of::<GUITHREADINFO>() as u32;
         if !platform_window::gui_thread_info(thread_id, &mut info) {
+            if is_telegram_process(&process_name) {
+                return true;
+            }
             if is_qq_wps_process(&process_name) {
                 return has_default_ime_window(target) || has_accessible_caret(target);
             }
@@ -215,6 +229,10 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
         };
         let focus_cls = identity_host.class_name(focus).to_ascii_lowercase();
         let text_input_capabilities = self.paste_target_text_input_capabilities(focus);
+
+        if is_telegram_process(&process_name) {
+            return true;
+        }
 
         if is_qq_wps_process(&process_name) {
             let has_focus_window = identity_host.exists(info.hwndFocus);
@@ -276,5 +294,17 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
     fn send_paste_shortcut(&mut self, _target: Self::Handle) -> bool {
         platform_input::send_ctrl_v();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_telegram_process;
+
+    #[test]
+    fn telegram_desktop_process_names_are_recognized() {
+        assert!(is_telegram_process("Telegram.exe"));
+        assert!(is_telegram_process("TelegramDesktop.exe"));
+        assert!(!is_telegram_process("notepad.exe"));
     }
 }

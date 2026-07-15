@@ -700,107 +700,6 @@ pub(crate) fn run_baidu_ocr_api(
     parse_baidu_ocr_text(&String::from_utf8_lossy(&output.stdout))
 }
 
-// ── Structured OCR result (with bounding boxes) ─────────────────────────────
-
-#[derive(Clone, Default)]
-pub(crate) struct OcrLine {
-    pub text: String,
-    pub left: u32,
-    pub top: u32,
-    pub width: u32,
-    pub height: u32,
-}
-
-fn parse_baidu_ocr_lines(body: &str) -> Result<Vec<OcrLine>, String> {
-    let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
-    if let Some(err) = json
-        .get("error_msg")
-        .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return Err(err.to_string());
-    }
-    let lines: Vec<OcrLine> = json
-        .get("words_result")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| {
-                    let text = item
-                        .get("words")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())?;
-                    let loc = item.get("location")?;
-                    let left = loc.get("left").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    let top = loc.get("top").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    let width = loc.get("width").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                    let height = loc.get("height").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-                    Some(OcrLine {
-                        text: text.to_string(),
-                        left,
-                        top,
-                        width,
-                        height,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if lines.is_empty() {
-        Err(tr(
-            "百度 OCR 返回中未找到可用文本字段",
-            "Baidu OCR response does not contain recognized text",
-        )
-        .to_string())
-    } else {
-        Ok(lines)
-    }
-}
-
-/// Like `run_baidu_ocr_api` but returns per-line text with bounding boxes.
-pub(crate) fn run_baidu_ocr_api_lines(
-    api_key: &str,
-    secret_key: &str,
-    image_bytes: &[u8],
-) -> Result<Vec<OcrLine>, String> {
-    let access_token = fetch_baidu_access_token(api_key, secret_key)?;
-    let form_body = format!(
-        "image={}",
-        url_encode_form_component(&base64::engine::general_purpose::STANDARD.encode(image_bytes))
-    );
-    let request_path = temp_unique_path("baidu_ocr_lines_body", "txt");
-    std::fs::write(&request_path, &form_body).map_err(|e| e.to_string())?;
-    let request_url = format!(
-        "https://aip.baidubce.com/rest/2.0/ocr/v1/general?access_token={}",
-        access_token
-    );
-    let mut config = String::from("silent\nshow-error\nlocation\n");
-    config.push_str(&curl_config_option("request", "POST"));
-    config.push_str(&curl_config_option("url", &request_url));
-    config.push_str(&curl_config_option(
-        "header",
-        "Content-Type: application/x-www-form-urlencoded",
-    ));
-    config.push_str(&curl_config_option(
-        "data-binary",
-        &format!("@{}", request_path.to_string_lossy()),
-    ));
-    let output = run_curl_config(&config, "baidu_ocr_lines");
-    let _ = std::fs::remove_file(&request_path);
-    let output = output?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(if stderr.is_empty() {
-            tr("百度 OCR 请求失败", "Baidu OCR request failed").to_string()
-        } else {
-            stderr
-        });
-    }
-    parse_baidu_ocr_lines(&String::from_utf8_lossy(&output.stdout))
-}
-
 fn parse_baidu_ocr_text(body: &str) -> Result<String, String> {
     let json: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
     if let Some(err_msg) = json
@@ -1620,9 +1519,9 @@ mod tests {
 
     #[test]
     fn update_check_does_not_report_current_four_part_version_as_newer() {
-        assert!(!version_is_newer("0.9.9.6", APP_VERSION));
-        assert!(!version_is_newer("v0.9.9.6", APP_VERSION));
-        assert!(version_is_newer("0.9.9.7", APP_VERSION));
+        assert!(!version_is_newer("0.9.9.7", APP_VERSION));
+        assert!(!version_is_newer("v0.9.9.7", APP_VERSION));
+        assert!(version_is_newer("0.9.9.8", APP_VERSION));
     }
 
     #[test]

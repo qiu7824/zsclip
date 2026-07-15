@@ -4,10 +4,10 @@ use windows_sys::Win32::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
         CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
         FillRect, FrameRect, GetDC, GetDeviceCaps, GetStockObject, IntersectClipRect,
-        InvalidateRect, PatBlt, RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC,
-        SelectObject, SetBkColor, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor,
-        StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS,
-        HALFTONE, HBITMAP, HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
+        InvalidateRect, RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC, SelectObject,
+        SetBkColor, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits,
+        BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, HALFTONE, HBITMAP,
+        HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
     },
     UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL, HICON},
 };
@@ -50,10 +50,6 @@ pub(crate) fn invalidate_rect(hwnd: HWND, rect: *const RECT, erase: i32) -> bool
 
 pub(crate) fn frame_rect(dc: HDC, rect: *const RECT, brush: HBRUSH) -> i32 {
     unsafe { FrameRect(dc, rect, brush) }
-}
-
-pub(crate) fn pat_blt(dc: HDC, x: i32, y: i32, width: i32, height: i32, rop: u32) -> bool {
-    unsafe { PatBlt(dc, x, y, width, height, rop) != 0 }
 }
 
 pub(crate) fn create_compatible_dc(dc: HDC) -> HDC {

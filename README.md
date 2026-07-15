@@ -17,7 +17,7 @@
 
 ## 下载
 
-- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.6>
+- GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/tag/0.9.9.7>
 - 包管理器分发规划: [docs/package-managers.md](docs/package-managers.md)
 
 ## 项目定位

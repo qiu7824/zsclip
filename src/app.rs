@@ -150,16 +150,16 @@ pub(crate) use self::main_edge_auto_hide::{
 };
 pub(crate) use self::main_entry::run;
 pub(crate) use self::main_low_level_input::refresh_low_level_input_hooks;
-pub(crate) use self::main_row_tools::image_input_for_ocr;
 pub(crate) use self::main_search::{layout_children, reset_search_ui_state};
 pub(crate) use self::main_window::{
     hide_main_window, present_main_window, refresh_main_window_layout_for_monitor,
     set_main_window_activation_policy, set_main_window_bounds,
 };
 pub(crate) use self::main_window_refresh::refresh_window_for_show;
+pub(crate) use self::main_window_registry::main_window_hwnd;
 pub(crate) use self::main_window_registry::{get_state_ptr, quick_window_hwnd};
 pub(crate) use self::prelude::{ClipItem, ClipKind};
-pub(crate) use self::runtime::{data_dir, save_settings};
+pub(crate) use self::runtime::{data_dir, persist_sticker_layout, save_settings};
 pub(crate) use self::state::{AppState, Icons};
 pub(crate) use self::windows_messages::{WM_LAN_SYNC_READY, WM_TRAYICON};
 
