@@ -22,10 +22,14 @@ use crate::{
 };
 
 const HOVER_PREVIEW_CLASS: &str = "ZsClipHoverPreview";
-const PREVIEW_W_TEXT: i32 = 520;
-const PREVIEW_H_TEXT: i32 = 360;
+const PREVIEW_W_TEXT: i32 = 420;
+const PREVIEW_H_TEXT: i32 = 220;
 const PREVIEW_W_IMAGE: i32 = 520;
 const PREVIEW_H_IMAGE: i32 = 360;
+// 392x164 的正文区使用 12px 字体时可显示约 10 行、420 个中英文混排字符。
+const PREVIEW_TEXT_MAX_LINES: usize = 10;
+const PREVIEW_TEXT_MAX_CHARS: usize = 420;
+const PREVIEW_FILE_MAX_ITEMS: usize = 8;
 const MARKDOWN_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 const WM_HOVER_IMAGE_READY: u32 = WM_APP + 41;
 
@@ -231,26 +235,35 @@ fn limit_preview_text(text: &str, max_lines: usize, max_chars: usize) -> String 
     let mut out = String::new();
     let mut chars = 0usize;
     let mut lines = 0usize;
+    let mut truncated = false;
 
-    for line in text.lines() {
+    let mut source_lines = text.lines().peekable();
+    while let Some(line) = source_lines.next() {
         if lines >= max_lines || chars >= max_chars {
+            truncated = true;
             break;
         }
         let remaining = max_chars.saturating_sub(chars);
         let chunk: String = line.chars().take(remaining).collect();
-        chars += chunk.chars().count();
+        let chunk_chars = chunk.chars().count();
+        chars += chunk_chars;
         if !out.is_empty() {
             out.push('\n');
         }
         out.push_str(&chunk);
         lines += 1;
+        if chunk_chars < line.chars().count() || source_lines.peek().is_some() && lines >= max_lines
+        {
+            truncated = true;
+            break;
+        }
     }
 
     if out.is_empty() {
         return String::new();
     }
-    if text.chars().count() > chars || text.lines().count() > lines {
-        out.push_str("\n......");
+    if truncated {
+        out.push_str(" ......");
     }
     out
 }
@@ -289,7 +302,7 @@ fn markdown_file_preview_text(paths: &[String]) -> Option<String> {
         .take(MARKDOWN_PREVIEW_MAX_BYTES)
         .read_to_string(&mut text)
         .ok()?;
-    let preview = limit_preview_text(&text, 24, 2_000);
+    let preview = limit_preview_text(&text, PREVIEW_TEXT_MAX_LINES, PREVIEW_TEXT_MAX_CHARS);
     (!preview.is_empty()).then_some(preview)
 }
 
@@ -357,24 +370,25 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     let body = match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             if let Some(html) = item.rich_text_html.as_deref() {
-                rich_text_preview_text(
+                let text = rich_text_preview_text(
                     html,
                     item.text.as_deref().unwrap_or(item.preview.as_str()),
-                    24,
-                    2_000,
-                )
+                    PREVIEW_TEXT_MAX_LINES + 1,
+                    PREVIEW_TEXT_MAX_CHARS + 1,
+                );
+                limit_preview_text(&text, PREVIEW_TEXT_MAX_LINES, PREVIEW_TEXT_MAX_CHARS)
             } else {
                 limit_preview_text(
                     item.text.as_deref().unwrap_or(item.preview.as_str()),
-                    24,
-                    2_000,
+                    PREVIEW_TEXT_MAX_LINES,
+                    PREVIEW_TEXT_MAX_CHARS,
                 )
             }
         }
         ClipKind::Files => markdown_file_preview.unwrap_or_else(|| {
             item.file_paths
                 .as_ref()
-                .map(|paths| limit_file_preview(paths, 18))
+                .map(|paths| limit_file_preview(paths, PREVIEW_FILE_MAX_ITEMS))
                 .unwrap_or_else(|| item.preview.clone())
         }),
         ClipKind::Image => String::new(),
@@ -476,18 +490,38 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
 
 #[cfg(test)]
 mod tests {
-    use super::limit_preview_text;
+    use super::{limit_preview_text, PREVIEW_TEXT_MAX_CHARS, PREVIEW_TEXT_MAX_LINES};
 
     #[test]
-    fn text_preview_can_keep_more_than_ten_lines() {
-        let source = (1..=30)
+    fn text_preview_capacity_matches_text_window() {
+        let source = (1..=12)
             .map(|line| format!("line {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let preview = limit_preview_text(&source, 24, 2_000);
+        let preview = limit_preview_text(&source, PREVIEW_TEXT_MAX_LINES, PREVIEW_TEXT_MAX_CHARS);
 
-        assert!(preview.contains("line 24"));
-        assert!(!preview.contains("line 25"));
+        assert!(preview.contains("line 10"));
+        assert!(!preview.contains("line 11"));
         assert!(preview.ends_with("......"));
+    }
+
+    #[test]
+    fn complete_multiline_preview_does_not_add_false_ellipsis() {
+        let preview = limit_preview_text(
+            "first line\nsecond line",
+            PREVIEW_TEXT_MAX_LINES,
+            PREVIEW_TEXT_MAX_CHARS,
+        );
+
+        assert_eq!(preview, "first line\nsecond line");
+    }
+
+    #[test]
+    fn text_preview_uses_full_420_character_capacity() {
+        let source = "测试abc123".repeat(80);
+        let preview = limit_preview_text(&source, PREVIEW_TEXT_MAX_LINES, PREVIEW_TEXT_MAX_CHARS);
+        let content = preview.strip_suffix(" ......").unwrap();
+
+        assert_eq!(content.chars().count(), PREVIEW_TEXT_MAX_CHARS);
     }
 }
