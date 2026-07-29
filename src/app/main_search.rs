@@ -1,5 +1,7 @@
 use super::prelude::*;
 
+const SEARCH_DEBOUNCE_MS: u32 = 280;
+
 pub(crate) unsafe fn layout_children(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
@@ -130,7 +132,7 @@ pub(super) unsafe fn handle_search_control_command(
     start_flagged_timer(
         hwnd,
         ID_TIMER_SEARCH_DEBOUNCE,
-        180,
+        SEARCH_DEBOUNCE_MS,
         &mut state.search_debounce_timer,
     );
     true

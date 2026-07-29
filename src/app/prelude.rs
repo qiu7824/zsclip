@@ -236,7 +236,9 @@ pub(in crate::app) use crate::cloud_sync::{
     CloudSyncPaths,
 };
 pub(in crate::app) use crate::db_runtime::{close_db, ensure_db, with_db, with_db_mut};
-pub(in crate::app) use crate::hover_preview::{hide_hover_preview, show_hover_preview};
+pub(in crate::app) use crate::hover_preview::{
+    hide_hover_preview, release_hover_preview_memory, show_hover_preview,
+};
 pub(in crate::app) use crate::i18n::{app_title, tr, translate};
 pub(in crate::app) use crate::lan_sync::{self, LanClipEnvelope, LanFileMeta};
 #[cfg(feature = "mail-merge")]

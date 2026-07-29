@@ -1,7 +1,19 @@
 use super::prelude::*;
 
+const HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 3_000;
+const HIDDEN_MEMORY_RECLAIM_RETRY_MS: u32 = 1_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HiddenWorkingSetTrimResult {
+    Trimmed,
+    Failed,
+    AppWindowVisible,
+    TransientWindowVisible,
+}
+
 unsafe fn reclaim_window_state_memory(_hwnd: HWND, state: &mut AppState) {
     hide_hover_preview();
+    release_hover_preview_memory();
     state.clear_payload_cache();
     crate::win_ui_render::release_idle_memory();
     #[cfg(feature = "lan-sync")]
@@ -36,27 +48,40 @@ fn window_counts_as_visible_for_memory_reclaim(hwnd: HWND) -> bool {
         && !platform_window::is_minimized(hwnd)
 }
 
-pub(super) unsafe fn trim_hidden_process_working_set() {
+pub(super) unsafe fn trim_hidden_process_working_set() -> HiddenWorkingSetTrimResult {
     for hwnd in window_host_hwnds() {
         if window_counts_as_visible_for_memory_reclaim(hwnd) {
-            return;
+            return HiddenWorkingSetTrimResult::AppWindowVisible;
         }
         let ptr = get_state_ptr(hwnd);
         if !ptr.is_null() && window_counts_as_visible_for_memory_reclaim((*ptr).settings_hwnd) {
-            return;
+            return HiddenWorkingSetTrimResult::TransientWindowVisible;
         }
     }
     if window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd()) {
-        return;
+        return HiddenWorkingSetTrimResult::TransientWindowVisible;
     }
-    platform_process::trim_current_working_set();
+    if platform_process::trim_current_working_set() {
+        HiddenWorkingSetTrimResult::Trimmed
+    } else {
+        HiddenWorkingSetTrimResult::Failed
+    }
 }
 
 pub(super) unsafe fn schedule_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
     start_flagged_timer(
         hwnd,
         ID_TIMER_HIDDEN_RECLAIM,
-        800,
+        HIDDEN_MEMORY_RECLAIM_DELAY_MS,
+        &mut state.hidden_reclaim_timer,
+    );
+}
+
+pub(super) unsafe fn retry_hidden_memory_reclaim(hwnd: HWND, state: &mut AppState) {
+    start_flagged_timer(
+        hwnd,
+        ID_TIMER_HIDDEN_RECLAIM,
+        HIDDEN_MEMORY_RECLAIM_RETRY_MS,
         &mut state.hidden_reclaim_timer,
     );
 }

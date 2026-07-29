@@ -41,11 +41,11 @@ unsafe fn any_visible_window_requires_quick_escape_try() -> bool {
     false
 }
 
-unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
+unsafe fn should_ignore_outside_click_for_point_in_hosts(pt: POINT, hosts: [HWND; 2]) -> bool {
     if screen_point_hits_popup_menu(pt) {
         return true;
     }
-    for hwnd in window_host_hwnds() {
+    for hwnd in hosts {
         if screen_point_hits_window_scope(hwnd, pt) {
             return true;
         }
@@ -66,6 +66,10 @@ unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
     }
     let popup = current_vv_popup_hwnd();
     screen_point_hits_window_scope(popup, pt)
+}
+
+unsafe fn should_ignore_outside_click_for_point(pt: POINT) -> bool {
+    should_ignore_outside_click_for_point_in_hosts(pt, window_host_hwnds())
 }
 
 pub(super) unsafe fn edge_window_scope_contains_point(hwnd: HWND, pt: POINT) -> bool {
@@ -95,11 +99,24 @@ unsafe fn window_needs_outside_hide_timer(hwnd: HWND) -> bool {
 }
 
 unsafe fn refresh_outside_hide_timers() {
+    let needs_hook = window_host_hwnds_try()
+        .into_iter()
+        .any(|hwnd| window_needs_outside_hide_timer(hwnd));
+    if needs_hook {
+        ensure_outside_click_mouse_hook();
+    } else {
+        disable_outside_click_mouse_hook();
+    }
+    let hook_installed = outside_click_mouse_hook_handle()
+        .lock()
+        .ok()
+        .map(|handle| *handle != 0)
+        .unwrap_or(false);
     for hwnd in window_host_hwnds() {
         if !platform_window::exists(hwnd) {
             continue;
         }
-        if window_needs_outside_hide_timer(hwnd) {
+        if !hook_installed && window_needs_outside_hide_timer(hwnd) {
             timer::start(hwnd, ID_TIMER_OUTSIDE_HIDE, 120);
         } else {
             timer::stop(hwnd, ID_TIMER_OUTSIDE_HIDE);
@@ -223,6 +240,45 @@ pub(super) unsafe fn ensure_quick_escape_keyboard_hook() {
     }
 }
 
+unsafe extern "system" fn outside_click_mouse_hook_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let Some(event) = platform_hook::mouse_button_down_event(code, wparam, lparam) else {
+        return platform_hook::call_next(code, wparam, lparam);
+    };
+    let hosts = window_host_hwnds_try();
+    if should_ignore_outside_click_for_point_in_hosts(event.point, hosts) {
+        return platform_hook::call_next(code, wparam, lparam);
+    }
+    for hwnd in hosts {
+        if window_needs_outside_hide_timer(hwnd) {
+            platform_window::post_hwnd_message(hwnd, WM_OUTSIDE_CLICK_REQUESTED, 0, 0);
+        }
+    }
+    platform_hook::call_next(code, wparam, lparam)
+}
+
+unsafe fn ensure_outside_click_mouse_hook() {
+    let Ok(mut handle) = outside_click_mouse_hook_handle().lock() else {
+        return;
+    };
+    if *handle == 0 {
+        *handle = platform_hook::install_low_level_mouse(Some(outside_click_mouse_hook_proc));
+    }
+}
+
+unsafe fn disable_outside_click_mouse_hook() {
+    let Ok(mut handle) = outside_click_mouse_hook_handle().lock() else {
+        return;
+    };
+    if *handle != 0 {
+        platform_hook::uninstall(*handle);
+        *handle = 0;
+    }
+}
+
 unsafe fn disable_quick_escape_keyboard_hook() {
     let Ok(mut handle) = quick_escape_keyboard_hook_handle().lock() else {
         return;
@@ -252,6 +308,24 @@ pub(crate) unsafe fn shutdown_low_level_input_hooks() {
         }
     }
     disable_quick_escape_keyboard_hook();
+    disable_outside_click_mouse_hook();
+}
+
+pub(super) unsafe fn handle_outside_click_requested(hwnd: HWND) {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() || !platform_window::is_visible(hwnd) {
+        return;
+    }
+    let state = &*ptr;
+    if !state.settings.auto_hide_on_blur
+        || !(state.role == WindowRole::Quick || state.main_window_noactivate)
+        || vv_popup_menu_active()
+    {
+        return;
+    }
+    hide_hover_preview();
+    platform_window::hide(hwnd);
+    refresh_low_level_input_hooks();
 }
 
 pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
@@ -278,7 +352,5 @@ pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
     if !platform_input::any_mouse_button_down() {
         return;
     }
-    hide_hover_preview();
-    platform_window::hide(hwnd);
-    refresh_low_level_input_hooks();
+    handle_outside_click_requested(hwnd);
 }

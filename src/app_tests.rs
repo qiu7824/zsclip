@@ -1003,6 +1003,7 @@ fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
 
     assert!(!main_window.contains("release_list_memory"));
     assert!(main_window.contains("trim_current_working_set"));
+    assert!(main_window.contains("HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 3_000"));
     assert!(!show_block.contains("reload_state_from_db_persisting"));
     assert!(!show_block.contains("load_settings()"));
     assert!(!show_block.contains("sync_main_tray_icon"));
@@ -1012,7 +1013,8 @@ fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
     assert!(show_block.contains("state.refilter()"));
     assert!(events.contains("apply_ready_page_loads(hwnd, &mut *ptr)"));
     assert!(events.contains("trim_hidden_process_working_set()"));
-    assert!(host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW"));
+    assert!(host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN"));
+    assert!(!host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW"));
 }
 
 #[test]
@@ -5264,6 +5266,7 @@ fn windows_low_level_input_lives_outside_hosts_rs() {
         "fn refresh_outside_hide_timers",
         "fn refresh_edge_auto_hide_timers",
         "fn quick_escape_keyboard_hook_proc",
+        "fn outside_click_mouse_hook_proc",
         "pub(crate) unsafe fn refresh_low_level_input_hooks",
         "pub(super) unsafe fn handle_outside_hide_tick",
     ] {
@@ -5278,10 +5281,13 @@ fn windows_low_level_input_lives_outside_hosts_rs() {
         "fn refresh_outside_hide_timers",
         "fn refresh_edge_auto_hide_timers",
         "fn quick_escape_keyboard_hook_proc",
+        "fn outside_click_mouse_hook_proc",
         "pub(crate) unsafe fn refresh_low_level_input_hooks",
         "pub(crate) unsafe fn shutdown_low_level_input_hooks",
         "pub(super) unsafe fn handle_outside_hide_tick",
+        "pub(super) unsafe fn handle_outside_click_requested",
         "platform_hook::install_low_level_keyboard",
+        "platform_hook::install_low_level_mouse",
         "ID_TIMER_OUTSIDE_HIDE",
         "ID_TIMER_EDGE_AUTO_HIDE",
     ] {
@@ -6897,6 +6903,7 @@ fn windows_main_search_control_operations_use_search_control_host() {
     assert!(main_search.contains("search_text(state.search_hwnd"));
     assert!(main_search.contains("apply_search_style(request)"));
     assert!(main_search.contains("handle_search_control_command("));
+    assert!(main_search.contains("const SEARCH_DEBOUNCE_MS: u32 = 280"));
     assert!(main_search.contains("main_search_visibility_plan(MainSearchVisibilityInput"));
     assert!(main_entry.contains("release_search_style_resource((*ptr).search_font)"));
     assert!(main_search_host.contains("fn apply_search_style("));

@@ -73,11 +73,9 @@ pub(crate) fn process_image_name(pid: u32) -> String {
     }
 }
 
-pub(crate) fn trim_current_working_set() {
+pub(crate) fn trim_current_working_set() -> bool {
     unsafe {
         let process = GetCurrentProcess();
-        if !process.is_null() {
-            let _ = EmptyWorkingSet(process);
-        }
+        !process.is_null() && EmptyWorkingSet(process) != 0
     }
 }

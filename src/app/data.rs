@@ -1,5 +1,17 @@
 use super::prelude::*;
 use crate::platform::gdi as platform_gdi;
+use std::sync::mpsc::{self, Sender};
+
+struct ItemsPageLoadTask {
+    hwnd: isize,
+    tab: usize,
+    request_seq: u64,
+    query: ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    reset: bool,
+}
+
+static ITEMS_PAGE_LOAD_SENDER: OnceLock<Sender<ItemsPageLoadTask>> = OnceLock::new();
 
 struct DbItem {
     id: i64,
@@ -867,39 +879,64 @@ pub(super) fn spawn_items_page_load(
     reset: bool,
 ) {
     let hwnd_value = hwnd as isize;
-    std::thread::spawn(move || {
-        let result = match db_load_items_page(&query, cursor, ITEMS_PAGE_SIZE) {
-            Ok((items, next_cursor, has_more)) => PageLoadResult {
-                hwnd: hwnd_value,
-                tab,
-                request_seq,
-                query,
-                reset,
-                items,
-                next_cursor,
-                has_more,
-                error: None,
-            },
-            Err(err) => PageLoadResult {
-                hwnd: hwnd_value,
-                tab,
-                request_seq,
-                query,
-                reset,
-                items: Vec::new(),
-                next_cursor: cursor,
-                has_more: false,
-                error: Some(err.to_string()),
-            },
-        };
+    mark_latest_page_request(hwnd_value, tab, request_seq);
+    let task = ItemsPageLoadTask {
+        hwnd: hwnd_value,
+        tab,
+        request_seq,
+        query,
+        cursor,
+        reset,
+    };
+    let sender = ITEMS_PAGE_LOAD_SENDER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<ItemsPageLoadTask>();
+        std::thread::Builder::new()
+            .name("zsclip-items-loader".to_string())
+            .spawn(move || {
+                while let Ok(task) = receiver.recv() {
+                    if !page_request_is_latest(task.hwnd, task.tab, task.request_seq) {
+                        continue;
+                    }
+                    let result = match db_load_items_page(&task.query, task.cursor, ITEMS_PAGE_SIZE)
+                    {
+                        Ok((items, next_cursor, has_more)) => PageLoadResult {
+                            hwnd: task.hwnd,
+                            tab: task.tab,
+                            request_seq: task.request_seq,
+                            query: task.query,
+                            reset: task.reset,
+                            items,
+                            next_cursor,
+                            has_more,
+                            error: None,
+                        },
+                        Err(err) => PageLoadResult {
+                            hwnd: task.hwnd,
+                            tab: task.tab,
+                            request_seq: task.request_seq,
+                            query: task.query,
+                            reset: task.reset,
+                            items: Vec::new(),
+                            next_cursor: task.cursor,
+                            has_more: false,
+                            error: Some(err.to_string()),
+                        },
+                    };
 
-        if platform_window::is_window_alive(hwnd_value) {
-            if let Ok(mut queue) = page_load_results().lock() {
-                queue.push_back(result);
-            }
-            platform_window::post_message(hwnd_value, WM_ITEMS_PAGE_READY, 0, 0);
-        }
+                    if page_request_is_latest(task.hwnd, task.tab, task.request_seq)
+                        && platform_window::is_window_alive(task.hwnd)
+                    {
+                        if let Ok(mut queue) = page_load_results().lock() {
+                            queue.push_back(result);
+                        }
+                        platform_window::post_message(task.hwnd, WM_ITEMS_PAGE_READY, 0, 0);
+                    }
+                }
+            })
+            .expect("failed to start items page loader");
+        sender
     });
+    let _ = sender.send(task);
 }
 
 pub(super) fn spawn_startup_data_reconcile(hwnd: HWND, keep_duplicates: bool) {

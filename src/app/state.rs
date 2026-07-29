@@ -542,6 +542,8 @@ pub(super) struct CloudSyncResult {
 static VV_HOOK_STATE: OnceLock<Mutex<VvHookState>> = OnceLock::new();
 static VV_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
 static QUICK_ESCAPE_KEYBOARD_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+static OUTSIDE_CLICK_MOUSE_HOOK: OnceLock<Mutex<isize>> = OnceLock::new();
+static LATEST_PAGE_REQUESTS: OnceLock<Mutex<LatestPageRequests>> = OnceLock::new();
 pub(super) static VV_POPUP_HWND: OnceLock<isize> = OnceLock::new();
 static PAGE_LOAD_RESULTS: OnceLock<Mutex<VecDeque<PageLoadResult>>> = OnceLock::new();
 static CLOUD_SYNC_RESULTS: OnceLock<Mutex<VecDeque<CloudSyncResult>>> = OnceLock::new();
@@ -567,6 +569,48 @@ pub(super) fn quick_escape_keyboard_hook_handle() -> &'static Mutex<isize> {
     QUICK_ESCAPE_KEYBOARD_HOOK.get_or_init(|| Mutex::new(0))
 }
 
+pub(super) fn outside_click_mouse_hook_handle() -> &'static Mutex<isize> {
+    OUTSIDE_CLICK_MOUSE_HOOK.get_or_init(|| Mutex::new(0))
+}
+
+#[derive(Default)]
+struct LatestPageRequests {
+    requests: HashMap<(isize, usize), u64>,
+}
+
+impl LatestPageRequests {
+    fn mark(&mut self, hwnd: isize, tab: usize, request_seq: u64) {
+        self.requests.insert((hwnd, tab), request_seq);
+    }
+
+    fn is_latest(&self, hwnd: isize, tab: usize, request_seq: u64) -> bool {
+        self.requests.get(&(hwnd, tab)).copied() == Some(request_seq)
+    }
+
+    fn clear_window(&mut self, hwnd: isize) {
+        self.requests
+            .retain(|(request_hwnd, _), _| *request_hwnd != hwnd);
+    }
+}
+
+fn latest_page_requests() -> &'static Mutex<LatestPageRequests> {
+    LATEST_PAGE_REQUESTS.get_or_init(|| Mutex::new(LatestPageRequests::default()))
+}
+
+pub(super) fn mark_latest_page_request(hwnd: isize, tab: usize, request_seq: u64) {
+    if let Ok(mut requests) = latest_page_requests().lock() {
+        requests.mark(hwnd, tab, request_seq);
+    }
+}
+
+pub(super) fn page_request_is_latest(hwnd: isize, tab: usize, request_seq: u64) -> bool {
+    latest_page_requests()
+        .lock()
+        .ok()
+        .map(|requests| requests.is_latest(hwnd, tab, request_seq))
+        .unwrap_or(false)
+}
+
 pub(super) fn page_load_results() -> &'static Mutex<VecDeque<PageLoadResult>> {
     PAGE_LOAD_RESULTS.get_or_init(|| Mutex::new(VecDeque::new()))
 }
@@ -586,6 +630,9 @@ pub(super) fn clear_page_load_results_for_hwnd(hwnd: HWND) {
     if let Ok(mut queue) = page_load_results().lock() {
         let target = hwnd as isize;
         queue.retain(|result| result.hwnd != target);
+    }
+    if let Ok(mut requests) = latest_page_requests().lock() {
+        requests.clear_window(hwnd as isize);
     }
 }
 
@@ -981,4 +1028,25 @@ pub(crate) fn apply_shared_tab_view_state(state: &mut AppState) -> bool {
     state.tab_group_filters = next_filters;
     state.current_group_filter = next_filters[next_tab];
     changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LatestPageRequests;
+
+    #[test]
+    fn latest_page_requests_reject_stale_work_and_clear_destroyed_window() {
+        let mut requests = LatestPageRequests::default();
+        requests.mark(10, 0, 1);
+        requests.mark(10, 0, 2);
+        requests.mark(20, 0, 1);
+
+        assert!(!requests.is_latest(10, 0, 1));
+        assert!(requests.is_latest(10, 0, 2));
+        assert!(requests.is_latest(20, 0, 1));
+
+        requests.clear_window(10);
+        assert!(!requests.is_latest(10, 0, 2));
+        assert!(requests.is_latest(20, 0, 1));
+    }
 }

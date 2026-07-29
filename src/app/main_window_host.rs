@@ -303,7 +303,7 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                     handle,
                     null(),
                     null_mut(),
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN,
                 );
                 platform_window::set_foreground(handle);
                 platform_input::set_focus(handle);
@@ -323,7 +323,7 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                     handle,
                     null(),
                     null_mut(),
-                    RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+                    RDW_INVALIDATE | RDW_ALLCHILDREN,
                 );
             }
         }
