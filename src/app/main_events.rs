@@ -151,28 +151,55 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             let mut should_send_paste = true;
             let mut should_play_sound = false;
             let mut paste_target = null_mut();
+            let mut retry_delay_ms = None;
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let state = &mut *ptr;
                 let target = state.paste_target_override;
                 paste_target = target;
                 if !target.is_null() {
-                    should_send_paste =
+                    let foreground_requested =
                         WindowsPasteTargetHost::new().force_paste_target_foreground(target);
-                    if should_send_paste {
-                        restore_hotkey_focus_target(state, target);
-                        should_send_paste = can_send_ctrl_v_to_target(state, target);
+                    append_paste_diagnostic(&format!(
+                        "paste_timer target={target:p} foreground_requested={foreground_requested} foreground_now={:p}",
+                        WindowsWindowIdentityHost::new().foreground_handle()
+                    ));
+                    restore_hotkey_focus_target(state, target);
+                    should_send_paste = can_send_ctrl_v_to_target(state, target);
+                    if !should_send_paste {
+                        let identity_host = WindowsWindowIdentityHost::new();
+                        let foreground = identity_host.foreground_handle();
+                        retry_delay_ms = paste_focus_retry_delay_ms(
+                            state.paste_focus_retry_attempts,
+                            identity_host.exists(target),
+                            foreground,
+                            target,
+                        );
+                        if retry_delay_ms.is_some() {
+                            state.paste_focus_retry_attempts =
+                                state.paste_focus_retry_attempts.saturating_add(1);
+                            append_paste_diagnostic(&format!(
+                                "paste_retry target={target:p} attempt={} foreground={foreground:p}",
+                                state.paste_focus_retry_attempts
+                            ));
+                        }
                     }
+                }
+                if let Some(delay_ms) = retry_delay_ms {
+                    timer::start(hwnd, ID_TIMER_PASTE, delay_ms);
+                    return;
                 }
                 if should_send_paste {
                     platform_input::send_backspace_times(state.paste_backspace_count);
                 }
                 state.paste_backspace_count = 0;
+                state.paste_focus_retry_attempts = 0;
                 state.paste_target_override = null_mut();
                 clear_hotkey_passthrough_state(state);
                 should_play_sound = state.settings.paste_success_sound_enabled;
             }
             if should_send_paste {
+                append_paste_diagnostic(&format!("paste_send target={paste_target:p} ctrl_v=true"));
                 platform_input::send_ctrl_v();
                 if should_play_sound {
                     let ptr = get_state_ptr(hwnd);
@@ -184,6 +211,9 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     }
                 }
             } else if !ptr.is_null() {
+                append_paste_diagnostic(&format!(
+                    "paste_send target={paste_target:p} ctrl_v=false"
+                ));
                 show_paste_failure_message(hwnd, &*ptr, paste_target);
             }
         }

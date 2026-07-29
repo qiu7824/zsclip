@@ -4,9 +4,9 @@ use crate::platform::gdi as platform_gdi;
 use crate::settings_model::{
     settings_chrome_paint_plan, settings_content_paint_plan, settings_nav_item_paint_plan,
     settings_scrollbar_paint_plan, settings_viewport_mask_paint_plan, SettingsChromeRenderPlan,
-    SettingsContentRenderPlan, SettingsNavIconKind, SettingsNavItemRender, SettingsPaintCommand,
-    SettingsPaintPlan, SettingsScrollbarRenderPlan, SettingsTextCommand, SettingsTextContent,
-    SettingsTextFontRole, SettingsThemeRole,
+    SettingsContentRenderPlan, SettingsNavItemRender, SettingsPaintCommand, SettingsPaintPlan,
+    SettingsScrollbarRenderPlan, SettingsTextCommand, SettingsTextContent, SettingsTextFontRole,
+    SettingsThemeRole,
 };
 use crate::ui::{draw_round_fill, draw_round_rect, draw_text_ex};
 use crate::win_native_style::{rgb, Theme};
@@ -124,8 +124,7 @@ fn settings_theme_role_color(role: SettingsThemeRole, th: Theme) -> u32 {
 fn settings_text_content(content: SettingsTextContent) -> &'static str {
     match content {
         SettingsTextContent::Label(label) => label,
-        SettingsTextContent::NavIcon(icon) => settings_nav_glyph(icon),
-        SettingsTextContent::ChromeMenuIcon => "",
+        SettingsTextContent::Icon(icon) => icon.windows_fluent_glyph(),
     }
 }
 
@@ -163,17 +162,6 @@ pub unsafe fn draw_settings_scrollbar(
 ) {
     let paint_plan = settings_scrollbar_paint_plan(plan);
     draw_settings_paint_plan(hdc, paint_plan, th);
-}
-
-fn settings_nav_glyph(icon: SettingsNavIconKind) -> &'static str {
-    match icon {
-        SettingsNavIconKind::General => "",
-        SettingsNavIconKind::Hotkey => "",
-        SettingsNavIconKind::Plugin => "",
-        SettingsNavIconKind::Group => "",
-        SettingsNavIconKind::Sync => "",
-        SettingsNavIconKind::About => "",
-    }
 }
 
 pub unsafe fn draw_settings_content(
