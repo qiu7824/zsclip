@@ -52,6 +52,41 @@ struct HoverPreviewData {
     last_h: i32,
 }
 
+impl HoverPreviewData {
+    fn release_cached_content(&mut self) {
+        self.item_id = 0;
+        self.header.clear();
+        self.header.shrink_to_fit();
+        self.body.clear();
+        self.body.shrink_to_fit();
+        self.image = None;
+        self.image_width = 0;
+        self.image_height = 0;
+        self.loading_item_id = 0;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewUpdatePlan {
+    KeepVisible,
+    ShowCached,
+    ReplaceContent,
+}
+
+fn preview_update_plan(
+    visible: bool,
+    same_content: bool,
+    same_geometry: bool,
+) -> PreviewUpdatePlan {
+    if visible && same_content && same_geometry {
+        PreviewUpdatePlan::KeepVisible
+    } else if same_content {
+        PreviewUpdatePlan::ShowCached
+    } else {
+        PreviewUpdatePlan::ReplaceContent
+    }
+}
+
 static HOVER_HWND: OnceLock<isize> = OnceLock::new();
 
 unsafe extern "system" fn preview_wnd_proc(
@@ -307,22 +342,71 @@ fn markdown_file_preview_text(paths: &[String]) -> Option<String> {
 }
 
 pub(crate) unsafe fn hide_hover_preview() {
-    let hwnd = preview_hwnd();
+    let Some(raw) = HOVER_HWND.get() else {
+        return;
+    };
+    let hwnd = *raw as HWND;
     if platform_window::exists(hwnd) {
-        let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
-        if !ptr.is_null() {
-            (*ptr).item_id = 0;
-            (*ptr).header.clear();
-            (*ptr).header.shrink_to_fit();
-            (*ptr).body.clear();
-            (*ptr).body.shrink_to_fit();
-            (*ptr).image = None;
-            (*ptr).image_width = 0;
-            (*ptr).image_height = 0;
-            (*ptr).loading_item_id = 0;
-        }
         platform_window::hide(hwnd);
     }
+}
+
+pub(crate) unsafe fn release_hover_preview_memory() {
+    let Some(raw) = HOVER_HWND.get() else {
+        return;
+    };
+    let hwnd = *raw as HWND;
+    if !platform_window::exists(hwnd) {
+        return;
+    }
+    let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
+    if !ptr.is_null() {
+        (*ptr).release_cached_content();
+    }
+}
+
+fn rect_contains_point(x: i32, y: i32, w: i32, h: i32, point_x: i32, point_y: i32) -> bool {
+    point_x >= x && point_x < x + w && point_y >= y && point_y < y + h
+}
+
+fn preview_origin_near_cursor(
+    cursor_x: i32,
+    cursor_y: i32,
+    width: i32,
+    height: i32,
+    work_area: RECT,
+) -> (i32, i32) {
+    const GAP_X: i32 = 16;
+    const GAP_Y: i32 = 22;
+    let candidates = [
+        (cursor_x + GAP_X, cursor_y + GAP_Y),
+        (cursor_x - GAP_X - width, cursor_y + GAP_Y),
+        (cursor_x + GAP_X, cursor_y - GAP_Y - height),
+        (cursor_x - GAP_X - width, cursor_y - GAP_Y - height),
+    ];
+    for (x, y) in candidates {
+        if x >= work_area.left
+            && y >= work_area.top
+            && x + width <= work_area.right
+            && y + height <= work_area.bottom
+        {
+            return (x, y);
+        }
+    }
+
+    let max_x = (work_area.right - width).max(work_area.left);
+    let max_y = (work_area.bottom - height).max(work_area.top);
+    for (x, y) in candidates {
+        let x = x.clamp(work_area.left, max_x);
+        let y = y.clamp(work_area.top, max_y);
+        if !rect_contains_point(x, y, width, height, cursor_x, cursor_y) {
+            return (x, y);
+        }
+    }
+    (
+        (cursor_x + GAP_X).clamp(work_area.left, max_x),
+        (cursor_y + GAP_Y).clamp(work_area.top, max_y),
+    )
 }
 
 fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) {
@@ -408,16 +492,7 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         x: cursor_x,
         y: cursor_y,
     });
-    let mut x = cursor_x + 16;
-    let mut y = cursor_y + 22;
-    if x + w > wa.right {
-        x = wa.right - w;
-    }
-    if y + h > wa.bottom {
-        y = wa.bottom - h;
-    }
-    x = x.max(wa.left);
-    y = y.max(wa.top);
+    let (x, y) = preview_origin_near_cursor(cursor_x, cursor_y, w, h, wa);
 
     let data = &mut *ptr;
     let same_image_shape = image_shape == Some((data.image_width, data.image_height));
@@ -427,25 +502,25 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
     let visible = platform_window::is_visible(hwnd);
 
-    if visible && same_content && same_geometry {
-        return;
-    }
-
-    if visible && same_content {
-        data.last_x = x;
-        data.last_y = y;
-        data.last_w = w;
-        data.last_h = h;
-        platform_window::set_pos(
-            hwnd,
-            HWND_TOPMOST,
-            x,
-            y,
-            w,
-            h,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        );
-        return;
+    match preview_update_plan(visible, same_content, same_geometry) {
+        PreviewUpdatePlan::KeepVisible => return,
+        PreviewUpdatePlan::ShowCached => {
+            data.last_x = x;
+            data.last_y = y;
+            data.last_w = w;
+            data.last_h = h;
+            platform_window::set_pos(
+                hwnd,
+                HWND_TOPMOST,
+                x,
+                y,
+                w,
+                h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+            return;
+        }
+        PreviewUpdatePlan::ReplaceContent => {}
     }
 
     let image = if item.kind == ClipKind::Image {
@@ -490,7 +565,11 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
 
 #[cfg(test)]
 mod tests {
-    use super::{limit_preview_text, PREVIEW_TEXT_MAX_CHARS, PREVIEW_TEXT_MAX_LINES};
+    use super::{
+        limit_preview_text, preview_origin_near_cursor, preview_update_plan, rect_contains_point,
+        PreviewUpdatePlan, PREVIEW_TEXT_MAX_CHARS, PREVIEW_TEXT_MAX_LINES,
+    };
+    use windows_sys::Win32::Foundation::RECT;
 
     #[test]
     fn text_preview_capacity_matches_text_window() {
@@ -503,6 +582,41 @@ mod tests {
         assert!(preview.contains("line 9"));
         assert!(!preview.contains("line 10"));
         assert!(preview.ends_with("......"));
+    }
+
+    #[test]
+    fn preview_placement_keeps_stationary_cursor_outside_at_monitor_edges() {
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        for (width, height) in [(420, 220), (520, 360)] {
+            for (cursor_x, cursor_y) in [(0, 0), (1919, 0), (0, 1079), (1919, 1079)] {
+                let (x, y) =
+                    preview_origin_near_cursor(cursor_x, cursor_y, width, height, work_area);
+                assert!(!rect_contains_point(
+                    x, y, width, height, cursor_x, cursor_y
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn hidden_same_item_reuses_cached_preview_without_replacing_image() {
+        assert_eq!(
+            preview_update_plan(false, true, true),
+            PreviewUpdatePlan::ShowCached
+        );
+        assert_eq!(
+            preview_update_plan(true, true, true),
+            PreviewUpdatePlan::KeepVisible
+        );
+        assert_eq!(
+            preview_update_plan(false, false, true),
+            PreviewUpdatePlan::ReplaceContent
+        );
     }
 
     #[test]

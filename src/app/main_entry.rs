@@ -72,6 +72,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
     if msg == WM_DPICHANGED {
         apply_dpi_suggested_rect(hwnd, lparam);
     }
+    if msg == WM_OUTSIDE_CLICK_REQUESTED {
+        handle_outside_click_requested(hwnd);
+        return 0;
+    }
     if let Some(event) = main_window_host_event_from_message(msg, wparam, lparam) {
         match event {
             MainWindowHostEvent::Async(event) => {

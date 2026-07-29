@@ -3211,10 +3211,13 @@ impl MainUiLayout {
     }
 
     pub(crate) fn search_rect(self) -> UiRect {
+        let search_button = self.title_button_rect("search");
+        let control_gap = (self.btn_gap * 4).max(self.btn_gap);
+        let right = (self.search_left + self.search_w).min(search_button.left - control_gap);
         UiRect::new(
             self.search_left,
             self.search_top,
-            self.search_left + self.search_w,
+            right.max(self.search_left + 20),
             self.search_top + self.search_h,
         )
     }
@@ -4068,6 +4071,17 @@ mod tests {
             ),
             MainPointerDownTarget::Tab(1)
         );
+    }
+
+    #[test]
+    fn zsclip_search_box_keeps_scaled_gap_from_search_button() {
+        for dpi in [96, 120, 144, 192] {
+            let layout = MainUiLayout::zsclip().scaled(dpi);
+            let search = layout.search_rect();
+            let button = layout.title_button_rect("search");
+            assert!(search.right <= button.left);
+            assert!(button.left - search.right >= layout.btn_gap * 4);
+        }
     }
 
     #[test]
