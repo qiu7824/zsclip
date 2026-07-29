@@ -6,6 +6,7 @@ use crate::app_core::{
     SETTINGS_PAGE_LABELS,
 };
 use crate::i18n::{tr, translate};
+use crate::zsui::ZsIcon;
 
 pub const SCROLL_BAR_W: i32 = 3;
 pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
@@ -795,26 +796,14 @@ pub fn settings_pointer_move_transition(
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingsNavIconKind {
-    General,
-    Hotkey,
-    Plugin,
-    Group,
-    Sync,
-    About,
-}
-
-impl SettingsNavIconKind {
-    pub fn for_page(page: SettingsPage) -> Self {
-        match page {
-            SettingsPage::General => Self::General,
-            SettingsPage::Hotkey => Self::Hotkey,
-            SettingsPage::Plugin => Self::Plugin,
-            SettingsPage::Group => Self::Group,
-            SettingsPage::Cloud => Self::Sync,
-            SettingsPage::About => Self::About,
-        }
+pub const fn settings_nav_icon_for_page(page: SettingsPage) -> ZsIcon {
+    match page {
+        SettingsPage::General => ZsIcon::Settings,
+        SettingsPage::Hotkey => ZsIcon::Code,
+        SettingsPage::Plugin => ZsIcon::Tool,
+        SettingsPage::Group => ZsIcon::Group,
+        SettingsPage::Cloud => ZsIcon::Refresh,
+        SettingsPage::About => ZsIcon::Inspector,
     }
 }
 
@@ -823,7 +812,7 @@ pub struct SettingsNavItemRender {
     pub index: usize,
     pub page: SettingsPage,
     pub label: &'static str,
-    pub icon: SettingsNavIconKind,
+    pub icon: ZsIcon,
     pub rect: UiRect,
     pub selected: bool,
     pub hovered: bool,
@@ -862,8 +851,7 @@ pub enum SettingsTextFontRole {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingsTextContent {
     Label(&'static str),
-    NavIcon(SettingsNavIconKind),
-    ChromeMenuIcon,
+    Icon(ZsIcon),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -961,7 +949,7 @@ pub fn settings_nav_item_paint_plan(item: &SettingsNavItemRender) -> SettingsNav
     let text_commands = vec![
         SettingsTextCommand {
             rect: icon_rect,
-            content: SettingsTextContent::NavIcon(item.icon),
+            content: SettingsTextContent::Icon(item.icon),
             color: icon_color,
             size: 16,
             bold: false,
@@ -1006,7 +994,7 @@ pub fn settings_nav_render_plan(
                 index,
                 page,
                 label: SETTINGS_PAGE_LABELS[index],
-                icon: SettingsNavIconKind::for_page(page),
+                icon: settings_nav_icon_for_page(page),
                 rect,
                 selected: index == current_page,
                 hovered: hover_page == Some(index),
@@ -1096,7 +1084,7 @@ pub fn settings_chrome_paint_plan(
         text_commands: vec![
             SettingsTextCommand {
                 rect: plan.menu_icon_rect,
-                content: SettingsTextContent::ChromeMenuIcon,
+                content: SettingsTextContent::Icon(ZsIcon::Sidebar),
                 color: SettingsThemeRole::TextMuted,
                 size: 16,
                 bold: false,
@@ -4509,7 +4497,7 @@ mod tests {
             about.label,
             SETTINGS_PAGE_LABELS[SettingsPage::About.index()]
         );
-        assert_eq!(about.icon, SettingsNavIconKind::About);
+        assert_eq!(about.icon, ZsIcon::Inspector);
         assert!(about.badge_rect.is_some());
         assert_eq!(
             about.rect,
@@ -4531,7 +4519,7 @@ mod tests {
             index: SettingsPage::Plugin.index(),
             page: SettingsPage::Plugin,
             label: "插件",
-            icon: SettingsNavIconKind::Plugin,
+            icon: ZsIcon::Tool,
             rect: UiRect::new(10, 20, 200, 56),
             selected: true,
             hovered: false,
@@ -4574,7 +4562,7 @@ mod tests {
                         item.rect.left + settings_scale(38),
                         item.rect.bottom,
                     ),
-                    content: SettingsTextContent::NavIcon(SettingsNavIconKind::Plugin),
+                    content: SettingsTextContent::Icon(ZsIcon::Tool),
                     color: SettingsThemeRole::Accent,
                     size: 16,
                     bold: false,
@@ -4837,7 +4825,7 @@ mod tests {
             vec![
                 SettingsTextCommand {
                     rect: chrome.menu_icon_rect,
-                    content: SettingsTextContent::ChromeMenuIcon,
+                    content: SettingsTextContent::Icon(ZsIcon::Sidebar),
                     color: SettingsThemeRole::TextMuted,
                     size: 16,
                     bold: false,
@@ -4973,7 +4961,7 @@ mod tests {
             index: SettingsPage::General.index(),
             page: SettingsPage::General,
             label: "常规",
-            icon: SettingsNavIconKind::General,
+            icon: ZsIcon::Settings,
             rect: settings_nav_item_rect(SettingsPage::General.index()),
             selected: true,
             hovered: false,

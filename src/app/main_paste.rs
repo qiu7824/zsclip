@@ -384,17 +384,47 @@ pub(super) unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND)
 pub(super) unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -> bool {
     let identity_host = WindowsWindowIdentityHost::new();
     if !identity_host.exists(target) {
+        append_paste_diagnostic(&format!(
+            "paste_check target={target:p} exists=false allowed=false"
+        ));
         return false;
     }
     if !identity_host.is_foreground(target) {
+        append_paste_diagnostic(&format!(
+            "paste_check target={target:p} exists=true foreground=false allowed=false process={} class={}",
+            identity_host.process_name(target),
+            identity_host.class_name(target)
+        ));
         return false;
     }
     if vv_is_qq_wps_process(&window_process_name(target)) {
+        append_paste_diagnostic(&format!(
+            "paste_check target={target:p} foreground=true qq_wps=true allowed=true"
+        ));
         return true;
     }
-    WindowsPasteTargetHost::new()
-        .paste_target_focus_status(target, state.hotkey_passthrough_focus)
-        .allows_paste_attempt()
+    let focus_status = WindowsPasteTargetHost::new()
+        .paste_target_focus_status(target, state.hotkey_passthrough_focus);
+    let allowed = focus_status.allows_paste_attempt();
+    append_paste_diagnostic(&format!(
+        "paste_check target={target:p} foreground=true focus={:p} status={focus_status:?} allowed={allowed} process={} class={}",
+        state.hotkey_passthrough_focus,
+        identity_host.process_name(target),
+        identity_host.class_name(target)
+    ));
+    allowed
+}
+
+pub(super) fn paste_focus_retry_delay_ms(
+    attempts: u8,
+    target_exists: bool,
+    foreground: HWND,
+    target: HWND,
+) -> Option<u32> {
+    (attempts < PASTE_FOCUS_RETRY_MAX_ATTEMPTS
+        && target_exists
+        && (foreground.is_null() || foreground == target))
+        .then_some(PASTE_FOCUS_RETRY_DELAY_MS)
 }
 
 unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> String {
@@ -499,8 +529,29 @@ pub(super) unsafe fn paste_after_clipboard_ready_to_target(
     hide_main: bool,
     backspaces: u8,
 ) {
+    let source = if target.is_null() {
+        "none"
+    } else if state.hotkey_passthrough_active && state.hotkey_passthrough_target == target {
+        "hotkey_snapshot"
+    } else if state.paste_target_override == target {
+        "override"
+    } else if state.role == WindowRole::Quick {
+        "quick_foreground_or_zorder"
+    } else {
+        "zorder"
+    };
+    let identity_host = WindowsWindowIdentityHost::new();
+    append_paste_diagnostic(&format!(
+        "paste_queue target={target:p} source={source} passthrough_target={:p} passthrough_focus={:p} current_foreground={:p} hide_main={hide_main} process={} class={}",
+        state.hotkey_passthrough_target,
+        state.hotkey_passthrough_focus,
+        identity_host.foreground_handle(),
+        identity_host.process_name(target),
+        identity_host.class_name(target)
+    ));
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
+    state.paste_focus_retry_attempts = 0;
     if !target.is_null() {
         if hide_main {
             WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
@@ -520,6 +571,34 @@ pub(super) unsafe fn paste_after_clipboard_ready_to_target(
             translate("粘贴失败").as_ref(),
             translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").as_ref(),
             NativeDialogLevel::Warning,
+        );
+    }
+}
+
+#[cfg(test)]
+mod paste_focus_retry_tests {
+    use super::*;
+
+    #[test]
+    fn paste_focus_retry_only_retries_transient_foreground_states() {
+        let target = 7usize as HWND;
+        let other = 9usize as HWND;
+        assert_eq!(
+            paste_focus_retry_delay_ms(0, true, null_mut(), target),
+            Some(PASTE_FOCUS_RETRY_DELAY_MS)
+        );
+        assert_eq!(
+            paste_focus_retry_delay_ms(1, true, target, target),
+            Some(PASTE_FOCUS_RETRY_DELAY_MS)
+        );
+        assert_eq!(paste_focus_retry_delay_ms(1, true, other, target), None);
+        assert_eq!(
+            paste_focus_retry_delay_ms(1, false, null_mut(), target),
+            None
+        );
+        assert_eq!(
+            paste_focus_retry_delay_ms(PASTE_FOCUS_RETRY_MAX_ATTEMPTS, true, null_mut(), target),
+            None
         );
     }
 }

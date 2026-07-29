@@ -85,6 +85,31 @@ pub(crate) fn data_dir() -> PathBuf {
         .clone()
 }
 
+pub(super) fn append_paste_diagnostic(event: &str) {
+    use std::io::Write;
+
+    let path = data_dir().join("paste-focus.log");
+    let truncate = fs::metadata(&path)
+        .map(|metadata| metadata.len() > 512 * 1024)
+        .unwrap_or(false);
+    let mut options = fs::OpenOptions::new();
+    options.create(true).write(true);
+    if truncate {
+        options.truncate(true);
+    } else {
+        options.append(true);
+    }
+    let Ok(mut file) = options.open(path) else {
+        return;
+    };
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let event = event.replace(['\r', '\n'], " ");
+    let _ = writeln!(file, "{timestamp_ms} {event}");
+}
+
 fn migrate_legacy_data_dirs_to(target: &Path) {
     if fs::create_dir_all(target).is_err() {
         return;

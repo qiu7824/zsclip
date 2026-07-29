@@ -219,6 +219,11 @@ pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) ->
         refresh_search_font(state);
         ensure_db();
         if role == WindowRole::Main {
+            append_paste_diagnostic(&format!(
+                "session_start pid={} version={}",
+                std::process::id(),
+                crate::app_version::APP_VERSION
+            ));
             #[cfg(feature = "lan-sync")]
             if lan_sync::ensure_device_identity(&mut state.settings) {
                 save_settings(&state.settings);
