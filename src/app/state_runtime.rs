@@ -2,7 +2,7 @@ use super::prelude::*;
 
 pub(super) fn reload_state_from_db_persisting(state: &mut AppState) {
     if reload_state_from_db(state) {
-        save_settings(&state.settings);
+        save_state_settings(state);
     }
 }
 
@@ -15,6 +15,13 @@ fn item_payload_missing(item: &ClipItem) -> bool {
         ClipKind::Files => item.file_paths.is_none() && item.text.is_none(),
         ClipKind::Image => item.image_bytes.is_none() && item.image_path.is_none(),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipItemAddOutcome {
+    Applied,
+    Duplicate,
+    RetryableFailure,
 }
 
 impl AppState {
@@ -261,21 +268,51 @@ impl AppState {
         }
     }
 
-    pub(super) fn add_clip_item(&mut self, item: ClipItem, signature: String) {
-        let _ = self.add_clip_item_inner(item, signature, true, false);
+    pub(super) fn add_clip_item(&mut self, item: ClipItem, signature: String) -> bool {
+        self.add_clip_item_inner(item, signature, true, false) == ClipItemAddOutcome::Applied
+    }
+
+    pub(super) fn add_clip_item_for_capture(
+        &mut self,
+        item: ClipItem,
+        signature: String,
+    ) -> Result<bool, ()> {
+        match self.add_clip_item_inner(item, signature, true, false) {
+            ClipItemAddOutcome::Applied => Ok(true),
+            ClipItemAddOutcome::Duplicate => Ok(false),
+            ClipItemAddOutcome::RetryableFailure => Err(()),
+        }
     }
 
     pub(super) fn add_lan_clip_item(&mut self, item: ClipItem, signature: String) -> bool {
-        self.add_clip_item_inner(item, signature, false, true)
+        self.add_clip_item_inner(item, signature, false, true) == ClipItemAddOutcome::Applied
     }
 
-    pub(super) fn add_clip_item_inner(
+    fn add_clip_item_inner(
+        &mut self,
+        item: ClipItem,
+        signature: String,
+        broadcast_lan: bool,
+        force_dedupe: bool,
+    ) -> ClipItemAddOutcome {
+        let cleanup_item = item.clone();
+        let expected_generation = self.app_data_generation;
+        crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+            self.add_clip_item_inner_locked(item, signature, broadcast_lan, force_dedupe)
+        })
+        .unwrap_or_else(|| {
+            remove_uninserted_image_file(&cleanup_item);
+            ClipItemAddOutcome::RetryableFailure
+        })
+    }
+
+    fn add_clip_item_inner_locked(
         &mut self,
         mut item: ClipItem,
         signature: String,
         broadcast_lan: bool,
         force_dedupe: bool,
-    ) -> bool {
+    ) -> ClipItemAddOutcome {
         let signature = dedupe_signature_for_item(&item, &signature);
         let full_dedupe = force_dedupe || self.settings.dedupe_filter_enabled;
 
@@ -285,7 +322,7 @@ impl AppState {
                 .is_some_and(|latest| latest == signature)
         {
             remove_uninserted_image_file(&item);
-            return false;
+            return ClipItemAddOutcome::Duplicate;
         }
 
         if full_dedupe && !signature.is_empty() {
@@ -293,7 +330,7 @@ impl AppState {
             if let Some(existing_id) = duplicate_ids.first().copied() {
                 if force_dedupe {
                     remove_uninserted_image_file(&item);
-                    return false;
+                    return ClipItemAddOutcome::Duplicate;
                 }
                 let anchor = self.current_scroll_anchor();
                 let existing_pinned = db_item_is_pinned(existing_id);
@@ -321,7 +358,7 @@ impl AppState {
                         }
                     }
                     remove_uninserted_image_file(&item);
-                    return false;
+                    return ClipItemAddOutcome::Duplicate;
                 }
                 if let Ok(new_id) = db_promote_item_to_top(existing_id) {
                     remove_uninserted_image_file(&item);
@@ -340,16 +377,17 @@ impl AppState {
                         sync_peer_windows_from_db(self.hwnd);
                     }
                     refresh_lan_latest_from_db(&self.settings);
-                    return true;
+                    return ClipItemAddOutcome::Applied;
                 }
                 remove_uninserted_image_file(&item);
-                return false;
+                return ClipItemAddOutcome::RetryableFailure;
             }
         }
-        item.id = db_insert_item(0, &item, Some(signature.as_str())).unwrap_or(0);
+        let insert_result = db_insert_item(0, &item, Some(signature.as_str()));
+        item.id = insert_result.unwrap_or(0);
         if item.id <= 0 {
             remove_uninserted_image_file(&item);
-            return false;
+            return ClipItemAddOutcome::RetryableFailure;
         }
         // DB assigns created_at with CURRENT_TIMESTAMP; fill memory so date headers render correctly.
         if item.created_at.is_empty() {
@@ -385,7 +423,7 @@ impl AppState {
             maybe_broadcast_lan_clip_item(self, &item, &signature);
         }
         refresh_lan_latest_from_db(&self.settings);
-        true
+        ClipItemAddOutcome::Applied
     }
 
     pub(super) fn list_view_height(&self) -> i32 {
@@ -405,7 +443,7 @@ impl AppState {
     }
 
     pub(super) fn layout(&self) -> MainUiLayout {
-        main_layout_for_dpi(self.ui_dpi)
+        main_layout_for_dpi(self.ui_dpi).with_app_icon_visible(self.settings.app_icon_visible)
     }
 
     pub(super) fn quick_action_rect_slot(&self, visible_idx: i32, slot: i32) -> Option<RECT> {

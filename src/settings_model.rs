@@ -511,7 +511,7 @@ const HOTKEY_TITLES: [&str; 3] = [
 
 const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
     SettingsFormCardSpec {
-        rows: 10,
+        rows: 13,
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -519,7 +519,7 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 9,
+        rows: 10,
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -2849,6 +2849,8 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "auto_start" => native_setting_binding("auto_start"),
         "silent_start" => native_setting_binding("silent_start"),
         "tray_icon" => native_setting_binding("tray_icon_enabled"),
+        "app_icon" => native_setting_binding("app_icon_visible"),
+        "dark_mode" => native_setting_binding("dark_mode_enabled"),
         "capture_enable" => native_setting_binding("clipboard_capture_enabled"),
         "close_to_tray" => native_setting_binding("close_without_exit"),
         "auto_hide_on_blur" => native_setting_binding("auto_hide_on_blur"),
@@ -2858,11 +2860,13 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "image_preview" => native_setting_binding("image_preview_enabled"),
         "rich_text" => native_setting_binding("rich_text_clipboard_enabled"),
         "quick_delete" => native_setting_binding("quick_delete_button"),
+        "context_menu_copy" => native_setting_binding("context_menu_copy_enabled"),
         "max_items" => native_setting_binding("max_items"),
         "click_hide" => native_setting_binding("click_hide"),
         "paste_move_top" => native_setting_binding("move_pasted_item_to_top"),
         "dedupe_filter" => native_setting_binding("dedupe_filter_enabled"),
         "persistent_search" => native_setting_binding("persistent_search_box"),
+        "copy_sound" => native_setting_binding("copy_success_sound_enabled"),
         "paste_sound" => native_setting_binding("paste_success_sound_enabled"),
         "paste_sound_kind" => native_setting_binding("paste_success_sound_kind"),
         "skip_window" => native_setting_binding("paste_target_skip_enabled"),
@@ -2965,6 +2969,8 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "auto_start" => native_toggle_route(5010),
         "silent_start" => native_toggle_route(5059),
         "tray_icon" => native_toggle_route(5060),
+        "app_icon" => native_toggle_route(5099),
+        "dark_mode" => native_toggle_route(5097),
         "capture_enable" => native_toggle_route(5101),
         "close_to_tray" => native_toggle_route(5011),
         "auto_hide_on_blur" => native_toggle_route(5061),
@@ -2973,12 +2979,14 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "vv_mode" => native_toggle_route(5054),
         "image_preview" => native_toggle_route(5051),
         "quick_delete" => native_toggle_route(5052),
+        "context_menu_copy" => native_toggle_route(5100),
         "rich_text" => native_toggle_route(5096),
         "max_items" => native_dropdown_route(5015),
         "click_hide" => native_toggle_route(5038),
         "paste_move_top" => native_toggle_route(5063),
         "dedupe_filter" => native_toggle_route(5064),
         "persistent_search" => native_toggle_route(5069),
+        "copy_sound" => native_toggle_route(5098),
         "paste_sound" => native_toggle_route(5070),
         "paste_sound_kind" => native_dropdown_route(5071),
         "paste_sound_file" => native_action_route("settings_platform", "pick_paste_sound"),
@@ -3088,6 +3096,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("auto_start", "开机自启", Toggle),
             ("silent_start", "静默启动", Toggle),
             ("tray_icon", "右下角图标", Toggle),
+            ("app_icon", "软件图标显示", Toggle),
             ("capture_enable", "剪贴板捕获", Toggle),
             ("close_to_tray", "关闭不退出", Toggle),
             ("auto_hide_on_blur", "点击外部隐藏", Toggle),
@@ -3096,6 +3105,8 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("vv_mode", "VV 模式", Toggle),
             ("image_preview", "图片缩略图", Toggle),
             ("quick_delete", "快速删除按钮", Toggle),
+            ("dark_mode", "深色模式", Toggle),
+            ("context_menu_copy", "右键菜单复制", Toggle),
         ],
     );
     push_native_controls(
@@ -3118,6 +3129,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("paste_move_top", "粘贴后上移到首行", Toggle),
             ("dedupe_filter", "重复内容过滤", Toggle),
             ("persistent_search", "常驻搜索框", Toggle),
+            ("copy_sound", "复制成功声音", Toggle),
             ("paste_sound", "粘贴成功声音", Toggle),
             ("paste_sound_kind", "提示音", Dropdown),
             ("paste_sound_file", "声音文件", Button),
@@ -3566,6 +3578,7 @@ fn settings_native_json_updates_for_applied_field(
         "auto_start"
         | "silent_start"
         | "tray_icon_enabled"
+        | "app_icon_visible"
         | "clipboard_capture_enabled"
         | "close_without_exit"
         | "auto_hide_on_blur"
@@ -3574,11 +3587,14 @@ fn settings_native_json_updates_for_applied_field(
         | "vv_mode_enabled"
         | "image_preview_enabled"
         | "quick_delete_button"
+        | "context_menu_copy_enabled"
         | "click_hide"
         | "move_pasted_item_to_top"
         | "dedupe_filter_enabled"
         | "persistent_search_box"
+        | "copy_success_sound_enabled"
         | "paste_success_sound_enabled"
+        | "dark_mode_enabled"
         | "paste_target_skip_enabled"
         | "hotkey_enabled"
         | "plain_paste_hotkey_enabled"
@@ -5087,23 +5103,47 @@ mod tests {
 
     #[test]
     fn multi_sync_options_are_platform_neutral() {
+        #[cfg(feature = "lan-sync")]
         assert_eq!(MULTI_SYNC_MODE_OPTIONS, ["关闭", "WebDAV", "局域网"]);
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(MULTI_SYNC_MODE_OPTIONS, ["关闭", "WebDAV"]);
         assert_eq!(multi_sync_mode_display("off"), "关闭");
         assert_eq!(multi_sync_mode_display("webdav"), "WebDAV");
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_mode_display("lan"), "局域网");
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_mode_display("lan"), "关闭");
         assert_eq!(multi_sync_mode_from_label("WebDAV"), "webdav");
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_mode_from_label("局域网"), "lan");
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_mode_from_label("局域网"), "off");
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_mode_from_label("lan"), "lan");
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_mode_from_label("lan"), "off");
         assert_eq!(multi_sync_mode_from_label("关闭"), "off");
 
         assert_eq!(multi_sync_mode_from_flags(false, false), "off");
         assert_eq!(multi_sync_mode_from_flags(true, false), "webdav");
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_mode_from_flags(false, true), "lan");
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_mode_from_flags(false, true), "off");
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_mode_from_flags(true, true), "lan");
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_mode_from_flags(true, true), "webdav");
         assert_eq!(multi_sync_flags_for_mode("webdav"), (true, false));
+        #[cfg(feature = "lan-sync")]
         assert_eq!(multi_sync_flags_for_mode("lan"), (false, true));
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(multi_sync_flags_for_mode("lan"), (false, false));
         assert_eq!(multi_sync_flags_for_mode("off"), (false, false));
+        #[cfg(feature = "lan-sync")]
         assert_eq!(normalize_multi_sync_flags(true, true), (false, true));
+        #[cfg(not(feature = "lan-sync"))]
+        assert_eq!(normalize_multi_sync_flags(true, true), (true, false));
         assert_eq!(localized_cloud_status_text(""), tr("未同步", "Not synced"));
         assert_eq!(
             localized_cloud_status_text(" 未同步 "),
@@ -5658,6 +5698,25 @@ mod tests {
                 && control.key == "skip_window_classes"
                 && control.kind == SettingsNativeControlKind::TextInput
         }));
+        let context_menu_copy = control_summaries
+            .iter()
+            .find(|control| control.key == "context_menu_copy")
+            .unwrap();
+        assert_eq!(context_menu_copy.kind, SettingsNativeControlKind::Toggle);
+        assert_eq!(
+            context_menu_copy
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.field_name),
+            Some("context_menu_copy_enabled")
+        );
+        assert_eq!(
+            context_menu_copy
+                .route
+                .as_ref()
+                .and_then(|route| route.control_id),
+            Some(5100)
+        );
         assert!(control_summaries.iter().any(|control| {
             control.page == SettingsPage::Cloud
                 && control.key == "multi_sync_mode"

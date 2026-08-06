@@ -1187,7 +1187,9 @@ unsafe extern "system" fn wnd_proc(
                 if !st_ptr.is_null() {
                     let st = &mut *st_ptr;
                     match st.pending_paste_kind {
-                        PendingPasteKind::PlainText => platform_input::send_ctrl_v(),
+                        PendingPasteKind::PlainText => {
+                            let _ = platform_input::send_ctrl_v();
+                        }
                         PendingPasteKind::MergeFieldCode => {
                             send_ctrl_f9();
                             platform_input::send_ctrl_v();

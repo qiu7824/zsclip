@@ -4,7 +4,9 @@ use std::sync::{Mutex, OnceLock};
 use crate::platform::gdi as platform_gdi;
 use crate::platform::gdiplus;
 use crate::win_native_style::ui_text_font_family;
-use crate::win_system_ui::{draw_translated_text_block, draw_translated_text_line};
+use crate::win_system_ui::{
+    draw_translated_text_block, draw_translated_text_line, draw_translated_text_line_px,
+};
 
 use windows_sys::Win32::Foundation::RECT;
 
@@ -168,6 +170,32 @@ pub unsafe fn draw_text_ex(
         &mut rc2,
         color,
         size,
+        weight,
+        center,
+        family,
+        TRANSPARENT,
+        0,
+    );
+}
+
+pub unsafe fn draw_text_ex_px(
+    hdc: *mut core::ffi::c_void,
+    text: &str,
+    rc: &RECT,
+    color: u32,
+    pixel_size: i32,
+    bold: bool,
+    center: bool,
+    family: &str,
+) {
+    let weight = if bold { 700 } else { 400 };
+    let mut rc2 = *rc;
+    draw_translated_text_line_px(
+        hdc,
+        text,
+        &mut rc2,
+        color,
+        pixel_size,
         weight,
         center,
         family,

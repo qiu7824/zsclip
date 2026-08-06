@@ -125,15 +125,54 @@ pub(super) unsafe fn handle_search_control_command(
     id: usize,
     notification: u16,
 ) -> bool {
-    if id != IDC_SEARCH as usize || notification != EN_CHANGE_CODE {
+    if id != IDC_SEARCH as usize {
         return false;
     }
-    state.search_text = WindowsMainSearchControlHost::new().search_text(state.search_hwnd);
-    start_flagged_timer(
-        hwnd,
-        ID_TIMER_SEARCH_DEBOUNCE,
-        SEARCH_DEBOUNCE_MS,
-        &mut state.search_debounce_timer,
-    );
-    true
+    match notification {
+        EN_CHANGE_CODE => {
+            let search_text = WindowsMainSearchControlHost::new().search_text(state.search_hwnd);
+            state.search_text = search_text;
+            start_flagged_timer(
+                hwnd,
+                ID_TIMER_SEARCH_DEBOUNCE,
+                SEARCH_DEBOUNCE_MS,
+                &mut state.search_debounce_timer,
+            );
+            true
+        }
+        _ => false,
+    }
+}
+
+pub(super) unsafe fn refresh_search_theme_resources(state: &mut AppState) {
+    if !state.search_brush.is_null() {
+        platform_gdi::delete_object(state.search_brush as _);
+    }
+    state.search_brush = platform_gdi::create_solid_brush(state.theme.control_bg) as _;
+    if !state.search_hwnd.is_null() {
+        platform_gdi::invalidate_rect(state.search_hwnd, null(), 1);
+    }
+}
+
+pub(super) unsafe fn main_search_control_color(
+    hwnd: HWND,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> Option<LRESULT> {
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return None;
+    }
+    let state = &mut *ptr;
+    if lparam as HWND != state.search_hwnd {
+        return None;
+    }
+    if state.search_brush.is_null() {
+        refresh_search_theme_resources(state);
+    }
+    let hdc = wparam as HDC;
+    platform_gdi::set_bk_mode(hdc, 2);
+    platform_gdi::set_bk_color(hdc, state.theme.control_bg);
+    platform_gdi::set_text_color(hdc, state.theme.text);
+    Some(state.search_brush as LRESULT)
 }

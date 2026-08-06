@@ -167,22 +167,26 @@ mod tests {
     #[test]
     fn native_clipboard_capture_inserts_text_and_dedupes() {
         let _guard = db_test_guard();
-        let text = format!(
-            "native capture smoke text {:?}",
-            std::time::SystemTime::now()
-        );
-        TestClipboardHost::set_text(&text);
-        let first =
-            NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
-        assert!(first.inserted);
-        assert!(first.item_id.is_some());
+        crate::db_runtime::with_test_db(|| {
+            let text = format!(
+                "native capture smoke text {:?}",
+                std::time::SystemTime::now()
+            );
+            TestClipboardHost::set_text(&text);
+            let first =
+                NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
+            assert!(first.inserted);
+            assert!(first.item_id.is_some());
 
-        TestClipboardHost::set_text(&text);
-        let duplicate =
-            NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
-        assert!(!duplicate.inserted);
-        assert_eq!(duplicate.reason, "duplicate");
-        assert_eq!(duplicate.item_id, first.item_id);
+            TestClipboardHost::set_text(&text);
+            let duplicate =
+                NativeClipboardCaptureService::capture_current::<TestClipboardHost>(0, "test-host");
+            assert!(!duplicate.inserted);
+            assert_eq!(duplicate.reason, "duplicate");
+            assert_eq!(duplicate.item_id, first.item_id);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

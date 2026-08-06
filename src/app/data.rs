@@ -1,17 +1,51 @@
 use super::prelude::*;
 use crate::platform::gdi as platform_gdi;
-use std::sync::mpsc::{self, Sender};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 struct ItemsPageLoadTask {
     hwnd: isize,
     tab: usize,
     request_seq: u64,
+    app_data_generation: u64,
     query: ItemsQuery,
     cursor: Option<ItemsCursor>,
     reset: bool,
 }
 
-static ITEMS_PAGE_LOAD_SENDER: OnceLock<Sender<ItemsPageLoadTask>> = OnceLock::new();
+#[derive(Default)]
+struct ItemsPageLoadQueue {
+    pending: VecDeque<ItemsPageLoadTask>,
+    worker_running: bool,
+}
+
+impl ItemsPageLoadQueue {
+    fn enqueue(&mut self, task: ItemsPageLoadTask) -> bool {
+        self.pending
+            .retain(|pending| !(pending.hwnd == task.hwnd && pending.tab == task.tab));
+        self.pending.push_back(task);
+        if self.worker_running {
+            false
+        } else {
+            self.worker_running = true;
+            true
+        }
+    }
+
+    fn pop_next(&mut self) -> Option<ItemsPageLoadTask> {
+        let task = self.pending.pop_front();
+        if task.is_none() {
+            self.worker_running = false;
+        }
+        task
+    }
+}
+
+static ITEMS_PAGE_LOAD_QUEUE: OnceLock<Mutex<ItemsPageLoadQueue>> = OnceLock::new();
+static IMAGE_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn items_page_load_queue() -> &'static Mutex<ItemsPageLoadQueue> {
+    ITEMS_PAGE_LOAD_QUEUE.get_or_init(|| Mutex::new(ItemsPageLoadQueue::default()))
+}
 
 struct DbItem {
     id: i64,
@@ -129,49 +163,50 @@ fn collect_image_paths_for_delete(
 }
 
 pub(super) fn db_cleanup_orphan_image_files() -> rusqlite::Result<usize> {
-    let root = data_dir().join("images");
-    if !root.is_dir() {
-        return Ok(0);
-    }
-    let root_canon = root.canonicalize().unwrap_or(root);
-    let referenced_paths = with_db(|conn| {
+    with_db(|conn| {
+        let root = data_dir().join("images");
+        if !root.is_dir() {
+            return Ok(0);
+        }
+        let root_canon = root.canonicalize().unwrap_or(root);
         let mut stmt = conn.prepare(
             "SELECT image_path FROM items WHERE image_path IS NOT NULL AND TRIM(image_path)<>''",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        Ok(rows.filter_map(Result::ok).collect::<Vec<String>>())
-    })?;
+        let referenced_paths = rows.filter_map(Result::ok).collect::<Vec<String>>();
+        drop(stmt);
 
-    let mut referenced = HashSet::<PathBuf>::new();
-    for raw in referenced_paths {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        let path = PathBuf::from(raw);
-        let path_canon = path.canonicalize().unwrap_or(path);
-        if path_canon.starts_with(&root_canon) {
-            referenced.insert(path_canon);
-        }
-    }
-
-    let mut removed = 0;
-    if let Ok(entries) = fs::read_dir(&root_canon) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
+        let mut referenced = HashSet::<PathBuf>::new();
+        for raw in referenced_paths {
+            let raw = raw.trim();
+            if raw.is_empty() {
                 continue;
             }
+            let path = PathBuf::from(raw);
             let path_canon = path.canonicalize().unwrap_or(path);
-            if path_canon.starts_with(&root_canon)
-                && !referenced.contains(&path_canon)
-                && fs::remove_file(&path_canon).is_ok()
-            {
-                removed += 1;
+            if path_canon.starts_with(&root_canon) {
+                referenced.insert(path_canon);
             }
         }
-    }
-    Ok(removed)
+
+        let mut removed = 0;
+        if let Ok(entries) = fs::read_dir(&root_canon) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let path_canon = path.canonicalize().unwrap_or(path);
+                if path_canon.starts_with(&root_canon)
+                    && !referenced.contains(&path_canon)
+                    && fs::remove_file(&path_canon).is_ok()
+                {
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
+    })
 }
 
 fn row_to_clip_item(row: DbItem) -> ClipItem {
@@ -562,8 +597,34 @@ pub(super) fn output_image_path() -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis();
-    base.join(format!("zsclip_{}.png", ts))
+        .as_nanos();
+    let sequence = IMAGE_OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    base.join(format!(
+        "zsclip_{}_{}_{}.png",
+        std::process::id(),
+        ts,
+        sequence
+    ))
+}
+
+fn write_image_bytes_to_file(
+    file: std::fs::File,
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+) -> Option<()> {
+    use std::io::BufWriter;
+
+    let sync_file = file.try_clone().ok()?;
+    let writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(writer, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut png_writer = encoder.write_header().ok()?;
+    png_writer.write_image_data(bytes).ok()?;
+    png_writer.finish().ok()?;
+    sync_file.sync_all().ok()?;
+    Some(())
 }
 
 pub(super) fn write_image_bytes_to_path(
@@ -573,15 +634,12 @@ pub(super) fn write_image_bytes_to_path(
     height: u32,
 ) -> Option<PathBuf> {
     use std::fs::File;
-    use std::io::BufWriter;
 
     let file = File::create(out).ok()?;
-    let writer = BufWriter::new(file);
-    let mut encoder = png::Encoder::new(writer, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png_writer = encoder.write_header().ok()?;
-    png_writer.write_image_data(bytes).ok()?;
+    if write_image_bytes_to_file(file, bytes, width, height).is_none() {
+        let _ = fs::remove_file(out);
+        return None;
+    }
     Some(out.to_path_buf())
 }
 
@@ -590,8 +648,24 @@ pub(super) fn write_image_bytes_to_output_path(
     width: u32,
     height: u32,
 ) -> Option<PathBuf> {
-    let out = output_image_path();
-    write_image_bytes_to_path(&out, bytes, width, height)
+    for _ in 0..8 {
+        let out = output_image_path();
+        let file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        };
+        if write_image_bytes_to_file(file, bytes, width, height).is_some() {
+            return Some(out);
+        }
+        let _ = fs::remove_file(out);
+        return None;
+    }
+    None
 }
 
 pub(super) fn load_image_bytes_from_path(path: &str) -> Option<(Vec<u8>, usize, usize)> {
@@ -670,13 +744,26 @@ fn build_image_thumbnail_rgba(
     })
 }
 
-fn spawn_image_thumbnail_load(hwnd: HWND, item_id: i64, path: String, max_side: usize) {
+fn spawn_image_thumbnail_load(
+    hwnd: HWND,
+    item_id: i64,
+    app_data_generation: u64,
+    path: String,
+    max_side: usize,
+) {
     let hwnd_raw = hwnd as isize;
     std::thread::spawn(move || {
-        let image = load_image_bytes_from_path(&path).and_then(|(bytes, width, height)| {
-            build_image_thumbnail_rgba(&bytes, width, height, max_side)
+        let image = crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
+            load_image_bytes_from_path(&path).and_then(|(bytes, width, height)| {
+                build_image_thumbnail_rgba(&bytes, width, height, max_side)
+            })
+        })
+        .flatten();
+        let payload = Box::new(ImageThumbReadyResult {
+            item_id,
+            app_data_generation,
+            image,
         });
-        let payload = Box::new(ImageThumbReadyResult { item_id, image });
         unsafe {
             let _ = post_boxed_message(hwnd_raw, WM_IMAGE_THUMB_READY, 0, payload);
         }
@@ -697,7 +784,13 @@ pub(super) fn ensure_item_thumbnail_bytes(
         (bytes.clone(), item.image_width, item.image_height)
     } else if let Some(path) = item.image_path.as_ref() {
         if item.id > 0 && state.image_thumb_loading.insert(item.id) {
-            spawn_image_thumbnail_load(state.hwnd, item.id, path.clone(), max_side);
+            spawn_image_thumbnail_load(
+                state.hwnd,
+                item.id,
+                state.app_data_generation,
+                path.clone(),
+                max_side,
+            );
         }
         return None;
     } else {
@@ -719,7 +812,8 @@ fn current_search_date_context() -> SearchDateContext {
     SearchDateContext::from_date(year, month, day)
 }
 
-pub(super) fn db_load_items_page(
+fn db_load_items_page_from_connection(
+    conn: &rusqlite::Connection,
     query: &ItemsQuery,
     cursor: Option<ItemsCursor>,
     limit: usize,
@@ -727,76 +821,75 @@ pub(super) fn db_load_items_page(
     let date_context = current_search_date_context();
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(query.search_text.trim(), date_context);
-    with_db(|conn| {
-        let select_columns = "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at";
-        let mut sql = if near_query.is_some() {
-            format!(
+    let select_columns = "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at";
+    let mut sql = if near_query.is_some() {
+        format!(
                 "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE category=?"
             )
-        } else {
-            format!("SELECT {select_columns} FROM items WHERE category=?")
-        };
-        let mut bind_values = vec![SqlValue::from(query.category)];
+    } else {
+        format!("SELECT {select_columns} FROM items WHERE category=?")
+    };
+    let mut bind_values = vec![SqlValue::from(query.category)];
 
-        if query.group_id > 0 {
-            sql.push_str(" AND group_id=?");
-            bind_values.push(SqlValue::from(query.group_id));
-        }
+    if query.group_id > 0 {
+        sql.push_str(" AND group_id=?");
+        bind_values.push(SqlValue::from(query.group_id));
+    }
 
-        let kind_values = query.kind_filter.db_kinds(query.category);
-        if !kind_values.is_empty() {
-            sql.push_str(" AND kind IN (");
-            for index in 0..kind_values.len() {
-                if index > 0 {
-                    sql.push(',');
-                }
-                sql.push('?');
+    let kind_values = query.kind_filter.db_kinds(query.category);
+    if !kind_values.is_empty() {
+        sql.push_str(" AND kind IN (");
+        for index in 0..kind_values.len() {
+            if index > 0 {
+                sql.push(',');
             }
-            sql.push(')');
-            for kind in kind_values {
-                bind_values.push(SqlValue::from((*kind).to_string()));
-            }
+            sql.push('?');
         }
+        sql.push(')');
+        for kind in kind_values {
+            bind_values.push(SqlValue::from((*kind).to_string()));
+        }
+    }
 
-        for term in search_terms {
-            let like = format!("%{}%", term);
-            sql.push_str(
+    for term in search_terms {
+        let like = format!("%{}%", term);
+        sql.push_str(
                 " AND (LOWER(preview) LIKE ? \
                  OR LOWER(COALESCE(source_app, '')) LIKE ? \
                  OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
                  OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
             );
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like));
-        }
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like));
+    }
 
-        if let Some(app_value) = app_filter {
-            sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
-            bind_values.push(SqlValue::from(format!("%{}%", app_value)));
-        }
+    if let Some(app_value) = app_filter {
+        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
+        bind_values.push(SqlValue::from(format!("%{}%", app_value)));
+    }
 
-        match time_filter {
-            Some(SearchTimeFilter::ExactDay(day)) => {
-                sql.push_str(" AND date(created_at, 'localtime') = ?");
-                bind_values.push(SqlValue::from(days_to_sqlite_date(day)));
-            }
-            Some(SearchTimeFilter::RecentDays(days)) => {
-                let end_day = date_context.current_day;
-                let start_day = end_day - (days.max(1) - 1);
-                sql.push_str(
-                    " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
-                );
-                bind_values.push(SqlValue::from(days_to_sqlite_date(start_day)));
-                bind_values.push(SqlValue::from(days_to_sqlite_date(end_day)));
-            }
-            None => {}
+    match time_filter {
+        Some(SearchTimeFilter::ExactDay(day)) => {
+            sql.push_str(" AND date(created_at, 'localtime') = ?");
+            bind_values.push(SqlValue::from(days_to_sqlite_date(day)));
         }
-
-        if let Some(near_value) = near_query {
-            let like = format!("%{}%", near_value);
+        Some(SearchTimeFilter::RecentDays(days)) => {
+            let end_day = date_context.current_day;
+            let start_day = end_day - (days.max(1) - 1);
             sql.push_str(
+                " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
+            );
+            bind_values.push(SqlValue::from(days_to_sqlite_date(start_day)));
+            bind_values.push(SqlValue::from(days_to_sqlite_date(end_day)));
+        }
+        None => {}
+    }
+
+    if let Some(near_value) = near_query {
+        let like = format!("%{}%", near_value);
+        sql.push_str(
                 "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? \
                  OR LOWER(COALESCE(source_app, '')) LIKE ? \
                  OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
@@ -805,55 +898,78 @@ pub(super) fn db_load_items_page(
                  SELECT id, kind, preview, text_data, source_app, file_paths, image_path, image_width, image_height, pinned, group_id, created_at \
                  FROM base WHERE rn IN (SELECT rn FROM near_rows)",
             );
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like.clone()));
-            bind_values.push(SqlValue::from(like));
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like.clone()));
+        bind_values.push(SqlValue::from(like));
+    }
+
+    if let Some(cursor) = cursor {
+        let pinned = if cursor.pinned { 1_i64 } else { 0_i64 };
+        sql.push_str(" AND (pinned < ? OR (pinned = ? AND id < ?))");
+        bind_values.push(SqlValue::from(pinned));
+        bind_values.push(SqlValue::from(pinned));
+        bind_values.push(SqlValue::from(cursor.id));
+    }
+
+    sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
+    bind_values.push(SqlValue::from(limit.max(1) as i64 + 1));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
+        Ok(DbItem {
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            preview: row.get(2)?,
+            text: row.get(3)?,
+            rich_text_html: None,
+            source_app: row.get(4)?,
+            file_paths: row.get(5)?,
+            image_path: row.get(6)?,
+            image_bytes: None,
+            image_width: row.get(7)?,
+            image_height: row.get(8)?,
+            pinned: row.get(9)?,
+            group_id: row.get(10)?,
+            created_at: row.get(11)?,
+        })
+    })?;
+
+    let mut items: Vec<ClipItem> = rows
+        .filter_map(|row| row.ok().map(row_to_clip_item_summary))
+        .collect();
+    let has_more = items.len() > limit.max(1);
+    if has_more {
+        items.truncate(limit.max(1));
+    }
+    let next_cursor = items.last().map(|item| ItemsCursor {
+        pinned: item.pinned,
+        id: item.id,
+    });
+    Ok((items, next_cursor, has_more))
+}
+
+pub(super) fn db_load_items_page(
+    query: &ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    limit: usize,
+) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
+    with_db(|conn| db_load_items_page_from_connection(conn, query, cursor, limit))
+}
+
+fn db_load_items_page_if_latest(
+    hwnd: isize,
+    tab: usize,
+    request_seq: u64,
+    query: &ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    limit: usize,
+) -> rusqlite::Result<Option<(Vec<ClipItem>, Option<ItemsCursor>, bool)>> {
+    with_db(|conn| {
+        if !page_request_is_latest(hwnd, tab, request_seq) {
+            return Ok(None);
         }
-
-        if let Some(cursor) = cursor {
-            let pinned = if cursor.pinned { 1_i64 } else { 0_i64 };
-            sql.push_str(" AND (pinned < ? OR (pinned = ? AND id < ?))");
-            bind_values.push(SqlValue::from(pinned));
-            bind_values.push(SqlValue::from(pinned));
-            bind_values.push(SqlValue::from(cursor.id));
-        }
-
-        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
-        bind_values.push(SqlValue::from(limit.max(1) as i64 + 1));
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
-            Ok(DbItem {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                preview: row.get(2)?,
-                text: row.get(3)?,
-                rich_text_html: None,
-                source_app: row.get(4)?,
-                file_paths: row.get(5)?,
-                image_path: row.get(6)?,
-                image_bytes: None,
-                image_width: row.get(7)?,
-                image_height: row.get(8)?,
-                pinned: row.get(9)?,
-                group_id: row.get(10)?,
-                created_at: row.get(11)?,
-            })
-        })?;
-
-        let mut items: Vec<ClipItem> = rows
-            .filter_map(|row| row.ok().map(row_to_clip_item_summary))
-            .collect();
-        let has_more = items.len() > limit.max(1);
-        if has_more {
-            items.truncate(limit.max(1));
-        }
-        let next_cursor = items.last().map(|item| ItemsCursor {
-            pinned: item.pinned,
-            id: item.id,
-        });
-        Ok((items, next_cursor, has_more))
+        db_load_items_page_from_connection(conn, query, cursor, limit).map(Some)
     })
 }
 
@@ -874,6 +990,7 @@ pub(super) fn spawn_items_page_load(
     hwnd: HWND,
     tab: usize,
     request_seq: u64,
+    app_data_generation: u64,
     query: ItemsQuery,
     cursor: Option<ItemsCursor>,
     reset: bool,
@@ -884,65 +1001,84 @@ pub(super) fn spawn_items_page_load(
         hwnd: hwnd_value,
         tab,
         request_seq,
+        app_data_generation,
         query,
         cursor,
         reset,
     };
-    let sender = ITEMS_PAGE_LOAD_SENDER.get_or_init(|| {
-        let (sender, receiver) = mpsc::channel::<ItemsPageLoadTask>();
-        std::thread::Builder::new()
-            .name("zsclip-items-loader".to_string())
-            .spawn(move || {
-                while let Ok(task) = receiver.recv() {
-                    if !page_request_is_latest(task.hwnd, task.tab, task.request_seq) {
-                        continue;
-                    }
-                    let result = match db_load_items_page(&task.query, task.cursor, ITEMS_PAGE_SIZE)
-                    {
-                        Ok((items, next_cursor, has_more)) => PageLoadResult {
-                            hwnd: task.hwnd,
-                            tab: task.tab,
-                            request_seq: task.request_seq,
-                            query: task.query,
-                            reset: task.reset,
-                            items,
-                            next_cursor,
-                            has_more,
-                            error: None,
-                        },
-                        Err(err) => PageLoadResult {
-                            hwnd: task.hwnd,
-                            tab: task.tab,
-                            request_seq: task.request_seq,
-                            query: task.query,
-                            reset: task.reset,
-                            items: Vec::new(),
-                            next_cursor: task.cursor,
-                            has_more: false,
-                            error: Some(err.to_string()),
-                        },
-                    };
+    let start_worker = items_page_load_queue()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .enqueue(task);
+    if start_worker {
+        std::thread::spawn(run_items_page_load_worker);
+    }
+}
 
-                    if page_request_is_latest(task.hwnd, task.tab, task.request_seq)
-                        && platform_window::is_window_alive(task.hwnd)
-                    {
-                        if let Ok(mut queue) = page_load_results().lock() {
-                            queue.push_back(result);
-                        }
-                        platform_window::post_message(task.hwnd, WM_ITEMS_PAGE_READY, 0, 0);
-                    }
-                }
+fn run_items_page_load_worker() {
+    loop {
+        let task = items_page_load_queue()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pop_next();
+        let Some(task) = task else {
+            return;
+        };
+        let loaded =
+            crate::db_runtime::with_shared_app_data_generation(task.app_data_generation, || {
+                db_load_items_page_if_latest(
+                    task.hwnd,
+                    task.tab,
+                    task.request_seq,
+                    &task.query,
+                    task.cursor,
+                    ITEMS_PAGE_SIZE,
+                )
             })
-            .expect("failed to start items page loader");
-        sender
-    });
-    let _ = sender.send(task);
+            .unwrap_or(Ok(None));
+        let result = match loaded {
+            Ok(Some((items, next_cursor, has_more))) => PageLoadResult {
+                hwnd: task.hwnd,
+                tab: task.tab,
+                request_seq: task.request_seq,
+                app_data_generation: task.app_data_generation,
+                query: task.query,
+                reset: task.reset,
+                items,
+                next_cursor,
+                has_more,
+                error: None,
+            },
+            Ok(None) => continue,
+            Err(err) => PageLoadResult {
+                hwnd: task.hwnd,
+                tab: task.tab,
+                request_seq: task.request_seq,
+                app_data_generation: task.app_data_generation,
+                query: task.query,
+                reset: task.reset,
+                items: Vec::new(),
+                next_cursor: task.cursor,
+                has_more: false,
+                error: Some(err.to_string()),
+            },
+        };
+
+        if page_request_is_latest(task.hwnd, task.tab, task.request_seq)
+            && platform_window::is_window_alive(task.hwnd)
+        {
+            if let Ok(mut queue) = page_load_results().lock() {
+                queue.push_back(result);
+            }
+            platform_window::post_message(task.hwnd, WM_ITEMS_PAGE_READY, 0, 0);
+        }
+    }
 }
 
 pub(super) fn spawn_startup_data_reconcile(hwnd: HWND, keep_duplicates: bool) {
     let hwnd_value = hwnd as isize;
     std::thread::spawn(move || {
-        let deleted = db_reconcile_dedupe_signatures(0, keep_duplicates).unwrap_or(0);
+        let deleted = db_reconcile_dedupe_signatures_impl(0, keep_duplicates).unwrap_or(0);
         if platform_window::is_window_alive(hwnd_value) {
             platform_window::post_message(hwnd_value, WM_STARTUP_DATA_RECONCILED, deleted, 0);
         }
@@ -950,12 +1086,22 @@ pub(super) fn spawn_startup_data_reconcile(hwnd: HWND, keep_duplicates: bool) {
 }
 
 pub(super) unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
+    let expected_generation = state.app_data_generation;
+    let _ = crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        apply_ready_page_loads_locked(hwnd, state);
+    });
+}
+
+unsafe fn apply_ready_page_loads_locked(hwnd: HWND, state: &mut AppState) {
     let mut changed = false;
     if let Ok(mut queue) = page_load_results().lock() {
         let mut pending = VecDeque::new();
         while let Some(result) = queue.pop_front() {
             if result.hwnd != hwnd as isize {
                 pending.push_back(result);
+                continue;
+            }
+            if result.app_data_generation != state.app_data_generation {
                 continue;
             }
             changed |= state.apply_page_load_result(result);
@@ -1219,72 +1365,78 @@ pub(super) fn db_reconcile_dedupe_signatures(
     category: i64,
     keep_duplicates: bool,
 ) -> rusqlite::Result<usize> {
-    let rows = with_db(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, kind, preview, \
-             CASE WHEN COALESCE(signature, '')='' THEN text_data ELSE NULL END as text_data, \
-             COALESCE(source_app, '') as source_app, \
-             CASE WHEN COALESCE(signature, '')='' THEN file_paths ELSE NULL END as file_paths, \
-             CASE WHEN COALESCE(signature, '')='' THEN image_data ELSE NULL END as image_data, \
-             CASE WHEN COALESCE(signature, '')='' THEN image_path ELSE NULL END as image_path, \
-             image_width, image_height, pinned, group_id, \
-             COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
-             FROM items WHERE category=? ORDER BY id DESC",
-        )?;
-        let mapped = stmt.query_map(params![category], |row| {
-            let item = row_to_clip_item(DbItem {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                preview: row.get(2)?,
-                text: row.get(3)?,
-                rich_text_html: None,
-                source_app: row.get(4)?,
-                file_paths: row.get(5)?,
-                image_bytes: row.get(6)?,
-                image_path: row.get(7)?,
-                image_width: row.get(8)?,
-                image_height: row.get(9)?,
-                pinned: row.get(10)?,
-                group_id: row.get(11)?,
-                created_at: row.get(12)?,
-            });
-            Ok((item.id, item.pinned, row.get::<_, String>(13)?, item))
-        })?;
-        Ok(mapped.filter_map(Result::ok).collect::<Vec<_>>())
-    })?;
+    db_reconcile_dedupe_signatures_impl(category, keep_duplicates)
+}
 
-    let mut updates = Vec::<(i64, String)>::new();
-    let mut groups = HashMap::<String, (Vec<i64>, Vec<i64>)>::new();
-    for (id, pinned, stored_signature, item) in rows {
-        let signature = dedupe_signature_for_item(&item, &stored_signature);
-        if signature.trim().is_empty() {
-            continue;
-        }
-        let stored = stored_signature.trim();
-        if stored != signature {
-            updates.push((id, signature.clone()));
-        }
-        let entry = groups.entry(signature).or_default();
-        if pinned {
-            entry.0.push(id);
-        } else {
-            entry.1.push(id);
-        }
-    }
-
-    let mut delete_ids = Vec::<i64>::new();
-    if !keep_duplicates {
-        for (_signature, (pinned_ids, nonpinned_ids)) in groups {
-            if !pinned_ids.is_empty() {
-                delete_ids.extend(nonpinned_ids);
-            } else if nonpinned_ids.len() > 1 {
-                delete_ids.extend(nonpinned_ids.into_iter().skip(1));
+fn db_reconcile_dedupe_signatures_impl(
+    category: i64,
+    keep_duplicates: bool,
+) -> rusqlite::Result<usize> {
+    let deleted = with_db_mut(|conn| {
+        let rows = {
+            let mut stmt = conn.prepare(
+                "SELECT id, kind, preview, \
+                 CASE WHEN COALESCE(signature, '')='' THEN text_data ELSE NULL END as text_data, \
+                 COALESCE(source_app, '') as source_app, \
+                 CASE WHEN COALESCE(signature, '')='' THEN file_paths ELSE NULL END as file_paths, \
+                 CASE WHEN COALESCE(signature, '')='' THEN image_data ELSE NULL END as image_data, \
+                 CASE WHEN COALESCE(signature, '')='' THEN image_path ELSE NULL END as image_path, \
+                 image_width, image_height, pinned, group_id, \
+                 COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
+                 FROM items WHERE category=? ORDER BY id DESC",
+            )?;
+            let mapped = stmt.query_map(params![category], |row| {
+                let item = row_to_clip_item(DbItem {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    preview: row.get(2)?,
+                    text: row.get(3)?,
+                    rich_text_html: None,
+                    source_app: row.get(4)?,
+                    file_paths: row.get(5)?,
+                    image_bytes: row.get(6)?,
+                    image_path: row.get(7)?,
+                    image_width: row.get(8)?,
+                    image_height: row.get(9)?,
+                    pinned: row.get(10)?,
+                    group_id: row.get(11)?,
+                    created_at: row.get(12)?,
+                });
+                Ok((item.id, item.pinned, row.get::<_, String>(13)?, item))
+            })?;
+            mapped.filter_map(Result::ok).collect::<Vec<_>>()
+        };
+        let mut updates = Vec::<(i64, String)>::new();
+        let mut groups = HashMap::<String, (Vec<i64>, Vec<i64>)>::new();
+        for (id, pinned, stored_signature, item) in rows {
+            let signature = dedupe_signature_for_item(&item, &stored_signature);
+            if signature.trim().is_empty() {
+                continue;
+            }
+            let stored = stored_signature.trim();
+            if stored != signature {
+                updates.push((id, signature.clone()));
+            }
+            let entry = groups.entry(signature).or_default();
+            if pinned {
+                entry.0.push(id);
+            } else {
+                entry.1.push(id);
             }
         }
-    }
 
-    let mut deleted_image_paths = Vec::<String>::new();
-    with_db_mut(|conn| {
+        let mut delete_ids = Vec::<i64>::new();
+        if !keep_duplicates {
+            for (_signature, (pinned_ids, nonpinned_ids)) in groups {
+                if !pinned_ids.is_empty() {
+                    delete_ids.extend(nonpinned_ids);
+                } else if nonpinned_ids.len() > 1 {
+                    delete_ids.extend(nonpinned_ids.into_iter().skip(1));
+                }
+            }
+        }
+
+        let mut deleted_image_paths = Vec::<String>::new();
         let tx = conn.unchecked_transaction()?;
         for (id, signature) in &updates {
             tx.execute(
@@ -1301,11 +1453,12 @@ pub(super) fn db_reconcile_dedupe_signatures(
             tx.execute("DELETE FROM items WHERE id=?", params![id])?;
         }
         tx.commit()?;
-        Ok(())
+        remove_stored_image_files(deleted_image_paths);
+        Ok(delete_ids.len())
     })?;
-    remove_stored_image_files(deleted_image_paths);
+
     let _ = db_cleanup_orphan_image_files();
-    Ok(delete_ids.len())
+    Ok(deleted)
 }
 
 pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
@@ -1579,6 +1732,14 @@ pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> 
 }
 
 pub(super) fn reload_state_from_db(state: &mut AppState) -> bool {
+    let expected_generation = state.app_data_generation;
+    crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        reload_state_from_db_locked(state)
+    })
+    .unwrap_or(false)
+}
+
+fn reload_state_from_db_locked(state: &mut AppState) -> bool {
     ensure_db();
     let mut settings_changed = false;
     state.clear_payload_cache();
@@ -1621,6 +1782,24 @@ pub(super) fn reload_state_from_db(state: &mut AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn page_load_task(hwnd: isize, tab: usize, request_seq: u64) -> ItemsPageLoadTask {
+        ItemsPageLoadTask {
+            hwnd,
+            tab,
+            request_seq,
+            app_data_generation: crate::db_runtime::current_app_data_generation(),
+            query: ItemsQuery {
+                category: tab as i64,
+                group_id: 0,
+                search_text: format!("request-{request_seq}"),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
+            },
+            cursor: None,
+            reset: true,
+        }
+    }
 
     fn insert_item(
         category: i64,
@@ -1702,6 +1881,50 @@ mod tests {
             assert_eq!(
                 returned,
                 ids[1..=7].iter().rev().copied().collect::<Vec<_>>()
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn item_page_load_queue_coalesces_pending_requests_and_stops_when_empty() {
+        let mut queue = ItemsPageLoadQueue::default();
+
+        assert!(queue.enqueue(page_load_task(10, 0, 1)));
+        assert!(!queue.enqueue(page_load_task(20, 0, 1)));
+        assert!(!queue.enqueue(page_load_task(10, 0, 2)));
+        assert_eq!(queue.pending.len(), 2);
+
+        let other_window = queue.pop_next().expect("other window remains queued");
+        assert_eq!((other_window.hwnd, other_window.request_seq), (20, 1));
+        let replacement = queue.pop_next().expect("latest replacement remains queued");
+        assert_eq!((replacement.hwnd, replacement.request_seq), (10, 2));
+        assert!(queue.worker_running);
+        assert!(queue.pop_next().is_none());
+        assert!(!queue.worker_running);
+    }
+
+    #[test]
+    fn stale_page_request_is_skipped_after_database_access_is_acquired() {
+        crate::db_runtime::with_test_db(|| {
+            let item_id = insert_item(0, "text", "latest", 0, "2026-07-01 10:00:00")?;
+            let query = ItemsQuery {
+                category: 0,
+                group_id: 0,
+                search_text: String::new(),
+                kind_filter: ClipKindFilter::All,
+                near_query: None,
+            };
+            let hwnd = 9_991_337;
+            mark_latest_page_request(hwnd, 0, 2);
+
+            assert!(db_load_items_page_if_latest(hwnd, 0, 1, &query, None, 20)?.is_none());
+            let (items, _, _) = db_load_items_page_if_latest(hwnd, 0, 2, &query, None, 20)?
+                .expect("latest request executes its SQL query");
+            assert_eq!(
+                items.iter().map(|item| item.id).collect::<Vec<_>>(),
+                vec![item_id]
             );
             Ok(())
         })

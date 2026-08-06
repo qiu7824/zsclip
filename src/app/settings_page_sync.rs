@@ -33,7 +33,8 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                 );
             }
             settings_sync_pos_fields_enabled(st);
-            let sound_enabled = st.draft.paste_success_sound_enabled;
+            let sound_enabled =
+                st.draft.copy_success_sound_enabled || st.draft.paste_success_sound_enabled;
             if !st.cb_paste_sound.is_null() {
                 settings_set_text(
                     st.cb_paste_sound,

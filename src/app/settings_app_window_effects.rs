@@ -2,10 +2,20 @@ use super::prelude::*;
 use crate::platform::gdi as platform_gdi;
 
 pub(super) unsafe fn settings_refresh_windows_after_commit(
-    st: &SettingsWndState,
+    st: &mut SettingsWndState,
     app: &mut AppState,
     baseline: &SettingsAppEffectBaseline,
 ) {
+    if baseline.dark_mode_enabled != app.settings.dark_mode_enabled {
+        platform_appearance::set_dark_mode_enabled(app.settings.dark_mode_enabled);
+        platform_appearance::init_dark_mode_for_process();
+        app.theme = Theme::default();
+        refresh_search_theme_resources(app);
+        WindowsMainWindowHost::new(Some(wnd_proc)).apply_main_window_appearance(st.parent_hwnd);
+        settings_refresh_theme_resources(st);
+        platform_appearance::apply_dark_mode_to_window(app.settings_hwnd);
+        repaint_settings_window(app.settings_hwnd, true);
+    }
     if baseline.edge_auto_hide && !app.settings.edge_auto_hide {
         restore_edge_hidden_window(st.parent_hwnd, app);
     } else if !baseline.edge_auto_hide

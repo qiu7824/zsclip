@@ -11878,9 +11878,22 @@ mod tests {
 
         let paste = MainAsyncEvent::ImagePaste(crate::app_core::ImagePasteReadyResult {
             image: Some((vec![255, 0, 0, 255], 1, 1)),
+            generation: 3,
+            app_data_generation: 5,
+            item_id: 7,
+            context: crate::app_core::ImagePasteRequestContext::MainList,
             target: NativeWindowToken(7),
             hide_main: true,
             backspaces: 2,
+            completion: crate::app_core::main_paste_completion_plan(
+                crate::app_core::MainPasteCompletionKind::AsyncImage,
+                crate::app_core::MainPasteCompletionInput {
+                    item_id: 7,
+                    move_pasted_item_to_top: true,
+                    click_hide: true,
+                    paste_success_sound_enabled: false,
+                },
+            ),
         });
         assert_eq!(
             model.accept_async_event(&paste),
@@ -11893,6 +11906,7 @@ mod tests {
         );
 
         let translate = MainAsyncEvent::TextTranslate(crate::app_core::TextOperationReadyResult {
+            app_data_generation: 5,
             text: Some("translated".to_string()),
             error: None,
         });
@@ -12443,6 +12457,7 @@ mod tests {
         assert_eq!(application.background_tasks().lan_refresh_generation(), 1);
         let thumbnail = MainAsyncEvent::ImageThumbnail(crate::app_core::ImageThumbReadyResult {
             item_id: 9,
+            app_data_generation: 5,
             image: None,
         });
         assert_eq!(
@@ -12455,6 +12470,7 @@ mod tests {
         assert_eq!(application.background_tasks().cached_thumbnail_ids(), &[9]);
         assert_eq!(application.clip_payloads().cached_thumbnail_ids(), &[9]);
         let text = MainAsyncEvent::TextTranslate(crate::app_core::TextOperationReadyResult {
+            app_data_generation: 5,
             text: Some("done".to_string()),
             error: None,
         });
@@ -14443,6 +14459,7 @@ mod tests {
         let row_plan = main_row_menu_plan(MainRowMenuInput {
             selected_count: 1,
             has_unpinned: true,
+            context_menu_copy_enabled: true,
             current_kind: ClipKind::Text,
             grouping_enabled: true,
             current_can_ocr: false,

@@ -175,6 +175,7 @@ pub(crate) struct MainRowAiCapabilityPlan {
 pub(crate) struct MainRowMenuInput {
     pub(crate) selected_count: usize,
     pub(crate) has_unpinned: bool,
+    pub(crate) context_menu_copy_enabled: bool,
     pub(crate) current_kind: ClipKind,
     pub(crate) grouping_enabled: bool,
     pub(crate) current_can_ocr: bool,
@@ -329,6 +330,11 @@ pub(crate) fn main_row_menu_plan(input: MainRowMenuInput) -> MainRowMenuPlan {
         return MainRowMenuPlan { entries };
     }
 
+    if input.context_menu_copy_enabled {
+        push_action(&mut entries, MainRowMenuAction::Copy, true);
+        entries.push(MainRowMenuEntry::Separator);
+    }
+
     match input.current_kind {
         ClipKind::Image => {
             push_action(&mut entries, MainRowMenuAction::Sticker, true);
@@ -418,7 +424,8 @@ pub(crate) fn main_row_menu_action_label(
     input: MainRowMenuLabelInput,
 ) -> &'static str {
     match action {
-        MainRowMenuAction::Copy => "合并复制",
+        MainRowMenuAction::Copy if input.selected_count > 1 => "合并复制",
+        MainRowMenuAction::Copy => "复制",
         MainRowMenuAction::Pin if input.selected_count > 1 && input.has_unpinned => "置顶所选",
         MainRowMenuAction::Pin if input.has_unpinned => "置顶",
         MainRowMenuAction::Pin => "取消置顶",
@@ -2383,6 +2390,7 @@ pub(crate) struct MainHoverTarget {
     pub(crate) scrollbar: bool,
     pub(crate) scroll_to_top: bool,
     pub(crate) row: i32,
+    pub(crate) quick_delete_row: i32,
 }
 
 impl Default for MainHoverTarget {
@@ -2393,6 +2401,7 @@ impl Default for MainHoverTarget {
             scrollbar: false,
             scroll_to_top: false,
             row: -1,
+            quick_delete_row: -1,
         }
     }
 }
@@ -2409,6 +2418,7 @@ impl MainHoverTarget {
             },
             scroll_to_top: false,
             row: -1,
+            quick_delete_row: -1,
         };
         MainHoverClearTransition {
             next,
@@ -2720,6 +2730,7 @@ pub(crate) struct MainRowRender {
 pub(crate) struct MainRowContentInput {
     pub(crate) pinned: bool,
     pub(crate) show_delete: bool,
+    pub(crate) delete_hovered: bool,
     pub(crate) show_preview: bool,
 }
 
@@ -2905,6 +2916,16 @@ impl MainUiLayout {
             search_w: scale(self.search_w, dpi),
             search_h: scale(self.search_h, dpi),
         }
+    }
+
+    pub(crate) fn with_app_icon_visible(mut self, visible: bool) -> Self {
+        if !visible {
+            let right = self.search_left + self.search_w;
+            let left = self.app_icon_rect().left;
+            self.search_left = left;
+            self.search_w = (right - left).max(20);
+        }
+        self
     }
 
     pub(crate) fn list_view_height(self) -> i32 {
@@ -3151,8 +3172,16 @@ impl MainUiLayout {
             });
             paint_commands.push(MainPaintCommand::RoundRect {
                 rect: rect.inflate(2, 2),
-                fill: MainPaintFill::Theme(MainThemeRole::Surface),
-                stroke: Some(MainThemeRole::Stroke),
+                fill: MainPaintFill::Theme(if input.delete_hovered {
+                    MainThemeRole::ButtonHover
+                } else {
+                    MainThemeRole::Surface
+                }),
+                stroke: Some(if input.delete_hovered {
+                    MainThemeRole::Accent
+                } else {
+                    MainThemeRole::Stroke
+                }),
                 radius: 10,
             });
         }
@@ -3733,6 +3762,11 @@ impl MainUiLayout {
         } else {
             self.hit_test_row(x, y, filtered_len, scroll_y)
         };
+        target.quick_delete_row = self
+            .quick_action_rect(target.row, filtered_len, scroll_y, 0)
+            .filter(|rect| rect.contains(x, y))
+            .map(|_| target.row)
+            .unwrap_or(-1);
 
         target
     }
@@ -4085,6 +4119,17 @@ mod tests {
     }
 
     #[test]
+    fn hiding_app_icon_expands_search_box_to_the_left() {
+        for dpi in [96, 120, 144, 192] {
+            let visible = MainUiLayout::zsclip().scaled(dpi);
+            let hidden = visible.with_app_icon_visible(false);
+            assert_eq!(hidden.search_rect().left, visible.app_icon_rect().left);
+            assert_eq!(hidden.search_rect().right, visible.search_rect().right);
+            assert!(hidden.search_rect().width() > visible.search_rect().width());
+        }
+    }
+
+    #[test]
     fn main_pointer_down_state_plan_describes_press_state_without_host_actions() {
         let layout = test_layout();
         assert_eq!(
@@ -4190,8 +4235,28 @@ mod tests {
         let hover = row_hover.hover.unwrap();
         assert_eq!(hover.next.row, 1);
         assert_eq!(hover.next.title_button, "");
+        assert_eq!(hover.next.quick_delete_row, -1);
         assert!(hover.target_changed);
         assert!(hover.row_changed);
+
+        let delete = layout.quick_action_rect(1, 30, 0, 0).unwrap();
+        let delete_hover = layout.pointer_move_transition(
+            delete.left + 1,
+            delete.top + 1,
+            30,
+            0,
+            TitleButtonVisibility::default(),
+            false,
+            hover.next,
+            false,
+            0,
+            0,
+        );
+        let delete_hover = delete_hover.hover.unwrap();
+        assert_eq!(delete_hover.next.row, 1);
+        assert_eq!(delete_hover.next.quick_delete_row, 1);
+        assert!(delete_hover.target_changed);
+        assert!(!delete_hover.row_changed);
 
         let track = layout.scrollbar_track_rect(30).unwrap();
         let scrollbar_hover = layout.pointer_move_transition(
@@ -4237,6 +4302,7 @@ mod tests {
             scrollbar: true,
             scroll_to_top: true,
             row: 3,
+            quick_delete_row: -1,
         };
 
         let leave = current.clear_transition(true);
@@ -4862,6 +4928,7 @@ mod tests {
             MainRowContentInput {
                 pinned: false,
                 show_delete: false,
+                delete_hovered: false,
                 show_preview: false,
             },
         );
@@ -4907,6 +4974,7 @@ mod tests {
         let plan = main_row_menu_plan(MainRowMenuInput {
             selected_count: 3,
             has_unpinned: false,
+            context_menu_copy_enabled: true,
             current_kind: ClipKind::Text,
             grouping_enabled: true,
             current_can_ocr: false,
@@ -4938,6 +5006,33 @@ mod tests {
                 enabled: false
             })
         ));
+
+        let copy_setting_disabled = main_row_menu_plan(MainRowMenuInput {
+            selected_count: 3,
+            has_unpinned: false,
+            context_menu_copy_enabled: false,
+            current_kind: ClipKind::Text,
+            grouping_enabled: true,
+            current_can_ocr: false,
+            current_can_translate: false,
+            current_is_excel: false,
+            quick_search_enabled: false,
+            qr_quick_enabled: false,
+            super_mail_merge_enabled: false,
+            lan_push_available: false,
+        });
+        assert!(menu_actions(&copy_setting_disabled).contains(&Some(MainRowMenuAction::Copy)));
+        assert_eq!(
+            main_row_menu_action_label(
+                MainRowMenuAction::Copy,
+                MainRowMenuLabelInput {
+                    selected_count: 3,
+                    has_unpinned: false,
+                    current_is_dir: false,
+                },
+            ),
+            "合并复制"
+        );
     }
 
     #[test]
@@ -4945,6 +5040,7 @@ mod tests {
         let files = main_row_menu_plan(MainRowMenuInput {
             selected_count: 1,
             has_unpinned: true,
+            context_menu_copy_enabled: true,
             current_kind: ClipKind::Files,
             grouping_enabled: false,
             current_can_ocr: true,
@@ -4956,8 +5052,10 @@ mod tests {
             lan_push_available: true,
         });
         assert_eq!(
-            menu_actions(&files)[..8],
+            menu_actions(&files)[..10],
             [
+                Some(MainRowMenuAction::Copy),
+                None,
                 Some(MainRowMenuAction::OpenPath),
                 Some(MainRowMenuAction::OpenFolder),
                 Some(MainRowMenuAction::CopyPath),
@@ -4972,6 +5070,7 @@ mod tests {
         let text = main_row_menu_plan(MainRowMenuInput {
             selected_count: 1,
             has_unpinned: true,
+            context_menu_copy_enabled: true,
             current_kind: ClipKind::Text,
             grouping_enabled: true,
             current_can_ocr: false,
@@ -4985,6 +5084,8 @@ mod tests {
         assert_eq!(
             menu_actions(&text),
             vec![
+                Some(MainRowMenuAction::Copy),
+                None,
                 Some(MainRowMenuAction::Edit),
                 Some(MainRowMenuAction::QuickSearch),
                 Some(MainRowMenuAction::TextTranslate),
@@ -4999,6 +5100,22 @@ mod tests {
                 Some(MainRowMenuAction::DeleteUnpinned),
             ]
         );
+
+        let text_without_copy = main_row_menu_plan(MainRowMenuInput {
+            selected_count: 1,
+            has_unpinned: true,
+            context_menu_copy_enabled: false,
+            current_kind: ClipKind::Text,
+            grouping_enabled: true,
+            current_can_ocr: false,
+            current_can_translate: true,
+            current_is_excel: false,
+            quick_search_enabled: true,
+            qr_quick_enabled: true,
+            super_mail_merge_enabled: false,
+            lan_push_available: false,
+        });
+        assert!(!menu_actions(&text_without_copy).contains(&Some(MainRowMenuAction::Copy)));
     }
 
     #[test]
@@ -5008,6 +5125,10 @@ mod tests {
             has_unpinned: true,
             current_is_dir: false,
         };
+        assert_eq!(
+            main_row_menu_action_label(MainRowMenuAction::Copy, single_unpinned),
+            "复制"
+        );
         assert_eq!(
             main_row_menu_action_label(MainRowMenuAction::Pin, single_unpinned),
             "置顶"
@@ -5653,6 +5774,7 @@ mod tests {
             MainRowContentInput {
                 pinned: false,
                 show_delete: false,
+                delete_hovered: false,
                 show_preview: false,
             },
         );
@@ -5680,6 +5802,7 @@ mod tests {
             MainRowContentInput {
                 pinned: true,
                 show_delete: false,
+                delete_hovered: false,
                 show_preview: false,
             },
         );
@@ -5700,6 +5823,7 @@ mod tests {
             MainRowContentInput {
                 pinned: true,
                 show_delete: true,
+                delete_hovered: false,
                 show_preview: true,
             },
         );
@@ -5731,6 +5855,25 @@ mod tests {
                 .map(|command| command.kind)
                 .collect::<Vec<_>>(),
             vec![MainIconKind::Pin, MainIconKind::Delete]
+        );
+
+        let delete_hovered = layout.row_content_plan(
+            &row,
+            MainRowContentInput {
+                pinned: false,
+                show_delete: true,
+                delete_hovered: true,
+                show_preview: false,
+            },
+        );
+        assert_eq!(
+            delete_hovered.paint_commands.first(),
+            Some(&MainPaintCommand::RoundRect {
+                rect: UiRect::new(230, 105, 250, 125),
+                fill: MainPaintFill::Theme(MainThemeRole::ButtonHover),
+                stroke: Some(MainThemeRole::Accent),
+                radius: 10,
+            })
         );
     }
 

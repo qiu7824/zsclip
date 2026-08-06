@@ -1,4 +1,5 @@
 use super::command_protocol::Command;
+use super::main_window::MainPasteCompletionPlan;
 use crate::app_core::native_host_actions::NativeHostClipListItemProjection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,16 +27,110 @@ pub(crate) struct ImageThumbnail {
     pub(crate) height: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImagePasteRequestContext {
+    MainList,
+    VvPopup,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImagePasteHostActivationMode {
+    Activating,
+    NoActivate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImagePasteResultDisposition {
+    ImageUnavailable,
+    ClipboardWriteFailed,
+    TargetUnavailable,
+    Complete,
+}
+
+impl ImagePasteResultDisposition {
+    pub(crate) const fn executes_completion(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+}
+
+pub(crate) fn next_image_paste_generation(latest: u64) -> u64 {
+    let next = latest.wrapping_add(1);
+    if next == 0 {
+        1
+    } else {
+        next
+    }
+}
+
+pub(crate) fn consume_image_paste_generation(pending: &mut Option<u64>, generation: u64) -> bool {
+    if *pending != Some(generation) {
+        return false;
+    }
+    *pending = None;
+    true
+}
+
+pub(crate) fn image_paste_request_context_is_current(
+    context: ImagePasteRequestContext,
+    request_item_id: i64,
+    host_visible: bool,
+    foreground_context_is_current: bool,
+    current_item_id: Option<i64>,
+) -> bool {
+    match context {
+        ImagePasteRequestContext::MainList => {
+            host_visible
+                && foreground_context_is_current
+                && request_item_id > 0
+                && current_item_id == Some(request_item_id)
+        }
+        ImagePasteRequestContext::VvPopup => foreground_context_is_current,
+    }
+}
+
+pub(crate) fn image_paste_foreground_context_is_current(
+    activation_mode: ImagePasteHostActivationMode,
+    host_matches_foreground_root: bool,
+    target_matches_foreground_root: bool,
+) -> bool {
+    match activation_mode {
+        ImagePasteHostActivationMode::Activating => host_matches_foreground_root,
+        ImagePasteHostActivationMode::NoActivate => target_matches_foreground_root,
+    }
+}
+
+pub(crate) fn image_paste_result_disposition(
+    image_available: bool,
+    clipboard_written: bool,
+    target_available: bool,
+) -> ImagePasteResultDisposition {
+    if !image_available {
+        ImagePasteResultDisposition::ImageUnavailable
+    } else if !clipboard_written {
+        ImagePasteResultDisposition::ClipboardWriteFailed
+    } else if !target_available {
+        ImagePasteResultDisposition::TargetUnavailable
+    } else {
+        ImagePasteResultDisposition::Complete
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImagePasteReadyResult {
     pub(crate) image: Option<(Vec<u8>, usize, usize)>,
+    pub(crate) generation: u64,
+    pub(crate) app_data_generation: u64,
+    pub(crate) item_id: i64,
+    pub(crate) context: ImagePasteRequestContext,
     pub(crate) target: NativeWindowToken,
     pub(crate) hide_main: bool,
     pub(crate) backspaces: u8,
+    pub(crate) completion: MainPasteCompletionPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TextOperationReadyResult {
+    pub(crate) app_data_generation: u64,
     pub(crate) text: Option<String>,
     pub(crate) error: Option<String>,
 }
@@ -43,6 +138,7 @@ pub(crate) struct TextOperationReadyResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImageThumbReadyResult {
     pub(crate) item_id: i64,
+    pub(crate) app_data_generation: u64,
     pub(crate) image: Option<ImageThumbnail>,
 }
 

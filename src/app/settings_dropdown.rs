@@ -3,7 +3,7 @@ use super::prelude::*;
 pub(super) unsafe fn open_settings_config_file(st: &SettingsWndState) {
     let pst = get_state_ptr(st.parent_hwnd);
     if !pst.is_null() {
-        save_settings(&(*pst).settings);
+        save_state_settings(&*pst);
     } else if !settings_file().exists() {
         save_settings(&AppSettings::default());
     }

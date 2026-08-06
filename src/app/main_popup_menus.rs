@@ -67,6 +67,7 @@ pub(super) unsafe fn show_row_menu(
             menu: MainRowMenuInput {
                 selected_count,
                 has_unpinned,
+                context_menu_copy_enabled: state.settings.context_menu_copy_enabled,
                 current_kind,
                 grouping_enabled,
                 current_can_ocr,

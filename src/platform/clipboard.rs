@@ -17,6 +17,8 @@ use super::memory;
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
 const MAX_HTML_FORMAT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_CF_UNICODETEXT_BYTES: usize = 100 * 1024 * 1024;
+const MAX_CF_UNICODETEXT_UNITS: usize = MAX_CF_UNICODETEXT_BYTES / size_of::<u16>();
 pub(crate) const CF_TEXT: u32 = 1;
 pub(crate) const CF_BITMAP: u32 = 2;
 pub(crate) const CF_METAFILEPICT: u32 = 3;
@@ -78,8 +80,7 @@ impl ClipboardFormatSnapshot {
 
 impl ClipboardHost for WindowsClipboardHost {
     fn read_text() -> Option<String> {
-        let mut clipboard = Clipboard::new().ok()?;
-        clipboard.get_text().ok()
+        read_cf_unicode_text_bounded(0)
     }
 
     fn write_text(text: &str) -> bool {
@@ -185,6 +186,79 @@ pub(crate) fn owner() -> HWND {
 
 pub(crate) fn sequence_number() -> u32 {
     unsafe { GetClipboardSequenceNumber() }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CfUnicodeTextDecode {
+    Text(String),
+    TooLarge,
+    Unterminated,
+    InvalidUtf16,
+}
+
+fn decode_bounded_cf_unicode_text(units: &[u16], max_units: usize) -> CfUnicodeTextDecode {
+    let scan_len = units.len().min(max_units.saturating_add(1));
+    let Some(nul_index) = units[..scan_len].iter().position(|unit| *unit == 0) else {
+        return if units.len() > max_units {
+            CfUnicodeTextDecode::TooLarge
+        } else {
+            CfUnicodeTextDecode::Unterminated
+        };
+    };
+    if nul_index > max_units {
+        return CfUnicodeTextDecode::TooLarge;
+    }
+    match String::from_utf16(&units[..nul_index]) {
+        Ok(text) => CfUnicodeTextDecode::Text(text),
+        Err(_) => CfUnicodeTextDecode::InvalidUtf16,
+    }
+}
+
+fn clipboard_sequence_matches(expected_sequence: u32) -> bool {
+    expected_sequence == 0 || sequence_number() == expected_sequence
+}
+
+fn read_cf_unicode_text_from_open_clipboard() -> Option<String> {
+    let handle = data_handle(CF_UNICODETEXT);
+    if handle.is_null() {
+        return None;
+    }
+    let unit_count = memory::global_size(handle) / size_of::<u16>();
+    if unit_count == 0 {
+        return None;
+    }
+    let locked = memory::global_lock(handle);
+    if locked.is_null() {
+        return None;
+    }
+    let scan_units = unit_count.min(MAX_CF_UNICODETEXT_UNITS.saturating_add(1));
+    let units = unsafe { std::slice::from_raw_parts(locked as *const u16, scan_units) };
+    let decoded = decode_bounded_cf_unicode_text(units, MAX_CF_UNICODETEXT_UNITS);
+    memory::global_unlock(handle);
+    match decoded {
+        CfUnicodeTextDecode::Text(text) => Some(text),
+        CfUnicodeTextDecode::TooLarge
+        | CfUnicodeTextDecode::Unterminated
+        | CfUnicodeTextDecode::InvalidUtf16 => None,
+    }
+}
+
+fn read_cf_unicode_text_bounded(expected_sequence: u32) -> Option<String> {
+    if !clipboard_sequence_matches(expected_sequence) || !open(core::ptr::null_mut()) {
+        return None;
+    }
+    let text = if clipboard_sequence_matches(expected_sequence) {
+        read_cf_unicode_text_from_open_clipboard()
+    } else {
+        None
+    };
+    let sequence_unchanged = clipboard_sequence_matches(expected_sequence);
+    close();
+    sequence_unchanged.then_some(text).flatten()
+}
+
+pub(crate) fn read_text_for_sequence(expected_sequence: u32) -> Option<String> {
+    read_cf_unicode_text_bounded(expected_sequence)
 }
 
 fn format_name_string(format: u32) -> Option<String> {
@@ -744,6 +818,41 @@ mod tests {
             Some("https://example.test/中文")
         );
         assert_eq!(decode_text_bytes(&[], false), None);
+    }
+
+    #[test]
+    fn bounded_unicode_clipboard_text_stops_at_first_nul() {
+        let mut units: Vec<u16> = "短文本".encode_utf16().collect();
+        units.push(0);
+        units.extend(std::iter::repeat(b'X' as u16).take(1024));
+        assert_eq!(
+            decode_bounded_cf_unicode_text(&units, 16),
+            CfUnicodeTextDecode::Text("短文本".to_string())
+        );
+    }
+
+    #[test]
+    fn bounded_unicode_clipboard_text_rejects_oversized_unterminated_data() {
+        assert_eq!(
+            decode_bounded_cf_unicode_text(&[b'A' as u16; 9], 8),
+            CfUnicodeTextDecode::TooLarge
+        );
+        assert_eq!(
+            decode_bounded_cf_unicode_text(&[b'A' as u16; 8], 8),
+            CfUnicodeTextDecode::Unterminated
+        );
+    }
+
+    #[test]
+    fn bounded_unicode_clipboard_text_requires_valid_utf16() {
+        assert_eq!(
+            decode_bounded_cf_unicode_text(&[0xD800, 0], 8),
+            CfUnicodeTextDecode::InvalidUtf16
+        );
+        assert_eq!(
+            decode_bounded_cf_unicode_text(&[0], 0),
+            CfUnicodeTextDecode::Text(String::new())
+        );
     }
 
     #[test]

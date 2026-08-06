@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "0.9.9.8"
+        default: "0.9.9.9"
   push:
     branches:
       - main
@@ -20,9 +20,78 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.version.outputs.release_version }}
+      mac_short_version: ${{ steps.version.outputs.mac_short_version }}
+      mac_bundle_version: ${{ steps.version.outputs.mac_bundle_version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve and validate release version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t app_versions < <(sed -nE 's/^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?const[[:space:]]+APP_VERSION:[[:space:]]*&str[[:space:]]*=[[:space:]]*"([^"]+)";[[:space:]]*$/\3/p' src/app_version.rs)
+          if [ "${#app_versions[@]}" -ne 1 ]; then
+            echo "::error title=Invalid APP_VERSION::Expected exactly one APP_VERSION declaration in src/app_version.rs"
+            exit 1
+          fi
+          app_version="${app_versions[0]}"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release_version="$INPUT_VERSION"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            release_version="$REF_NAME"
+          else
+            release_version="$app_version"
+          fi
+
+          if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid APP_VERSION::$app_version is not a four-part numeric version"
+            exit 1
+          fi
+          if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Invalid release version::$release_version is not a four-part numeric version"
+            exit 1
+          fi
+          if [ "$release_version" != "$app_version" ]; then
+            echo "::error title=Release version mismatch::Requested $release_version but APP_VERSION is $app_version"
+            exit 1
+          fi
+
+          IFS='.' read -r version_major version_minor version_patch version_revision <<< "$release_version"
+          version_major=$((10#$version_major))
+          version_minor=$((10#$version_minor))
+          version_patch=$((10#$version_patch))
+          version_revision=$((10#$version_revision))
+          mac_bundle_epoch=$((version_major * 100 + version_minor + 1))
+          if (( mac_bundle_epoch > 9999 || version_patch > 99 || version_revision > 99 )); then
+            echo "::error title=Unsupported macOS version::$release_version cannot be represented as a legal three-part CFBundleVersion"
+            exit 1
+          fi
+          mac_short_version="$version_major.$version_minor.$version_patch"
+          mac_bundle_version="$mac_bundle_epoch.$version_patch.$version_revision"
+
+          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
+          echo "mac_short_version=$mac_short_version" >> "$GITHUB_OUTPUT"
+          echo "mac_bundle_version=$mac_bundle_version" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $release_version" >> "$GITHUB_STEP_SUMMARY"
+          echo "macOS versions: short=$mac_short_version, bundle=$mac_bundle_version" >> "$GITHUB_STEP_SUMMARY"
+
   windows:
     name: Windows release package
+    needs: prepare
     runs-on: windows-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
     steps:
       - uses: actions/checkout@v5
       - name: Checkout zsui dependency
@@ -60,8 +129,8 @@ jobs:
           New-Item -ItemType Directory -Force dist\installer-source | Out-Null
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64\剪贴板.exe
           Copy-Item target\release\zsclip.exe dist\installer-source\剪贴板.exe
-          @'
-          剪贴板 0.9.9.8 - Windows
+          $installText = @'
+          剪贴板 __RELEASE_VERSION__ - Windows
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -71,12 +140,14 @@ jobs:
           说明:
           - 当前包是便携版，不写注册表，不包含安装向导。
           - 开机自启、托盘、热键等功能在应用设置里启用。
-          '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
+          '@
+          $installText.Replace('__RELEASE_VERSION__', $env:RELEASE_VERSION) |
+            Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64\INSTALL.txt
           Copy-Item dist\zsclip-windows-x86_64\INSTALL.txt dist\installer-source\INSTALL.txt
           Compress-Archive -Path dist\zsclip-windows-x86_64\* -DestinationPath dist\zsclip-windows-x86_64-portable.zip -Force
           $installerScript = @'
           #define MyAppName "剪贴板"
-          #define MyAppVersion "0.9.9.8"
+          #define MyAppVersion "__RELEASE_VERSION__"
           #define MyAppPublisher "qiu7824"
           #define MyAppURL "https://github.com/qiu7824/zsclip"
           #define MyAppExeName "剪贴板.exe"
@@ -272,6 +343,7 @@ jobs:
             end;
           end;
           '@
+          $installerScript = $installerScript.Replace('__RELEASE_VERSION__', $env:RELEASE_VERSION)
           [System.IO.File]::WriteAllText((Resolve-Path .).Path + '\installer.iss', $installerScript, [System.Text.UTF8Encoding]::new($true))
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss 2>&1 | Tee-Object -FilePath inno-build.log
           if ($LASTEXITCODE -ne 0) {
@@ -300,8 +372,8 @@ jobs:
           Copy-Item target\release\zsclip.exe dist\installer-source-no-lan\剪贴板.exe -Force
           Copy-Item dist\installer-source\INSTALL.txt dist\installer-source-no-lan\INSTALL.txt -Force
           Copy-Item target\release\zsclip.exe dist\zsclip-windows-x86_64-no-lan\剪贴板.exe -Force
-          @'
-          剪贴板 0.9.9.8 - Windows 无局域网同步便携版
+          $noLanInstallText = @'
+          剪贴板 __RELEASE_VERSION__ - Windows 无局域网同步便携版
 
           安装/运行:
           1. 解压此 zip 到你要长期使用的安装目录，例如 D:\剪贴板。
@@ -312,7 +384,9 @@ jobs:
           - 当前包是便携版，不写注册表，不包含安装向导。
           - 此包不包含局域网同步功能，适合不需要扫码绑定/局域网发现的环境。
           - 开机自启、托盘、热键等功能在应用设置里启用。
-          '@ | Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64-no-lan\INSTALL.txt
+          '@
+          $noLanInstallText.Replace('__RELEASE_VERSION__', $env:RELEASE_VERSION) |
+            Set-Content -Encoding UTF8 dist\zsclip-windows-x86_64-no-lan\INSTALL.txt
           Compress-Archive -Path dist\zsclip-windows-x86_64-no-lan\* -DestinationPath dist\zsclip-windows-x86_64-no-lan-portable.zip -Force
           $noLanInstaller = (Get-Content installer.iss -Raw).
             Replace('#define MySourceDir "dist\installer-source"', '#define MySourceDir "dist\installer-source-no-lan"').
@@ -330,14 +404,14 @@ jobs:
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.8-setup.exe
-          path: dist/zsclip-v0.9.9.8-setup.exe
+          name: zsclip-v${{ needs.prepare.outputs.release_version }}-setup.exe
+          path: dist/zsclip-v${{ needs.prepare.outputs.release_version }}-setup.exe
           if-no-files-found: error
       - name: Upload Windows no-lan installer
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.8-setup-no-lan.exe
-          path: dist/zsclip-v0.9.9.8-setup-no-lan.exe
+          name: zsclip-v${{ needs.prepare.outputs.release_version }}-setup-no-lan.exe
+          path: dist/zsclip-v${{ needs.prepare.outputs.release_version }}-setup-no-lan.exe
           if-no-files-found: error
       - name: Upload Windows portable package
         uses: actions/upload-artifact@v7
@@ -354,7 +428,8 @@ jobs:
       - name: Package resource bundle
         shell: pwsh
         run: |
-          $resourceRoot = "dist\zsclip-v0.9.9.8-resources"
+          $resourceName = "zsclip-v$($env:RELEASE_VERSION)-resources"
+          $resourceRoot = "dist\$resourceName"
           if (Test-Path $resourceRoot) {
             Remove-Item -LiteralPath $resourceRoot -Recurse -Force
           }
@@ -369,17 +444,22 @@ jobs:
               Copy-Item -Path $file -Destination $resourceRoot -Force
             }
           }
-          Compress-Archive -Path "$resourceRoot\*" -DestinationPath "dist\zsclip-v0.9.9.8-resources.zip" -Force
+          Compress-Archive -Path "$resourceRoot\*" -DestinationPath "dist\$resourceName.zip" -Force
       - name: Upload resource bundle
         uses: actions/upload-artifact@v7
         with:
-          name: zsclip-v0.9.9.8-resources.zip
-          path: dist/zsclip-v0.9.9.8-resources.zip
+          name: zsclip-v${{ needs.prepare.outputs.release_version }}-resources.zip
+          path: dist/zsclip-v${{ needs.prepare.outputs.release_version }}-resources.zip
           if-no-files-found: error
 
   macos:
     name: macOS release package (${{ matrix.asset_arch }})
+    needs: prepare
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      MAC_SHORT_VERSION: ${{ needs.prepare.outputs.mac_short_version }}
+      MAC_BUNDLE_VERSION: ${{ needs.prepare.outputs.mac_bundle_version }}
     strategy:
       fail-fast: false
       matrix:
@@ -465,21 +545,25 @@ jobs:
             <key>CFBundlePackageType</key>
             <string>APPL</string>
             <key>CFBundleShortVersionString</key>
-            <string>0.9.9.8</string>
+            <string>__MAC_SHORT_VERSION__</string>
             <key>CFBundleVersion</key>
-            <string>0.9.9.8</string>
+            <string>__MAC_BUNDLE_VERSION__</string>
             <key>NSHighResolutionCapable</key>
             <true/>
           </dict>
           </plist>
           PLIST
+          sed -i '' \
+            -e "s/__MAC_SHORT_VERSION__/${MAC_SHORT_VERSION}/g" \
+            -e "s/__MAC_BUNDLE_VERSION__/${MAC_BUNDLE_VERSION}/g" \
+            dist/ZSClip.app/Contents/Info.plist
           codesign --force --deep --sign - dist/ZSClip.app
           codesign --verify --deep --strict dist/ZSClip.app
           mkdir -p dist/dmg-root
           cp -R dist/ZSClip.app dist/dmg-root/ZSClip.app
           ln -s /Applications dist/dmg-root/Applications
           cat > dist/dmg-root/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.8 - macOS ${{ matrix.display_arch }}
+          ZSClip __RELEASE_VERSION__ - macOS ${{ matrix.display_arch }}
 
           安装/运行:
           1. 打开 DMG。
@@ -492,7 +576,8 @@ jobs:
             xattr -dr com.apple.quarantine /Applications/ZSClip.app
           - 全局热键、VV 粘贴等系统级能力可能需要在“系统设置 -> 隐私与安全性”里授权辅助功能/输入监控。
           TXT
-          hdiutil create -volname "ZSClip 0.9.9.8 ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
+          sed -i '' "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" dist/dmg-root/INSTALL.txt
+          hdiutil create -volname "ZSClip ${RELEASE_VERSION} ${{ matrix.asset_arch }}" -srcfolder dist/dmg-root -ov -format UDZO dist/zsclip-macos-${{ matrix.asset_arch }}.dmg
       - name: Upload macOS package
         uses: actions/upload-artifact@v7
         with:
@@ -502,7 +587,10 @@ jobs:
 
   linux:
     name: Linux release package
+    needs: prepare
     runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
     steps:
       - uses: actions/checkout@v5
       - name: Checkout zsui dependency
@@ -569,7 +657,7 @@ jobs:
           Categories=Utility;
           DESKTOP
           cat > dist/zsclip-linux-x86_64/INSTALL.txt <<'TXT'
-          ZSClip 0.9.9.8 - Linux x86_64
+          ZSClip __RELEASE_VERSION__ - Linux x86_64
 
           安装/运行:
           1. 解压: tar -xzf zsclip-linux-x86_64.tar.gz
@@ -583,6 +671,7 @@ jobs:
           - 当前包是便携 tar.gz，不是 deb/AppImage。
           - 托盘、全局热键、VV 粘贴在 Wayland/X11 下可能需要对应桌面环境权限或工具支持。
           TXT
+          sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" dist/zsclip-linux-x86_64/INSTALL.txt
           tar -czf dist/zsclip-linux-x86_64.tar.gz -C dist zsclip-linux-x86_64
           mkdir -p dist/deb/DEBIAN
           mkdir -p dist/deb/usr/bin
@@ -592,7 +681,7 @@ jobs:
           cp dist/zsclip-linux-x86_64/share/applications/zsclip.desktop dist/deb/usr/share/applications/zsclip.desktop
           cat > dist/deb/DEBIAN/control <<'CONTROL'
           Package: zsclip
-          Version: 0.9.9.8
+          Version: __RELEASE_VERSION__
           Section: utils
           Priority: optional
           Architecture: amd64
@@ -600,6 +689,7 @@ jobs:
           Maintainer: ZSClip
           Description: Native clipboard manager with sync features.
           CONTROL
+          sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" dist/deb/DEBIAN/control
           dpkg-deb --build dist/deb dist/zsclip-linux-x86_64.deb
       - name: Upload Linux deb package
         uses: actions/upload-artifact@v7
@@ -616,7 +706,10 @@ jobs:
 
   android:
     name: Android test APK
+    needs: prepare
     runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-java@v4
@@ -644,11 +737,14 @@ jobs:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/')
     needs:
+      - prepare
       - windows
       - macos
       - linux
       - android
     runs-on: ubuntu-latest
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
     permissions:
       contents: write
     steps:
@@ -665,16 +761,20 @@ jobs:
         run: |
           set +e
           cat > release-notes.md <<'NOTES'
-          # ZSClip 0.9.9.8
+          # ZSClip __RELEASE_VERSION__
 
           ## 更新内容
-          - 修复便携版展开搜索后 CPU 占用升高、输入阻塞和搜索框按钮间距过小的问题。
-          - 优化窗口隐藏、内存回收与再次显示流程，减少弹出迟缓、白屏和悬停预览闪烁。
-          - 增强单击历史记录后的目标窗口焦点恢复，在前台状态短暂不稳定时自动重试粘贴。
-          - 设置导航统一使用 ZSUI 语义图标映射，保持各页面图标含义一致。
+          - 窗口隐藏后约 800ms 回收内存，并移除常驻搜索加载线程。
+          - 修复 WebDAV 恢复可能失败、读取旧数据或产生损坏结果的问题。
+          - 修复 LAN 同步将服务器拒绝响应误判为成功的问题。
+          - 修复异步图片粘贴失败时窗口消失但未粘贴，以及剪贴板写入失败吞掉下一次真实复制的问题。
+          - 修复 VV 模式在英文输入状态下未替换 `vv`，并完善高 DPI 缩放与弹窗定位。
+          - 设置新增明暗主题、复制成功提示音、软件图标显示和普通记录右键“复制”开关。
+          - 隐藏软件图标时自动扩展搜索框，优化暗色搜索框配色与删除按钮悬停反馈。
+          - 移除旧版运行日志记录。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v0.9.9.8-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v0.9.9.8-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v__RELEASE_VERSION__-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v__RELEASE_VERSION__-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
           - Android 测试包: 下载 `zsclip-android-test.apk`。
           - macOS 测试包: Apple Silicon 下载 `zsclip-macos-arm64.dmg`，Intel 下载 `zsclip-macos-x86_64.dmg`。
           - Linux 测试包: Debian/Ubuntu 可试用 `zsclip-linux-x86_64.deb`，其他发行版可下载 `zsclip-linux-x86_64.tar.gz`。
@@ -683,6 +783,28 @@ jobs:
           - Windows 同时提供完整安装器、无局域网同步安装器、便携包和无局域网同步便携包。
           - macOS/Linux 当前仍是测试包，未完成正式验收前不要按 Windows 正式版标准承诺稳定性。
           NOTES
+          sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" release-notes.md
+
+          setup_asset="zsclip-v${RELEASE_VERSION}-setup.exe"
+          no_lan_setup_asset="zsclip-v${RELEASE_VERSION}-setup-no-lan.exe"
+          resource_asset="zsclip-v${RELEASE_VERSION}-resources.zip"
+          required_assets=(
+            "$setup_asset"
+            "$no_lan_setup_asset"
+            zsclip-windows-x86_64-portable.zip
+            zsclip-windows-x86_64-no-lan-portable.zip
+            "$resource_asset"
+            zsclip-android-test.apk
+            zsclip-macos-arm64.dmg
+            zsclip-macos-x86_64.dmg
+            zsclip-linux-x86_64.deb
+            zsclip-linux-x86_64.tar.gz
+          )
+          release_asset_paths=()
+          for asset in "${required_assets[@]}"; do
+            release_asset_paths+=("release-assets/$asset")
+          done
+
           ls -lah release-assets
           gh release delete "$TAG_NAME" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           for stale in \
@@ -700,24 +822,15 @@ jobs:
             zsclip-windows-x86_64-portable.zip \
             zsclip-windows-x86_64-no-lan-portable.zip \
             zsclip-windows-x86_64-setup.exe \
-            zsclip-v0.9.9.8-setup.exe \
-            zsclip-v0.9.9.8-setup-no-lan.exe \
-            zsclip-v0.9.9.8-resources.zip
+            "$setup_asset" \
+            "$no_lan_setup_asset" \
+            "$resource_asset"
           do
             gh release delete-asset "$TAG_NAME" "$stale" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           done
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
             gh release upload "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.8-setup.exe \
-              release-assets/zsclip-v0.9.9.8-setup-no-lan.exe \
-              release-assets/zsclip-windows-x86_64-portable.zip \
-              release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
-              release-assets/zsclip-v0.9.9.8-resources.zip \
-              release-assets/zsclip-android-test.apk \
-              release-assets/zsclip-macos-arm64.dmg \
-              release-assets/zsclip-macos-x86_64.dmg \
-              release-assets/zsclip-linux-x86_64.deb \
-              release-assets/zsclip-linux-x86_64.tar.gz \
+              "${release_asset_paths[@]}" \
               --repo "$GH_REPO" \
               --clobber 2>&1 | tee release-upload.log
             status=${PIPESTATUS[0]}
@@ -727,16 +840,7 @@ jobs:
             fi
           else
             gh release create "$TAG_NAME" \
-              release-assets/zsclip-v0.9.9.8-setup.exe \
-              release-assets/zsclip-v0.9.9.8-setup-no-lan.exe \
-              release-assets/zsclip-windows-x86_64-portable.zip \
-              release-assets/zsclip-windows-x86_64-no-lan-portable.zip \
-              release-assets/zsclip-v0.9.9.8-resources.zip \
-              release-assets/zsclip-android-test.apk \
-              release-assets/zsclip-macos-arm64.dmg \
-              release-assets/zsclip-macos-x86_64.dmg \
-              release-assets/zsclip-linux-x86_64.deb \
-              release-assets/zsclip-linux-x86_64.tar.gz \
+              "${release_asset_paths[@]}" \
               --repo "$GH_REPO" \
               --target "$GITHUB_SHA" \
               --title "ZSClip $TAG_NAME" \
@@ -752,35 +856,13 @@ jobs:
             exit "$status"
           fi
           gh release view "$TAG_NAME" --repo "$GH_REPO" --json tagName,targetCommitish,assets --jq '.tagName + " " + (.targetCommitish // "") + "\n" + (.assets[].name)' | tee release-verify.log
-          for required in \
-            zsclip-v0.9.9.8-setup.exe \
-            zsclip-v0.9.9.8-setup-no-lan.exe \
-            zsclip-windows-x86_64-portable.zip \
-            zsclip-windows-x86_64-no-lan-portable.zip \
-            zsclip-v0.9.9.8-resources.zip \
-            zsclip-android-test.apk \
-            zsclip-macos-arm64.dmg \
-            zsclip-macos-x86_64.dmg \
-            zsclip-linux-x86_64.deb \
-            zsclip-linux-x86_64.tar.gz
-          do
+          for required in "${required_assets[@]}"; do
             if ! grep -Fx "$required" release-verify.log >/dev/null; then
               echo "::error title=GitHub release verification failed::Missing release asset $required"
               exit 1
             fi
           done
-          for required in \
-            zsclip-v0.9.9.8-setup.exe \
-            zsclip-v0.9.9.8-setup-no-lan.exe \
-            zsclip-windows-x86_64-portable.zip \
-            zsclip-windows-x86_64-no-lan-portable.zip \
-            zsclip-v0.9.9.8-resources.zip \
-            zsclip-android-test.apk \
-            zsclip-macos-arm64.dmg \
-            zsclip-macos-x86_64.dmg \
-            zsclip-linux-x86_64.deb \
-            zsclip-linux-x86_64.tar.gz
-          do
+          for required in "${required_assets[@]}"; do
             url="https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${required}"
             code="000"
             for attempt in 1 2 3 4 5 6; do

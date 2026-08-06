@@ -10,6 +10,20 @@ use crate::app_core::{
 };
 use crate::platform::{input as platform_input, window as platform_window};
 
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetKeyboardLayout(idThread: u32) -> isize;
+}
+
+#[link(name = "imm32")]
+unsafe extern "system" {
+    fn ImmGetContext(hwnd: HWND) -> isize;
+    fn ImmReleaseContext(hwnd: HWND, context: isize) -> i32;
+    fn ImmGetOpenStatus(context: isize) -> i32;
+    fn ImmGetConversionStatus(context: isize, conversion: *mut u32, sentence: *mut u32) -> i32;
+    fn ImmIsIME(layout: isize) -> i32;
+}
+
 const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
 const IMC_GETCOMPOSITIONWINDOW: WPARAM = 0x000B;
 const CFS_RECT_V: u32 = 0x0001;
@@ -17,6 +31,14 @@ const CFS_POINT_V: u32 = 0x0002;
 const CFS_FORCE_POSITION_V: u32 = 0x0020;
 const CFS_CANDIDATEPOS_V: u32 = 0x0040;
 const CFS_EXCLUDE_V: u32 = 0x0080;
+const IME_CMODE_NATIVE_V: u32 = 0x0001;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WindowsImeInputMode {
+    Native,
+    Alphanumeric,
+    Unknown,
+}
 
 #[repr(C)]
 struct CandidateForm {
@@ -39,6 +61,50 @@ pub(crate) struct WindowsImeHost;
 impl WindowsImeHost {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    pub(crate) fn input_mode(self, focus: HWND) -> WindowsImeInputMode {
+        if !platform_window::exists(focus) {
+            return WindowsImeInputMode::Unknown;
+        }
+        let thread_id = platform_window::window_thread_id(focus);
+        if thread_id != 0 {
+            let layout = unsafe { GetKeyboardLayout(thread_id) };
+            if layout != 0 && unsafe { ImmIsIME(layout) } == 0 {
+                return WindowsImeInputMode::Alphanumeric;
+            }
+        }
+
+        let context = unsafe { ImmGetContext(focus) };
+        if context == 0 {
+            return WindowsImeInputMode::Unknown;
+        }
+        let open = unsafe { ImmGetOpenStatus(context) } != 0;
+        let mut conversion = 0u32;
+        let mut sentence = 0u32;
+        let conversion_known =
+            unsafe { ImmGetConversionStatus(context, &mut conversion, &mut sentence) } != 0;
+        unsafe {
+            ImmReleaseContext(focus, context);
+        }
+
+        classify_windows_ime_input_mode(open, conversion_known, conversion)
+    }
+}
+
+fn classify_windows_ime_input_mode(
+    open: bool,
+    conversion_known: bool,
+    conversion: u32,
+) -> WindowsImeInputMode {
+    if !open {
+        WindowsImeInputMode::Alphanumeric
+    } else if !conversion_known {
+        WindowsImeInputMode::Unknown
+    } else if conversion & IME_CMODE_NATIVE_V != 0 {
+        WindowsImeInputMode::Native
+    } else {
+        WindowsImeInputMode::Alphanumeric
     }
 }
 
@@ -136,6 +202,31 @@ const fn empty_rect() -> RECT {
 
 fn rect_has_area(rect: &RECT) -> bool {
     rect.right > rect.left && rect.bottom > rect.top
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ime_input_mode_distinguishes_native_and_english_states() {
+        assert_eq!(
+            classify_windows_ime_input_mode(false, true, IME_CMODE_NATIVE_V),
+            WindowsImeInputMode::Alphanumeric
+        );
+        assert_eq!(
+            classify_windows_ime_input_mode(true, true, IME_CMODE_NATIVE_V),
+            WindowsImeInputMode::Native
+        );
+        assert_eq!(
+            classify_windows_ime_input_mode(true, true, 0),
+            WindowsImeInputMode::Alphanumeric
+        );
+        assert_eq!(
+            classify_windows_ime_input_mode(true, false, 0),
+            WindowsImeInputMode::Unknown
+        );
+    }
 }
 
 fn point_to_screen(hwnd: HWND, mut point: POINT) -> Option<Point> {

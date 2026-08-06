@@ -640,6 +640,7 @@ pub(super) fn main_hover_target_from_state(state: &AppState) -> MainHoverTarget 
         scrollbar: state.hover_scroll,
         scroll_to_top: state.hover_to_top,
         row: state.hover_idx,
+        quick_delete_row: state.hover_delete_idx,
     }
 }
 
@@ -649,4 +650,5 @@ pub(super) fn apply_main_hover_target(state: &mut AppState, target: MainHoverTar
     state.hover_scroll = target.scrollbar;
     state.hover_to_top = target.scroll_to_top;
     state.hover_idx = target.row;
+    state.hover_delete_idx = target.quick_delete_row;
 }

@@ -190,6 +190,46 @@ pub(crate) unsafe fn draw_translated_text_line(
     platform_gdi::select_object(hdc as _, old);
 }
 
+pub(crate) unsafe fn draw_translated_text_line_px(
+    hdc: *mut c_void,
+    text: &str,
+    rc: &mut RECT,
+    color: u32,
+    pixel_size: i32,
+    weight: i32,
+    center: bool,
+    family: &str,
+    transparent_mode: i32,
+    flags_extra: u32,
+) {
+    let translated = translate(text);
+    platform_gdi::set_bk_mode(hdc as _, transparent_mode);
+    platform_gdi::set_text_color(hdc as _, color);
+    let created_font = create_font_px(family, pixel_size, weight);
+    let font = if created_font.is_null() {
+        platform_gdi::get_stock_object(DEFAULT_GUI_FONT) as *mut c_void
+    } else {
+        created_font
+    };
+    let old = platform_gdi::select_object(hdc as _, font as _);
+    let flags = (if center { DT_CENTER } else { DT_LEFT })
+        | DT_VCENTER
+        | DT_SINGLELINE
+        | DT_END_ELLIPSIS
+        | flags_extra;
+    platform_gdi::draw_text(
+        hdc as _,
+        to_wide(translated.as_ref()).as_ptr(),
+        -1,
+        rc,
+        flags,
+    );
+    platform_gdi::select_object(hdc as _, old);
+    if !created_font.is_null() {
+        platform_gdi::delete_object(created_font as _);
+    }
+}
+
 pub(crate) unsafe fn draw_translated_text_block(
     hdc: *mut c_void,
     text: &str,

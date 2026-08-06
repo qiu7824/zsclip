@@ -1,6 +1,6 @@
 use super::prelude::*;
 
-const HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 3_000;
+const HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 800;
 const HIDDEN_MEMORY_RECLAIM_RETRY_MS: u32 = 1_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,7 +223,7 @@ unsafe fn handle_main_destroy(hwnd: HWND, state: &mut AppState) {
     clear_cloud_sync_results_for_hwnd(hwnd);
     match state.role {
         WindowRole::Main => {
-            save_settings(&state.settings);
+            save_state_settings(state);
             timer::stop(hwnd, ID_TIMER_STARTUP_RECOVERY);
             timer::stop(hwnd, ID_TIMER_VV_WATCH);
             timer::stop(hwnd, ID_TIMER_VV_SHOW);

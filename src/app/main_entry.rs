@@ -3,6 +3,7 @@ use super::prelude::*;
 pub(crate) fn run() -> AppResult<()> {
     let _ = crate::cloud_sync::cleanup_cloud_sync_temp_files();
     let boot_settings = load_settings();
+    platform_appearance::set_dark_mode_enabled(boot_settings.dark_mode_enabled);
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     let (_single_instance_mutex, already_running) =
         platform_process::create_named_mutex("Global\\ZsClipSingleInstance");
@@ -107,6 +108,8 @@ pub(super) unsafe extern "system" fn wnd_proc(
             0
         }
         WM_ERASEBKGND => 1,
+        WM_CTLCOLOREDIT => main_search_control_color(hwnd, wparam, lparam)
+            .unwrap_or_else(|| platform_window::default_window_proc(hwnd, msg, wparam, lparam)),
         WM_MOUSEACTIVATE => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
@@ -140,6 +143,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
                     WindowsMainSearchControlHost::new()
                         .release_search_style_resource((*ptr).search_font);
                     (*ptr).search_font = null_mut();
+                }
+                if !(*ptr).search_brush.is_null() {
+                    platform_gdi::delete_object((*ptr).search_brush as _);
+                    (*ptr).search_brush = null_mut();
                 }
                 (*ptr).icons.destroy();
                 drop(Box::from_raw(ptr));
@@ -216,17 +223,13 @@ pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) ->
     set_window_host(role, hwnd);
     let _ = dispatch_main_ui_event(hwnd, UiEvent::Lifecycle(LifecycleEvent::Mount));
     if let Some(state) = unsafe { get_state_mut(hwnd) } {
+        refresh_search_theme_resources(state);
         refresh_search_font(state);
         ensure_db();
         if role == WindowRole::Main {
-            append_paste_diagnostic(&format!(
-                "session_start pid={} version={}",
-                std::process::id(),
-                crate::app_version::APP_VERSION
-            ));
             #[cfg(feature = "lan-sync")]
             if lan_sync::ensure_device_identity(&mut state.settings) {
-                save_settings(&state.settings);
+                save_state_settings(state);
             }
             #[cfg(not(feature = "lan-sync"))]
             {
@@ -384,10 +387,26 @@ pub(super) unsafe fn settings_set_hotkey_recording(st: &mut SettingsWndState, re
 }
 
 pub(super) unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: usize) {
+    let expected_generation = state.app_data_generation;
+    if crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        handle_vv_select_locked(hwnd, state, index);
+    })
+    .is_none()
+    {
+        vv_popup_hide(hwnd, state);
+        apply_loaded_settings(hwnd, state);
+    }
+}
+
+unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize) {
     let popup_visible = state.vv_popup_visible;
     let target = state.vv_popup_target;
     let backspaces = if popup_visible {
-        vv_backspace_count_for_target_window(target, state.vv_popup_replaces_ime)
+        vv_backspace_count_for_target_window(
+            target,
+            state.vv_popup_replaces_ime,
+            state.vv_popup_trigger_text_visible,
+        )
     } else {
         0
     };
@@ -410,22 +429,24 @@ pub(super) unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: u
         }
         MainVvSelectPlan::Paste { item, backspaces } => {
             vv_popup_hide(hwnd, state);
+            state.pending_image_paste_generation = None;
             (item, backspaces)
         }
     };
+    let async_completion = main_paste_completion_plan(
+        MainPasteCompletionKind::VvAsyncImage,
+        paste_completion_input(state, item.id),
+    );
     if queue_async_image_paste_if_needed(
         hwnd,
         state,
         &item,
+        ImagePasteRequestContext::VvPopup,
         target,
         state.settings.click_hide,
         backspaces,
+        async_completion,
     ) {
-        let plan = main_paste_completion_plan(
-            MainPasteCompletionKind::VvAsyncImage,
-            paste_completion_input(state, item.id),
-        );
-        execute_paste_completion_plan(hwnd, state, plan);
         return;
     }
     if !apply_item_to_clipboard(state, &item) {

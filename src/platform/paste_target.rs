@@ -292,8 +292,7 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
     }
 
     fn send_paste_shortcut(&mut self, _target: Self::Handle) -> bool {
-        platform_input::send_ctrl_v();
-        true
+        platform_input::send_ctrl_v()
     }
 }
 

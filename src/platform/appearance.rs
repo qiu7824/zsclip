@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use windows_sys::Win32::{
     Foundation::{FreeLibrary, HWND, RECT},
@@ -8,6 +9,11 @@ use windows_sys::Win32::{
 const HKEY_CURRENT_USER: isize = -2147483647i32 as isize;
 const KEY_READ: u32 = 0x20019;
 const REG_DWORD: u32 = 4;
+const COLOR_MODE_SYSTEM: u8 = 0;
+const COLOR_MODE_LIGHT: u8 = 1;
+const COLOR_MODE_DARK: u8 = 2;
+
+static COLOR_MODE: AtomicU8 = AtomicU8::new(COLOR_MODE_SYSTEM);
 
 #[link(name = "advapi32")]
 unsafe extern "system" {
@@ -77,7 +83,7 @@ pub(crate) fn system_accent() -> u32 {
     rgb(0, 120, 212)
 }
 
-pub(crate) fn is_dark_mode() -> bool {
+pub(crate) fn system_is_dark_mode() -> bool {
     let key_path = wide_null("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
     let val_name = wide_null("AppsUseLightTheme");
     unsafe {
@@ -98,6 +104,25 @@ pub(crate) fn is_dark_mode() -> bool {
         );
         RegCloseKey(hkey);
         ret == 0 && reg_type == REG_DWORD && data == 0
+    }
+}
+
+pub(crate) fn set_dark_mode_enabled(enabled: bool) {
+    COLOR_MODE.store(
+        if enabled {
+            COLOR_MODE_DARK
+        } else {
+            COLOR_MODE_LIGHT
+        },
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn is_dark_mode() -> bool {
+    match COLOR_MODE.load(Ordering::Relaxed) {
+        COLOR_MODE_LIGHT => false,
+        COLOR_MODE_DARK => true,
+        _ => system_is_dark_mode(),
     }
 }
 
@@ -124,10 +149,9 @@ pub(crate) fn set_dwm_u32_attribute(hwnd: HWND, attribute: u32, value: u32) -> b
 }
 
 pub(crate) fn set_dark_frame(hwnd: HWND, enabled: bool) {
-    if enabled {
-        let _ = set_dwm_u32_attribute(hwnd, 20, 1);
-        let _ = set_dwm_u32_attribute(hwnd, 19, 1);
-    }
+    let value = u32::from(enabled);
+    let _ = set_dwm_u32_attribute(hwnd, 20, value);
+    let _ = set_dwm_u32_attribute(hwnd, 19, value);
 }
 
 pub(crate) fn set_rounded_corners(hwnd: HWND) {

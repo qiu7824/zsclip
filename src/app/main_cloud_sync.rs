@@ -11,7 +11,7 @@ pub(super) unsafe fn queue_cloud_sync(
     }
     if state.settings.cloud_webdav_url.trim().is_empty() {
         state.settings.cloud_last_sync_status = "未配置 WebDAV 地址".to_string();
-        save_settings(&state.settings);
+        save_state_settings(state);
         refresh_settings_window_from_app(state);
         if !auto_triggered {
             show_native_dialog_message(
@@ -33,7 +33,7 @@ pub(super) unsafe fn queue_cloud_sync(
 
     state.cloud_sync_in_progress = true;
     state.settings.cloud_last_sync_status = cloud_sync_running_text(auto_triggered).to_string();
-    save_settings(&state.settings);
+    save_state_settings(state);
     refresh_settings_window_from_app(state);
     spawn_cloud_sync_job(
         hwnd as isize,
@@ -63,23 +63,31 @@ pub(super) unsafe fn apply_ready_cloud_syncs(hwnd: HWND, state: &mut AppState) {
         schedule_cloud_sync(state, false);
         match ready_item.result {
             Ok(outcome) => {
-                state.settings.cloud_last_sync_status = outcome.status_text;
-                save_settings(&state.settings);
                 if outcome.reload_settings {
                     apply_loaded_settings(hwnd, state);
+                    state.settings.cloud_last_sync_status = outcome.status_text;
+                    save_state_settings(state);
+                    refresh_settings_window_from_app(state);
                 } else if outcome.reload_data {
+                    state.settings.cloud_last_sync_status = outcome.status_text;
+                    save_state_settings(state);
                     reload_state_from_db_persisting(state);
                     layout_children(hwnd);
                     repaint_main_window(hwnd, true);
                 } else {
+                    state.settings.cloud_last_sync_status = outcome.status_text;
+                    save_state_settings(state);
                     refresh_settings_window_from_app(state);
                     repaint_main_window(hwnd, true);
                 }
                 sync_peer_windows_from_settings(hwnd);
             }
             Err(err) => {
+                if state.app_data_generation != crate::db_runtime::current_app_data_generation() {
+                    apply_loaded_settings(hwnd, state);
+                }
                 state.settings.cloud_last_sync_status = format!("失败：{err}");
-                save_settings(&state.settings);
+                save_state_settings(state);
                 refresh_settings_window_from_app(state);
                 sync_peer_windows_from_settings(hwnd);
                 if !ready_item.auto_triggered {
