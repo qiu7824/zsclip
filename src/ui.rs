@@ -1,6 +1,6 @@
 pub use crate::win_ui_render::{
     draw_icon_tinted_soft, draw_round_fill, draw_round_rect, draw_text, draw_text_block,
-    draw_text_block_ex, draw_text_ex,
+    draw_text_block_ex, draw_text_ex, draw_text_ex_px,
 };
 
 pub fn rgba_to_opaque_bgra_on_bg(bytes: &[u8], bg: u32) -> Vec<u8> {

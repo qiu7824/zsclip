@@ -1,7 +1,8 @@
 #![cfg_attr(windows, allow(dead_code))]
 
-use std::cell::RefCell;
-use std::sync::OnceLock;
+use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params_from_iter, Connection, OptionalExtension};
@@ -9,11 +10,226 @@ use rusqlite::{params_from_iter, Connection, OptionalExtension};
 use crate::app_core::{parse_search_query_with_context, SearchDateContext, SearchTimeFilter};
 use crate::time_utils::{days_to_sqlite_date, utc_secs_to_local_parts};
 
-thread_local! {
-    static DB_CONN: RefCell<Option<Connection>> = const { RefCell::new(None) };
+#[derive(Default)]
+enum DbConnectionTarget {
+    #[default]
+    Runtime,
+    #[cfg(test)]
+    InMemory,
+    #[cfg(test)]
+    Path(std::path::PathBuf),
 }
 
-static DB_MIGRATED: OnceLock<()> = OnceLock::new();
+#[derive(Default)]
+struct DbConnectionSlot {
+    connection: Option<Connection>,
+    target: DbConnectionTarget,
+}
+
+type SharedDbConnectionSlot = Arc<Mutex<DbConnectionSlot>>;
+
+thread_local! {
+    static DB_CONN: SharedDbConnectionSlot = register_db_connection_slot();
+    static APP_DATA_READ_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+// Files in the application data directory and the database form one logical
+// state. Normal work takes the shared gate before touching either resource;
+// restore takes the exclusive gate before the exclusive database gate.
+static APP_DATA_ACCESS_GATE: OnceLock<RwLock<()>> = OnceLock::new();
+static APP_DATA_REPLACEMENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+// Normal database work holds a shared gate. Restore takes the exclusive gate and
+// clears every registered TLS connection for the file before replacing it.
+static DB_ACCESS_GATE: OnceLock<RwLock<()>> = OnceLock::new();
+static DB_CONNECTION_SLOTS: OnceLock<Mutex<Vec<Weak<Mutex<DbConnectionSlot>>>>> = OnceLock::new();
+static DB_MIGRATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static DB_MIGRATED: AtomicBool = AtomicBool::new(false);
+// Even values are stable database generations. An odd value means a file
+// replacement is in progress. A DB operation that began before a replacement
+// must never resume against the newly restored file.
+static DB_REPLACEMENT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn app_data_access_gate() -> &'static RwLock<()> {
+    APP_DATA_ACCESS_GATE.get_or_init(|| RwLock::new(()))
+}
+
+struct AppDataReadDepthGuard;
+
+impl Drop for AppDataReadDepthGuard {
+    fn drop(&mut self) {
+        APP_DATA_READ_DEPTH.with(|depth| {
+            let previous = depth.get();
+            debug_assert!(previous > 0);
+            depth.set(previous.saturating_sub(1));
+        });
+    }
+}
+
+/// Runs normal settings/image/database work under the shared application-data
+/// gate. Shared entry is re-entrant on one thread so a combined image+DB action
+/// may call ordinary DB helpers without reversing the data -> DB lock order.
+pub(crate) fn with_shared_app_data<T, F>(action: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    let nested = APP_DATA_READ_DEPTH.with(|depth| depth.get() > 0);
+    let _access_guard = if nested {
+        None
+    } else {
+        Some(
+            app_data_access_gate()
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    };
+    APP_DATA_READ_DEPTH.with(|depth| depth.set(depth.get().saturating_add(1)));
+    let _depth_guard = AppDataReadDepthGuard;
+    action()
+}
+
+/// Executes only if the caller's in-memory state belongs to the current
+/// application-data generation, while preventing a restore until it returns.
+pub(crate) fn with_shared_app_data_generation<T, F>(expected: u64, action: F) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    // Fast-fail UI and async callbacks while a restore owns the exclusive
+    // application-data gate. Waiting here would freeze the window for the
+    // entire backup/swap operation only to reject the stale callback later.
+    let observed = APP_DATA_REPLACEMENT_EPOCH.load(Ordering::Acquire);
+    if observed != expected || observed & 1 != 0 {
+        return None;
+    }
+    with_shared_app_data(|| {
+        let current = APP_DATA_REPLACEMENT_EPOCH.load(Ordering::Acquire);
+        if current != expected || current & 1 != 0 {
+            None
+        } else {
+            Some(action())
+        }
+    })
+}
+
+pub(crate) fn current_app_data_generation() -> u64 {
+    // This is an advisory, non-blocking observation. An odd value tells UI
+    // callbacks to abandon work immediately while replacement is active;
+    // callers that touch data still enter one of the guarded helpers above.
+    APP_DATA_REPLACEMENT_EPOCH.load(Ordering::Acquire)
+}
+
+/// Takes a consistent application-data snapshot without changing its
+/// generation. Normal settings/image/database work is paused for the callback;
+/// callers that also need the DB gate must acquire it from inside this scope.
+pub(crate) fn with_exclusive_app_data_snapshot<T, F>(snapshot: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let read_depth = APP_DATA_READ_DEPTH.with(Cell::get);
+    if read_depth != 0 {
+        return Err("cannot snapshot application data from a shared data operation".to_string());
+    }
+    let _access_guard = app_data_access_gate()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    snapshot()
+}
+
+struct AppDataReplacementEpochGuard;
+
+impl AppDataReplacementEpochGuard {
+    fn begin() -> Self {
+        let previous = APP_DATA_REPLACEMENT_EPOCH.fetch_add(1, Ordering::AcqRel);
+        debug_assert_eq!(previous & 1, 0);
+        Self
+    }
+}
+
+impl Drop for AppDataReplacementEpochGuard {
+    fn drop(&mut self) {
+        let previous = APP_DATA_REPLACEMENT_EPOCH.fetch_add(1, Ordering::AcqRel);
+        debug_assert_eq!(previous & 1, 1);
+    }
+}
+
+/// Replaces settings/images (and, for a full restore, the database) while all
+/// normal application-data work is stopped. Nested callers must acquire the DB
+/// exclusive gate only after entering this function.
+pub(crate) fn with_exclusive_app_data_replacement<T, F>(replace: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let read_depth = APP_DATA_READ_DEPTH.with(Cell::get);
+    if read_depth != 0 {
+        return Err("cannot replace application data from a shared data operation".to_string());
+    }
+    let _access_guard = app_data_access_gate()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _replacement_epoch = AppDataReplacementEpochGuard::begin();
+    replace()
+}
+
+fn db_access_gate() -> &'static RwLock<()> {
+    DB_ACCESS_GATE.get_or_init(|| RwLock::new(()))
+}
+
+fn db_connection_slots() -> &'static Mutex<Vec<Weak<Mutex<DbConnectionSlot>>>> {
+    DB_CONNECTION_SLOTS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn db_migration_lock() -> &'static Mutex<()> {
+    DB_MIGRATION_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn register_db_connection_slot() -> SharedDbConnectionSlot {
+    let slot = Arc::new(Mutex::new(DbConnectionSlot::default()));
+    let mut slots = db_connection_slots()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    slots.retain(|entry| entry.strong_count() > 0);
+    slots.push(Arc::downgrade(&slot));
+    slot
+}
+
+fn db_replacement_interrupted_error() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ABORT),
+        Some("database operation crossed a restore boundary".to_string()),
+    )
+}
+
+fn db_operation_read_guard() -> rusqlite::Result<std::sync::RwLockReadGuard<'static, ()>> {
+    let epoch_before = DB_REPLACEMENT_EPOCH.load(Ordering::Acquire);
+    if epoch_before & 1 != 0 {
+        return Err(db_replacement_interrupted_error());
+    }
+    let guard = db_access_gate()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let epoch_after = DB_REPLACEMENT_EPOCH.load(Ordering::Acquire);
+    if epoch_before != epoch_after || epoch_after & 1 != 0 {
+        drop(guard);
+        return Err(db_replacement_interrupted_error());
+    }
+    Ok(guard)
+}
+
+struct DbReplacementEpochGuard;
+
+impl DbReplacementEpochGuard {
+    fn begin() -> Self {
+        let previous = DB_REPLACEMENT_EPOCH.fetch_add(1, Ordering::AcqRel);
+        debug_assert_eq!(previous & 1, 0);
+        Self
+    }
+}
+
+impl Drop for DbReplacementEpochGuard {
+    fn drop(&mut self) {
+        let previous = DB_REPLACEMENT_EPOCH.fetch_add(1, Ordering::AcqRel);
+        debug_assert_eq!(previous & 1, 1);
+    }
+}
 
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
     let table = validate_schema_table(table)?;
@@ -302,6 +518,209 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn quick_check_database(conn: &Connection) -> rusqlite::Result<()> {
+    let mut stmt = conn.prepare("PRAGMA quick_check")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let result = row.get::<_, String>(0)?;
+        if !result.eq_ignore_ascii_case("ok") {
+            return Err(rusqlite::Error::InvalidParameterName(format!(
+                "database quick_check failed: {result}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn collect_restored_image_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    output: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_restored_image_files(root, &path, output)?;
+        } else if entry.file_type()?.is_file() {
+            if let Ok(relative) = path.strip_prefix(root) {
+                output.push(relative.to_path_buf());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn safe_image_relative_path(raw: &str) -> Option<std::path::PathBuf> {
+    let normalized = raw.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    let suffix = parts
+        .iter()
+        .rposition(|part| part.eq_ignore_ascii_case("images"))
+        .map(|index| &parts[index.saturating_add(1)..])
+        .filter(|parts| !parts.is_empty())
+        .or_else(|| {
+            let looks_absolute = normalized.starts_with('/')
+                || parts
+                    .first()
+                    .map(|part| part.ends_with(':'))
+                    .unwrap_or(false);
+            (!looks_absolute).then_some(parts.as_slice())
+        })?;
+    let mut relative = std::path::PathBuf::new();
+    for part in suffix {
+        if part.is_empty() || *part == "." || *part == ".." || part.contains(':') {
+            return None;
+        }
+        relative.push(part);
+    }
+    (!relative.as_os_str().is_empty()).then_some(relative)
+}
+
+fn restored_image_path_matches(left: &std::path::Path, right: &std::path::Path) -> bool {
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn resolve_restored_image_relative_path(
+    raw: &str,
+    available: &[std::path::PathBuf],
+) -> Option<std::path::PathBuf> {
+    if let Some(candidate) = safe_image_relative_path(raw) {
+        if let Some(found) = available
+            .iter()
+            .find(|path| restored_image_path_matches(path, &candidate))
+        {
+            return Some(found.clone());
+        }
+    }
+
+    let normalized = raw.trim().replace('\\', "/");
+    let file_name = normalized
+        .rsplit('/')
+        .find(|part| !part.is_empty() && *part != "." && *part != ".." && !part.contains(':'))?;
+    let matches = available
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .map(|name| {
+                    #[cfg(windows)]
+                    {
+                        name.to_string_lossy().eq_ignore_ascii_case(file_name)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        name == std::ffi::OsStr::new(file_name)
+                    }
+                })
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    (matches.len() == 1).then(|| matches[0].clone())
+}
+
+pub(crate) fn prepare_restored_database(
+    db_file: &std::path::Path,
+    staged_images_dir: &std::path::Path,
+    active_images_dir: &std::path::Path,
+) -> Result<(), String> {
+    let mut conn = Connection::open(db_file)
+        .map_err(|err| format!("恢复文件不是有效的 SQLite 数据库：{err}"))?;
+    conn.busy_timeout(Duration::from_millis(5_000))
+        .map_err(|err| format!("设置恢复数据库超时失败：{err}"))?;
+    quick_check_database(&conn).map_err(|err| format!("恢复数据库完整性检查失败：{err}"))?;
+    let has_items: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='items'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| format!("恢复数据库结构检查失败：{err}"))?;
+    if has_items == 0 {
+        return Err("恢复数据库缺少 items 表。".to_string());
+    }
+
+    migrate_db(&conn).map_err(|err| format!("恢复数据库迁移失败：{err}"))?;
+
+    let mut available_images = Vec::new();
+    collect_restored_image_files(staged_images_dir, staged_images_dir, &mut available_images)
+        .map_err(|err| format!("读取恢复图片暂存目录失败：{err}"))?;
+    let image_rows = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, COALESCE(image_path, ''), image_data IS NOT NULL \
+                 FROM items WHERE image_path IS NOT NULL AND TRIM(image_path)<>''",
+            )
+            .map_err(|err| format!("读取恢复图片路径失败：{err}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            })
+            .map_err(|err| format!("读取恢复图片路径失败：{err}"))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|err| format!("读取恢复图片路径失败：{err}"))?
+    };
+    let tx = conn
+        .transaction()
+        .map_err(|err| format!("更新恢复图片路径失败：{err}"))?;
+    for (id, old_path, has_image_data) in image_rows {
+        if let Some(relative) = resolve_restored_image_relative_path(&old_path, &available_images) {
+            let restored_path = active_images_dir.join(relative);
+            tx.execute(
+                "UPDATE items SET image_path=? WHERE id=?",
+                rusqlite::params![restored_path.to_string_lossy().to_string(), id],
+            )
+            .map_err(|err| format!("更新恢复图片路径失败：{err}"))?;
+        } else if has_image_data {
+            tx.execute("UPDATE items SET image_path=NULL WHERE id=?", [id])
+                .map_err(|err| format!("清理失效恢复图片路径失败：{err}"))?;
+        } else {
+            return Err(format!("恢复数据库引用了归档中不存在的图片：{old_path}"));
+        }
+    }
+    tx.commit()
+        .map_err(|err| format!("提交恢复图片路径失败：{err}"))?;
+
+    conn.prepare(
+        "SELECT id, category, kind, preview, signature, source_app, pinned, group_id \
+         FROM items ORDER BY id DESC LIMIT 1",
+    )
+    .map_err(|err| format!("恢复数据库关键查询检查失败：{err}"))?;
+    quick_check_database(&conn).map_err(|err| format!("迁移后恢复数据库完整性检查失败：{err}"))?;
+    checkpoint_connection(&conn).map_err(|err| format!("写入恢复数据库 WAL 失败：{err}"))?;
+    drop(conn);
+    for sidecar in [wal_file_path(db_file), shm_file_path(db_file)] {
+        match std::fs::remove_file(&sidecar) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(format!(
+                    "无法清理恢复数据库暂存文件 {}：{err}",
+                    sidecar.to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn runtime_db_file() -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -318,39 +737,77 @@ fn runtime_db_file() -> std::path::PathBuf {
     }
 }
 
-fn ensure_connection(cell: &RefCell<Option<Connection>>) -> rusqlite::Result<()> {
-    let mut slot = cell.borrow_mut();
-    if slot.is_none() {
-        let db_file = runtime_db_file();
-        if let Some(parent) = db_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
+fn open_connection(target: &DbConnectionTarget) -> rusqlite::Result<Connection> {
+    match target {
+        DbConnectionTarget::Runtime => {
+            let db_file = runtime_db_file();
+            if let Some(parent) = db_file.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|_| rusqlite::Error::InvalidPath(db_file.clone()))?;
+            }
+            Connection::open(db_file)
         }
-        let conn = Connection::open(db_file)?;
-        configure_db_connection(&conn)?;
-        *slot = Some(conn);
+        #[cfg(test)]
+        DbConnectionTarget::InMemory => Connection::open_in_memory(),
+        #[cfg(test)]
+        DbConnectionTarget::Path(path) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|_| rusqlite::Error::InvalidPath(path.clone()))?;
+            }
+            Connection::open(path)
+        }
     }
-    if DB_MIGRATED.get().is_none() {
-        if let Some(conn) = slot.as_ref() {
-            migrate_db(conn)?;
-            let _ = DB_MIGRATED.set(());
+}
+
+fn ensure_connection(slot: &mut DbConnectionSlot) -> rusqlite::Result<()> {
+    if slot.connection.is_none() {
+        let conn = open_connection(&slot.target)?;
+        configure_db_connection(&conn)?;
+        slot.connection = Some(conn);
+    }
+
+    if !DB_MIGRATED.load(Ordering::Acquire) {
+        let _migration_guard = db_migration_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !DB_MIGRATED.load(Ordering::Relaxed) {
+            if let Some(conn) = slot.connection.as_ref() {
+                migrate_db(conn)?;
+                DB_MIGRATED.store(true, Ordering::Release);
+            }
         }
     }
     Ok(())
 }
 
 pub(crate) fn ensure_db() {
-    let _ = DB_CONN.with(ensure_connection);
+    with_shared_app_data(|| {
+        let _access_guard = db_access_gate()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let _ = ensure_connection(&mut slot);
+        });
+    });
 }
 
 pub(crate) fn with_db<T, F>(f: F) -> rusqlite::Result<T>
 where
     F: FnOnce(&Connection) -> rusqlite::Result<T>,
 {
-    DB_CONN.with(|cell| {
-        ensure_connection(cell)?;
-        let slot = cell.borrow();
-        let conn = slot.as_ref().ok_or(rusqlite::Error::InvalidQuery)?;
-        f(conn)
+    with_shared_app_data(|| {
+        let _access_guard = db_operation_read_guard()?;
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            ensure_connection(&mut slot)?;
+            let conn = slot
+                .connection
+                .as_ref()
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            f(conn)
+        })
     })
 }
 
@@ -358,11 +815,17 @@ pub(crate) fn with_db_mut<T, F>(f: F) -> rusqlite::Result<T>
 where
     F: FnOnce(&mut Connection) -> rusqlite::Result<T>,
 {
-    DB_CONN.with(|cell| {
-        ensure_connection(cell)?;
-        let mut slot = cell.borrow_mut();
-        let conn = slot.as_mut().ok_or(rusqlite::Error::InvalidQuery)?;
-        f(conn)
+    with_shared_app_data(|| {
+        let _access_guard = db_operation_read_guard()?;
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            ensure_connection(&mut slot)?;
+            let conn = slot
+                .connection
+                .as_mut()
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            f(conn)
+        })
     })
 }
 
@@ -1101,21 +1564,177 @@ pub(crate) fn assign_native_clip_group(item_ids: &[i64], group_id: i64) -> rusql
     })
 }
 
+fn validate_wal_checkpoint_result(
+    busy: i64,
+    log_frames: i64,
+    checkpointed_frames: i64,
+) -> rusqlite::Result<()> {
+    if busy != 0 || (log_frames >= 0 && checkpointed_frames < log_frames) {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            Some(format!(
+                "WAL checkpoint incomplete: busy={busy}, log={log_frames}, checkpointed={checkpointed_frames}"
+            )),
+        ));
+    }
+    Ok(())
+}
+
+fn checkpoint_connection(conn: &Connection) -> rusqlite::Result<()> {
+    let (busy, log_frames, checkpointed_frames) =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+    validate_wal_checkpoint_result(busy, log_frames, checkpointed_frames)
+}
+
+fn wal_file_path(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}-wal", path.to_string_lossy()))
+}
+
+fn shm_file_path(path: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("{}-shm", path.to_string_lossy()))
+}
+
 pub(crate) fn checkpoint_db() -> rusqlite::Result<()> {
-    with_db(|conn| {
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-        Ok(())
-    })
+    with_db(checkpoint_connection)
 }
 
 pub(crate) fn close_db() {
-    DB_CONN.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(conn) = slot.as_mut() {
-            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-        }
-        *slot = None;
+    with_shared_app_data(|| {
+        let _access_guard = db_access_gate()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(conn) = slot.connection.as_ref() {
+                let _ = checkpoint_connection(conn);
+            }
+            slot.connection = None;
+        });
     });
+}
+
+fn normalized_db_path(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    std::fs::canonicalize(&absolute).unwrap_or(absolute)
+}
+
+pub(crate) fn is_runtime_db_file(path: &std::path::Path) -> bool {
+    normalized_db_path(path) == normalized_db_path(&runtime_db_file())
+}
+
+fn connection_target_path(target: &DbConnectionTarget) -> Option<std::path::PathBuf> {
+    match target {
+        DbConnectionTarget::Runtime => Some(runtime_db_file()),
+        #[cfg(test)]
+        DbConnectionTarget::InMemory => None,
+        #[cfg(test)]
+        DbConnectionTarget::Path(path) => Some(path.clone()),
+    }
+}
+
+fn db_paths_match(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let left = normalized_db_path(left);
+    let right = normalized_db_path(right);
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn close_db_connections_for_path(db_file: &std::path::Path) -> Result<(), String> {
+    let live_slots = {
+        let mut slots = db_connection_slots()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let live = slots.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+        slots.retain(|entry| entry.strong_count() > 0);
+        live
+    };
+
+    let mut closed_connections = Vec::new();
+    for slot in live_slots {
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let targets_db_file = connection_target_path(&slot.target)
+            .map(|target| db_paths_match(&target, db_file))
+            .unwrap_or(false);
+        if !targets_db_file {
+            continue;
+        }
+        if let Some(conn) = slot.connection.take() {
+            closed_connections.push(conn);
+        }
+    }
+    drop(closed_connections);
+
+    if !db_file.exists() {
+        return Ok(());
+    }
+    let conn =
+        Connection::open(db_file).map_err(|err| format!("打开数据库以写入 WAL 失败：{err}"))?;
+    conn.busy_timeout(Duration::from_millis(5_000))
+        .map_err(|err| format!("设置 WAL 写入超时失败：{err}"))?;
+    checkpoint_connection(&conn).map_err(|err| format!("关闭数据库连接前写入 WAL 失败：{err}"))?;
+    drop(conn);
+    Ok(())
+}
+
+fn with_exclusive_db_access<T, F>(db_file: &std::path::Path, action: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let _access_guard = db_access_gate()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    close_db_connections_for_path(db_file)?;
+    action()
+}
+
+/// Runs while every `with_db` call is blocked and all registered connections for
+/// `db_file` are closed. The callback must not call `with_db`/`with_db_mut`.
+pub(crate) fn with_exclusive_db_snapshot<T, F>(
+    db_file: &std::path::Path,
+    snapshot: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    with_exclusive_db_access(db_file, snapshot)
+}
+
+/// Replaces database-owned files while all registered DB access is blocked.
+/// The callback must not call `with_db`/`with_db_mut`.
+pub(crate) fn with_exclusive_db_file_replacement<T, F>(
+    db_file: &std::path::Path,
+    replace: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    let _access_guard = db_access_gate()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _replacement_epoch = DbReplacementEpochGuard::begin();
+    close_db_connections_for_path(db_file)?;
+    let result = replace();
+    DB_MIGRATED.store(false, Ordering::Release);
+    result
 }
 
 #[cfg(test)]
@@ -1123,16 +1742,40 @@ pub(crate) fn with_test_db<T, F>(f: F) -> rusqlite::Result<T>
 where
     F: FnOnce() -> rusqlite::Result<T>,
 {
-    DB_CONN.with(|cell| {
-        let previous = cell.borrow_mut().take();
-        let conn = Connection::open_in_memory()?;
-        configure_db_connection(&conn)?;
-        migrate_db(&conn)?;
-        *cell.borrow_mut() = Some(conn);
-        let result = f();
-        *cell.borrow_mut() = previous;
-        result
-    })
+    let previous = {
+        let _access_guard = db_access_gate()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::mem::replace(
+                &mut *slot,
+                DbConnectionSlot {
+                    connection: None,
+                    target: DbConnectionTarget::InMemory,
+                },
+            );
+            let setup = Connection::open_in_memory().and_then(|conn| {
+                configure_db_connection(&conn)?;
+                migrate_db(&conn)?;
+                slot.connection = Some(conn);
+                Ok(())
+            });
+            if let Err(err) = setup {
+                *slot = previous;
+                return Err(err);
+            }
+            Ok(previous)
+        })?
+    };
+    let result = f();
+    let _access_guard = db_access_gate()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    DB_CONN.with(|slot| {
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = previous;
+    });
+    result
 }
 
 #[cfg(test)]
@@ -1140,24 +1783,296 @@ pub(crate) fn with_test_db_path<T, F>(path: &std::path::Path, f: F) -> rusqlite:
 where
     F: FnOnce() -> rusqlite::Result<T>,
 {
-    DB_CONN.with(|cell| {
-        let previous = cell.borrow_mut().take();
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let conn = Connection::open(path)?;
-        configure_db_connection(&conn)?;
-        migrate_db(&conn)?;
-        *cell.borrow_mut() = Some(conn);
-        let result = f();
-        *cell.borrow_mut() = previous;
-        result
-    })
+    let previous = {
+        let _access_guard = db_access_gate()
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        DB_CONN.with(|slot| {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let previous = std::mem::replace(
+                &mut *slot,
+                DbConnectionSlot {
+                    connection: None,
+                    target: DbConnectionTarget::Path(path.to_path_buf()),
+                },
+            );
+            let setup: rusqlite::Result<()> = (|| {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|_| rusqlite::Error::InvalidPath(path.to_path_buf()))?;
+                }
+                let conn = Connection::open(path)?;
+                configure_db_connection(&conn)?;
+                migrate_db(&conn)?;
+                slot.connection = Some(conn);
+                Ok(())
+            })();
+            if let Err(err) = setup {
+                *slot = previous;
+                return Err(err);
+            }
+            Ok(previous)
+        })?
+    };
+    let result = f();
+    let _access_guard = db_access_gate()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    DB_CONN.with(|slot| {
+        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = previous;
+    });
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    fn db_runtime_test_path(label: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        std::env::var_os("ZSCLIP_TEST_TEMP_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("zsclip-{label}-{}-{nonce}.db", std::process::id()))
+    }
+
+    #[test]
+    fn wal_checkpoint_result_rejects_busy_and_partial_completion() {
+        assert!(validate_wal_checkpoint_result(0, -1, -1).is_ok());
+        assert!(validate_wal_checkpoint_result(0, 4, 4).is_ok());
+        assert!(validate_wal_checkpoint_result(1, 4, 4).is_err());
+        assert!(validate_wal_checkpoint_result(0, 4, 3).is_err());
+    }
+
+    #[test]
+    fn generation_checks_do_not_wait_for_an_active_app_data_replacement() {
+        let stable_generation = current_app_data_generation();
+        assert_eq!(stable_generation & 1, 0);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let replacement = thread::spawn(move || {
+            with_exclusive_app_data_replacement(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let observer = thread::spawn(move || {
+            let observed_generation = current_app_data_generation();
+            let guarded =
+                with_shared_app_data_generation(stable_generation, || "unexpected".to_string());
+            observed_tx.send((observed_generation, guarded)).unwrap();
+        });
+        let (observed_generation, guarded) = observed_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("generation observation must not block on restore");
+        assert_eq!(observed_generation & 1, 1);
+        assert!(guarded.is_none());
+
+        release_tx.send(()).unwrap();
+        observer.join().unwrap();
+        replacement.join().unwrap();
+        assert_eq!(current_app_data_generation() & 1, 0);
+    }
+
+    #[test]
+    fn exclusive_replacement_waits_for_work_and_reopens_other_thread_tls_connection() {
+        let db_file = db_runtime_test_path("exclusive-replacement");
+        let replacement_db_file = db_runtime_test_path("exclusive-replacement-source");
+        let replacement_conn = Connection::open(&replacement_db_file).unwrap();
+        configure_db_connection(&replacement_conn).unwrap();
+        migrate_db(&replacement_conn).unwrap();
+        replacement_conn
+            .execute(
+                "INSERT INTO items(category, kind, preview, signature, source_app) VALUES(0, 'text', 'after restore', 'after', 'test')",
+                [],
+            )
+            .unwrap();
+        replacement_conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .unwrap();
+        drop(replacement_conn);
+
+        let worker_db_file = db_file.clone();
+        let (operation_entered_tx, operation_entered_rx) = mpsc::channel();
+        let (release_operation_tx, release_operation_rx) = mpsc::channel();
+        let (replacement_done_tx, replacement_done_rx) = mpsc::channel();
+        let (observed_preview_tx, observed_preview_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            with_test_db_path(&worker_db_file, || {
+                with_db(|conn| {
+                    conn.execute(
+                        "INSERT INTO items(category, kind, preview, signature, source_app) VALUES(0, 'text', 'before restore', 'before', 'test')",
+                        [],
+                    )?;
+                    operation_entered_tx.send(()).unwrap();
+                    release_operation_rx.recv().unwrap();
+                    Ok(())
+                })?;
+                replacement_done_rx.recv().unwrap();
+                let preview: String = with_db(|conn| {
+                    conn.query_row("SELECT preview FROM items LIMIT 1", [], |row| row.get(0))
+                })?;
+                observed_preview_tx.send(preview).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        operation_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+
+        let (replacement_entered_tx, replacement_entered_rx) = mpsc::channel();
+        let releaser = thread::spawn(move || {
+            assert!(replacement_entered_rx
+                .recv_timeout(Duration::from_millis(100))
+                .is_err());
+            release_operation_tx.send(()).unwrap();
+            replacement_entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
+        });
+        with_exclusive_db_file_replacement(&db_file, || {
+            replacement_entered_tx.send(()).unwrap();
+            for sidecar in [
+                format!("{}-wal", db_file.to_string_lossy()),
+                format!("{}-shm", db_file.to_string_lossy()),
+            ] {
+                match std::fs::remove_file(&sidecar) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
+            std::fs::remove_file(&db_file).map_err(|err| err.to_string())?;
+            std::fs::copy(&replacement_db_file, &db_file).map_err(|err| err.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+        replacement_done_tx.send(()).unwrap();
+
+        releaser.join().unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            observed_preview_rx
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
+            "after restore"
+        );
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(&replacement_db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", replacement_db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(format!("{}-shm", replacement_db_file.to_string_lossy()));
+    }
+
+    #[test]
+    fn write_started_during_replacement_is_aborted_without_touching_new_database() {
+        let db_file = db_runtime_test_path("replacement-epoch");
+        let replacement_db_file = db_runtime_test_path("replacement-epoch-source");
+        let replacement_conn = Connection::open(&replacement_db_file).unwrap();
+        configure_db_connection(&replacement_conn).unwrap();
+        migrate_db(&replacement_conn).unwrap();
+        replacement_conn
+            .execute(
+                "INSERT INTO items(category, kind, preview, signature, source_app) VALUES(0, 'text', 'restored row', 'restored', 'test')",
+                [],
+            )
+            .unwrap();
+        checkpoint_connection(&replacement_conn).unwrap();
+        drop(replacement_conn);
+
+        let worker_db_file = db_file.clone();
+        let (worker_ready_tx, worker_ready_rx) = mpsc::channel();
+        let (start_stale_write_tx, start_stale_write_rx) = mpsc::channel();
+        let (stale_write_result_tx, stale_write_result_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            with_test_db_path(&worker_db_file, || {
+                worker_ready_tx.send(()).unwrap();
+                start_stale_write_rx.recv().unwrap();
+                let result = with_db_mut(|conn| {
+                    conn.execute(
+                        "INSERT INTO items(category, kind, preview, signature, source_app) VALUES(0, 'text', 'stale row', 'stale', 'test')",
+                        [],
+                    )?;
+                    Ok(())
+                });
+                stale_write_result_tx.send(result).unwrap();
+                Ok(())
+            })
+            .unwrap();
+        });
+        worker_ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+
+        with_exclusive_db_file_replacement(&db_file, || {
+            start_stale_write_tx.send(()).unwrap();
+            let err = stale_write_result_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("stale write must not wait for replacement to finish")
+                .expect_err("stale write must be rejected");
+            match err {
+                rusqlite::Error::SqliteFailure(error, _) => {
+                    assert_eq!(error.extended_code, rusqlite::ffi::SQLITE_ABORT);
+                }
+                other => panic!("unexpected stale write error: {other}"),
+            }
+
+            for sidecar in [
+                format!("{}-wal", db_file.to_string_lossy()),
+                format!("{}-shm", db_file.to_string_lossy()),
+            ] {
+                match std::fs::remove_file(&sidecar) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
+            std::fs::remove_file(&db_file).map_err(|err| err.to_string())?;
+            std::fs::copy(&replacement_db_file, &db_file).map_err(|err| err.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+
+        worker.join().unwrap();
+        let active_conn = Connection::open(&db_file).unwrap();
+        let restored_count: i64 = active_conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE signature='restored'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stale_count: i64 = active_conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE signature='stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(restored_count, 1);
+        assert_eq!(stale_count, 0);
+        drop(active_conn);
+
+        let _ = std::fs::remove_file(&db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(&replacement_db_file);
+        let _ = std::fs::remove_file(format!("{}-wal", replacement_db_file.to_string_lossy()));
+        let _ = std::fs::remove_file(format!("{}-shm", replacement_db_file.to_string_lossy()));
+    }
 
     #[test]
     fn item_text_update_reports_affected_row_and_updates_preview() {

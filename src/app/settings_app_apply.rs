@@ -8,6 +8,7 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
     let app = &mut *pst;
     app.settings.auto_start = is_autostart_enabled();
     st.draft = app.settings.clone();
+    st.app_data_generation = app.app_data_generation;
     st.vv_source_selected = normalize_source_tab(st.draft.vv_source_tab);
     st.vv_group_selected = st.draft.vv_group_id;
     st.group_view_tab = normalize_source_tab(app.tab_index);

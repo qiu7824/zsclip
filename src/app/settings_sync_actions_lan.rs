@@ -97,8 +97,6 @@ unsafe fn copy_settings_lan_pairing_url(
         crate::lan_sync::mobile_setup_url(&st.draft)
     };
     if let Some(url) = url {
-        skip_next_clipboard_update_for_all_hosts();
-        set_ignore_clipboard_for_all_hosts(1200);
         copy_text_to_clipboard_in_background(url);
         let sender = if action == SettingsAction::CopyLanPairUrl {
             st.btn_lan_copy_pair

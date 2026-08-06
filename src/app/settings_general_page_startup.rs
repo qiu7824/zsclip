@@ -36,10 +36,19 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
     st.chk_tray_icon = btn;
     let (_, btn) = b.own_toggle_row(
         st,
+        tr("软件图标显示", "Show app icon"),
+        IDC_SET_APP_ICON_VISIBLE,
+        sec0.left(),
+        sec0.row_y(3),
+        sec0.full_w(),
+    );
+    st.chk_app_icon = btn;
+    let (_, btn) = b.own_toggle_row(
+        st,
         "关闭不退出（托盘驻留）",
         IDC_SET_CLOSETRAY,
         sec0.left(),
-        sec0.row_y(3),
+        sec0.row_y(4),
         sec0.full_w(),
     );
     st.chk_close_tray = btn;
@@ -48,7 +57,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         "呼出后点击外部自动隐藏",
         IDC_SET_AUTOHIDE_BLUR,
         sec0.left(),
-        sec0.row_y(4),
+        sec0.row_y(5),
         sec0.full_w(),
     );
     st.chk_auto_hide_on_blur = btn;
@@ -57,7 +66,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         "贴边自动隐藏",
         IDC_SET_EDGEHIDE,
         sec0.left(),
-        sec0.row_y(5),
+        sec0.row_y(6),
         sec0.full_w(),
     );
     st.chk_edge_hide = btn;
@@ -66,7 +75,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         "悬停预览",
         IDC_SET_HOVERPREVIEW,
         sec0.left(),
-        sec0.row_y(6),
+        sec0.row_y(7),
         sec0.full_w(),
     );
     st.chk_hover_preview = btn;
@@ -75,7 +84,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         tr("VV 模式", "VV Mode"),
         IDC_SET_VV_MODE,
         sec0.left(),
-        sec0.row_y(7),
+        sec0.row_y(8),
         sec0.full_w(),
     );
     let _ = b.own_toggle_row(
@@ -83,7 +92,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         tr("显示图片缩略图", "Show image thumbnails"),
         IDC_SET_IMAGE_PREVIEW,
         sec0.left(),
-        sec0.row_y(8),
+        sec0.row_y(9),
         sec0.full_w(),
     );
     let _ = b.own_toggle_row(
@@ -91,7 +100,24 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         tr("快速删除按钮", "Quick delete button"),
         IDC_SET_QUICK_DELETE,
         sec0.left(),
-        sec0.row_y(9),
+        sec0.row_y(10),
+        sec0.full_w(),
+    );
+    let (_, btn) = b.own_toggle_row(
+        st,
+        tr("深色模式", "Dark mode"),
+        IDC_SET_DARK_MODE,
+        sec0.left(),
+        sec0.row_y(11),
+        sec0.full_w(),
+    );
+    st.chk_dark_mode = btn;
+    let _ = b.own_toggle_row(
+        st,
+        tr("右键菜单复制", "Copy in context menu"),
+        IDC_SET_CONTEXT_MENU_COPY,
+        sec0.left(),
+        sec0.row_y(12),
         sec0.full_w(),
     );
 
@@ -160,10 +186,19 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
     st.chk_persistent_search = btn;
     let (_, btn) = b.own_toggle_row(
         st,
+        tr("复制成功声音", "Copy success sound"),
+        IDC_SET_COPY_SOUND_ENABLE,
+        sec2.left(),
+        sec2.row_y(4),
+        sec2.full_w(),
+    );
+    st.chk_copy_sound = btn;
+    let (_, btn) = b.own_toggle_row(
+        st,
         "粘贴成功声音",
         IDC_SET_PASTE_SOUND_ENABLE,
         sec2.left(),
-        sec2.row_y(4),
+        sec2.row_y(5),
         sec2.full_w(),
     );
     st.chk_paste_sound = btn;
@@ -171,7 +206,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         st,
         "提示音：",
         sec2.left(),
-        sec2.label_y(5, settings_scale(24)),
+        sec2.label_y(6, settings_scale(24)),
         sec2.label_w(),
         settings_scale(24),
     );
@@ -180,7 +215,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         &paste_sound_display("default"),
         IDC_SET_PASTE_SOUND_KIND,
         sec2.field_x(),
-        sec2.row_y(5),
+        sec2.row_y(6),
         settings_scale(170),
     );
     if !st.cb_paste_sound.is_null() {
@@ -190,7 +225,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         st,
         "声音文件：",
         sec2.left(),
-        sec2.label_y(6, settings_scale(24)),
+        sec2.label_y(7, settings_scale(24)),
         sec2.label_w(),
         settings_scale(24),
     );
@@ -199,7 +234,7 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         &paste_sound_file_button_text(""),
         IDC_SET_PASTE_SOUND_PICK,
         sec2.field_x(),
-        sec2.row_y(6),
+        sec2.row_y(7),
         settings_scale(240),
     );
     if !st.btn_paste_sound_pick.is_null() {

@@ -87,7 +87,30 @@ pub(super) fn vv_backspace_count_for_target_identity(
     }
 }
 
-pub(super) unsafe fn vv_backspace_count_for_target_window(target: HWND, replaces_ime: bool) -> u8 {
+pub(super) fn vv_backspace_count_for_trigger_state(
+    process_name: &str,
+    root_process_name: &str,
+    target_class_name: &str,
+    replaces_ime: bool,
+    trigger_text_visible: bool,
+) -> u8 {
+    if trigger_text_visible {
+        2
+    } else {
+        vv_backspace_count_for_target_identity(
+            process_name,
+            root_process_name,
+            target_class_name,
+            replaces_ime,
+        )
+    }
+}
+
+pub(super) unsafe fn vv_backspace_count_for_target_window(
+    target: HWND,
+    replaces_ime: bool,
+    trigger_text_visible: bool,
+) -> u8 {
     let process_name = window_process_name(target);
     let root = WindowsWindowIdentityHost::new().root_handle(target);
     let root_process_name = if root.is_null() || root == target {
@@ -96,12 +119,44 @@ pub(super) unsafe fn vv_backspace_count_for_target_window(target: HWND, replaces
         window_process_name(root)
     };
     let target_class_name = vv_window_class_name(target);
-    vv_backspace_count_for_target_identity(
+    vv_backspace_count_for_trigger_state(
         &process_name,
         &root_process_name,
         &target_class_name,
         replaces_ime,
+        trigger_text_visible,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn english_vv_trigger_is_replaced_including_browser_targets() {
+        assert_eq!(
+            vv_backspace_count_for_trigger_state(
+                "chrome.exe",
+                "",
+                "Chrome_WidgetWin_1",
+                false,
+                true,
+            ),
+            2
+        );
+        assert_eq!(
+            vv_backspace_count_for_trigger_state("notepad.exe", "", "Edit", false, true),
+            2
+        );
+    }
+
+    #[test]
+    fn native_ime_trigger_does_not_delete_existing_text() {
+        assert_eq!(
+            vv_backspace_count_for_trigger_state("notepad.exe", "", "Edit", true, false),
+            0
+        );
+    }
 }
 
 unsafe fn vv_target_is_text_input_ready(target: HWND) -> bool {

@@ -5020,6 +5020,7 @@ fn main_row_popup_entries_reuse_row_plan_and_group_submenu() {
     let plan = main_row_menu_plan(MainRowMenuInput {
         selected_count: 1,
         has_unpinned: false,
+        context_menu_copy_enabled: true,
         current_kind: ClipKind::Text,
         grouping_enabled: true,
         current_can_ocr: false,
@@ -9662,6 +9663,101 @@ fn main_timer_ids_map_to_platform_neutral_tasks() {
 }
 
 #[test]
+fn image_paste_generation_rejects_old_and_duplicate_results() {
+    let first = next_image_paste_generation(0);
+    let second = next_image_paste_generation(first);
+    let mut pending = Some(second);
+
+    assert!(!consume_image_paste_generation(&mut pending, first));
+    assert_eq!(pending, Some(second));
+    assert!(consume_image_paste_generation(&mut pending, second));
+    assert_eq!(pending, None);
+    assert!(!consume_image_paste_generation(&mut pending, second));
+}
+
+#[test]
+fn main_image_paste_context_requires_visible_foreground_unchanged_item() {
+    assert!(image_paste_request_context_is_current(
+        ImagePasteRequestContext::MainList,
+        7,
+        true,
+        true,
+        Some(7),
+    ));
+    assert!(!image_paste_request_context_is_current(
+        ImagePasteRequestContext::MainList,
+        7,
+        false,
+        true,
+        Some(7),
+    ));
+    assert!(!image_paste_request_context_is_current(
+        ImagePasteRequestContext::MainList,
+        7,
+        true,
+        false,
+        Some(7),
+    ));
+    assert!(!image_paste_request_context_is_current(
+        ImagePasteRequestContext::MainList,
+        7,
+        true,
+        true,
+        Some(8),
+    ));
+    assert!(!image_paste_request_context_is_current(
+        ImagePasteRequestContext::VvPopup,
+        7,
+        false,
+        false,
+        Some(8),
+    ));
+    assert!(image_paste_request_context_is_current(
+        ImagePasteRequestContext::VvPopup,
+        7,
+        false,
+        true,
+        Some(8),
+    ));
+}
+
+#[test]
+fn image_paste_foreground_context_tracks_the_expected_window_root() {
+    assert!(image_paste_foreground_context_is_current(
+        ImagePasteHostActivationMode::Activating,
+        true,
+        false,
+    ));
+    assert!(!image_paste_foreground_context_is_current(
+        ImagePasteHostActivationMode::Activating,
+        false,
+        true,
+    ));
+    assert!(image_paste_foreground_context_is_current(
+        ImagePasteHostActivationMode::NoActivate,
+        false,
+        true,
+    ));
+    assert!(!image_paste_foreground_context_is_current(
+        ImagePasteHostActivationMode::NoActivate,
+        true,
+        false,
+    ));
+}
+
+#[test]
+fn image_paste_failures_never_execute_completion() {
+    for disposition in [
+        image_paste_result_disposition(false, false, false),
+        image_paste_result_disposition(true, false, false),
+        image_paste_result_disposition(true, true, false),
+    ] {
+        assert!(!disposition.executes_completion());
+    }
+    assert!(image_paste_result_disposition(true, true, true).executes_completion());
+}
+
+#[test]
 fn main_async_events_are_plain_platform_neutral_payloads() {
     let image = ImageThumbnail {
         bytes: vec![255, 0, 0, 255],
@@ -9670,11 +9766,25 @@ fn main_async_events_are_plain_platform_neutral_payloads() {
     };
     let paste = ImagePasteReadyResult {
         image: Some((vec![1, 2, 3, 4], 1, 1)),
+        generation: 3,
+        app_data_generation: 5,
+        item_id: 7,
+        context: ImagePasteRequestContext::MainList,
         target: NativeWindowToken(42),
         hide_main: true,
         backspaces: 2,
+        completion: main_paste_completion_plan(
+            MainPasteCompletionKind::AsyncImage,
+            MainPasteCompletionInput {
+                item_id: 7,
+                move_pasted_item_to_top: true,
+                click_hide: true,
+                paste_success_sound_enabled: false,
+            },
+        ),
     };
     let text = TextOperationReadyResult {
+        app_data_generation: 5,
         text: Some("hello".to_string()),
         error: None,
     };
@@ -9690,10 +9800,12 @@ fn main_async_events_are_plain_platform_neutral_payloads() {
     assert_eq!(
         MainAsyncEvent::ImageThumbnail(ImageThumbReadyResult {
             item_id: 7,
+            app_data_generation: 5,
             image: Some(image.clone()),
         }),
         MainAsyncEvent::ImageThumbnail(ImageThumbReadyResult {
             item_id: 7,
+            app_data_generation: 5,
             image: Some(image),
         })
     );

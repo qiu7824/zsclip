@@ -4,6 +4,22 @@ pub(super) unsafe fn settings_commit_collected_app_settings(
     st: &mut SettingsWndState,
     app: &mut AppState,
 ) {
+    let expected_generation = st.app_data_generation;
+    if app.app_data_generation != expected_generation
+        || crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+            settings_commit_collected_app_settings_locked(st, app);
+        })
+        .is_none()
+    {
+        apply_loaded_settings(st.parent_hwnd, app);
+        settings_apply_from_app(st);
+    }
+}
+
+unsafe fn settings_commit_collected_app_settings_locked(
+    st: &mut SettingsWndState,
+    app: &mut AppState,
+) {
     let baseline = SettingsAppEffectBaseline::capture(app);
     #[cfg(feature = "lan-sync")]
     crate::lan_sync::ensure_device_identity(&mut st.draft);
@@ -25,7 +41,7 @@ pub(super) unsafe fn settings_commit_collected_app_settings(
         app.tab_group_filters = [0, 0];
         remember_shared_tab_view_state(app);
     }
-    save_settings(&app.settings);
+    save_state_settings(app);
     if baseline.grouping_enabled != app.settings.grouping_enabled {
         app.clear_selection();
     }

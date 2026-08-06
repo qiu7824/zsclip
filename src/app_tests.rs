@@ -734,7 +734,7 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(capture.contains("pub(super) fn normalize_captured_image_rgba("));
     assert!(capture.contains("fn read_windows_clipboard_bitmap_rgba("));
     assert!(capture.contains("unsafe fn clipboard_source_app_name("));
-    assert!(capture.contains("WindowsClipboardHost::read_text"));
+    assert!(capture.contains("platform_clipboard::read_text_for_sequence(sequence)"));
     assert!(capture.contains("WindowsClipboardHost::read_image_rgba"));
     assert!(capture.contains("WindowsClipboardHost::read_file_paths"));
     assert!(capture.contains("platform_clipboard::snapshot_formats()"));
@@ -745,9 +745,9 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(capture.contains("platform_clipboard::url_format_payloads_from_snapshot(&snapshot)"));
     assert!(capture.contains("platform_clipboard::html_format_payload_from_snapshot(&snapshot)"));
     assert!(capture.contains("pub(super) unsafe fn capture_clipboard_guarded("));
-    assert!(
-        main_events.contains("MainTimerTask::ClipboardRetry => capture_clipboard_guarded(hwnd)")
-    );
+    assert!(main_events
+        .contains("MainTimerTask::ClipboardRetry => timer::stop(hwnd, ID_TIMER_CLIPBOARD_RETRY)"));
+    assert!(!main_events.contains("ClipboardRetry => capture_clipboard_guarded(hwnd)"));
     assert!(main_events.contains("UiEvent::ClipboardChanged => capture_clipboard_guarded(hwnd)"));
     assert!(main_events
         .contains("ApplicationEvent::ClipboardChanged { .. } => capture_clipboard_guarded(hwnd)"));
@@ -772,11 +772,11 @@ fn fragile_delayed_rendering_apps_are_skipped_before_data_reads() {
     assert!(capture.contains("\"catia\""));
     assert!(capture.contains("\"3dexperience\""));
     assert!(capture_block[skip_start..].contains("remember_clipboard_sequence(state, sequence)"));
-    assert!(capture_block[skip_start..].contains("reset_clipboard_retry(hwnd, state)"));
+    assert!(!capture_block.contains("schedule_clipboard_retry"));
     for read_call in [
         "platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)",
         "WindowsClipboardHost::read_file_paths()",
-        "WindowsClipboardHost::read_text()",
+        "platform_clipboard::read_text_for_sequence(sequence)",
         "guarded_read_clipboard_image_rgba()",
         "guarded_read_windows_clipboard_bitmap_rgba()",
         "html_format_payload_from_snapshot",
@@ -788,6 +788,58 @@ fn fragile_delayed_rendering_apps_are_skipped_before_data_reads() {
             "fragile delayed rendering skip must happen before {read_call}"
         );
     }
+}
+
+#[test]
+fn clipboard_sequence_capture_is_terminal_without_retry() {
+    let mut terminal_sequence = 0;
+    assert!(begin_clipboard_sequence_capture(&mut terminal_sequence, 41));
+    assert_eq!(terminal_sequence, 41);
+    assert!(!begin_clipboard_sequence_capture(
+        &mut terminal_sequence,
+        41
+    ));
+    assert!(begin_clipboard_sequence_capture(&mut terminal_sequence, 42));
+    assert!(begin_clipboard_sequence_capture(&mut terminal_sequence, 0));
+    assert!(begin_clipboard_sequence_capture(&mut terminal_sequence, 0));
+
+    let capture = main_clipboard_capture_source();
+    let main_events = main_events_source();
+    let constants = include_str!("app/constants.rs");
+    assert!(!capture.contains("schedule_clipboard_retry"));
+    assert!(!capture.contains("reset_clipboard_retry"));
+    assert!(!capture.contains("clipboard_retry_attempts"));
+    assert!(capture
+        .contains("let Some(text) = platform_clipboard::read_text_for_sequence(sequence) else"));
+    assert!(!constants.contains("CLIPBOARD_RETRY_DELAY"));
+    assert!(!constants.contains("CLIPBOARD_RETRY_MAX_ATTEMPTS"));
+    assert!(main_events
+        .contains("MainTimerTask::ClipboardRetry => timer::stop(hwnd, ID_TIMER_CLIPBOARD_RETRY)"));
+    assert!(!main_events.contains("ClipboardRetry => capture_clipboard_guarded(hwnd)"));
+
+    let capture_start = capture
+        .find("pub(super) unsafe fn capture_clipboard(")
+        .unwrap();
+    let capture_block = &capture[capture_start..];
+    let claim = capture_block
+        .find("begin_clipboard_sequence_capture(&mut state.clipboard_terminal_sequence, sequence)")
+        .unwrap();
+    for read in [
+        "platform_clipboard::snapshot_formats()",
+        "WindowsClipboardHost::read_file_paths()",
+        "platform_clipboard::read_text_for_sequence(sequence)",
+        "guarded_read_clipboard_image_rgba()",
+        "guarded_read_windows_clipboard_bitmap_rgba()",
+    ] {
+        assert!(
+            claim < capture_block.find(read).unwrap(),
+            "sequence must be terminal before {read}"
+        );
+    }
+
+    assert!(constants.contains("PASTE_FOCUS_RETRY_MAX_ATTEMPTS"));
+    assert!(main_events.contains("state.paste_focus_retry_attempts"));
+    assert!(main_events.contains("state.vv_popup_pending_retries"));
 }
 
 #[test]
@@ -1003,7 +1055,7 @@ fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
 
     assert!(!main_window.contains("release_list_memory"));
     assert!(main_window.contains("trim_current_working_set"));
-    assert!(main_window.contains("HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 3_000"));
+    assert!(main_window.contains("HIDDEN_MEMORY_RECLAIM_DELAY_MS: u32 = 800"));
     assert!(!show_block.contains("reload_state_from_db_persisting"));
     assert!(!show_block.contains("load_settings()"));
     assert!(!show_block.contains("sync_main_tray_icon"));
@@ -1015,6 +1067,24 @@ fn hidden_windows_keep_summary_rows_ready_for_the_next_popup() {
     assert!(events.contains("trim_hidden_process_working_set()"));
     assert!(host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN"));
     assert!(!host.contains("RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW"));
+}
+
+#[test]
+fn item_page_loads_use_short_lived_threads_and_drop_stale_results() {
+    let data = app_data_source();
+    let state = app_state_source();
+
+    assert!(!data.contains("ITEMS_PAGE_LOAD_SENDER"));
+    assert!(!data.contains("zsclip-items-loader"));
+    assert!(data.contains("ITEMS_PAGE_LOAD_QUEUE"));
+    assert!(data.contains("std::thread::spawn(run_items_page_load_worker)"));
+    assert!(data.contains("pending.hwnd == task.hwnd && pending.tab == task.tab"));
+    assert!(data.matches("page_request_is_latest(").count() >= 2);
+    assert!(data.contains("with_shared_app_data_generation(task.app_data_generation"));
+    assert!(data.contains("result.app_data_generation != state.app_data_generation"));
+    assert!(!data.contains("is_search_request"));
+    assert!(!data.contains("try_log_performance"));
+    assert!(!state.contains("self.search_on,\n            query,"));
 }
 
 #[test]
@@ -1281,11 +1351,13 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_AUTOSTART,
         IDC_SET_SILENTSTART,
         IDC_SET_TRAYICON,
+        IDC_SET_DARK_MODE,
         IDC_SET_CLOSETRAY,
         IDC_SET_CLICK_HIDE,
         IDC_SET_PASTE_MOVE_TOP,
         IDC_SET_DEDUPE_FILTER,
         IDC_SET_PERSIST_SEARCH,
+        IDC_SET_COPY_SOUND_ENABLE,
         IDC_SET_PASTE_SOUND_ENABLE,
         IDC_SET_SKIP_WINDOW_ENABLE,
         IDC_SET_RICH_TEXT,
@@ -1295,6 +1367,7 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_VV_MODE,
         IDC_SET_IMAGE_PREVIEW,
         IDC_SET_QUICK_DELETE,
+        IDC_SET_CONTEXT_MENU_COPY,
         IDC_SET_GROUP_ENABLE,
         IDC_SET_GROUP_TYPE_FILTER,
         IDC_SET_CLOUD_ENABLE,
@@ -1315,6 +1388,10 @@ fn settings_window_buttons_map_to_stable_commands() {
             ))
         );
     }
+    assert_eq!(
+        settings_page_to_sync_after_toggle(IDC_SET_COPY_SOUND_ENABLE),
+        Some(SettingsPage::General.index())
+    );
     assert_eq!(
         settings_page_to_sync_after_toggle(IDC_SET_PASTE_SOUND_ENABLE),
         Some(SettingsPage::General.index())
@@ -1481,6 +1558,7 @@ fn startup_data_reconcile_does_not_block_main_window_creation() {
 #[test]
 fn windows_boxed_result_message_transfers_payload_ownership_once() {
     let payload = Box::new(TextOperationReadyResult {
+        app_data_generation: 0,
         text: Some("hello".to_string()),
         error: None,
     });
@@ -1504,6 +1582,7 @@ fn windows_boxed_result_message_transfers_payload_ownership_once() {
 #[test]
 fn main_window_host_event_adapter_routes_async_and_ui_messages() {
     let payload = Box::new(TextOperationReadyResult {
+        app_data_generation: 0,
         text: Some("hello".to_string()),
         error: None,
     });
@@ -1920,6 +1999,10 @@ fn windows_clipboard_host_implements_clipboard_trait_contract() {
         clipboard_host.contains("fn read_text"),
         "missing clipboard text read"
     );
+    assert!(clipboard_host.contains("pub(crate) fn read_text_for_sequence"));
+    assert!(clipboard_host.contains("decode_bounded_cf_unicode_text"));
+    assert!(clipboard_host.contains("MAX_CF_UNICODETEXT_BYTES"));
+    assert!(!clipboard_host.contains("clipboard.get_text()"));
     assert!(
         clipboard_host.contains("fn write_text"),
         "missing clipboard text write"
@@ -3195,6 +3278,27 @@ fn windows_main_sync_adapters_live_outside_app_rs() {
 }
 
 #[test]
+fn webdav_restore_loads_restored_settings_before_persisting_sync_status() {
+    let cloud = main_cloud_sync_source();
+    let branch_start = cloud.find("if outcome.reload_settings {").unwrap();
+    let branch_end = cloud[branch_start..]
+        .find("} else if outcome.reload_data {")
+        .map(|offset| branch_start + offset)
+        .unwrap();
+    let branch = &cloud[branch_start..branch_end];
+    let apply = branch.find("apply_loaded_settings(hwnd, state);").unwrap();
+    let status = branch
+        .find("state.settings.cloud_last_sync_status = outcome.status_text;")
+        .unwrap();
+    let save = branch.find("save_state_settings(state);").unwrap();
+
+    assert!(
+        apply < status && status < save,
+        "restored settings must be loaded before the outcome status is persisted"
+    );
+}
+
+#[test]
 fn windows_main_runtime_state_definition_lives_outside_app_rs() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let state = app_state_source();
@@ -4345,6 +4449,7 @@ fn windows_settings_toggle_state_lives_outside_hosts_rs() {
     assert!(toggle_general.contains("IDC_SET_RICH_TEXT"));
     assert!(toggle_general.contains("rich_text_clipboard_enabled"));
     assert!(toggle_general.contains("st.draft.quick_delete_button"));
+    assert!(toggle_general.contains("st.draft.context_menu_copy_enabled"));
     assert!(toggle_cloud.contains("pub(super) fn settings_toggle_cloud_get"));
     assert!(toggle_cloud.contains("pub(super) fn settings_toggle_cloud_flip"));
     assert!(toggle_cloud.contains("IDC_SET_CLOUD_ENABLE"));
@@ -4953,12 +5058,18 @@ fn windows_vv_popup_window_presentation_uses_transient_host() {
     assert!(!destroy_block.contains("platform_window::destroy(popup)"));
     assert!(proc_block.contains("vv_popup_layout_for_window(hwnd).with_width"));
     assert!(proc_block.contains("WM_SIZE"));
+    assert!(proc_block.contains("WM_DPICHANGED"));
+    assert!(proc_block.contains("vv_popup_move_near_target(&*ptr, hwnd)"));
+    assert!(vv_popup.contains("draw_text_ex_px("));
+    assert!(!vv_popup.contains("draw_text_ex(\n"));
     assert!(!hosts.contains("pub(super) struct WindowsTransientWindowHost"));
     assert!(transient_host.contains("pub(super) struct WindowsTransientWindowHost"));
     assert!(
         transient_host.contains("impl NativeTransientWindowHost for WindowsTransientWindowHost")
     );
     assert!(transient_host.contains("WS_POPUP | WS_THICKFRAME"));
+    assert!(transient_host.contains("AdjustWindowRectExForDpi"));
+    assert!(transient_host.contains("transient_outer_bounds_for_client(bounds)"));
     assert!(transient_host.contains("fn destroy_transient_window(&mut self"));
     assert!(ime_host.contains("pub(crate) struct WindowsImeHost"));
     assert!(ime_host.contains("impl NativeImeHost for WindowsImeHost"));
@@ -5663,6 +5774,154 @@ fn windows_main_event_executor_lives_outside_app_rs() {
 }
 
 #[test]
+fn windows_async_image_paste_consumes_latest_request_before_side_effects() {
+    let main_events = main_events_source();
+    let start = main_events
+        .find("MainAsyncEvent::ImagePaste(payload) =>")
+        .unwrap();
+    let end = main_events[start..]
+        .find("MainAsyncEvent::ImageOcr(payload) =>")
+        .map(|offset| start + offset)
+        .unwrap();
+    let branch = &main_events[start..end];
+
+    let consume = branch.find("consume_image_paste_generation(").unwrap();
+    let context = branch
+        .find("image_paste_request_context_is_current(")
+        .unwrap();
+    let write = branch.find("write_image_rgba(").unwrap();
+    let target = branch.find("identity_host.exists(target)").unwrap();
+    let complete = branch
+        .find("ImagePasteResultDisposition::Complete =>")
+        .unwrap();
+    let queue = branch
+        .find("paste_after_async_image_ready_to_target(")
+        .unwrap();
+
+    assert!(consume < context);
+    assert!(context < write);
+    assert!(write < target);
+    assert!(target < complete);
+    assert!(complete < queue);
+    assert!(!branch.contains("execute_paste_completion_plan("));
+    assert!(branch.contains("payload.context == ImagePasteRequestContext::VvPopup"));
+    assert!(branch.contains("ImagePasteHostActivationMode::NoActivate"));
+    assert!(branch.contains("foreground_root == host_root"));
+    assert!(branch.contains("foreground_root == target_root"));
+}
+
+#[test]
+fn windows_async_image_completion_runs_only_after_ordered_replacement_input_is_sent() {
+    let main_events = main_events_source();
+    let start = main_events.find("MainTimerTask::Paste =>").unwrap();
+    let end = main_events[start..]
+        .find("\n        MainTimerTask::SearchDebounce")
+        .map(|offset| start + offset)
+        .unwrap();
+    let branch = &main_events[start..end];
+
+    let backspace = branch
+        .find("paste_backspaces = state.paste_backspace_count;")
+        .unwrap();
+    let replacement_input = branch
+        .find("platform_input::send_backspaces_then_ctrl_v(paste_backspaces)")
+        .unwrap();
+    let input_success = branch.find("if input_sent {").unwrap();
+    let completion = branch
+        .find("execute_pending_paste_completion_after_focus(")
+        .unwrap();
+    let failure_clear = branch
+        .find("clear_pending_paste_completion(state)")
+        .unwrap();
+
+    assert!(backspace < replacement_input);
+    assert!(replacement_input < input_success);
+    assert!(input_success < completion);
+    assert!(failure_clear < replacement_input);
+    assert!(branch.contains("show_paste_failure_message(hwnd, &*ptr, paste_target)"));
+    assert!(!branch.contains("append_paste_diagnostic"));
+    assert!(branch.contains("let mut should_send_paste = false;"));
+}
+
+#[test]
+fn windows_clipboard_paste_defers_success_side_effects_until_input_succeeds() {
+    let main_paste = main_paste_source();
+    let start = main_paste
+        .find("unsafe fn execute_paste_completion_plan_to_target")
+        .unwrap();
+    let end = main_paste[start..]
+        .find("\npub(super) fn clear_pending_paste_completion")
+        .map(|offset| start + offset)
+        .unwrap();
+    let branch = &main_paste[start..end];
+
+    let defer = branch.find("if plan.send_paste_after_clipboard {").unwrap();
+    let queue = branch
+        .find("paste_after_async_image_ready_to_target(")
+        .unwrap();
+    let promote = branch.find("maybe_promote_pasted_item(").unwrap();
+
+    assert!(defer < queue);
+    assert!(queue < promote);
+    assert!(branch.contains("deferred_completion.send_paste_after_clipboard = false;"));
+    assert!(branch.contains("deferred_completion.play_success_sound = false;"));
+
+    let ready_start = main_paste
+        .find("pub(super) unsafe fn paste_after_clipboard_ready_to_target")
+        .unwrap();
+    let ready_end = main_paste[ready_start..]
+        .find("\npub(super) unsafe fn paste_after_async_image_ready_to_target")
+        .map(|offset| ready_start + offset)
+        .unwrap();
+    let ready = &main_paste[ready_start..ready_end];
+    assert!(ready.contains("state.pending_paste_hide_main = hide_main;"));
+    assert!(ready.contains(
+        "queue_paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);"
+    ));
+}
+
+#[test]
+fn windows_text_processing_skips_only_the_successful_programmatic_clipboard_update() {
+    let main_events = main_events_source();
+    let start = main_events
+        .find("pub(super) unsafe fn handle_text_processing_result")
+        .unwrap();
+    let branch = &main_events[start..];
+
+    let write = branch
+        .find("let clipboard_written = platform_clipboard::WindowsClipboardHost::write_text")
+        .unwrap();
+    let success = branch.find("if clipboard_written {").unwrap();
+    let skip = branch
+        .find("skip_next_clipboard_update_for_all_hosts();")
+        .unwrap();
+    let failure = branch
+        .find("show_clipboard_write_failure_message(hwnd);")
+        .unwrap();
+
+    assert!(write < success);
+    assert!(success < skip);
+    assert!(skip < failure);
+}
+
+#[test]
+fn windows_clipboard_capture_skips_database_failures_and_commits_png_files() {
+    let capture = main_clipboard_capture_source();
+    let state_runtime = app_state_runtime_source();
+    let data = app_data_source();
+
+    assert!(capture.matches("add_clip_item_for_capture(").count() >= 3);
+    assert!(capture.contains("finish_captured_item_add(hwnd, state, result)"));
+    assert!(capture.contains("play_copy_success_sound_if_enabled(state, applied)"));
+    assert!(capture.contains("Err(()) => false"));
+    assert!(!capture.contains("schedule_clipboard_retry"));
+    assert!(state_runtime.contains("ClipItemAddOutcome::RetryableFailure"));
+    assert!(state_runtime.contains("item.id = insert_result.unwrap_or(0);"));
+    assert!(data.contains("png_writer.finish().ok()?;"));
+    assert!(data.contains("sync_file.sync_all().ok()?;"));
+}
+
+#[test]
 fn windows_main_entry_adapter_lives_outside_app_rs() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let main_entry = main_entry_source();
@@ -5776,22 +6035,36 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(workflow.contains("Check: ShouldDisableAutostart"));
     assert!(workflow.contains("Flags: deletevalue"));
     assert!(workflow.contains(&format!("default: \"{app_version}\"")));
-    assert!(workflow.contains(&format!("zsclip-v{app_version}-resources.zip")));
+    assert!(workflow.contains("name: Resolve release version"));
+    assert!(workflow.contains("RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}"));
+    assert!(workflow.contains("mac_short_version: ${{ steps.version.outputs.mac_short_version }}"));
+    assert!(
+        workflow.contains("mac_bundle_version: ${{ steps.version.outputs.mac_bundle_version }}")
+    );
+    assert!(workflow.contains("mac_bundle_epoch=$((version_major * 100 + version_minor + 1))"));
+    assert!(workflow
+        .contains("mac_bundle_version=\"$mac_bundle_epoch.$version_patch.$version_revision\""));
+    assert!(workflow.contains("<string>__MAC_SHORT_VERSION__</string>"));
+    assert!(workflow.contains("<string>__MAC_BUNDLE_VERSION__</string>"));
+    assert!(!workflow.contains("<string>__RELEASE_VERSION__</string>"));
+    assert!(workflow.contains("$resourceName = \"zsclip-v$($env:RELEASE_VERSION)-resources\""));
+    assert!(workflow.contains("resource_asset=\"zsclip-v${RELEASE_VERSION}-resources.zip\""));
     assert!(workflow.contains("name: Android test APK"));
     assert!(workflow.contains("gradle assembleDebug"));
     assert!(workflow.contains("zsclip-android-test.apk"));
     assert!(workflow.contains("- android"));
     assert!(workflow.contains("Package resource bundle"));
-    assert!(workflow.contains(&format!(
-        "release-assets/zsclip-v{app_version}-resources.zip"
-    )));
+    assert!(workflow.contains("release_asset_paths+=(\"release-assets/$asset\")"));
     assert_eq!(zsui_revision.len(), 40);
     assert!(zsui_revision.chars().all(|ch| ch.is_ascii_hexdigit()));
     assert_eq!(workflow.matches("checkout --detach FETCH_HEAD").count(), 3);
-    assert_eq!(native_hosts.matches("checkout --detach FETCH_HEAD").count(), 2);
+    assert_eq!(
+        native_hosts.matches("checkout --detach FETCH_HEAD").count(),
+        2
+    );
     assert!(!workflow.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
     assert!(!native_hosts.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
-    assert!(workflow.contains("release-assets/zsclip-android-test.apk"));
+    assert!(workflow.contains("zsclip-android-test.apk"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
 
@@ -6129,6 +6402,14 @@ fn windows_main_renderer_executes_shared_render_plan_outside_app_rs() {
     assert!(renderer.contains("platform_gdi::begin_paint"));
     assert!(renderer.contains("platform_gdi::end_paint"));
     assert!(renderer.contains("platform_gdi::copy_bits"));
+}
+
+#[test]
+fn windows_main_renderer_uses_the_loaded_application_icon_for_the_title() {
+    let renderer = include_str!("../src/app/main_renderer.rs");
+
+    assert!(renderer.contains("matches!(command.kind, MainIconKind::App) && app_icon != 0"));
+    assert!(renderer.contains("draw_main_icon_command(memdc, *command, dark, state.icons.app)"));
 }
 
 #[test]
@@ -6925,6 +7206,19 @@ fn windows_main_search_control_operations_use_search_control_host() {
         "platform_gdi::create_font_w(\n        -platform_dpi::scale_for_window(state.hwnd, 14)"
     ));
     assert!(!production.contains("platform_gdi::delete_object((*ptr).search_font"));
+}
+
+#[test]
+fn windows_main_search_edit_uses_the_active_theme_colors() {
+    let main_entry = include_str!("../src/app/main_entry.rs");
+    let main_search = include_str!("../src/app/main_search.rs");
+    let window_effects = include_str!("../src/app/settings_app_window_effects.rs");
+
+    assert!(main_entry.contains("WM_CTLCOLOREDIT => main_search_control_color"));
+    assert!(main_search.contains("set_bk_color(hdc, state.theme.control_bg)"));
+    assert!(main_search.contains("set_text_color(hdc, state.theme.text)"));
+    assert!(main_search.contains("create_solid_brush(state.theme.control_bg)"));
+    assert!(window_effects.contains("refresh_search_theme_resources(app)"));
 }
 
 #[test]

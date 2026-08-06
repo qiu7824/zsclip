@@ -388,6 +388,7 @@ impl NativeHostRowPopupMenuInput {
             menu: MainRowMenuInput {
                 selected_count: 1,
                 has_unpinned: true,
+                context_menu_copy_enabled: true,
                 current_kind: ClipKind::Text,
                 grouping_enabled: true,
                 current_can_ocr: false,
@@ -432,6 +433,7 @@ pub(crate) fn native_host_row_popup_menu_input_for_projection(
         menu: MainRowMenuInput {
             selected_count,
             has_unpinned,
+            context_menu_copy_enabled: true,
             current_kind,
             grouping_enabled,
             current_can_ocr: matches!(current_kind, ClipKind::Image | ClipKind::Files),

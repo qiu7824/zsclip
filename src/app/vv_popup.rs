@@ -97,7 +97,10 @@ fn vv_popup_layout_for_window(hwnd: HWND) -> MainVvPopupLayout {
 
 unsafe fn draw_vv_popup_text_command(hdc: HDC, command: &MainVvPopupTextCommand, th: Theme) {
     let rect: RECT = command.rect.into();
-    draw_text_ex(
+    // The render plan has already converted this size to physical pixels for
+    // the target monitor, so using the regular DPI-scaled font path here would
+    // apply the monitor scale twice.
+    draw_text_ex_px(
         hdc as _,
         &command.text,
         &rect,
@@ -411,6 +414,7 @@ pub(super) unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
     state.vv_popup_pending_retries = 0;
     state.vv_popup_target = null_mut();
     state.vv_popup_replaces_ime = false;
+    state.vv_popup_trigger_text_visible = false;
     state.vv_popup_group_id = 0;
     state.vv_popup_items.clear();
     vv_popup_sync_hook_state(false, null_mut());
@@ -420,13 +424,47 @@ pub(super) unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VvImeTriggerPlan {
+    send_escape: bool,
+    replaces_ime: bool,
+    trigger_text_visible: bool,
+}
+
+fn vv_ime_trigger_plan(
+    input_mode: WindowsImeInputMode,
+    ime_overlay_detected: bool,
+) -> VvImeTriggerPlan {
+    match input_mode {
+        WindowsImeInputMode::Native => VvImeTriggerPlan {
+            send_escape: true,
+            replaces_ime: ime_overlay_detected,
+            trigger_text_visible: false,
+        },
+        WindowsImeInputMode::Alphanumeric => VvImeTriggerPlan {
+            send_escape: false,
+            replaces_ime: false,
+            trigger_text_visible: true,
+        },
+        WindowsImeInputMode::Unknown => VvImeTriggerPlan {
+            send_escape: true,
+            replaces_ime: ime_overlay_detected,
+            trigger_text_visible: false,
+        },
+    }
+}
+
 pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool {
+    if state.app_data_generation != crate::db_runtime::current_app_data_generation() {
+        return false;
+    }
     state.vv_popup_group_id = vv_popup_resolved_group_id(state, state.settings.vv_group_id);
     vv_popup_rebuild_items(state);
     state.vv_popup_target = target;
     state.vv_popup_pending_retries = 0;
     state.vv_popup_visible = true;
     state.vv_popup_replaces_ime = false;
+    state.vv_popup_trigger_text_visible = false;
     vv_popup_sync_hook_state(true, target);
     let popup = vv_popup_hwnd(hwnd);
     if !vv_popup_move_near_target(state, popup) {
@@ -434,7 +472,7 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
         return false;
     }
     let focus_hwnd = vv_focus_hwnd_for_target(target);
-    let ime_replaced_trigger = if focus_hwnd.is_null() {
+    let ime_overlay_detected = if focus_hwnd.is_null() {
         false
     } else {
         let work_area = platform_monitor::nearest_work_rect_for_window(focus_hwnd);
@@ -446,11 +484,60 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
         )
         .is_some()
     };
-    send_escape_key();
-    state.vv_popup_replaces_ime = ime_replaced_trigger;
+    let ime_plan = vv_ime_trigger_plan(
+        WindowsImeHost::new().input_mode(focus_hwnd),
+        ime_overlay_detected,
+    );
+    if ime_plan.send_escape {
+        send_escape_key();
+    }
+    state.vv_popup_replaces_ime = ime_plan.replaces_ime;
+    state.vv_popup_trigger_text_visible = ime_plan.trigger_text_visible;
     platform_gdi::invalidate_rect(popup, null(), 1);
     let _ = vv_popup_move_near_target(state, popup);
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_mode_without_overlay_escapes_then_removes_literal_trigger() {
+        let plan = vv_ime_trigger_plan(WindowsImeInputMode::Native, false);
+
+        assert!(plan.send_escape);
+        assert!(!plan.replaces_ime);
+        assert_eq!(
+            vv_backspace_count_for_trigger_state(
+                "notepad.exe",
+                "",
+                "Edit",
+                plan.replaces_ime,
+                plan.trigger_text_visible,
+            ),
+            2
+        );
+    }
+
+    #[test]
+    fn english_mode_keeps_escape_up_and_replaces_vv_even_in_browser() {
+        let plan = vv_ime_trigger_plan(WindowsImeInputMode::Alphanumeric, false);
+
+        assert!(!plan.send_escape);
+        assert!(!plan.replaces_ime);
+        assert!(plan.trigger_text_visible);
+        assert_eq!(
+            vv_backspace_count_for_trigger_state(
+                "chrome.exe",
+                "",
+                "Chrome_WidgetWin_1",
+                plan.replaces_ime,
+                plan.trigger_text_visible,
+            ),
+            2
+        );
+    }
 }
 
 unsafe extern "system" fn vv_popup_wnd_proc(
@@ -565,6 +652,15 @@ unsafe extern "system" fn vv_popup_wnd_proc(
             0
         }
         WM_SIZE => {
+            platform_gdi::invalidate_rect(hwnd, null(), 1);
+            0
+        }
+        WM_DPICHANGED => {
+            let main_hwnd = platform_window::user_data(hwnd) as HWND;
+            let ptr = get_state_ptr(main_hwnd);
+            if !ptr.is_null() && (*ptr).vv_popup_visible {
+                let _ = vv_popup_move_near_target(&*ptr, hwnd);
+            }
             platform_gdi::invalidate_rect(hwnd, null(), 1);
             0
         }

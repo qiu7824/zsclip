@@ -4,6 +4,7 @@ pub(super) struct SettingsAppEffectBaseline {
     pub(super) grouping_enabled: bool,
     pub(super) auto_start: bool,
     pub(super) tray_icon_enabled: bool,
+    pub(super) dark_mode_enabled: bool,
     pub(super) hotkey: String,
     pub(super) plain_hotkey: String,
     pub(super) edge_auto_hide: bool,
@@ -17,6 +18,7 @@ impl SettingsAppEffectBaseline {
             grouping_enabled: app.settings.grouping_enabled,
             auto_start: app.settings.auto_start,
             tray_icon_enabled: app.settings.tray_icon_enabled,
+            dark_mode_enabled: app.settings.dark_mode_enabled,
             hotkey: format!(
                 "{}+{}+{}",
                 app.settings.hotkey_enabled, app.settings.hotkey_mod, app.settings.hotkey_key

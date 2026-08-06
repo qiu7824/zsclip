@@ -15,11 +15,14 @@ fn is_general_surface_control(id: isize) -> bool {
         IDC_SET_AUTOSTART
             | IDC_SET_SILENTSTART
             | IDC_SET_TRAYICON
+            | IDC_SET_APP_ICON_VISIBLE
+            | IDC_SET_DARK_MODE
             | IDC_SET_CLOSETRAY
             | IDC_SET_CLICK_HIDE
             | IDC_SET_PASTE_MOVE_TOP
             | IDC_SET_DEDUPE_FILTER
             | IDC_SET_PERSIST_SEARCH
+            | IDC_SET_COPY_SOUND_ENABLE
             | IDC_SET_PASTE_SOUND_ENABLE
             | IDC_SET_SKIP_WINDOW_ENABLE
             | IDC_SET_RICH_TEXT
@@ -29,6 +32,7 @@ fn is_general_surface_control(id: isize) -> bool {
             | IDC_SET_VV_MODE
             | IDC_SET_IMAGE_PREVIEW
             | IDC_SET_QUICK_DELETE
+            | IDC_SET_CONTEXT_MENU_COPY
             | IDC_SET_MAX
             | IDC_SET_POSMODE
             | IDC_SET_PASTE_SOUND_KIND

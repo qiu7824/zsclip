@@ -26,22 +26,22 @@ pub(super) unsafe fn execute_main_menu_command(hwnd: HWND, intent: MainMenuComma
                 }
                 MainTrayActionPlan::SetClipboardCapture { enabled } => {
                     state.settings.clipboard_capture_enabled = enabled;
-                    save_settings(&state.settings);
+                    save_state_settings(state);
                     if !enabled {
                         let sequence = platform_clipboard::WindowsClipboardHost::sequence_number();
                         if sequence != 0 {
                             state.last_clipboard_seq = sequence;
+                            state.clipboard_terminal_sequence = sequence;
                         }
-                        reset_clipboard_retry(hwnd, state);
                     }
                 }
                 #[cfg(feature = "lan-sync")]
                 MainTrayActionPlan::SetLanSync { enabled } => {
                     state.settings.lan_sync_enabled = enabled;
                     if lan_sync::ensure_device_identity(&mut state.settings) {
-                        save_settings(&state.settings);
+                        save_state_settings(state);
                     }
-                    save_settings(&state.settings);
+                    save_state_settings(state);
                     refresh_lan_latest_from_db(&state.settings);
                     lan_sync::refresh_service(hwnd, &state.settings);
                     request_settings_window_repaint(state.settings_hwnd);
@@ -148,9 +148,10 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
         }
         MainTimerTask::Paste => {
             timer::stop(hwnd, ID_TIMER_PASTE);
-            let mut should_send_paste = true;
+            let mut should_send_paste = false;
             let mut should_play_sound = false;
             let mut paste_target = null_mut();
+            let mut paste_backspaces = 0;
             let mut retry_delay_ms = None;
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
@@ -158,12 +159,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 let target = state.paste_target_override;
                 paste_target = target;
                 if !target.is_null() {
-                    let foreground_requested =
-                        WindowsPasteTargetHost::new().force_paste_target_foreground(target);
-                    append_paste_diagnostic(&format!(
-                        "paste_timer target={target:p} foreground_requested={foreground_requested} foreground_now={:p}",
-                        WindowsWindowIdentityHost::new().foreground_handle()
-                    ));
+                    WindowsPasteTargetHost::new().force_paste_target_foreground(target);
                     restore_hotkey_focus_target(state, target);
                     should_send_paste = can_send_ctrl_v_to_target(state, target);
                     if !should_send_paste {
@@ -178,10 +174,6 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                         if retry_delay_ms.is_some() {
                             state.paste_focus_retry_attempts =
                                 state.paste_focus_retry_attempts.saturating_add(1);
-                            append_paste_diagnostic(&format!(
-                                "paste_retry target={target:p} attempt={} foreground={foreground:p}",
-                                state.paste_focus_retry_attempts
-                            ));
                         }
                     }
                 }
@@ -190,7 +182,9 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     return;
                 }
                 if should_send_paste {
-                    platform_input::send_backspace_times(state.paste_backspace_count);
+                    paste_backspaces = state.paste_backspace_count;
+                } else {
+                    clear_pending_paste_completion(state);
                 }
                 state.paste_backspace_count = 0;
                 state.paste_focus_retry_attempts = 0;
@@ -199,21 +193,23 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 should_play_sound = state.settings.paste_success_sound_enabled;
             }
             if should_send_paste {
-                append_paste_diagnostic(&format!("paste_send target={paste_target:p} ctrl_v=true"));
-                platform_input::send_ctrl_v();
-                if should_play_sound {
-                    let ptr = get_state_ptr(hwnd);
-                    if !ptr.is_null() {
-                        play_paste_success_sound(
-                            &(*ptr).settings.paste_success_sound_kind,
-                            &(*ptr).settings.paste_success_sound_path,
-                        );
+                let input_sent = platform_input::send_backspaces_then_ctrl_v(paste_backspaces);
+                let ptr = get_state_ptr(hwnd);
+                if !ptr.is_null() {
+                    if input_sent {
+                        execute_pending_paste_completion_after_focus(hwnd, &mut *ptr);
+                        if should_play_sound {
+                            play_paste_success_sound(
+                                &(*ptr).settings.paste_success_sound_kind,
+                                &(*ptr).settings.paste_success_sound_path,
+                            );
+                        }
+                    } else {
+                        clear_pending_paste_completion(&mut *ptr);
+                        show_paste_failure_message(hwnd, &*ptr, paste_target);
                     }
                 }
             } else if !ptr.is_null() {
-                append_paste_diagnostic(&format!(
-                    "paste_send target={paste_target:p} ctrl_v=false"
-                ));
                 show_paste_failure_message(hwnd, &*ptr, paste_target);
             }
         }
@@ -242,7 +238,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 }
             }
         }
-        MainTimerTask::ClipboardRetry => capture_clipboard_guarded(hwnd),
+        MainTimerTask::ClipboardRetry => timer::stop(hwnd, ID_TIMER_CLIPBOARD_RETRY),
         MainTimerTask::DpiFit => {
             timer::stop(hwnd, ID_TIMER_DPI_FIT);
             let ptr = get_state_ptr(hwnd);
@@ -354,6 +350,14 @@ pub(super) unsafe fn dispatch_main_ui_event(hwnd: HWND, event: UiEvent) -> bool 
             handle_main_app_activation_changed(hwnd, active)
         }
         UiEvent::SystemMetricsChanged => handle_main_system_metrics_changed(hwnd),
+        UiEvent::ThemeChanged => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() {
+                (*ptr).theme = Theme::default();
+            }
+            WindowsMainWindowHost::new(Some(wnd_proc)).apply_main_window_appearance(hwnd);
+            repaint_main_window(hwnd, true);
+        }
         UiEvent::WindowMoved => handle_main_window_moved(hwnd),
         UiEvent::WindowMoveCompleted => handle_main_window_move_completed(hwnd),
         UiEvent::DpiChanged { dpi } => handle_main_dpi_changed(hwnd, dpi),
@@ -455,25 +459,118 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 return;
             }
             let state = &mut *ptr;
-            if let Some((bytes, width, height)) = payload.image {
-                if platform_clipboard::WindowsClipboardHost::write_image_rgba(&bytes, width, height)
-                {
-                    state.note_programmatic_clipboard_signature(
-                        image_content_signature(&bytes, width, height),
-                        1200,
+            if !consume_image_paste_generation(
+                &mut state.pending_image_paste_generation,
+                payload.generation,
+            ) {
+                return;
+            }
+            if payload.app_data_generation != state.app_data_generation
+                || state.app_data_generation != crate::db_runtime::current_app_data_generation()
+            {
+                clear_hotkey_passthrough_state(state);
+                return;
+            }
+            let identity_host = WindowsWindowIdentityHost::new();
+            let target = payload.target.0 as HWND;
+            let host_visible =
+                platform_window::is_visible(hwnd) && !platform_window::is_minimized(hwnd);
+            let foreground = identity_host.foreground_handle();
+            let foreground_root = identity_host.root_handle(foreground);
+            let host_root = identity_host.root_handle(hwnd);
+            let target_root = identity_host.root_handle(target);
+            let host_matches_foreground_root =
+                !host_root.is_null() && !foreground_root.is_null() && foreground_root == host_root;
+            let target_matches_foreground_root = !target_root.is_null()
+                && !foreground_root.is_null()
+                && foreground_root == target_root;
+            let activation_mode = if payload.context == ImagePasteRequestContext::VvPopup
+                || state.role == WindowRole::Quick
+                || state.main_window_noactivate
+            {
+                ImagePasteHostActivationMode::NoActivate
+            } else {
+                ImagePasteHostActivationMode::Activating
+            };
+            let foreground_context_is_current = image_paste_foreground_context_is_current(
+                activation_mode,
+                host_matches_foreground_root,
+                target_matches_foreground_root,
+            );
+            let current_item_id = state.current_item().map(|item| item.id);
+            if !image_paste_request_context_is_current(
+                payload.context,
+                payload.item_id,
+                host_visible,
+                foreground_context_is_current,
+                current_item_id,
+            ) {
+                clear_hotkey_passthrough_state(state);
+                return;
+            }
+
+            let image_available = payload.image.is_some();
+            let clipboard_written = payload
+                .image
+                .as_ref()
+                .map(|(bytes, width, height)| {
+                    platform_clipboard::WindowsClipboardHost::write_image_rgba(
+                        bytes, *width, *height,
+                    )
+                })
+                .unwrap_or(false);
+            if clipboard_written {
+                let (bytes, width, height) = payload.image.as_ref().unwrap();
+                state.note_programmatic_clipboard_signature(
+                    image_content_signature(bytes, *width, *height),
+                    1200,
+                );
+                set_ignore_clipboard_for_all_hosts(1200);
+            }
+            let target_available = clipboard_written && identity_host.exists(target);
+            let disposition = image_paste_result_disposition(
+                image_available,
+                clipboard_written,
+                target_available,
+            );
+            match disposition {
+                ImagePasteResultDisposition::ImageUnavailable => {
+                    clear_hotkey_passthrough_state(state);
+                    show_native_dialog_message(
+                        hwnd,
+                        tr("图片粘贴", "Image Paste"),
+                        tr(
+                            "图片数据已丢失或无法读取，请重新复制该图片。",
+                            "The image data is missing or unreadable. Copy the image again.",
+                        ),
+                        NativeDialogLevel::Error,
                     );
-                    set_ignore_clipboard_for_all_hosts(1200);
-                    paste_after_clipboard_ready_to_target(
+                }
+                ImagePasteResultDisposition::ClipboardWriteFailed => {
+                    clear_hotkey_passthrough_state(state);
+                    show_clipboard_write_failure_message(hwnd);
+                }
+                ImagePasteResultDisposition::TargetUnavailable => {
+                    clear_hotkey_passthrough_state(state);
+                    show_paste_failure_message(hwnd, state, target);
+                }
+                ImagePasteResultDisposition::Complete => {
+                    debug_assert!(disposition.executes_completion());
+                    paste_after_async_image_ready_to_target(
                         hwnd,
                         state,
-                        payload.target.0 as HWND,
+                        target,
                         payload.hide_main,
                         payload.backspaces,
+                        payload.completion,
                     );
                 }
             }
         }
         MainAsyncEvent::ImageOcr(payload) => {
+            if payload.app_data_generation != crate::db_runtime::current_app_data_generation() {
+                return;
+            }
             handle_text_processing_result(
                 hwnd,
                 payload.text,
@@ -483,6 +580,9 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
             );
         }
         MainAsyncEvent::TextTranslate(payload) => {
+            if payload.app_data_generation != crate::db_runtime::current_app_data_generation() {
+                return;
+            }
             handle_text_processing_result(
                 hwnd,
                 payload.text,
@@ -495,6 +595,11 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let state = &mut *ptr;
+                if payload.app_data_generation != state.app_data_generation
+                    || state.app_data_generation != crate::db_runtime::current_app_data_generation()
+                {
+                    return;
+                }
                 state.image_thumb_loading.remove(&payload.item_id);
                 if let Some(image) = payload.image {
                     state.image_thumb_cache.put(payload.item_id, image);
@@ -521,8 +626,12 @@ pub(super) unsafe fn handle_text_processing_result(
         let normalized = text.replace("\r\n", "\n");
         let preview = build_preview(&normalized);
         let signature = text_content_signature(&normalized);
-        skip_next_clipboard_update_for_all_hosts();
-        let _ = platform_clipboard::WindowsClipboardHost::write_text(&normalized);
+        let clipboard_written = platform_clipboard::WindowsClipboardHost::write_text(&normalized);
+        if clipboard_written {
+            skip_next_clipboard_update_for_all_hosts();
+        } else {
+            show_clipboard_write_failure_message(hwnd);
+        }
         state.add_clip_item(
             ClipItem {
                 id: 0,

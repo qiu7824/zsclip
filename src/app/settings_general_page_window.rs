@@ -12,7 +12,7 @@ pub(super) unsafe fn settings_create_general_window_position_page(
         tr("焦点窗口跳过", "Skip focused window"),
         IDC_SET_SKIP_WINDOW_ENABLE,
         sec2.left(),
-        sec2.row_y(7),
+        sec2.row_y(8),
         sec2.full_w(),
     );
     st.chk_skip_window = btn;
@@ -21,7 +21,7 @@ pub(super) unsafe fn settings_create_general_window_position_page(
         st,
         tr("跳过窗口类名：", "Skip class names:"),
         sec2.left(),
-        sec2.label_y(8, settings_scale(24)),
+        sec2.label_y(9, settings_scale(24)),
         skip_label_w,
         settings_scale(24),
     );
@@ -35,7 +35,7 @@ pub(super) unsafe fn settings_create_general_window_position_page(
         "",
         IDC_SET_SKIP_WINDOW_CLASSNAMES,
         skip_edit_x,
-        sec2.row_y(8),
+        sec2.row_y(9),
         skip_edit_w,
     );
     st.btn_capture_skip_window = b.button(
@@ -43,7 +43,7 @@ pub(super) unsafe fn settings_create_general_window_position_page(
         tr("捕获当前", "Capture current"),
         IDC_SET_SKIP_WINDOW_CAPTURE,
         skip_edit_x + skip_edit_w + skip_gap,
-        sec2.row_y(8),
+        sec2.row_y(9),
         skip_button_w,
     );
     if !st.btn_capture_skip_window.is_null() {

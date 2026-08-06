@@ -8,7 +8,7 @@ pub(super) unsafe fn settings_refresh_integrations_after_commit(
     if baseline.auto_start != app.settings.auto_start {
         app.settings.auto_start = apply_autostart(app.settings.auto_start);
         st.draft.auto_start = app.settings.auto_start;
-        save_settings(&app.settings);
+        save_state_settings(app);
     }
     if baseline.tray_icon_enabled != app.settings.tray_icon_enabled {
         let main_hwnd = main_window_hwnd();

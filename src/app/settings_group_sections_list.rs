@@ -56,6 +56,11 @@ pub(super) unsafe fn settings_groups_selected(st: &SettingsWndState) -> Option<(
 pub(super) unsafe fn settings_groups_sync_name(_st: &mut SettingsWndState) {}
 
 pub(super) unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) {
+    let parent = get_state_ptr(st.parent_hwnd);
+    if parent.is_null() {
+        return;
+    }
+    let expected_generation = (*parent).app_data_generation;
     let Some((idx, _)) = settings_groups_selected(st) else {
         return;
     };
@@ -69,7 +74,15 @@ pub(super) unsafe fn settings_groups_move(st: &mut SettingsWndState, step: i32) 
     let mut ids: Vec<i64> = groups.iter().map(|g| g.id).collect();
     let item = ids.remove(idx);
     ids.insert(new_idx as usize, item);
-    if db_set_groups_order(category, &ids).is_ok() {
+    let result = crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        db_set_groups_order(category, &ids)
+    });
+    if result.is_none() {
+        apply_loaded_settings(st.parent_hwnd, &mut *parent);
+        settings_groups_refresh_list(st, 0);
+        return;
+    }
+    if result.is_some_and(|result| result.is_ok()) {
         settings_groups_refresh_list(st, ids[new_idx as usize]);
         let pst = get_state_ptr(st.parent_hwnd);
         if !pst.is_null() {

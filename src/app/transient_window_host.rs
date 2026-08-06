@@ -2,17 +2,60 @@ use crate::app_core::{
     NativeTransientWindowHost, NativeTransientWindowPresentation, NativeTransientWindowRequest,
     UiRect,
 };
+use crate::platform::dpi as platform_dpi;
 use crate::platform::string::to_wide;
 use crate::platform::window as platform_window;
 use std::mem::{size_of, zeroed};
 use std::ptr::null_mut;
 use windows_sys::Win32::{
-    Foundation::HWND,
-    UI::WindowsAndMessaging::{
-        HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME,
+    Foundation::{HWND, POINT, RECT},
+    UI::{
+        HiDpi::AdjustWindowRectExForDpi,
+        WindowsAndMessaging::{
+            HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW, WNDCLASSEXW, WNDPROC, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_THICKFRAME,
+        },
     },
 };
+
+const TRANSIENT_WINDOW_STYLE: u32 = WS_POPUP | WS_THICKFRAME;
+const TRANSIENT_WINDOW_EX_STYLE: u32 = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+
+fn transient_outer_bounds_for_client(bounds: UiRect) -> UiRect {
+    let client_width = (bounds.right - bounds.left).max(1);
+    let client_height = (bounds.bottom - bounds.top).max(1);
+    let dpi = unsafe {
+        platform_dpi::layout_dpi_for_point(POINT {
+            x: bounds.left,
+            y: bounds.top,
+        })
+        .max(96)
+    };
+    let mut adjusted = RECT {
+        left: 0,
+        top: 0,
+        right: client_width,
+        bottom: client_height,
+    };
+    let adjusted_ok = unsafe {
+        AdjustWindowRectExForDpi(
+            &mut adjusted,
+            TRANSIENT_WINDOW_STYLE,
+            0,
+            TRANSIENT_WINDOW_EX_STYLE,
+            dpi,
+        ) != 0
+    };
+    if !adjusted_ok {
+        return bounds;
+    }
+    UiRect::new(
+        bounds.left + adjusted.left,
+        bounds.top + adjusted.top,
+        bounds.left + adjusted.right,
+        bounds.top + adjusted.bottom,
+    )
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct WindowsTransientWindowHost {
@@ -58,15 +101,16 @@ impl NativeTransientWindowHost for WindowsTransientWindowHost {
             }
             self.register_transient_class();
             let class_name = to_wide(self.class_name);
+            let bounds = transient_outer_bounds_for_client(request.bounds);
             let handle = platform_window::create_window_ex(
-                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                TRANSIENT_WINDOW_EX_STYLE,
                 class_name.as_ptr(),
                 to_wide("").as_ptr(),
-                WS_POPUP | WS_THICKFRAME,
-                request.bounds.left,
-                request.bounds.top,
-                request.bounds.right - request.bounds.left,
-                request.bounds.bottom - request.bounds.top,
+                TRANSIENT_WINDOW_STYLE,
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
                 null_mut(),
                 null_mut(),
                 hinstance,
@@ -81,6 +125,7 @@ impl NativeTransientWindowHost for WindowsTransientWindowHost {
     }
 
     fn present_transient_window(&mut self, handle: Self::Handle, bounds: UiRect) {
+        let bounds = transient_outer_bounds_for_client(bounds);
         platform_window::set_pos(
             handle,
             HWND_TOPMOST,

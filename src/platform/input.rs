@@ -124,6 +124,26 @@ fn key_input(vk: u16, flags: u32) -> INPUT {
     }
 }
 
+fn paste_input_sequence(backspaces: u8, shift_down: bool) -> Vec<(u16, u32)> {
+    let mut sequence =
+        Vec::with_capacity(usize::from(backspaces) * 2 + if shift_down { 6 } else { 4 });
+    if shift_down {
+        sequence.push((VK_SHIFT as u16, KEYEVENTF_KEYUP));
+    }
+    for _ in 0..backspaces {
+        sequence.push((VK_BACK as u16, 0));
+        sequence.push((VK_BACK as u16, KEYEVENTF_KEYUP));
+    }
+    sequence.push((VK_CONTROL as u16, 0));
+    sequence.push((VK_V as u16, 0));
+    sequence.push((VK_V as u16, KEYEVENTF_KEYUP));
+    sequence.push((VK_CONTROL as u16, KEYEVENTF_KEYUP));
+    if shift_down {
+        sequence.push((VK_SHIFT as u16, 0));
+    }
+    sequence
+}
+
 pub(crate) fn key_down(vk: u8) {
     unsafe {
         keybd_event(vk, 0, 0, 0);
@@ -141,34 +161,77 @@ pub(crate) fn tap_key(vk: u8) {
     key_up(vk);
 }
 
-pub(crate) fn send_ctrl_v() {
+fn complete_input_injection(sent: u32, expected: usize) -> bool {
+    sent as usize == expected
+}
+
+pub(crate) fn send_ctrl_v() -> bool {
+    send_backspaces_then_ctrl_v(0)
+}
+
+pub(crate) fn send_backspaces_then_ctrl_v(backspaces: u8) -> bool {
     let shift_down = is_key_down(VK_SHIFT as u32);
-    let mut inputs = Vec::with_capacity(if shift_down { 6 } else { 4 });
-    if shift_down {
-        inputs.push(key_input(VK_SHIFT as u16, KEYEVENTF_KEYUP));
-    }
-    inputs.push(key_input(VK_CONTROL as u16, 0));
-    inputs.push(key_input(VK_V as u16, 0));
-    inputs.push(key_input(VK_V as u16, KEYEVENTF_KEYUP));
-    inputs.push(key_input(VK_CONTROL as u16, KEYEVENTF_KEYUP));
-    if shift_down {
-        inputs.push(key_input(VK_SHIFT as u16, 0));
-    }
-    unsafe {
-        let _ = SendInput(
+    let mut inputs = paste_input_sequence(backspaces, shift_down)
+        .into_iter()
+        .map(|(vk, flags)| key_input(vk, flags))
+        .collect::<Vec<_>>();
+    let sent = unsafe {
+        SendInput(
             inputs.len() as u32,
             inputs.as_mut_ptr(),
             core::mem::size_of::<INPUT>() as i32,
-        );
-    }
-}
-
-pub(crate) fn send_backspace_times(count: u8) {
-    for _ in 0..count {
-        tap_key(VK_BACK as u8);
-    }
+        )
+    };
+    complete_input_injection(sent, inputs.len())
 }
 
 pub(crate) fn send_alt_tap() {
     tap_key(VK_MENU as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ctrl_v_input_injection_requires_every_event() {
+        assert!(!complete_input_injection(0, 4));
+        assert!(!complete_input_injection(3, 4));
+        assert!(complete_input_injection(4, 4));
+        assert_eq!(
+            paste_input_sequence(0, false),
+            vec![
+                (VK_CONTROL as u16, 0),
+                (VK_V as u16, 0),
+                (VK_V as u16, KEYEVENTF_KEYUP),
+                (VK_CONTROL as u16, KEYEVENTF_KEYUP),
+            ]
+        );
+    }
+
+    #[test]
+    fn vv_replacement_input_deletes_trigger_before_paste_in_one_batch() {
+        assert_eq!(
+            paste_input_sequence(2, false),
+            vec![
+                (VK_BACK as u16, 0),
+                (VK_BACK as u16, KEYEVENTF_KEYUP),
+                (VK_BACK as u16, 0),
+                (VK_BACK as u16, KEYEVENTF_KEYUP),
+                (VK_CONTROL as u16, 0),
+                (VK_V as u16, 0),
+                (VK_V as u16, KEYEVENTF_KEYUP),
+                (VK_CONTROL as u16, KEYEVENTF_KEYUP),
+            ]
+        );
+    }
+
+    #[test]
+    fn vv_replacement_temporarily_releases_shift_around_the_batch() {
+        let sequence = paste_input_sequence(2, true);
+
+        assert_eq!(sequence.first(), Some(&(VK_SHIFT as u16, KEYEVENTF_KEYUP)));
+        assert_eq!(sequence.last(), Some(&(VK_SHIFT as u16, 0)));
+        assert_eq!(sequence.len(), 10);
+    }
 }

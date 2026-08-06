@@ -212,6 +212,29 @@ fn png_dimensions_from_bytes(bytes: &[u8]) -> Option<(usize, usize)> {
     Some((info.width as usize, info.height as usize))
 }
 
+fn write_lan_image_png(bytes: &[u8]) -> Option<PathBuf> {
+    use std::io::Write;
+
+    for _ in 0..8 {
+        let output = output_image_path();
+        let mut file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        };
+        if file.write_all(bytes).is_ok() && file.sync_all().is_ok() {
+            return Some(output);
+        }
+        let _ = fs::remove_file(output);
+        return None;
+    }
+    None
+}
+
 fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -229,33 +252,40 @@ pub(super) unsafe fn handle_lan_sync_ready(hwnd: HWND) {
     let state = &mut *ptr;
     let mirror_clipboard = state.settings.lan_receive_mode == "clipboard";
     for incoming_clip in incoming {
-        let message_key = lan_message_key_from_envelope(&incoming_clip.envelope);
-        if !state.remember_lan_message_key(&message_key) {
-            continue;
-        }
-        if let Some(decoded) = lan_item_from_envelope(incoming_clip) {
-            let clipboard_item = decoded.item.clone();
-            let latest_envelope = decoded.latest_envelope.clone();
-            let inserted = state.add_lan_clip_item(decoded.item, decoded.content_signature);
-            if inserted {
-                if let Some(item_id) = db_latest_item_id(0) {
-                    let _ = db_save_lan_origin_metadata(
-                        item_id,
-                        &LanOriginMetadata {
-                            message_id: latest_envelope.message_id.clone(),
-                            origin_device_id: latest_envelope.origin_device_id.clone(),
-                            origin_seq: latest_envelope.origin_seq,
-                            hash: latest_envelope.hash.clone(),
-                        },
-                    );
+        let expected_generation = state.app_data_generation;
+        let processed =
+            crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+                let message_key = lan_message_key_from_envelope(&incoming_clip.envelope);
+                if !state.remember_lan_message_key(&message_key) {
+                    return;
                 }
-                lan_sync::set_latest_clip(Some(latest_envelope));
-                if mirror_clipboard {
-                    let _ = apply_lan_item_to_clipboard(state, &clipboard_item);
+                if let Some(decoded) = lan_item_from_envelope(incoming_clip) {
+                    let clipboard_item = decoded.item.clone();
+                    let latest_envelope = decoded.latest_envelope.clone();
+                    let inserted = state.add_lan_clip_item(decoded.item, decoded.content_signature);
+                    if inserted {
+                        if let Some(item_id) = db_latest_item_id(0) {
+                            let _ = db_save_lan_origin_metadata(
+                                item_id,
+                                &LanOriginMetadata {
+                                    message_id: latest_envelope.message_id.clone(),
+                                    origin_device_id: latest_envelope.origin_device_id.clone(),
+                                    origin_seq: latest_envelope.origin_seq,
+                                    hash: latest_envelope.hash.clone(),
+                                },
+                            );
+                        }
+                        lan_sync::set_latest_clip(Some(latest_envelope));
+                        if mirror_clipboard {
+                            let _ = apply_lan_item_to_clipboard(state, &clipboard_item);
+                        }
+                    } else {
+                        remove_uninserted_image_file(&clipboard_item);
+                    }
                 }
-            } else {
-                remove_uninserted_image_file(&clipboard_item);
-            }
+            });
+        if processed.is_none() {
+            break;
         }
     }
     repaint_main_window(hwnd, true);
@@ -446,8 +476,7 @@ fn lan_item_from_envelope(incoming: lan_sync::LanIncomingClip) -> Option<LanDeco
             }
             let (width, height) = png_dimensions_from_bytes(&png_bytes)?;
             let content_signature = lan_image_content_signature(&envelope.hash, &png_bytes);
-            let output = output_image_path();
-            fs::write(&output, png_bytes).ok()?;
+            let output = write_lan_image_png(&png_bytes)?;
             let preview = if envelope.preview.trim().is_empty() {
                 format!("{} {}x{}", tr("局域网图片", "LAN image"), width, height)
             } else {

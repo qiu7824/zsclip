@@ -328,7 +328,12 @@ pub(crate) fn image_input_for_ocr(item: &ClipItem) -> Option<OcrImageInput> {
     }
 }
 
-pub(super) unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item: ClipItem) {
+pub(super) unsafe fn spawn_image_ocr_job(
+    hwnd: HWND,
+    app_data_generation: u64,
+    settings: AppSettings,
+    item: ClipItem,
+) {
     let hwnd_value = hwnd as isize;
     std::thread::spawn(move || {
         let result = match settings.image_ocr_provider.as_str() {
@@ -380,10 +385,12 @@ pub(super) unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item
 
         let payload = match result {
             Ok(text) => TextOperationReadyResult {
+                app_data_generation,
                 text: Some(text),
                 error: None,
             },
             Err(err) => TextOperationReadyResult {
+                app_data_generation,
                 text: None,
                 error: Some(err),
             },
@@ -394,6 +401,7 @@ pub(super) unsafe fn spawn_image_ocr_job(hwnd: HWND, settings: AppSettings, item
 
 pub(super) unsafe fn spawn_text_translate_text_job(
     hwnd: HWND,
+    app_data_generation: u64,
     settings: AppSettings,
     text: String,
 ) {
@@ -415,10 +423,12 @@ pub(super) unsafe fn spawn_text_translate_text_job(
 
         let payload = match result {
             Ok(text) => TextOperationReadyResult {
+                app_data_generation,
                 text: Some(text),
                 error: None,
             },
             Err(err) => TextOperationReadyResult {
+                app_data_generation,
                 text: None,
                 error: Some(err),
             },

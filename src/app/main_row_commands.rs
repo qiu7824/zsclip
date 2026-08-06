@@ -73,7 +73,8 @@ unsafe fn execute_row_external_action(hwnd: HWND, state: &mut AppState, action: 
             }
         }
         MainRowExternalActionPlan::CopyText(text) => {
-            let _ = platform_clipboard::WindowsClipboardHost::write_text(&text);
+            let copied = platform_clipboard::WindowsClipboardHost::write_text(&text);
+            play_copy_success_sound_if_enabled(state, copied);
         }
         MainRowExternalActionPlan::LanPushFiles(paths) => {
             #[cfg(feature = "lan-sync")]
@@ -96,7 +97,12 @@ unsafe fn execute_row_external_action(hwnd: HWND, state: &mut AppState, action: 
             quick_search_open(&state.settings, &text);
         }
         MainRowExternalActionPlan::TextTranslate(text) => {
-            spawn_text_translate_text_job(hwnd, state.settings.clone(), text);
+            spawn_text_translate_text_job(
+                hwnd,
+                state.app_data_generation,
+                state.settings.clone(),
+                text,
+            );
         }
         MainRowExternalActionPlan::QrText(text) => {
             if let Some((qr_item, sig)) = build_qr_clip_item(&text) {
@@ -143,7 +149,15 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
             );
         }
         MainRowDialogActionPlan::EditItem { item_id, title } => {
-            let initial_text = db_item_text(item_id).unwrap_or_default();
+            let expected_generation = state.app_data_generation;
+            let Some(initial_text) =
+                crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+                    db_item_text(item_id).unwrap_or_default()
+                })
+            else {
+                apply_loaded_settings(hwnd, state);
+                return;
+            };
             let initial_size =
                 if state.settings.edit_dialog_w > 0 && state.settings.edit_dialog_h > 0 {
                     Some(UiSize {
@@ -154,8 +168,17 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
                     None
                 };
             let mut save_handler = |text: &str| {
-                db_update_item_text(item_id, text).map_err(|_| {
-                    tr("保存失败，请稍后重试。", "Save failed. Please try again.").to_string()
+                crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+                    db_update_item_text(item_id, text).map_err(|_| {
+                        tr("保存失败，请稍后重试。", "Save failed. Please try again.").to_string()
+                    })
+                })
+                .unwrap_or_else(|| {
+                    Err(tr(
+                        "数据已在恢复期间更新，请关闭编辑框后重试。",
+                        "Data changed during restore. Close the editor and try again.",
+                    )
+                    .to_string())
                 })
             };
             let result = WindowsEditTextDialogHost::new().open_edit_text(
@@ -170,9 +193,13 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
             if let Some(size) = result.final_size {
                 state.settings.edit_dialog_w = size.width;
                 state.settings.edit_dialog_h = size.height;
-                save_settings(&state.settings);
+                save_state_settings(state);
             }
             if result.saved {
+                if state.app_data_generation != crate::db_runtime::current_app_data_generation() {
+                    apply_loaded_settings(hwnd, state);
+                    return;
+                }
                 reload_state_from_db_persisting(state);
                 state.refilter();
                 sync_peer_windows_from_db(hwnd);
@@ -216,7 +243,12 @@ unsafe fn execute_row_current_item_action(
             }
         }
         MainRowCurrentItemActionPlan::ImageOcr { item } => {
-            spawn_image_ocr_job(hwnd, state.settings.clone(), item);
+            spawn_image_ocr_job(
+                hwnd,
+                state.app_data_generation,
+                state.settings.clone(),
+                item,
+            );
         }
     }
 }
@@ -237,6 +269,21 @@ unsafe fn execute_row_data_action(hwnd: HWND, state: &mut AppState, action: Main
 }
 
 unsafe fn execute_row_data_plan(hwnd: HWND, state: &mut AppState, plan: MainRowDataActionPlan) {
+    let expected_generation = state.app_data_generation;
+    if crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        execute_row_data_plan_locked(hwnd, state, plan);
+    })
+    .is_none()
+    {
+        apply_loaded_settings(hwnd, state);
+    }
+}
+
+unsafe fn execute_row_data_plan_locked(
+    hwnd: HWND,
+    state: &mut AppState,
+    plan: MainRowDataActionPlan,
+) {
     match plan {
         MainRowDataActionPlan::AddToPhrase {
             items,
@@ -357,6 +404,10 @@ pub(super) unsafe fn execute_row_command(
     state: &mut AppState,
     intent: MainMenuCommandIntent,
 ) {
+    if state.app_data_generation != crate::db_runtime::current_app_data_generation() {
+        apply_loaded_settings(hwnd, state);
+        return;
+    }
     match intent {
         MainMenuCommandIntent::RowPaste => {
             if select_context_row(state) {
@@ -366,7 +417,8 @@ pub(super) unsafe fn execute_row_command(
         }
         MainMenuCommandIntent::RowAction(MainRowMenuAction::Copy) => {
             if select_context_row(state) {
-                copy_selection_to_clipboard(state);
+                let copied = copy_selection_to_clipboard(state);
+                play_copy_success_sound_if_enabled(state, copied);
                 state.clear_selection();
                 repaint_main_window(hwnd, false);
             }

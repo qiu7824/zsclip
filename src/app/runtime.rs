@@ -9,6 +9,11 @@ const SECRET_STORAGE_FIELDS: [(&str, &str); 5] = [
     ("text_translate_secret", "text_translate_secret_encrypted"),
 ];
 static DATA_DIR_CACHE: OnceLock<PathBuf> = OnceLock::new();
+static SETTINGS_FILE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn settings_file_write_lock() -> &'static Mutex<()> {
+    SETTINGS_FILE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 pub(super) fn current_exe_path() -> Option<PathBuf> {
     std::env::current_exe().ok()
@@ -83,31 +88,6 @@ pub(crate) fn data_dir() -> PathBuf {
             local
         })
         .clone()
-}
-
-pub(super) fn append_paste_diagnostic(event: &str) {
-    use std::io::Write;
-
-    let path = data_dir().join("paste-focus.log");
-    let truncate = fs::metadata(&path)
-        .map(|metadata| metadata.len() > 512 * 1024)
-        .unwrap_or(false);
-    let mut options = fs::OpenOptions::new();
-    options.create(true).write(true);
-    if truncate {
-        options.truncate(true);
-    } else {
-        options.append(true);
-    }
-    let Ok(mut file) = options.open(path) else {
-        return;
-    };
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    let event = event.replace(['\r', '\n'], " ");
-    let _ = writeln!(file, "{timestamp_ms} {event}");
 }
 
 fn migrate_legacy_data_dirs_to(target: &Path) {
@@ -269,14 +249,50 @@ pub(super) fn settings_file() -> PathBuf {
     data_dir().join("settings.json")
 }
 
-pub(super) fn load_settings() -> AppSettings {
+fn load_settings_unlocked() -> AppSettings {
     match fs::read_to_string(settings_file()) {
         Ok(text) => load_settings_from_text(&text),
         Err(_) => AppSettings::default(),
     }
 }
 
+pub(super) fn load_settings_with_generation() -> (AppSettings, u64) {
+    crate::db_runtime::with_shared_app_data(|| {
+        let _write_guard = settings_file_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        (
+            load_settings_unlocked(),
+            crate::db_runtime::current_app_data_generation(),
+        )
+    })
+}
+
+pub(super) fn load_settings() -> AppSettings {
+    load_settings_with_generation().0
+}
+
 pub(crate) fn save_settings(settings: &AppSettings) {
+    crate::db_runtime::with_shared_app_data(|| {
+        save_settings_unlocked(settings);
+    });
+}
+
+pub(crate) fn save_settings_for_generation(settings: &AppSettings, expected: u64) -> bool {
+    crate::db_runtime::with_shared_app_data_generation(expected, || {
+        save_settings_unlocked(settings);
+    })
+    .is_some()
+}
+
+pub(crate) fn save_state_settings(state: &AppState) -> bool {
+    save_settings_for_generation(&state.settings, state.app_data_generation)
+}
+
+fn save_settings_unlocked(settings: &AppSettings) {
+    let _write_guard = settings_file_write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut merged = settings.clone();
     if let Ok(text) = fs::read_to_string(settings_file()) {
         let persisted = load_settings_from_text(&text);
@@ -295,11 +311,16 @@ fn write_settings(settings: &AppSettings) {
 }
 
 pub(crate) fn persist_sticker_layout(x: i32, y: i32, zoom_pct: i32) {
-    let mut settings = load_settings();
-    settings.sticker_x = x;
-    settings.sticker_y = y;
-    settings.sticker_zoom_pct = zoom_pct.clamp(20, 400);
-    write_settings(&settings);
+    crate::db_runtime::with_shared_app_data(|| {
+        let _write_guard = settings_file_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = load_settings_unlocked();
+        settings.sticker_x = x;
+        settings.sticker_y = y;
+        settings.sticker_zoom_pct = zoom_pct.clamp(20, 400);
+        write_settings(&settings);
+    });
 }
 
 pub(super) fn current_cloud_sync_paths() -> CloudSyncPaths {
@@ -518,6 +539,37 @@ mod tests {
 
         let disabled = load_settings_from_text(r#"{"clipboard_capture_enabled":false}"#);
         assert!(!disabled.clipboard_capture_enabled);
+    }
+
+    #[test]
+    fn context_menu_copy_setting_defaults_off_and_preserves_true() {
+        let legacy = load_settings_from_text(r#"{"hotkey_enabled":false}"#);
+        assert!(!legacy.context_menu_copy_enabled);
+
+        let enabled = load_settings_from_text(r#"{"context_menu_copy_enabled":true}"#);
+        assert!(enabled.context_menu_copy_enabled);
+
+        let text = serialize_settings(&enabled).unwrap();
+        assert!(load_settings_from_text(&text).context_menu_copy_enabled);
+    }
+
+    #[test]
+    fn appearance_and_copy_sound_settings_round_trip() {
+        let settings = load_settings_from_text(
+            r#"{"dark_mode_enabled":true,"copy_success_sound_enabled":true,"app_icon_visible":false}"#,
+        );
+        assert!(settings.dark_mode_enabled);
+        assert!(settings.copy_success_sound_enabled);
+        assert!(!settings.app_icon_visible);
+
+        let text = serialize_settings(&settings).unwrap();
+        let loaded = load_settings_from_text(&text);
+        assert!(loaded.dark_mode_enabled);
+        assert!(loaded.copy_success_sound_enabled);
+        assert!(!loaded.app_icon_visible);
+
+        let legacy = load_settings_from_text(r#"{"hotkey_enabled":false}"#);
+        assert!(legacy.app_icon_visible);
     }
 
     #[test]

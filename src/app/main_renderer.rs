@@ -171,11 +171,20 @@ pub(super) fn windows_native_clip_row_component_specs_for_items(
     )
 }
 
-unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, dark: bool) {
+unsafe fn draw_main_icon_command(
+    hdc: HDC,
+    command: MainIconCommand,
+    dark: bool,
+    app_icon: isize,
+) {
     let rect: RECT = command.rect.into();
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
-    let icon = icon_handle_for(main_icon_asset_kind(command.kind), width.max(height));
+    let icon = if matches!(command.kind, MainIconKind::App) && app_icon != 0 {
+        app_icon
+    } else {
+        icon_handle_for(main_icon_asset_kind(command.kind), width.max(height))
+    };
     if icon != 0 {
         let (tint_for_dark_mode, soften) = match command.color_mode {
             MainIconColorMode::ThemeAware => (dark, 0),
@@ -261,7 +270,10 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         draw_main_paint_command(memdc, *command, th);
     }
     for command in &render_plan.icon_commands {
-        draw_main_icon_command(memdc, *command, dark);
+        if !state.settings.app_icon_visible && matches!(command.kind, MainIconKind::App) {
+            continue;
+        }
+        draw_main_icon_command(memdc, *command, dark, state.icons.app);
     }
 
     for command in &render_plan.segment_commands {
@@ -308,7 +320,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
             debug_assert_eq!(dynamic_row_item_id, row_presentation.item_id);
 
             if let Some(command) = row_plan.item_icon_command {
-                draw_main_icon_command(memdc, command, dark);
+                draw_main_icon_command(memdc, command, dark, state.icons.app);
             }
 
             let row_content = layout.row_content_plan(
@@ -316,6 +328,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                 MainRowContentInput {
                     pinned: row_presentation.pin_badge.is_some(),
                     show_delete: row_shows_delete_button(state, i),
+                    delete_hovered: state.hover_delete_idx == i,
                     show_preview: row_supports_image_preview(&item, &state.settings),
                 },
             );
@@ -324,7 +337,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                 draw_main_paint_command(memdc, *command, th);
             }
             for command in &row_content.icon_commands {
-                draw_main_icon_command(memdc, *command, dark);
+                draw_main_icon_command(memdc, *command, dark, state.icons.app);
             }
 
             if let Some(preview_rc) = row_content.preview_rect {

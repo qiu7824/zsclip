@@ -1,6 +1,19 @@
 use super::prelude::*;
 
 pub(super) unsafe fn settings_refresh_data_after_commit(st: &SettingsWndState, app: &mut AppState) {
+    let expected_generation = app.app_data_generation;
+    if crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        settings_refresh_data_after_commit_locked(st, app);
+    })
+    .is_none()
+    {
+        apply_loaded_settings(st.parent_hwnd, app);
+    }
+}
+
+unsafe fn settings_refresh_data_after_commit_locked(st: &SettingsWndState, app: &mut AppState) {
+    #[cfg(not(feature = "lan-sync"))]
+    let _ = st;
     schedule_cloud_sync(app, false);
     #[cfg(feature = "lan-sync")]
     refresh_lan_latest_from_db(&app.settings);

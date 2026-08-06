@@ -12,11 +12,13 @@ use std::time::{Duration, Instant};
 pub(crate) const LAN_DISCOVERY_PORT_DEFAULT: u16 = 38472;
 pub(crate) const LAN_TCP_PORT_DEFAULT: u16 = 38473;
 pub(crate) const LAN_IMAGE_MAX_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const LAN_IMAGE_BASE64_MAX_BYTES: usize = ((LAN_IMAGE_MAX_BYTES + 2) / 3) * 4;
 pub(crate) const LAN_FILE_AUTO_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 pub(crate) const LAN_MAGIC: &str = "ZSCLIP_LAN_V1";
 pub(crate) const LAN_PROTOCOL: u32 = 1;
-pub(crate) const HTTP_MAX_BODY: usize = 12 * 1024 * 1024;
+// A 10 MiB PNG expands to about 13.34 MiB in Base64; keep room for its JSON envelope.
+pub(crate) const HTTP_MAX_BODY: usize = 16 * 1024 * 1024;
 pub(crate) const DISCOVERY_INTERVAL_MS: u64 = 5000;
 pub(crate) const LAN_FILE_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 pub(crate) const LAN_FILE_CHUNK_BYTES: usize = 512 * 1024;
@@ -473,27 +475,59 @@ pub(crate) fn read_http_request(
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or("/").to_string();
     let mut headers = Vec::new();
-    let mut content_len = 0usize;
+    let mut content_len = None;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
-            continue;
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid HTTP request header",
+            ));
         };
         let name = name.trim().to_string();
         let value = value.trim().to_string();
         if name.eq_ignore_ascii_case("content-length") {
-            content_len = value.parse::<usize>().unwrap_or(0);
+            let parsed = value.parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP Content-Length")
+            })?;
+            if content_len.is_some_and(|existing| existing != parsed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "conflicting HTTP Content-Length headers",
+                ));
+            }
+            content_len = Some(parsed);
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding")
+            && !value
+                .split(',')
+                .all(|token| token.trim().eq_ignore_ascii_case("identity"))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unsupported HTTP Transfer-Encoding: {value}"),
+            ));
         }
         headers.push((name, value));
     }
+    let content_len = content_len.unwrap_or(0);
     if content_len > HTTP_MAX_BODY {
-        return Err(io::Error::from(io::ErrorKind::InvalidData));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP request body is too large",
+        ));
     }
     let body_start = header_end + 4;
     let mut body = buf.get(body_start..).unwrap_or_default().to_vec();
     while body.len() < content_len {
         let n = reader.read(&mut tmp)?;
         if n == 0 {
-            break;
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "HTTP request body ended early: expected {content_len} bytes, received {}",
+                    body.len()
+                ),
+            ));
         }
         body.extend_from_slice(&tmp[..n]);
     }
@@ -612,12 +646,183 @@ pub(crate) fn http_request(
     }
     stream.write_all(b"\r\n")?;
     stream.write_all(body)?;
-    let mut resp = Vec::new();
-    stream.read_to_end(&mut resp)?;
-    let Some(header_end) = find_header_end(&resp) else {
-        return Ok(resp);
+
+    let mut response = Vec::with_capacity(8192);
+    let mut buffer = [0u8; 4096];
+    let header_end = loop {
+        if let Some(header_end) = find_header_end(&response) {
+            if header_end > 64 * 1024 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP response headers are too large",
+                ));
+            }
+            break header_end;
+        }
+        if response.len() >= 64 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP response headers are too large",
+            ));
+        }
+        let read = stream.read(&mut buffer)?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "HTTP response ended before the headers were complete",
+            ));
+        }
+        response.extend_from_slice(&buffer[..read]);
     };
-    Ok(resp.get(header_end + 4..).unwrap_or_default().to_vec())
+
+    let header_text = std::str::from_utf8(&response[..header_end]).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP response headers are not valid UTF-8",
+        )
+    })?;
+    let mut lines = header_text.split("\r\n");
+    let status_line = lines.next().unwrap_or_default();
+    let mut status_parts = status_line.split_whitespace();
+    let version = status_parts.next().unwrap_or_default();
+    let status = status_parts
+        .next()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HTTP status code"))?
+        .parse::<u16>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP status code"))?;
+    if !version.starts_with("HTTP/") || !(100..=599).contains(&status) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid HTTP response status line",
+        ));
+    }
+
+    let mut content_len = None;
+    let mut connection_close = false;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid HTTP response header",
+            ));
+        };
+        let value = value.trim();
+        if name.trim().eq_ignore_ascii_case("transfer-encoding")
+            && !value.eq_ignore_ascii_case("identity")
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unsupported HTTP Transfer-Encoding: {value}"),
+            ));
+        }
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            let parsed = value.parse::<usize>().map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "invalid HTTP Content-Length")
+            })?;
+            if content_len.is_some_and(|existing| existing != parsed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "conflicting HTTP Content-Length headers",
+                ));
+            }
+            content_len = Some(parsed);
+        }
+        if name.trim().eq_ignore_ascii_case("connection") {
+            connection_close |= value
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"));
+        }
+    }
+    let body_start = header_end + 4;
+    let initial_body = response.get(body_start..).unwrap_or_default();
+    let response_body = if matches!(status, 204 | 205) {
+        if content_len.is_some_and(|length| length != 0) || !initial_body.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("HTTP {status} response must not contain a body"),
+            ));
+        }
+        Vec::new()
+    } else if let Some(content_len) = content_len {
+        if content_len > HTTP_MAX_BODY {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP response body is too large",
+            ));
+        }
+        let mut body = initial_body.to_vec();
+        body.truncate(content_len);
+        while body.len() < content_len {
+            let remaining = content_len - body.len();
+            let read_len = remaining.min(buffer.len());
+            let read = stream.read(&mut buffer[..read_len])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "HTTP response body ended early: expected {content_len} bytes, received {}",
+                        body.len()
+                    ),
+                ));
+            }
+            body.extend_from_slice(&buffer[..read]);
+        }
+        body
+    } else if connection_close {
+        let mut body = initial_body.to_vec();
+        if body.len() > HTTP_MAX_BODY {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP response body is too large",
+            ));
+        }
+        loop {
+            let read_len = if body.len() == HTTP_MAX_BODY {
+                1
+            } else {
+                (HTTP_MAX_BODY - body.len()).min(buffer.len())
+            };
+            let read = stream.read(&mut buffer[..read_len])?;
+            if read == 0 {
+                break;
+            }
+            if body.len().saturating_add(read) > HTTP_MAX_BODY {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP response body is too large",
+                ));
+            }
+            body.extend_from_slice(&buffer[..read]);
+        }
+        body
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "HTTP response has no body delimiter (missing Content-Length or Connection: close)",
+        ));
+    };
+
+    if !(200..300).contains(&status) {
+        let mut detail = String::from_utf8_lossy(&response_body).trim().to_string();
+        if detail.chars().count() > 256 {
+            detail = detail.chars().take(256).collect();
+            detail.push('…');
+        }
+        let kind = match status {
+            401 | 403 => io::ErrorKind::PermissionDenied,
+            404 => io::ErrorKind::NotFound,
+            408 | 504 => io::ErrorKind::TimedOut,
+            _ => io::ErrorKind::Other,
+        };
+        let message = if detail.is_empty() {
+            format!("HTTP request failed with status {status}")
+        } else {
+            format!("HTTP request failed with status {status}: {detail}")
+        };
+        return Err(io::Error::new(kind, message));
+    }
+
+    Ok(response_body)
 }
 
 pub(crate) fn normalize_lan_host(raw: &str, default_port: u16) -> String {
@@ -1976,6 +2181,45 @@ pub(crate) fn apply_lan_pending_pair_decision_in_store(
 mod tests {
     use super::*;
 
+    fn read_complete_test_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("test server sets read timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        let header_end = loop {
+            if let Some(header_end) = find_header_end(&request) {
+                break header_end;
+            }
+            let read = stream
+                .read(&mut buffer)
+                .expect("server reads request headers");
+            assert!(read > 0, "client closed before sending complete headers");
+            request.extend_from_slice(&buffer[..read]);
+        };
+        let header_text = String::from_utf8_lossy(&request[..header_end]);
+        let content_len = header_text
+            .split("\r\n")
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().expect("valid Content-Length"))
+            })
+            .unwrap_or_default();
+        let expected_len = header_end + 4 + content_len;
+        while request.len() < expected_len {
+            let remaining = expected_len - request.len();
+            let read_len = remaining.min(buffer.len());
+            let read = stream
+                .read(&mut buffer[..read_len])
+                .expect("server reads request body");
+            assert!(read > 0, "client closed before sending complete body");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        request.truncate(expected_len);
+        request
+    }
+
     #[test]
     fn lan_clip_envelope_json_round_trips_without_host_runtime() {
         let envelope = LanClipEnvelope {
@@ -2004,6 +2248,32 @@ mod tests {
         assert_eq!(LAN_PROTOCOL, 1);
         assert_eq!(LAN_TCP_PORT_DEFAULT, 38473);
         assert!(LAN_IMAGE_MAX_BYTES < HTTP_MAX_BODY);
+    }
+
+    #[test]
+    fn http_body_limit_contains_a_maximum_image_clip_envelope() {
+        let image_png_base64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            vec![0_u8; LAN_IMAGE_MAX_BYTES],
+        );
+        assert_eq!(image_png_base64.len(), LAN_IMAGE_BASE64_MAX_BYTES);
+        let envelope = LanClipEnvelope {
+            message_id: "device-maximum-image".to_string(),
+            origin_device_id: "device".to_string(),
+            origin_seq: u64::MAX,
+            kind: "image".to_string(),
+            hash: "f".repeat(32),
+            created_at_ms: u64::MAX,
+            preview: "图".repeat(160),
+            text: None,
+            image_png_base64: Some(image_png_base64),
+            file_meta: Vec::new(),
+        };
+        let encoded = serde_json::to_vec(&envelope).expect("maximum image envelope serializes");
+
+        assert!(encoded.len() > 12 * 1024 * 1024);
+        assert!(encoded.len() <= HTTP_MAX_BODY);
+        assert_eq!(HTTP_MAX_BODY, 16 * 1024 * 1024);
     }
 
     #[test]
@@ -2226,6 +2496,77 @@ mod tests {
         assert_eq!(plan.push_targets[0].device_id, "phone");
         assert_eq!(plan.pull_targets.len(), 1);
         assert_eq!(plan.pull_targets[0].device_id, "phone");
+    }
+
+    #[test]
+    fn background_clip_sync_does_not_count_rejected_push_as_success() {
+        fn passthrough(value: &str) -> Option<String> {
+            Some(value.to_string())
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts clip push");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndenied",
+                )
+                .expect("server writes rejection");
+        });
+        let platform = LanRuntimePlatformContext::new(
+            std::env::temp_dir(),
+            LanRuntimeEventSink::None,
+            passthrough,
+            passthrough,
+        );
+        let config = LanRuntimeConfig::from_core_config(
+            platform,
+            LanRuntimeCoreConfig {
+                device_id: "desktop".to_string(),
+                device_name: "Desktop".to_string(),
+                tcp_port: LAN_TCP_PORT_DEFAULT,
+                udp_port: LAN_DISCOVERY_PORT_DEFAULT,
+                lan_enabled: true,
+                wps_taskpane_enabled: false,
+            },
+        );
+        let devices = vec![LanDevice {
+            device_id: "phone".to_string(),
+            name: "Phone".to_string(),
+            addr: addr.ip().to_string(),
+            tcp_port: addr.port(),
+            token: "token".to_string(),
+            last_seen_ms: 1,
+            trusted: true,
+            capabilities: vec!["receive_clip".to_string()],
+        }];
+        let latest = LanClipEnvelope {
+            message_id: "desktop-1".to_string(),
+            origin_device_id: "desktop".to_string(),
+            origin_seq: 1,
+            kind: "text".to_string(),
+            hash: "hash".to_string(),
+            created_at_ms: 1,
+            preview: "hello".to_string(),
+            text: Some("hello".to_string()),
+            image_png_base64: None,
+            file_meta: Vec::new(),
+        };
+
+        let execution = execute_lan_background_clip_sync_once(
+            &config,
+            &devices,
+            Some(latest),
+            Duration::from_secs(5),
+        );
+        server.join().expect("server thread joins");
+
+        assert_eq!(execution.pushed_count, 0);
+        assert_eq!(execution.failed_count, 1);
     }
 
     #[test]
@@ -2695,6 +3036,38 @@ mod tests {
     }
 
     #[test]
+    fn http_request_parser_rejects_invalid_lengths_truncated_bodies_and_chunked_encoding() {
+        let peer = "127.0.0.1:50000".parse().expect("valid socket addr");
+        for raw in [
+            b"POST / HTTP/1.1\r\nContent-Length: invalid\r\n\r\n".as_slice(),
+            b"POST / HTTP/1.1\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\ntest".as_slice(),
+            b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabc".as_slice(),
+            b"POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".as_slice(),
+        ] {
+            let mut reader = std::io::Cursor::new(raw);
+            assert!(read_http_request(&mut reader, peer).is_err());
+        }
+
+        let mut truncated =
+            std::io::Cursor::new(b"POST / HTTP/1.1\r\nContent-Length: 5\r\n\r\nabc".as_slice());
+        let error = read_http_request(&mut truncated, peer).expect_err("short body is rejected");
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn http_request_parser_accepts_repeated_matching_content_lengths() {
+        let raw = b"POST / HTTP/1.1\r\nContent-Length: 4\r\nContent-Length: 4\r\n\r\ntest";
+        let mut reader = std::io::Cursor::new(raw.as_slice());
+        let request = read_http_request(
+            &mut reader,
+            "127.0.0.1:50000".parse().expect("valid socket addr"),
+        )
+        .expect("matching lengths are accepted");
+
+        assert_eq!(request.body, b"test");
+    }
+
+    #[test]
     fn http_response_writers_emit_headers_and_body_without_platform_runtime() {
         let mut json_response = Vec::new();
         write_http_json(
@@ -2755,15 +3128,14 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
         let addr = listener.local_addr().expect("listener has local addr");
         let server = std::thread::spawn(move || {
-            use std::io::{Read as _, Write as _};
+            use std::io::Write as _;
 
             let (mut stream, _) = listener.accept().expect("server accepts one request");
-            let mut buf = [0u8; 1024];
-            let len = stream.read(&mut buf).expect("server reads request");
-            let request = String::from_utf8_lossy(&buf[..len]).to_string();
+            let request =
+                String::from_utf8_lossy(&read_complete_test_http_request(&mut stream)).to_string();
             stream
                 .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\naccepted",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\naccepted",
                 )
                 .expect("server writes response");
             request
@@ -2785,6 +3157,246 @@ mod tests {
         assert!(request.contains("Host: "));
         assert!(request.contains("X-Test: ok\r\n"));
         assert!(request.ends_with("\r\n\r\npayload"));
+    }
+
+    #[test]
+    fn http_client_rejects_non_success_statuses() {
+        for (status, expected_kind) in [
+            (401, io::ErrorKind::PermissionDenied),
+            (403, io::ErrorKind::PermissionDenied),
+            (413, io::ErrorKind::Other),
+            (500, io::ErrorKind::Other),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+            let addr = listener.local_addr().expect("listener has local addr");
+            let server = std::thread::spawn(move || {
+                use std::io::Write as _;
+
+                let (mut stream, _) = listener.accept().expect("server accepts one request");
+                read_complete_test_http_request(&mut stream);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Rejected\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndenied"
+                )
+                .expect("server writes rejection");
+            });
+
+            let error = http_request(
+                "POST",
+                &addr.to_string(),
+                "/v1/clip",
+                &[],
+                Some(b"payload"),
+                Duration::from_secs(5),
+            )
+            .expect_err("non-2xx status must fail");
+            server.join().expect("server thread joins");
+
+            assert_eq!(error.kind(), expected_kind);
+            assert!(error.to_string().contains(&status.to_string()));
+            assert!(error.to_string().contains("denied"));
+        }
+    }
+
+    #[test]
+    fn http_client_stops_at_content_length_on_keep_alive_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts one request");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: keep-alive\r\n\r\naccepted",
+                )
+                .expect("server writes keep-alive response");
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("client finishes before server closes connection");
+        });
+
+        let result = http_request(
+            "GET",
+            &addr.to_string(),
+            "/v1/info",
+            &[],
+            None,
+            Duration::from_millis(200),
+        );
+        let _ = release_tx.send(());
+        server.join().expect("server thread joins");
+
+        assert_eq!(
+            result.expect("complete response does not wait for EOF"),
+            b"accepted"
+        );
+    }
+
+    #[test]
+    fn http_client_accepts_bodyless_204_and_205_without_content_length() {
+        for status in [204, 205] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+            let addr = listener.local_addr().expect("listener has local addr");
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                use std::io::Write as _;
+
+                let (mut stream, _) = listener.accept().expect("server accepts one request");
+                read_complete_test_http_request(&mut stream);
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Empty\r\nConnection: keep-alive\r\n\r\n"
+                )
+                .expect("server writes bodyless response");
+                release_rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .expect("client accepts bodyless response before connection closes");
+            });
+
+            let result = http_request(
+                "POST",
+                &addr.to_string(),
+                "/v1/clip",
+                &[],
+                None,
+                Duration::from_millis(200),
+            );
+            let _ = release_tx.send(());
+            server.join().expect("server thread joins");
+
+            assert!(result
+                .expect("bodyless success response is accepted")
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn http_client_reads_close_delimited_body_to_eof() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts one request");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\naccepted")
+                .expect("server writes close-delimited response");
+        });
+
+        let result = http_request(
+            "GET",
+            &addr.to_string(),
+            "/v1/info",
+            &[],
+            None,
+            Duration::from_secs(5),
+        );
+        server.join().expect("server thread joins");
+
+        assert_eq!(
+            result.expect("close-delimited response succeeds"),
+            b"accepted"
+        );
+    }
+
+    #[test]
+    fn http_client_rejects_keep_alive_response_without_body_delimiter() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts one request");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: keep-alive\r\n\r\naccepted")
+                .expect("server writes undelimited response");
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("client rejects response before connection closes");
+        });
+
+        let error = http_request(
+            "GET",
+            &addr.to_string(),
+            "/v1/info",
+            &[],
+            None,
+            Duration::from_millis(200),
+        )
+        .expect_err("keep-alive response without a delimiter must fail");
+        let _ = release_tx.send(());
+        server.join().expect("server thread joins");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("no body delimiter"));
+    }
+
+    #[test]
+    fn http_client_rejects_short_content_length_body() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts one request");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nshort",
+                )
+                .expect("server writes truncated response");
+        });
+
+        let error = http_request(
+            "GET",
+            &addr.to_string(),
+            "/v1/info",
+            &[],
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("short response body must fail");
+        server.join().expect("server thread joins");
+
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().contains("expected 8 bytes"));
+    }
+
+    #[test]
+    fn http_client_explicitly_rejects_chunked_response() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener binds");
+        let addr = listener.local_addr().expect("listener has local addr");
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+
+            let (mut stream, _) = listener.accept().expect("server accepts one request");
+            read_complete_test_http_request(&mut stream);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\ntest\r\n0\r\n\r\n",
+                )
+                .expect("server writes chunked response");
+        });
+
+        let error = http_request(
+            "GET",
+            &addr.to_string(),
+            "/v1/info",
+            &[],
+            None,
+            Duration::from_secs(5),
+        )
+        .expect_err("unsupported chunked response must fail explicitly");
+        server.join().expect("server thread joins");
+
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("Transfer-Encoding"));
     }
 
     #[test]

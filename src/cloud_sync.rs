@@ -71,6 +71,13 @@ struct CloudSyncManifest {
     backup_name: String,
 }
 
+struct SnapshotArchive {
+    path: PathBuf,
+    settings_copy: PathBuf,
+    content_hash: String,
+    state_stamp: u64,
+}
+
 const BACKUP_FILE_NAME: &str = "latest.zip";
 
 impl RemoteLayout {
@@ -122,7 +129,6 @@ pub fn perform_cloud_sync(
 ) -> Result<CloudSyncOutcome, String> {
     let _ = cleanup_cloud_sync_temp_files();
     let remote = RemoteLayout::from_config(config)?;
-    ensure_remote_layout(config, &remote)?;
     match action {
         CloudSyncAction::SyncNow => sync_snapshot(config, &remote, paths),
         CloudSyncAction::UploadConfig => upload_config(config, &remote, paths),
@@ -162,15 +168,19 @@ fn cleanup_cloud_sync_temp_files_in_dir(dir: &Path) -> CloudSyncTempCleanup {
 
 fn is_cloud_sync_temp_file_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.ends_with(".zip")
+    (lower.ends_with(".zip")
         && (lower.starts_with("zsclip-cloud-")
             || lower.starts_with("zsclip_cloud_")
-            || lower.starts_with("zsclip_cloud-"))
+            || lower.starts_with("zsclip_cloud-")
+            || lower.starts_with("zsclip_before-restore_")))
+        || (lower.ends_with(".json") && lower.starts_with("zsclip_snapshot-settings_"))
 }
 
 fn is_cloud_sync_temp_dir_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.starts_with("zsclip-snapshot-staging-") || lower.starts_with("zsclip-snapshot-restore-")
+    lower.starts_with("zsclip-snapshot-staging-")
+        || lower.starts_with("zsclip-snapshot-restore-")
+        || lower.starts_with("zsclip-local-restore-backup-staging-")
 }
 
 fn sync_snapshot(
@@ -178,10 +188,18 @@ fn sync_snapshot(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
-    let imported_light_clip = import_remote_syncclipboard_clip(config, remote)?;
-    crate::db_runtime::checkpoint_db().map_err(|err| err.to_string())?;
-    let local_stamp = local_state_stamp(paths);
-    let local_hash = local_state_hash(paths)?;
+    let imported_light_clip = crate::db_runtime::with_shared_app_data(|| {
+        import_remote_syncclipboard_clip(config, remote)
+    })?;
+    let snapshot = crate::db_runtime::with_exclusive_app_data_snapshot(|| {
+        crate::db_runtime::with_exclusive_db_snapshot(&paths.db_file, || {
+            create_snapshot_archive(paths)
+        })
+    })?;
+    let _archive_guard = TempPathGuard::file(snapshot.path.clone());
+    let _settings_guard = TempPathGuard::file(snapshot.settings_copy.clone());
+    let local_stamp = snapshot.state_stamp;
+    let local_hash = snapshot.content_hash.clone();
     let remote_manifest = download_remote_manifest(config, remote)?;
     if let Some(manifest) = remote_manifest {
         let version_cmp = compare_versions(&manifest.version, APP_VERSION);
@@ -239,10 +257,9 @@ fn sync_snapshot(
     }
 
     let stamp = local_stamp.max(unix_now());
-    let archive_path = create_snapshot_archive(paths, stamp)?;
-    let _archive_guard = TempPathGuard::file(archive_path.clone());
-    upload_file(config, &archive_path, &remote.backup_url)?;
-    upload_file(config, &paths.settings_file, &remote.settings_url)?;
+    ensure_remote_layout(config, remote)?;
+    upload_file(config, &snapshot.path, &remote.backup_url)?;
+    upload_file(config, &snapshot.settings_copy, &remote.settings_url)?;
     let manifest = CloudSyncManifest {
         version: APP_VERSION.to_string(),
         updated_at: stamp,
@@ -278,10 +295,20 @@ fn upload_config(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
-    if !paths.settings_file.exists() {
-        return Err("本地设置文件不存在，无法上传。".to_string());
-    }
-    upload_file(config, &paths.settings_file, &remote.settings_url)?;
+    let settings_copy = temp_unique_path("config-upload", "json");
+    let _settings_guard = TempPathGuard::file(settings_copy.clone());
+    crate::db_runtime::with_exclusive_app_data_snapshot(|| {
+        if !paths.settings_file.exists() {
+            return Err("本地设置文件不存在，无法上传。".to_string());
+        }
+        validate_settings_json(&paths.settings_file)?;
+        fs::copy(&paths.settings_file, &settings_copy)
+            .map_err(|err| format!("无法暂存本地设置：{err}"))?;
+        sync_file(&settings_copy).map_err(|err| format!("无法同步本地设置副本：{err}"))?;
+        validate_settings_json(&settings_copy)
+    })?;
+    ensure_remote_layout(config, remote)?;
+    upload_file(config, &settings_copy, &remote.settings_url)?;
     Ok(CloudSyncOutcome {
         status_text: "云端配置已上传。".to_string(),
         reload_settings: false,
@@ -295,14 +322,18 @@ fn apply_remote_config(
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
     let download_path = temp_file_path("settings-download", "json");
+    let _download_guard = TempPathGuard::file(download_path.clone());
     if !download_file(config, &remote.settings_url, &download_path)? {
         return Err("云端没有找到 settings.json。".to_string());
     }
-    if let Some(parent) = paths.settings_file.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    fs::copy(&download_path, &paths.settings_file).map_err(|err| err.to_string())?;
-    let _ = fs::remove_file(download_path);
+    validate_settings_json(&download_path)?;
+    with_app_data_replacement_for_paths(paths, || {
+        if let Some(parent) = paths.settings_file.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("无法创建设置目录 {}：{err}", parent.to_string_lossy()))?;
+        }
+        replace_settings_file_transactionally(&download_path, &paths.settings_file)
+    })?;
     Ok(CloudSyncOutcome {
         status_text: "已应用云端配置。".to_string(),
         reload_settings: true,
@@ -315,7 +346,8 @@ fn restore_remote_backup(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
-    if let Some(manifest) = download_remote_manifest(config, remote)? {
+    let manifest = download_remote_manifest(config, remote)?;
+    if let Some(manifest) = manifest.as_ref() {
         if compare_versions(&manifest.version, APP_VERSION).is_gt() {
             return Err(format!(
                 "{}{}{}",
@@ -327,14 +359,36 @@ fn restore_remote_backup(
                 ),
             ));
         }
+        if manifest.backup_name.trim() != BACKUP_FILE_NAME {
+            return Err(format!(
+                "不支持云端备份文件名：{}（当前仅支持 {BACKUP_FILE_NAME}）。",
+                manifest.backup_name
+            ));
+        }
     }
     let download_path = temp_file_path("cloud-backup", "zip");
     let _download_guard = TempPathGuard::file(download_path.clone());
     if !download_file(config, &remote.backup_url, &download_path)? {
         return Err("云端没有找到可恢复的备份。".to_string());
     }
-    let local_backup = create_local_restore_backup(paths)?;
-    restore_snapshot_archive(paths, &download_path)?;
+    let expected_hash = manifest
+        .as_ref()
+        .map(|manifest| manifest.snapshot_hash.trim())
+        .filter(|hash| !hash.is_empty());
+    let mut staged_restore = stage_snapshot_restore(paths, &download_path, expected_hash)?;
+    let local_backup = with_app_data_replacement_for_paths(paths, || {
+        crate::db_runtime::with_exclusive_db_file_replacement(&paths.db_file, || {
+            let local_backup = create_local_restore_backup(paths)?;
+            if let Err(err) = commit_staged_restore(paths, &mut staged_restore) {
+                let recovery_note = local_backup
+                    .as_ref()
+                    .map(|path| format!("；恢复前本地备份保存在：{}", path.to_string_lossy()))
+                    .unwrap_or_default();
+                return Err(format!("{err}{recovery_note}"));
+            }
+            Ok(local_backup)
+        })
+    })?;
     Ok(CloudSyncOutcome {
         status_text: if let Some(path) = local_backup {
             format!(
@@ -351,6 +405,20 @@ fn restore_remote_backup(
         reload_settings: true,
         reload_data: true,
     })
+}
+
+fn with_app_data_replacement_for_paths<T, F>(
+    paths: &CloudSyncPaths,
+    replace: F,
+) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String>,
+{
+    if crate::db_runtime::is_runtime_db_file(&paths.db_file) {
+        crate::db_runtime::with_exclusive_app_data_replacement(replace)
+    } else {
+        crate::db_runtime::with_exclusive_app_data_snapshot(replace)
+    }
 }
 
 fn ensure_remote_layout(config: &CloudSyncConfig, remote: &RemoteLayout) -> Result<(), String> {
@@ -467,7 +535,18 @@ fn download_remote_manifest(
     Ok(Some(manifest))
 }
 
-fn create_snapshot_archive(paths: &CloudSyncPaths, _stamp: u64) -> Result<PathBuf, String> {
+fn validate_settings_json(path: &Path) -> Result<(), String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("无法读取设置文件 {}：{err}", path.to_string_lossy()))?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|err| format!("设置文件不是有效 JSON：{err}"))?;
+    if !parsed.is_object() {
+        return Err("设置文件必须是 JSON 对象。".to_string());
+    }
+    Ok(())
+}
+
+fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, String> {
     let staging_root = temp_dir_path("snapshot-staging");
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);
@@ -476,21 +555,69 @@ fn create_snapshot_archive(paths: &CloudSyncPaths, _stamp: u64) -> Result<PathBu
     let payload_dir = staging_root.join("payload");
     fs::create_dir_all(&payload_dir).map_err(|err| err.to_string())?;
 
-    if paths.settings_file.exists() {
-        fs::copy(&paths.settings_file, payload_dir.join("settings.json"))
-            .map_err(|err| err.to_string())?;
+    if !paths.settings_file.is_file() {
+        return Err("无法创建云备份：本地缺少 settings.json。".to_string());
     }
-    if paths.db_file.exists() {
-        fs::copy(&paths.db_file, payload_dir.join("clipboard.db"))
-            .map_err(|err| err.to_string())?;
+    validate_settings_json(&paths.settings_file)?;
+    if !paths.db_file.is_file() {
+        return Err("无法创建云备份：本地缺少 clipboard.db。".to_string());
     }
+    fs::copy(&paths.settings_file, payload_dir.join("settings.json"))
+        .map_err(|err| err.to_string())?;
+    validate_settings_json(&payload_dir.join("settings.json"))?;
+    fs::copy(&paths.db_file, payload_dir.join("clipboard.db")).map_err(|err| err.to_string())?;
     let images_dir = paths.data_dir.join("images");
     if images_dir.exists() {
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
     }
 
     let archive_path = temp_unique_path("cloud", "zip");
+    let payload_paths = CloudSyncPaths {
+        data_dir: payload_dir.clone(),
+        settings_file: payload_dir.join("settings.json"),
+        db_file: payload_dir.join("clipboard.db"),
+    };
+    let content_hash = local_state_hash(&payload_paths)?;
+    let state_stamp = local_state_stamp(paths);
+    let archive_guard = TempPathGuard::file(archive_path.clone());
+    let settings_copy = temp_unique_path("snapshot-settings", "json");
+    let settings_copy_guard = TempPathGuard::file(settings_copy.clone());
+    fs::copy(payload_dir.join("settings.json"), &settings_copy)
+        .map_err(|err| format!("无法保留云备份设置副本：{err}"))?;
+    sync_file(&settings_copy).map_err(|err| format!("无法同步云备份设置副本：{err}"))?;
     compress_archive(&payload_dir, &archive_path)?;
+    archive_guard.dismiss();
+    settings_copy_guard.dismiss();
+    drop(staging_guard);
+    Ok(SnapshotArchive {
+        path: archive_path,
+        settings_copy,
+        content_hash,
+        state_stamp,
+    })
+}
+
+fn create_local_backup_archive(paths: &CloudSyncPaths) -> Result<PathBuf, String> {
+    let staging_root = temp_dir_path("local-restore-backup-staging");
+    let staging_guard = TempPathGuard::dir(staging_root.clone());
+    let payload_dir = staging_root.join("payload");
+    fs::create_dir_all(&payload_dir).map_err(|err| err.to_string())?;
+    if paths.settings_file.is_file() {
+        fs::copy(&paths.settings_file, payload_dir.join("settings.json"))
+            .map_err(|err| err.to_string())?;
+    }
+    if paths.db_file.is_file() {
+        fs::copy(&paths.db_file, payload_dir.join("clipboard.db"))
+            .map_err(|err| err.to_string())?;
+    }
+    let images_dir = paths.data_dir.join("images");
+    if images_dir.is_dir() {
+        copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
+    }
+    let archive_path = temp_unique_path("before-restore", "zip");
+    let archive_guard = TempPathGuard::file(archive_path.clone());
+    compress_archive(&payload_dir, &archive_path)?;
+    archive_guard.dismiss();
     drop(staging_guard);
     Ok(archive_path)
 }
@@ -500,11 +627,16 @@ fn create_local_restore_backup(paths: &CloudSyncPaths) -> Result<Option<PathBuf>
         return Ok(None);
     }
     let stamp = local_state_stamp(paths).max(unix_now());
-    let temp_archive = create_snapshot_archive(paths, stamp)?;
+    let temp_archive = create_local_backup_archive(paths)?;
     let temp_guard = TempPathGuard::file(temp_archive.clone());
     let backup_dir = paths.data_dir.join("restore-backups");
     fs::create_dir_all(&backup_dir).map_err(|err| err.to_string())?;
-    let final_path = backup_dir.join(format!("before-restore-{}.zip", stamp));
+    let mut final_path = backup_dir.join(format!("before-restore-{stamp}.zip"));
+    let mut suffix = 1u32;
+    while final_path.exists() {
+        final_path = backup_dir.join(format!("before-restore-{stamp}-{suffix}.zip"));
+        suffix = suffix.saturating_add(1);
+    }
     fs::rename(&temp_archive, &final_path)
         .or_else(|_| {
             fs::copy(&temp_archive, &final_path)
@@ -516,7 +648,11 @@ fn create_local_restore_backup(paths: &CloudSyncPaths) -> Result<Option<PathBuf>
     Ok(Some(final_path))
 }
 
-fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Result<(), String> {
+fn stage_snapshot_restore(
+    paths: &CloudSyncPaths,
+    archive_path: &Path,
+    expected_hash: Option<&str>,
+) -> Result<StagedRestore, String> {
     let extract_root = temp_dir_path("snapshot-restore");
     if extract_root.exists() {
         let _ = fs::remove_dir_all(&extract_root);
@@ -530,38 +666,88 @@ fn restore_snapshot_archive(paths: &CloudSyncPaths, archive_path: &Path) -> Resu
     } else {
         extract_root.clone()
     };
-
-    if let Some(parent) = paths.settings_file.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    if let Some(parent) = paths.db_file.parent() {
-        let _ = fs::create_dir_all(parent);
+    if !source_dir.is_dir() {
+        return Err("云备份缺少有效的 payload 目录。".to_string());
     }
 
     let settings_src = source_dir.join("settings.json");
-    if settings_src.exists() {
-        fs::copy(settings_src, &paths.settings_file).map_err(|err| err.to_string())?;
+    if !settings_src.is_file() {
+        return Err("云备份缺少 settings.json。".to_string());
     }
-
+    validate_settings_json(&settings_src)?;
     let db_src = source_dir.join("clipboard.db");
-    if db_src.exists() {
-        remove_optional_file(&paths.db_file);
-        remove_optional_file(&wal_file_for(&paths.db_file));
-        remove_optional_file(&shm_file_for(&paths.db_file));
-        fs::copy(db_src, &paths.db_file).map_err(|err| err.to_string())?;
-    }
-
-    let images_dst = paths.data_dir.join("images");
-    if images_dst.exists() {
-        let _ = fs::remove_dir_all(&images_dst);
+    if !db_src.is_file() {
+        return Err("云备份缺少 clipboard.db。".to_string());
     }
     let images_src = source_dir.join("images");
-    if images_src.exists() {
-        copy_dir_recursive(&images_src, &images_dst)?;
+    if images_src.exists() && !images_src.is_dir() {
+        return Err("云备份中的 images 不是目录。".to_string());
     }
 
+    let payload_paths = CloudSyncPaths {
+        data_dir: source_dir.clone(),
+        settings_file: settings_src.clone(),
+        db_file: db_src.clone(),
+    };
+    let payload_hash = local_state_hash(&payload_paths)?;
+    if let Some(expected_hash) = expected_hash {
+        if !payload_hash.eq_ignore_ascii_case(expected_hash.trim()) {
+            return Err(format!(
+                "云备份内容校验失败：清单哈希为 {}，实际为 {payload_hash}。",
+                expected_hash.trim()
+            ));
+        }
+    }
+
+    for parent in [paths.settings_file.parent(), paths.db_file.parent()] {
+        if let Some(parent) = parent {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!("无法创建恢复暂存目录 {}：{err}", parent.to_string_lossy())
+            })?;
+        }
+    }
+    fs::create_dir_all(&paths.data_dir).map_err(|err| {
+        format!(
+            "无法创建恢复数据目录 {}：{err}",
+            paths.data_dir.to_string_lossy()
+        )
+    })?;
+
+    let token = restore_token();
+    let active_images_dir = paths.data_dir.join("images");
+    let settings_staged = restore_side_path(&paths.settings_file, "stage", &token);
+    let db_staged = restore_side_path(&paths.db_file, "stage", &token);
+    let images_staged = restore_side_path(&active_images_dir, "stage", &token);
+    remove_path_if_exists(&settings_staged, RestoreArtifactKind::File)?;
+    remove_path_if_exists(&db_staged, RestoreArtifactKind::File)?;
+    remove_path_if_exists(&images_staged, RestoreArtifactKind::Dir)?;
+
+    let settings_guard = TempPathGuard::file(settings_staged.clone());
+    let db_guard = TempPathGuard::file(db_staged.clone());
+    let images_guard = TempPathGuard::dir(images_staged.clone());
+    fs::copy(&settings_src, &settings_staged).map_err(|err| format!("无法暂存恢复设置：{err}"))?;
+    sync_file(&settings_staged).map_err(|err| format!("无法写入恢复设置暂存文件：{err}"))?;
+    validate_settings_json(&settings_staged)?;
+    fs::copy(&db_src, &db_staged).map_err(|err| format!("无法暂存恢复数据库：{err}"))?;
+    sync_file(&db_staged).map_err(|err| format!("无法写入恢复数据库暂存文件：{err}"))?;
+    fs::create_dir_all(&images_staged).map_err(|err| format!("无法创建恢复图片暂存目录：{err}"))?;
+    if images_src.is_dir() {
+        copy_dir_recursive(&images_src, &images_staged)?;
+    }
+    crate::db_runtime::prepare_restored_database(&db_staged, &images_staged, &active_images_dir)?;
+    sync_file(&db_staged).map_err(|err| format!("无法同步恢复数据库暂存文件：{err}"))?;
+
+    settings_guard.dismiss();
+    db_guard.dismiss();
+    images_guard.dismiss();
     drop(extract_guard);
-    Ok(())
+    Ok(StagedRestore {
+        token,
+        settings: settings_staged,
+        database: db_staged,
+        images: images_staged,
+        preserve_materials: false,
+    })
 }
 
 fn local_state_stamp(paths: &CloudSyncPaths) -> u64 {
@@ -1175,10 +1361,469 @@ fn shm_file_for(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}-shm", path.to_string_lossy()))
 }
 
-fn remove_optional_file(path: &Path) {
-    if path.exists() {
-        let _ = fs::remove_file(path);
+fn remove_optional_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("无法删除 {}：{err}", path.to_string_lossy())),
     }
+}
+
+fn sync_file(path: &Path) -> std::io::Result<()> {
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()
+}
+
+fn restore_token() -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nonce}", std::process::id())
+}
+
+fn restore_side_path(path: &Path, role: &str, token: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("zsclip-data");
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{file_name}.restore-{token}.{role}"))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RestoreArtifactKind {
+    File,
+    Dir,
+}
+
+fn remove_path_if_exists(path: &Path, kind: RestoreArtifactKind) -> Result<(), String> {
+    let result = match kind {
+        RestoreArtifactKind::File => fs::remove_file(path),
+        RestoreArtifactKind::Dir => fs::remove_dir_all(path),
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("无法删除 {}：{err}", path.to_string_lossy())),
+    }
+}
+
+#[derive(Debug)]
+struct StagedRestore {
+    token: String,
+    settings: PathBuf,
+    database: PathBuf,
+    images: PathBuf,
+    preserve_materials: bool,
+}
+
+impl StagedRestore {
+    fn preserve(&mut self) {
+        self.preserve_materials = true;
+    }
+
+    fn material_paths(&self, paths: &CloudSyncPaths) -> Vec<PathBuf> {
+        let images_destination = paths.data_dir.join("images");
+        let destinations = [
+            (
+                &self.settings,
+                &paths.settings_file,
+                RestoreArtifactKind::File,
+            ),
+            (&self.images, &images_destination, RestoreArtifactKind::Dir),
+            (&self.database, &paths.db_file, RestoreArtifactKind::File),
+        ];
+        let mut materials = Vec::new();
+        for (staged, destination, _) in destinations {
+            materials.push(staged.clone());
+            materials.push(restore_side_path(destination, "backup", &self.token));
+            materials.push(restore_side_path(destination, "recovery", &self.token));
+        }
+        materials
+    }
+}
+
+impl Drop for StagedRestore {
+    fn drop(&mut self) {
+        if self.preserve_materials {
+            return;
+        }
+        let _ = remove_path_if_exists(&self.settings, RestoreArtifactKind::File);
+        let _ = remove_path_if_exists(&self.database, RestoreArtifactKind::File);
+        let _ = remove_path_if_exists(&self.images, RestoreArtifactKind::Dir);
+    }
+}
+
+struct RestoreArtifact {
+    label: &'static str,
+    kind: RestoreArtifactKind,
+    staged: PathBuf,
+    destination: PathBuf,
+    backup: PathBuf,
+    recovery: PathBuf,
+    original_existed: bool,
+    committed: bool,
+}
+
+impl RestoreArtifact {
+    fn new(
+        label: &'static str,
+        kind: RestoreArtifactKind,
+        staged: PathBuf,
+        destination: PathBuf,
+        token: &str,
+    ) -> Self {
+        let backup = restore_side_path(&destination, "backup", token);
+        let recovery = restore_side_path(&destination, "recovery", token);
+        Self {
+            label,
+            kind,
+            staged,
+            destination,
+            backup,
+            recovery,
+            original_existed: false,
+            committed: false,
+        }
+    }
+}
+
+struct RestoreSwapFailure {
+    message: String,
+    rollback_confirmed: bool,
+}
+
+#[cfg(windows)]
+fn replace_file_with_backup(
+    staged: &Path,
+    destination: &Path,
+    backup: &Path,
+) -> std::io::Result<()> {
+    if !destination.exists() {
+        return fs::rename(staged, destination);
+    }
+
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut std::ffi::c_void,
+            reserved: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    let destination_wide = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let staged_wide = staged
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let backup_wide = backup
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let replaced = unsafe {
+        ReplaceFileW(
+            destination_wide.as_ptr(),
+            staged_wide.as_ptr(),
+            backup_wide.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn recover_failed_file_swap(artifact: &mut RestoreArtifact) -> Result<(), String> {
+    if artifact.backup.exists() {
+        remove_path_if_exists(&artifact.recovery, artifact.kind)?;
+        if artifact.destination.exists() {
+            fs::rename(&artifact.destination, &artifact.recovery).map_err(|err| {
+                format!(
+                    "旧数据已在 {}，但无法保全失败后的新文件 {}：{err}",
+                    artifact.backup.to_string_lossy(),
+                    artifact.destination.to_string_lossy()
+                )
+            })?;
+        }
+        if let Err(err) = fs::rename(&artifact.backup, &artifact.destination) {
+            if artifact.recovery.exists() && !artifact.destination.exists() {
+                let _ = fs::rename(&artifact.recovery, &artifact.destination);
+            }
+            return Err(format!(
+                "无法把旧数据 {} 恢复到 {}：{err}",
+                artifact.backup.to_string_lossy(),
+                artifact.destination.to_string_lossy()
+            ));
+        }
+        if artifact.recovery.exists() && !artifact.staged.exists() {
+            let _ = fs::rename(&artifact.recovery, &artifact.staged);
+        }
+        return Ok(());
+    }
+
+    if artifact.destination.exists() {
+        // ReplaceFileW was given an explicit backup path. If no backup was
+        // produced and the destination still exists, Windows retained the old
+        // destination name and the active file is safe.
+        return Ok(());
+    }
+    Err(format!(
+        "无法确认 {} 的旧数据位置；暂存文件：{}，备份文件：{}",
+        artifact.label,
+        artifact.staged.to_string_lossy(),
+        artifact.backup.to_string_lossy()
+    ))
+}
+
+fn swap_restore_artifact(artifact: &mut RestoreArtifact) -> Result<(), RestoreSwapFailure> {
+    if !artifact.staged.exists() {
+        return Err(RestoreSwapFailure {
+            message: format!(
+                "{} 暂存材料不存在：{}",
+                artifact.label,
+                artifact.staged.display()
+            ),
+            rollback_confirmed: true,
+        });
+    }
+    if let Err(err) = remove_path_if_exists(&artifact.backup, artifact.kind) {
+        return Err(RestoreSwapFailure {
+            message: err,
+            rollback_confirmed: true,
+        });
+    }
+    if let Err(err) = remove_path_if_exists(&artifact.recovery, artifact.kind) {
+        return Err(RestoreSwapFailure {
+            message: err,
+            rollback_confirmed: true,
+        });
+    }
+    artifact.original_existed = artifact.destination.exists();
+
+    #[cfg(windows)]
+    if artifact.kind == RestoreArtifactKind::File && artifact.original_existed {
+        if let Err(err) =
+            replace_file_with_backup(&artifact.staged, &artifact.destination, &artifact.backup)
+        {
+            let recovery = recover_failed_file_swap(artifact);
+            let rollback_confirmed = recovery.is_ok();
+            return Err(RestoreSwapFailure {
+                message: match recovery {
+                    Ok(()) => format!("替换 {} 失败，旧数据已恢复：{err}", artifact.label),
+                    Err(recovery_err) => {
+                        format!("替换 {} 失败：{err}；{recovery_err}", artifact.label)
+                    }
+                },
+                rollback_confirmed,
+            });
+        }
+        artifact.committed = true;
+        return Ok(());
+    }
+
+    if artifact.original_existed {
+        if let Err(err) = fs::rename(&artifact.destination, &artifact.backup) {
+            return Err(RestoreSwapFailure {
+                message: format!("无法备份现有 {}：{err}", artifact.label),
+                rollback_confirmed: true,
+            });
+        }
+    }
+    if let Err(err) = fs::rename(&artifact.staged, &artifact.destination) {
+        let rollback_confirmed = if artifact.original_existed {
+            fs::rename(&artifact.backup, &artifact.destination).is_ok()
+        } else {
+            true
+        };
+        return Err(RestoreSwapFailure {
+            message: format!("无法启用暂存 {}：{err}", artifact.label),
+            rollback_confirmed,
+        });
+    }
+    artifact.committed = true;
+    Ok(())
+}
+
+fn replace_settings_file_transactionally(source: &Path, destination: &Path) -> Result<(), String> {
+    let token = restore_token();
+    let staged = restore_side_path(destination, "stage", &token);
+    remove_path_if_exists(&staged, RestoreArtifactKind::File)?;
+    let staged_guard = TempPathGuard::file(staged.clone());
+    fs::copy(source, &staged).map_err(|err| format!("无法暂存云端设置：{err}"))?;
+    sync_file(&staged).map_err(|err| format!("无法同步云端设置暂存文件：{err}"))?;
+    validate_settings_json(&staged)?;
+
+    let mut artifact = RestoreArtifact::new(
+        "设置文件",
+        RestoreArtifactKind::File,
+        staged.clone(),
+        destination.to_path_buf(),
+        &token,
+    );
+    match swap_restore_artifact(&mut artifact) {
+        Ok(()) => {
+            cleanup_restore_artifact_materials(&artifact);
+            Ok(())
+        }
+        Err(failure) if failure.rollback_confirmed => {
+            cleanup_restore_artifact_materials(&artifact);
+            Err(failure.message)
+        }
+        Err(failure) => {
+            staged_guard.dismiss();
+            let materials = [&artifact.staged, &artifact.backup, &artifact.recovery]
+                .into_iter()
+                .filter(|path| path.exists())
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            Err(if materials.is_empty() {
+                failure.message
+            } else {
+                format!(
+                    "{}；已保留设置恢复材料：{}",
+                    failure.message,
+                    materials.join("，")
+                )
+            })
+        }
+    }
+}
+
+fn rollback_restore_artifact(artifact: &mut RestoreArtifact) -> Result<(), String> {
+    if !artifact.committed {
+        return Ok(());
+    }
+    remove_path_if_exists(&artifact.recovery, artifact.kind)?;
+    if artifact.original_existed {
+        if !artifact.backup.exists() {
+            return Err(format!(
+                "{} 的回滚备份不存在：{}",
+                artifact.label,
+                artifact.backup.display()
+            ));
+        }
+        if artifact.destination.exists() {
+            fs::rename(&artifact.destination, &artifact.recovery)
+                .map_err(|err| format!("无法保全已提交的 {}：{err}", artifact.label))?;
+        }
+        if let Err(err) = fs::rename(&artifact.backup, &artifact.destination) {
+            if artifact.recovery.exists() && !artifact.destination.exists() {
+                let _ = fs::rename(&artifact.recovery, &artifact.destination);
+            }
+            return Err(format!("无法回滚 {}：{err}", artifact.label));
+        }
+        if artifact.recovery.exists() && !artifact.staged.exists() {
+            let _ = fs::rename(&artifact.recovery, &artifact.staged);
+        }
+    } else if artifact.destination.exists() {
+        let target = if artifact.staged.exists() {
+            &artifact.recovery
+        } else {
+            &artifact.staged
+        };
+        fs::rename(&artifact.destination, target)
+            .map_err(|err| format!("无法回滚新建的 {}：{err}", artifact.label))?;
+    }
+    artifact.committed = false;
+    Ok(())
+}
+
+fn cleanup_restore_artifact_materials(artifact: &RestoreArtifact) {
+    let _ = remove_path_if_exists(&artifact.backup, artifact.kind);
+    let _ = remove_path_if_exists(&artifact.recovery, artifact.kind);
+}
+
+fn commit_staged_restore(paths: &CloudSyncPaths, staged: &mut StagedRestore) -> Result<(), String> {
+    // The exclusive DB gate has already closed every internal connection and
+    // verified a complete WAL checkpoint before this function is called.
+    remove_optional_file(&wal_file_for(&paths.db_file))?;
+    remove_optional_file(&shm_file_for(&paths.db_file))?;
+
+    let images_destination = paths.data_dir.join("images");
+    let mut artifacts = vec![
+        RestoreArtifact::new(
+            "设置文件",
+            RestoreArtifactKind::File,
+            staged.settings.clone(),
+            paths.settings_file.clone(),
+            &staged.token,
+        ),
+        RestoreArtifact::new(
+            "图片目录",
+            RestoreArtifactKind::Dir,
+            staged.images.clone(),
+            images_destination,
+            &staged.token,
+        ),
+        // Commit the database last. Once this succeeds there are no remaining
+        // fallible activation steps, so callers never observe a new DB with an
+        // error result and stale in-memory data.
+        RestoreArtifact::new(
+            "数据库",
+            RestoreArtifactKind::File,
+            staged.database.clone(),
+            paths.db_file.clone(),
+            &staged.token,
+        ),
+    ];
+
+    for index in 0..artifacts.len() {
+        if let Err(failure) = swap_restore_artifact(&mut artifacts[index]) {
+            let mut rollback_errors = Vec::new();
+            for rollback_index in (0..index).rev() {
+                if let Err(err) = rollback_restore_artifact(&mut artifacts[rollback_index]) {
+                    rollback_errors.push(err);
+                }
+            }
+            let rollback_confirmed = failure.rollback_confirmed && rollback_errors.is_empty();
+            if rollback_confirmed {
+                for artifact in &artifacts {
+                    cleanup_restore_artifact_materials(artifact);
+                }
+                return Err(failure.message);
+            }
+
+            staged.preserve();
+            let mut message = failure.message;
+            if !rollback_errors.is_empty() {
+                message.push_str("；回滚失败：");
+                message.push_str(&rollback_errors.join("；"));
+            }
+            let materials = staged
+                .material_paths(paths)
+                .into_iter()
+                .filter(|path| path.exists())
+                .map(|path| path.to_string_lossy().to_string())
+                .collect::<Vec<_>>();
+            if !materials.is_empty() {
+                message.push_str("；已保留恢复材料：");
+                message.push_str(&materials.join("，"));
+            }
+            return Err(message);
+        }
+    }
+
+    for artifact in &artifacts {
+        cleanup_restore_artifact_materials(artifact);
+    }
+    Ok(())
 }
 
 struct TempPathGuard {
@@ -1253,6 +1898,372 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("cloud sync e2e test lock poisoned")
+    }
+
+    fn write_restore_test_database_with_image(
+        path: &Path,
+        preview: &str,
+        image_path: Option<&str>,
+    ) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE items(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL DEFAULT 'text',
+                preview TEXT NOT NULL,
+                signature TEXT NOT NULL DEFAULT '',
+                text_data TEXT,
+                rich_text_html TEXT,
+                source_app TEXT NOT NULL DEFAULT '',
+                file_paths TEXT,
+                image_data BLOB,
+                image_path TEXT,
+                image_width INTEGER NOT NULL DEFAULT 0,
+                image_height INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                group_id INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE clip_groups(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category INTEGER NOT NULL DEFAULT 0,
+                name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO items(kind, preview, image_path) VALUES(?, ?, ?)",
+            rusqlite::params![
+                if image_path.is_some() {
+                    "image"
+                } else {
+                    "text"
+                },
+                preview,
+                image_path
+            ],
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+            .unwrap();
+    }
+
+    fn write_restore_test_database(path: &Path, preview: &str) {
+        write_restore_test_database_with_image(path, preview, None);
+    }
+
+    fn restored_test_preview(path: &Path) -> String {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.query_row("SELECT preview FROM items LIMIT 1", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn restore_test_paths(data_dir: &Path) -> CloudSyncPaths {
+        CloudSyncPaths {
+            data_dir: data_dir.to_path_buf(),
+            settings_file: data_dir.join("settings.json"),
+            db_file: data_dir.join("clipboard.db"),
+        }
+    }
+
+    fn write_restore_test_archive(
+        root: &Path,
+        settings: Option<&str>,
+        database: Option<&Path>,
+        images: &[(&str, &[u8])],
+    ) -> PathBuf {
+        let payload = root.join("remote-payload").join("payload");
+        fs::create_dir_all(&payload).unwrap();
+        if let Some(settings) = settings {
+            fs::write(payload.join("settings.json"), settings).unwrap();
+        }
+        if let Some(database) = database {
+            fs::copy(database, payload.join("clipboard.db")).unwrap();
+        }
+        for (relative, bytes) in images {
+            let path = payload.join("images").join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, bytes).unwrap();
+        }
+        let archive = root.join("remote-backup.zip");
+        compress_archive(&payload, &archive).unwrap();
+        archive
+    }
+
+    fn write_active_restore_fixture(paths: &CloudSyncPaths) {
+        fs::create_dir_all(paths.data_dir.join("images")).unwrap();
+        fs::write(&paths.settings_file, r#"{"source":"local"}"#).unwrap();
+        write_restore_test_database(&paths.db_file, "local data");
+        fs::write(
+            paths.data_dir.join("images").join("local.png"),
+            b"local image",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn restore_staging_rejects_missing_database_and_bad_settings_without_touching_active_data() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-required-payload-test");
+        let data_dir = root.join("active");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        write_active_restore_fixture(&paths);
+
+        let missing_db_archive =
+            write_restore_test_archive(&root.join("missing-db"), Some(r#"{"ok":true}"#), None, &[]);
+        let error = stage_snapshot_restore(&paths, &missing_db_archive, None).unwrap_err();
+        assert!(error.contains("clipboard.db"));
+
+        let remote_db = root.join("remote.db");
+        write_restore_test_database(&remote_db, "cloud data");
+        let bad_settings_archive = write_restore_test_archive(
+            &root.join("bad-settings"),
+            Some("{not-json"),
+            Some(&remote_db),
+            &[],
+        );
+        let error = stage_snapshot_restore(&paths, &bad_settings_archive, None).unwrap_err();
+        assert!(error.contains("JSON"));
+
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"local"}"#
+        );
+        assert_eq!(restored_test_preview(&paths.db_file), "local data");
+        assert_eq!(
+            fs::read(paths.data_dir.join("images").join("local.png")).unwrap(),
+            b"local image"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn restore_staging_rejects_hash_mismatch_before_touching_active_data() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-hash-mismatch-test");
+        let data_dir = root.join("active");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        write_active_restore_fixture(&paths);
+        let remote_db = root.join("remote.db");
+        write_restore_test_database(&remote_db, "cloud data");
+        let archive = write_restore_test_archive(
+            &root.join("remote"),
+            Some(r#"{"source":"cloud"}"#),
+            Some(&remote_db),
+            &[],
+        );
+
+        let error = stage_snapshot_restore(&paths, &archive, Some("0000000000000000")).unwrap_err();
+
+        assert!(error.contains("哈希"));
+        assert_eq!(restored_test_preview(&paths.db_file), "local data");
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"local"}"#
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn staged_restore_migrates_database_remaps_images_and_commits_all_artifacts() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-transaction-success-test");
+        let data_dir = root.join("active");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        write_active_restore_fixture(&paths);
+        let remote_db = root.join("remote.db");
+        write_restore_test_database_with_image(
+            &remote_db,
+            "cloud image",
+            Some(r#"C:\old-device\data\images\nested\cloud.png"#),
+        );
+        let archive = write_restore_test_archive(
+            &root.join("remote"),
+            Some(r#"{"source":"cloud"}"#),
+            Some(&remote_db),
+            &[("nested/cloud.png", b"cloud image")],
+        );
+        let mut staged = stage_snapshot_restore(&paths, &archive, None).unwrap();
+
+        let migrated_columns: i64 = rusqlite::Connection::open(&staged.database)
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('items') WHERE name='lan_origin_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migrated_columns, 1);
+        crate::db_runtime::with_exclusive_db_file_replacement(&paths.db_file, || {
+            commit_staged_restore(&paths, &mut staged)
+        })
+        .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"cloud"}"#
+        );
+        assert_eq!(restored_test_preview(&paths.db_file), "cloud image");
+        assert_eq!(
+            fs::read(paths.data_dir.join("images/nested/cloud.png")).unwrap(),
+            b"cloud image"
+        );
+        assert!(!paths.data_dir.join("images/local.png").exists());
+        let restored_image_path: String = rusqlite::Connection::open(&paths.db_file)
+            .unwrap()
+            .query_row("SELECT image_path FROM items LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            PathBuf::from(restored_image_path),
+            paths.data_dir.join("images/nested/cloud.png")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_database_at_commit_rolls_back_settings_and_images() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-transaction-rollback-test");
+        let data_dir = root.join("active");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        write_active_restore_fixture(&paths);
+        let remote_db = root.join("remote.db");
+        write_restore_test_database(&remote_db, "cloud data");
+        let archive = write_restore_test_archive(
+            &root.join("remote"),
+            Some(r#"{"source":"cloud"}"#),
+            Some(&remote_db),
+            &[("cloud.png", b"cloud image")],
+        );
+        let mut staged = stage_snapshot_restore(&paths, &archive, None).unwrap();
+        fs::remove_file(&staged.database).unwrap();
+
+        let error = crate::db_runtime::with_exclusive_db_file_replacement(&paths.db_file, || {
+            commit_staged_restore(&paths, &mut staged)
+        })
+        .unwrap_err();
+
+        assert!(error.contains("数据库"));
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"local"}"#
+        );
+        assert_eq!(restored_test_preview(&paths.db_file), "local data");
+        assert_eq!(
+            fs::read(paths.data_dir.join("images/local.png")).unwrap(),
+            b"local image"
+        );
+        assert!(!paths.data_dir.join("images/cloud.png").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_images_stage_rolls_back_settings_without_touching_active_data() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-images-stage-rollback-test");
+        let data_dir = root.join("active");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        write_active_restore_fixture(&paths);
+        let remote_db = root.join("remote.db");
+        write_restore_test_database(&remote_db, "cloud data");
+        let archive = write_restore_test_archive(
+            &root.join("remote"),
+            Some(r#"{"source":"cloud"}"#),
+            Some(&remote_db),
+            &[("cloud.png", b"cloud image")],
+        );
+        let mut staged = stage_snapshot_restore(&paths, &archive, None).unwrap();
+        fs::remove_dir_all(&staged.images).unwrap();
+
+        let error = crate::db_runtime::with_exclusive_db_file_replacement(&paths.db_file, || {
+            commit_staged_restore(&paths, &mut staged)
+        })
+        .unwrap_err();
+
+        assert!(error.contains("图片目录"));
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"local"}"#
+        );
+        assert_eq!(restored_test_preview(&paths.db_file), "local data");
+        assert_eq!(
+            fs::read(paths.data_dir.join("images/local.png")).unwrap(),
+            b"local image"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_webdav_applies_valid_remote_settings_without_mkcol_or_put() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("read-only-settings-apply-test");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        fs::write(&paths.settings_file, r#"{"source":"local"}"#).unwrap();
+        let server = FakeWebDavServer::start_read_only_settings(r#"{"source":"cloud"}"#);
+        let config = CloudSyncConfig {
+            webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+            webdav_user: String::new(),
+            webdav_pass: String::new(),
+            remote_dir: "ZS Clip".to_string(),
+        };
+
+        let outcome =
+            perform_cloud_sync(CloudSyncAction::ApplyRemoteConfig, &config, &paths).unwrap();
+
+        assert!(outcome.reload_settings);
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"cloud"}"#
+        );
+        let requests = server.requests();
+        assert!(requests.iter().any(|request| {
+            request.method == "GET" && request.path.ends_with("/settings.json")
+        }));
+        assert!(!requests
+            .iter()
+            .any(|request| request.method == "MKCOL" || request.method == "PUT"));
+        server.stop();
+        fs::remove_dir_all(data_dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_remote_settings_leave_active_settings_unchanged() {
+        let _guard = cloud_sync_e2e_guard();
+        let data_dir = temp_dir_path("invalid-settings-apply-test");
+        fs::create_dir_all(&data_dir).unwrap();
+        let paths = restore_test_paths(&data_dir);
+        fs::write(&paths.settings_file, r#"{"source":"local"}"#).unwrap();
+        let server = FakeWebDavServer::start_read_only_settings("{not-json");
+        let config = CloudSyncConfig {
+            webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+            webdav_user: String::new(),
+            webdav_pass: String::new(),
+            remote_dir: "ZS Clip".to_string(),
+        };
+
+        let error =
+            perform_cloud_sync(CloudSyncAction::ApplyRemoteConfig, &config, &paths).unwrap_err();
+
+        assert!(error.contains("JSON"));
+        assert_eq!(
+            fs::read_to_string(&paths.settings_file).unwrap(),
+            r#"{"source":"local"}"#
+        );
+        let requests = server.requests();
+        assert!(!requests
+            .iter()
+            .any(|request| request.method == "MKCOL" || request.method == "PUT"));
+        server.stop();
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]
@@ -1695,8 +2706,24 @@ mod tests {
             Self::start_with_remote_syncclipboard_empty_first(remote_syncclipboard, 0)
         }
 
+        fn start_read_only_settings(remote_settings: &'static str) -> Self {
+            Self::start_with_remote_syncclipboard_options(
+                None,
+                0,
+                false,
+                Some(remote_settings),
+                false,
+            )
+        }
+
         fn start_with_missing_remote_image(remote_syncclipboard: Option<&'static str>) -> Self {
-            Self::start_with_remote_syncclipboard_options(remote_syncclipboard, 0, false)
+            Self::start_with_remote_syncclipboard_options(
+                remote_syncclipboard,
+                0,
+                false,
+                None,
+                true,
+            )
         }
 
         fn start_with_empty_syncclipboard_once(remote_syncclipboard: &'static str) -> Self {
@@ -1711,6 +2738,8 @@ mod tests {
                 remote_syncclipboard,
                 empty_syncclipboard_count,
                 true,
+                None,
+                true,
             )
         }
 
@@ -1718,6 +2747,8 @@ mod tests {
             remote_syncclipboard: Option<&'static str>,
             empty_syncclipboard_count: usize,
             serve_remote_image: bool,
+            remote_settings: Option<&'static str>,
+            allow_writes: bool,
         ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -1737,6 +2768,8 @@ mod tests {
                             remote_syncclipboard,
                             &empty_syncclipboard_count_thread,
                             serve_remote_image,
+                            remote_settings,
+                            allow_writes,
                         ),
                         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
@@ -1782,6 +2815,8 @@ mod tests {
         remote_syncclipboard: Option<&'static str>,
         empty_syncclipboard_count: &Arc<AtomicUsize>,
         serve_remote_image: bool,
+        remote_settings: Option<&'static str>,
+        allow_writes: bool,
     ) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut request_line = String::new();
@@ -1857,8 +2892,16 @@ mod tests {
             (200, remote_android_image_png())
         } else if method == "GET" && path.ends_with("/manifest.json") {
             (404, Vec::new())
+        } else if method == "GET" && path.ends_with("/settings.json") {
+            remote_settings
+                .map(|body| (200, body.as_bytes().to_vec()))
+                .unwrap_or_else(|| (404, Vec::new()))
         } else if method == "MKCOL" || method == "PUT" {
-            (201, Vec::new())
+            if allow_writes {
+                (201, Vec::new())
+            } else {
+                (403, Vec::new())
+            }
         } else {
             (404, Vec::new())
         };

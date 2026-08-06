@@ -27,6 +27,15 @@ pub(super) unsafe fn copy_selection_to_clipboard(state: &mut AppState) -> bool {
     }
 }
 
+pub(super) fn play_copy_success_sound_if_enabled(state: &AppState, copied: bool) {
+    if copied && state.settings.copy_success_sound_enabled {
+        play_paste_success_sound(
+            &state.settings.paste_success_sound_kind,
+            &state.settings.paste_success_sound_path,
+        );
+    }
+}
+
 pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &ClipItem) -> bool {
     let full_item;
     let item: &ClipItem = if let Some(resolved) = state.resolve_item_for_use(item_ref) {
@@ -139,28 +148,40 @@ unsafe fn apply_item_to_clipboard_plain_text(state: &mut AppState, item_ref: &Cl
 
 fn spawn_async_image_paste_load(
     hwnd: HWND,
+    generation: u64,
+    app_data_generation: u64,
     item_id: i64,
+    context: ImagePasteRequestContext,
     target: HWND,
     hide_main: bool,
     backspaces: u8,
+    completion: MainPasteCompletionPlan,
 ) {
     let hwnd_raw = hwnd as isize;
     let target_token = NativeWindowToken(target as usize);
     std::thread::spawn(move || {
-        let image = db_load_item_full(item_id).and_then(|full| {
-            if let Some(bytes) = full.image_bytes {
-                Some((bytes, full.image_width, full.image_height))
-            } else {
-                full.image_path
-                    .as_deref()
-                    .and_then(load_image_bytes_from_path)
-            }
-        });
+        let image = crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
+            db_load_item_full(item_id).and_then(|full| {
+                if let Some(bytes) = full.image_bytes {
+                    Some((bytes, full.image_width, full.image_height))
+                } else {
+                    full.image_path
+                        .as_deref()
+                        .and_then(load_image_bytes_from_path)
+                }
+            })
+        })
+        .flatten();
         let payload = Box::new(ImagePasteReadyResult {
             image,
+            generation,
+            app_data_generation,
+            item_id,
+            context,
             target: target_token,
             hide_main,
             backspaces,
+            completion,
         });
         unsafe {
             let _ = post_boxed_message(hwnd_raw, WM_IMAGE_PASTE_READY, 0, payload);
@@ -170,11 +191,13 @@ fn spawn_async_image_paste_load(
 
 pub(super) unsafe fn queue_async_image_paste_if_needed(
     hwnd: HWND,
-    _state: &mut AppState,
+    state: &mut AppState,
     item_ref: &ClipItem,
+    context: ImagePasteRequestContext,
     target: HWND,
     hide_main: bool,
     backspaces: u8,
+    completion: MainPasteCompletionPlan,
 ) -> bool {
     if item_ref.kind != ClipKind::Image
         || item_ref.id <= 0
@@ -186,7 +209,21 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
     if !WindowsWindowIdentityHost::new().exists(target) {
         return false;
     }
-    spawn_async_image_paste_load(hwnd, item_ref.id, target, hide_main, backspaces);
+    cancel_queued_paste_attempt(hwnd, state);
+    let generation = next_image_paste_generation(state.image_paste_generation);
+    state.image_paste_generation = generation;
+    state.pending_image_paste_generation = Some(generation);
+    spawn_async_image_paste_load(
+        hwnd,
+        generation,
+        state.app_data_generation,
+        item_ref.id,
+        context,
+        target,
+        hide_main,
+        backspaces,
+        completion,
+    );
     true
 }
 
@@ -236,6 +273,13 @@ unsafe fn maybe_promote_pasted_item(hwnd: HWND, state: &mut AppState, item_id: i
     if !state.settings.move_pasted_item_to_top || item_id <= 0 {
         return;
     }
+    let expected_generation = state.app_data_generation;
+    let _ = crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        maybe_promote_pasted_item_locked(hwnd, state, item_id);
+    });
+}
+
+unsafe fn maybe_promote_pasted_item_locked(hwnd: HWND, state: &mut AppState, item_id: i64) {
     if let Ok(new_id) = db_promote_item_to_top(item_id) {
         let anchor = state.current_scroll_anchor();
         state.remove_cached_item(item_id);
@@ -284,6 +328,23 @@ pub(super) unsafe fn execute_paste_completion_plan_to_target(
     plan: MainPasteCompletionPlan,
     target: Option<HWND>,
 ) {
+    if plan.send_paste_after_clipboard {
+        let paste_target = target.unwrap_or_else(|| effective_paste_target(state, hwnd));
+        let mut deferred_completion = plan;
+        deferred_completion.send_paste_after_clipboard = false;
+        deferred_completion.paste_hide_main = false;
+        deferred_completion.paste_backspaces = 0;
+        deferred_completion.play_success_sound = false;
+        paste_after_async_image_ready_to_target(
+            hwnd,
+            state,
+            paste_target,
+            plan.paste_hide_main,
+            plan.paste_backspaces,
+            deferred_completion,
+        );
+        return;
+    }
     if let Some(item_id) = plan.promote_item_id {
         maybe_promote_pasted_item(hwnd, state, item_id);
     }
@@ -305,22 +366,50 @@ pub(super) unsafe fn execute_paste_completion_plan_to_target(
     if plan.clear_hover {
         clear_main_hover_state(hwnd);
     }
-    if plan.send_paste_after_clipboard {
-        if let Some(target) = target {
-            paste_after_clipboard_ready_to_target(
-                hwnd,
-                state,
-                target,
-                plan.paste_hide_main,
-                plan.paste_backspaces,
-            );
-        } else {
-            paste_after_clipboard_ready(hwnd, state, plan.paste_hide_main);
-        }
+}
+
+pub(super) fn clear_pending_paste_completion(state: &mut AppState) {
+    state.pending_paste_completion = None;
+    state.pending_paste_hide_main = false;
+}
+
+pub(super) unsafe fn execute_pending_paste_completion_after_focus(
+    hwnd: HWND,
+    state: &mut AppState,
+) {
+    let plan = state.pending_paste_completion.take();
+    let hide_main_after_focus = std::mem::take(&mut state.pending_paste_hide_main);
+    let completion_hides_main = plan.map(|plan| plan.hide_main_now).unwrap_or(false);
+    if let Some(plan) = plan {
+        debug_assert!(!plan.send_paste_after_clipboard);
+        execute_paste_completion_plan(hwnd, state, plan);
+    }
+    if hide_main_after_focus && !completion_hides_main {
+        WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
     }
 }
 
+pub(super) unsafe fn cancel_queued_paste_attempt(hwnd: HWND, state: &mut AppState) {
+    timer::stop(hwnd, ID_TIMER_PASTE);
+    state.paste_target_override = null_mut();
+    state.paste_backspace_count = 0;
+    state.paste_focus_retry_attempts = 0;
+    clear_pending_paste_completion(state);
+}
+
 pub(super) unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
+    let expected_generation = state.app_data_generation;
+    if crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        paste_selected_locked(hwnd, state);
+    })
+    .is_none()
+    {
+        apply_loaded_settings(hwnd, state);
+    }
+}
+
+unsafe fn paste_selected_locked(hwnd: HWND, state: &mut AppState) {
+    state.pending_image_paste_generation = None;
     let Some(item_ref) = state.current_item().cloned() else {
         return;
     };
@@ -339,19 +428,20 @@ pub(super) unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
             }
             MainPastePreparationStep::AsyncImage => {
                 let async_target = effective_paste_target(state, hwnd);
+                let completion = main_paste_completion_plan(
+                    MainPasteCompletionKind::AsyncImage,
+                    paste_completion_input(state, item_ref.id),
+                );
                 if queue_async_image_paste_if_needed(
                     hwnd,
                     state,
                     &item_ref,
+                    ImagePasteRequestContext::MainList,
                     async_target,
                     state.settings.click_hide,
                     0,
+                    completion,
                 ) {
-                    let plan = main_paste_completion_plan(
-                        MainPasteCompletionKind::AsyncImage,
-                        paste_completion_input(state, item_ref.id),
-                    );
-                    execute_paste_completion_plan(hwnd, state, plan);
                     return;
                 }
             }
@@ -384,35 +474,17 @@ pub(super) unsafe fn restore_hotkey_focus_target(state: &AppState, target: HWND)
 pub(super) unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -> bool {
     let identity_host = WindowsWindowIdentityHost::new();
     if !identity_host.exists(target) {
-        append_paste_diagnostic(&format!(
-            "paste_check target={target:p} exists=false allowed=false"
-        ));
         return false;
     }
     if !identity_host.is_foreground(target) {
-        append_paste_diagnostic(&format!(
-            "paste_check target={target:p} exists=true foreground=false allowed=false process={} class={}",
-            identity_host.process_name(target),
-            identity_host.class_name(target)
-        ));
         return false;
     }
     if vv_is_qq_wps_process(&window_process_name(target)) {
-        append_paste_diagnostic(&format!(
-            "paste_check target={target:p} foreground=true qq_wps=true allowed=true"
-        ));
         return true;
     }
     let focus_status = WindowsPasteTargetHost::new()
         .paste_target_focus_status(target, state.hotkey_passthrough_focus);
-    let allowed = focus_status.allows_paste_attempt();
-    append_paste_diagnostic(&format!(
-        "paste_check target={target:p} foreground=true focus={:p} status={focus_status:?} allowed={allowed} process={} class={}",
-        state.hotkey_passthrough_focus,
-        identity_host.process_name(target),
-        identity_host.class_name(target)
-    ));
-    allowed
+    focus_status.allows_paste_attempt()
 }
 
 pub(super) fn paste_focus_retry_delay_ms(
@@ -529,31 +601,36 @@ pub(super) unsafe fn paste_after_clipboard_ready_to_target(
     hide_main: bool,
     backspaces: u8,
 ) {
-    let source = if target.is_null() {
-        "none"
-    } else if state.hotkey_passthrough_active && state.hotkey_passthrough_target == target {
-        "hotkey_snapshot"
-    } else if state.paste_target_override == target {
-        "override"
-    } else if state.role == WindowRole::Quick {
-        "quick_foreground_or_zorder"
-    } else {
-        "zorder"
-    };
-    let identity_host = WindowsWindowIdentityHost::new();
-    append_paste_diagnostic(&format!(
-        "paste_queue target={target:p} source={source} passthrough_target={:p} passthrough_focus={:p} current_foreground={:p} hide_main={hide_main} process={} class={}",
-        state.hotkey_passthrough_target,
-        state.hotkey_passthrough_focus,
-        identity_host.foreground_handle(),
-        identity_host.process_name(target),
-        identity_host.class_name(target)
-    ));
+    clear_pending_paste_completion(state);
+    state.pending_paste_hide_main = hide_main;
+    queue_paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
+}
+
+pub(super) unsafe fn paste_after_async_image_ready_to_target(
+    hwnd: HWND,
+    state: &mut AppState,
+    target: HWND,
+    hide_main_after_focus: bool,
+    backspaces: u8,
+    completion: MainPasteCompletionPlan,
+) {
+    state.pending_paste_completion = Some(completion);
+    state.pending_paste_hide_main = hide_main_after_focus;
+    queue_paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);
+}
+
+unsafe fn queue_paste_after_clipboard_ready_to_target(
+    hwnd: HWND,
+    state: &mut AppState,
+    target: HWND,
+    hide_main_immediately: bool,
+    backspaces: u8,
+) {
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
     state.paste_focus_retry_attempts = 0;
     if !target.is_null() {
-        if hide_main {
+        if hide_main_immediately {
             WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
         }
         let _ = WindowsPasteTargetHost::new().force_paste_target_foreground(target);
@@ -561,6 +638,7 @@ pub(super) unsafe fn paste_after_clipboard_ready_to_target(
         timer::stop(hwnd, ID_TIMER_PASTE);
         timer::start(hwnd, ID_TIMER_PASTE, 150);
     } else {
+        clear_pending_paste_completion(state);
         clear_hotkey_passthrough_state(state);
         WindowsMainWindowHost::new(Some(wnd_proc)).foreground_main_window(hwnd);
         if state.search_on {
