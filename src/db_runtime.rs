@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{params_from_iter, Connection, OptionalExtension};
 
 use crate::app_core::{parse_search_query_with_context, SearchDateContext, SearchTimeFilter};
@@ -477,6 +478,12 @@ fn configure_db_connection(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+fn configure_runtime_wal_connection(conn: &Connection) -> rusqlite::Result<()> {
+    conn.pragma_update(None, "wal_autocheckpoint", 0i32)?;
+    conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    Ok(())
+}
+
 fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "
@@ -737,6 +744,46 @@ fn runtime_db_file() -> std::path::PathBuf {
     }
 }
 
+#[cfg(target_os = "windows")]
+const DB_CHECKPOINT_HELPER_ARG: &str = "--zsclip-checkpoint-after-parent";
+
+#[cfg(target_os = "windows")]
+pub(crate) fn maybe_run_db_checkpoint_helper_from_args() -> Option<i32> {
+    let mut args = std::env::args_os();
+    let _ = args.next();
+    if args.next().as_deref() != Some(std::ffi::OsStr::new(DB_CHECKPOINT_HELPER_ARG)) {
+        return None;
+    }
+    let parent_pid = args.next()?.to_string_lossy().parse::<u32>().ok()?;
+    if !crate::platform::process::wait_for_process_exit(parent_pid) {
+        return Some(1);
+    }
+    let db_file = runtime_db_file();
+    if !db_file.exists() || !wal_file_path(&db_file).exists() {
+        return Some(0);
+    }
+    let result = Connection::open(&db_file).and_then(|conn| {
+        conn.busy_timeout(Duration::from_millis(1_000))?;
+        checkpoint_connection(&conn)
+    });
+    Some(if result.is_ok() { 0 } else { 1 })
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn spawn_db_checkpoint_after_current_process_exit() {
+    use std::os::windows::process::CommandExt;
+
+    let Ok(executable) = std::env::current_exe() else {
+        return;
+    };
+    let mut command = std::process::Command::new(executable);
+    command
+        .arg(DB_CHECKPOINT_HELPER_ARG)
+        .arg(crate::platform::process::current_process_id().to_string())
+        .creation_flags(0x0800_0000);
+    let _ = command.spawn();
+}
+
 fn open_connection(target: &DbConnectionTarget) -> rusqlite::Result<Connection> {
     match target {
         DbConnectionTarget::Runtime => {
@@ -764,6 +811,9 @@ fn ensure_connection(slot: &mut DbConnectionSlot) -> rusqlite::Result<()> {
     if slot.connection.is_none() {
         let conn = open_connection(&slot.target)?;
         configure_db_connection(&conn)?;
+        if matches!(&slot.target, DbConnectionTarget::Runtime) {
+            configure_runtime_wal_connection(&conn)?;
+        }
         slot.connection = Some(conn);
     }
 
@@ -1605,18 +1655,16 @@ pub(crate) fn checkpoint_db() -> rusqlite::Result<()> {
 }
 
 pub(crate) fn close_db() {
-    with_shared_app_data(|| {
+    let connection = with_shared_app_data(|| {
         let _access_guard = db_access_gate()
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         DB_CONN.with(|slot| {
             let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(conn) = slot.connection.as_ref() {
-                let _ = checkpoint_connection(conn);
-            }
-            slot.connection = None;
-        });
+            slot.connection.take()
+        })
     });
+    drop(connection);
 }
 
 fn normalized_db_path(path: &std::path::Path) -> std::path::PathBuf {
@@ -1848,6 +1896,48 @@ mod tests {
         assert!(validate_wal_checkpoint_result(0, 4, 4).is_ok());
         assert!(validate_wal_checkpoint_result(1, 4, 4).is_err());
         assert!(validate_wal_checkpoint_result(0, 4, 3).is_err());
+    }
+
+    #[test]
+    fn runtime_connection_close_skips_implicit_checkpoint() {
+        let db_file = db_runtime_test_path("runtime-checkpoint-policy");
+        let conn = Connection::open(&db_file).unwrap();
+        configure_db_connection(&conn).unwrap();
+        configure_runtime_wal_connection(&conn).unwrap();
+
+        let auto_checkpoint: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(auto_checkpoint, 0);
+        assert!(conn
+            .db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE)
+            .unwrap());
+
+        conn.execute_batch("CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES('ok');")
+            .unwrap();
+        let wal_file = wal_file_path(&db_file);
+        let wal_bytes_before_close = std::fs::metadata(&wal_file).unwrap().len();
+        assert!(wal_bytes_before_close > 32);
+        drop(conn);
+        assert_eq!(
+            std::fs::metadata(&wal_file).unwrap().len(),
+            wal_bytes_before_close
+        );
+
+        let conn = Connection::open(&db_file).unwrap();
+        let value: String = conn
+            .query_row("SELECT value FROM sample", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(value, "ok");
+        checkpoint_connection(&conn).unwrap();
+        drop(conn);
+        for path in [
+            db_file.clone(),
+            wal_file_path(&db_file),
+            shm_file_path(&db_file),
+        ] {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]

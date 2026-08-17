@@ -7,7 +7,7 @@ use std::process::{Command, Output};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::app::{ClipItem, Icons};
+use crate::app::{ClipItem, ClipKind, Icons};
 use crate::app_core::{NativeFileDialogHost, NativeFileDialogRequest, NativeShellOpenHost};
 use crate::app_version::APP_VERSION;
 use crate::i18n::tr;
@@ -1335,12 +1335,28 @@ fn version_is_newer(latest: &str, current: &str) -> bool {
     a > b
 }
 
+fn file_path_looks_like_directory_without_io(path: &str) -> bool {
+    let path = path.trim();
+    if path.is_empty() {
+        return false;
+    }
+    if path.ends_with(['\\', '/']) {
+        return true;
+    }
+    let parsed = Path::new(path);
+    let Some(name) = parsed.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(name, "." | "..") || parsed.extension().is_none()
+}
+
 pub(crate) fn is_directory_item(item: &ClipItem) -> bool {
-    item.file_paths
-        .as_ref()
-        .and_then(|v| v.first())
-        .map(|p| Path::new(p).is_dir())
-        .unwrap_or(false)
+    matches!(item.kind, ClipKind::Files)
+        && item
+            .file_paths
+            .as_ref()
+            .and_then(|paths| paths.first())
+            .is_some_and(|path| file_path_looks_like_directory_without_io(path))
 }
 
 pub(crate) fn load_icons() -> Icons {
@@ -1516,6 +1532,34 @@ unsafe fn try_create_icon(data: &[u8], base: usize, w: i32, h: i32) -> Option<is
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn file_item(path: &str) -> ClipItem {
+        ClipItem {
+            id: 1,
+            kind: ClipKind::Files,
+            preview: path.to_string(),
+            text: None,
+            rich_text_html: None,
+            source_app: String::new(),
+            file_paths: Some(vec![path.to_string()]),
+            image_bytes: None,
+            image_path: None,
+            image_width: 0,
+            image_height: 0,
+            pinned: false,
+            group_id: 0,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn directory_item_detection_is_lexical_for_remote_paths() {
+        assert!(!is_directory_item(&file_item(
+            r"Z:\offline\remote-video.mp4"
+        )));
+        assert!(is_directory_item(&file_item(r"Z:\offline\folder")));
+        assert!(is_directory_item(&file_item(r"\\server\share\folder\")));
+    }
 
     #[test]
     fn update_check_does_not_report_current_four_part_version_as_newer() {

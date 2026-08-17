@@ -67,6 +67,12 @@ pub use zsui;
 
 #[cfg(target_os = "windows")]
 fn main() {
+    if let Some(code) = app::maybe_run_clipboard_read_helper_from_args() {
+        std::process::exit(code);
+    }
+    if let Some(code) = db_runtime::maybe_run_db_checkpoint_helper_from_args() {
+        std::process::exit(code);
+    }
     if let Some(code) = shell::maybe_run_wechat_ocr_helper_from_args() {
         std::process::exit(code);
     }

@@ -1,5 +1,5 @@
 use super::command_protocol::Command;
-use super::main_window::MainPasteCompletionPlan;
+use super::main_window::{ClipItem, MainPasteCompletionPlan};
 use crate::app_core::native_host_actions::NativeHostClipListItemProjection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +143,34 @@ pub(crate) struct ImageThumbReadyResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CapturedItemDbAction {
+    Duplicate,
+    Inserted { item: ClipItem },
+    Promoted { old_id: i64, new_id: i64 },
+    RetryableFailure,
+}
+
+impl CapturedItemDbAction {
+    pub(crate) const fn applied(&self) -> bool {
+        matches!(self, Self::Inserted { .. } | Self::Promoted { .. })
+    }
+
+    pub(crate) const fn completed(&self) -> bool {
+        !matches!(self, Self::RetryableFailure)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CapturedItemDbReadyResult {
+    pub(crate) app_data_generation: u64,
+    pub(crate) action: CapturedItemDbAction,
+    pub(crate) removed_ids: Vec<i64>,
+    pub(crate) signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MainAsyncEvent {
+    CapturedItemDb(CapturedItemDbReadyResult),
     ImagePaste(ImagePasteReadyResult),
     ImageOcr(TextOperationReadyResult),
     TextTranslate(TextOperationReadyResult),

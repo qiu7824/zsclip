@@ -744,6 +744,10 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(capture.contains("snapshot.has_image"));
     assert!(capture.contains("platform_clipboard::url_format_payloads_from_snapshot(&snapshot)"));
     assert!(capture.contains("platform_clipboard::html_format_payload_from_snapshot(&snapshot)"));
+    assert!(capture.contains("--zsclip-read-clipboard-helper"));
+    assert!(capture.contains("CLIPBOARD_READ_HELPER_TIMEOUT"));
+    assert!(capture.contains(".name(\"zsclip-clipboard-read\".to_string())"));
+    assert!(capture.contains("WM_CLIPBOARD_CAPTURE_READ_READY"));
     assert!(capture.contains("pub(super) unsafe fn capture_clipboard_guarded("));
     assert!(main_events
         .contains("MainTimerTask::ClipboardRetry => timer::stop(hwnd, ID_TIMER_CLIPBOARD_RETRY)"));
@@ -756,11 +760,9 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
 #[test]
 fn fragile_delayed_rendering_apps_are_skipped_before_data_reads() {
     let capture = main_clipboard_capture_source();
-    let capture_start = capture
-        .find("pub(super) unsafe fn capture_clipboard(")
-        .unwrap();
+    let capture_start = capture.find("fn read_clipboard_capture_result(").unwrap();
     let capture_end = capture[capture_start..]
-        .find("\npub(super) unsafe fn capture_clipboard_guarded")
+        .find("\nfn write_clipboard_helper_result(")
         .map(|offset| capture_start + offset)
         .unwrap();
     let capture_block = &capture[capture_start..capture_end];
@@ -771,7 +773,6 @@ fn fragile_delayed_rendering_apps_are_skipped_before_data_reads() {
     assert!(capture.contains("\"cnext\""));
     assert!(capture.contains("\"catia\""));
     assert!(capture.contains("\"3dexperience\""));
-    assert!(capture_block[skip_start..].contains("remember_clipboard_sequence(state, sequence)"));
     assert!(!capture_block.contains("schedule_clipboard_retry"));
     for read_call in [
         "platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)",
@@ -810,7 +811,7 @@ fn clipboard_sequence_capture_is_terminal_without_retry() {
     assert!(!capture.contains("reset_clipboard_retry"));
     assert!(!capture.contains("clipboard_retry_attempts"));
     assert!(capture
-        .contains("let Some(text) = platform_clipboard::read_text_for_sequence(sequence) else"));
+        .contains("if let Some(text) = platform_clipboard::read_text_for_sequence(sequence)"));
     assert!(!constants.contains("CLIPBOARD_RETRY_DELAY"));
     assert!(!constants.contains("CLIPBOARD_RETRY_MAX_ATTEMPTS"));
     assert!(main_events
@@ -820,10 +821,18 @@ fn clipboard_sequence_capture_is_terminal_without_retry() {
     let capture_start = capture
         .find("pub(super) unsafe fn capture_clipboard(")
         .unwrap();
-    let capture_block = &capture[capture_start..];
+    let capture_end = capture[capture_start..]
+        .find("\npub(super) unsafe fn capture_clipboard_guarded")
+        .map(|offset| capture_start + offset)
+        .unwrap();
+    let capture_block = &capture[capture_start..capture_end];
     let claim = capture_block
         .find("begin_clipboard_sequence_capture(&mut state.clipboard_terminal_sequence, sequence)")
         .unwrap();
+    let queue = capture_block
+        .find("queue_clipboard_capture_read(hwnd, state, sequence)")
+        .unwrap();
+    assert!(claim < queue);
     for read in [
         "platform_clipboard::snapshot_formats()",
         "WindowsClipboardHost::read_file_paths()",
@@ -832,14 +841,50 @@ fn clipboard_sequence_capture_is_terminal_without_retry() {
         "guarded_read_windows_clipboard_bitmap_rgba()",
     ] {
         assert!(
-            claim < capture_block.find(read).unwrap(),
-            "sequence must be terminal before {read}"
+            !capture_block.contains(read),
+            "UI capture must not call {read}"
         );
     }
 
     assert!(constants.contains("PASTE_FOCUS_RETRY_MAX_ATTEMPTS"));
     assert!(main_events.contains("state.paste_focus_retry_attempts"));
     assert!(main_events.contains("state.vv_popup_pending_retries"));
+}
+
+#[test]
+fn clipboard_data_reads_are_process_isolated_and_time_bounded() {
+    let capture = main_clipboard_capture_source();
+    let main_entry = main_entry_source();
+    let main = include_str!("main.rs").replace("\r\n", "\n");
+
+    let ui_start = capture
+        .find("pub(super) unsafe fn capture_clipboard(")
+        .unwrap();
+    let ui_end = capture[ui_start..]
+        .find("\npub(super) unsafe fn capture_clipboard_guarded")
+        .map(|offset| ui_start + offset)
+        .unwrap();
+    let ui_block = &capture[ui_start..ui_end];
+    for blocking_read in [
+        "snapshot_formats()",
+        "read_file_paths()",
+        "read_text_for_sequence(",
+        "read_image_rgba()",
+        "get_clipboard(",
+    ] {
+        assert!(
+            !ui_block.contains(blocking_read),
+            "window thread still performs blocking clipboard read: {blocking_read}"
+        );
+    }
+
+    assert!(capture.contains("std::process::Command::new(executable)"));
+    assert!(capture.contains("CLIPBOARD_READ_HELPER_TIMEOUT"));
+    assert!(capture.contains("let _ = child.kill();"));
+    assert!(capture.contains("clipboard_read_sender().try_send(request)"));
+    assert!(capture.contains("post_boxed_message("));
+    assert!(main_entry.contains("if msg == WM_CLIPBOARD_CAPTURE_READ_READY"));
+    assert!(main.contains("app::maybe_run_clipboard_read_helper_from_args()"));
 }
 
 #[test]
@@ -3347,6 +3392,29 @@ fn windows_clip_payload_data_helpers_live_outside_app_rs() {
     }
 
     assert!(data.contains("post_boxed_message(hwnd_raw, WM_IMAGE_THUMB_READY"));
+}
+
+#[test]
+fn windows_main_row_directory_detection_never_queries_the_file_system() {
+    let shell = include_str!("shell.rs").replace("\r\n", "\n");
+    let renderer = include_str!("app/main_renderer.rs").replace("\r\n", "\n");
+    let start = shell
+        .find("fn file_path_looks_like_directory_without_io(")
+        .unwrap();
+    let end = shell[start..]
+        .find("\npub(crate) fn load_icons(")
+        .map(|offset| start + offset)
+        .unwrap();
+    let directory_detection = &shell[start..end];
+
+    assert!(renderer.contains("is_directory_item(item)"));
+    assert!(renderer.contains("is_directory_item(&item)"));
+    for forbidden in [".is_dir()", "fs::metadata", ".exists()", ".canonicalize()"] {
+        assert!(
+            !directory_detection.contains(forbidden),
+            "row rendering must not perform filesystem I/O through {forbidden}"
+        );
+    }
 }
 
 #[test]
@@ -5864,7 +5932,8 @@ fn windows_clipboard_paste_defers_success_side_effects_until_input_succeeds() {
     assert!(defer < queue);
     assert!(queue < promote);
     assert!(branch.contains("deferred_completion.send_paste_after_clipboard = false;"));
-    assert!(branch.contains("deferred_completion.play_success_sound = false;"));
+    assert!(!branch.contains("deferred_completion.play_success_sound = false;"));
+    assert!(branch.contains("if plan.play_success_sound {"));
 
     let ready_start = main_paste
         .find("pub(super) unsafe fn paste_after_clipboard_ready_to_target")
@@ -5905,15 +5974,17 @@ fn windows_text_processing_skips_only_the_successful_programmatic_clipboard_upda
 }
 
 #[test]
-fn windows_clipboard_capture_skips_database_failures_and_commits_png_files() {
+fn windows_clipboard_capture_runs_database_work_off_ui_and_commits_png_files() {
     let capture = main_clipboard_capture_source();
     let state_runtime = app_state_runtime_source();
     let data = app_data_source();
 
-    assert!(capture.matches("add_clip_item_for_capture(").count() >= 3);
-    assert!(capture.contains("finish_captured_item_add(hwnd, state, result)"));
+    assert!(capture.matches("queue_captured_item_add(").count() >= 3);
+    assert!(capture.contains(".name(\"zsclip-capture-db\".to_string())"));
+    assert!(capture.contains("captured_item_db_sender().try_send(request)"));
+    assert!(capture.contains("WM_CAPTURED_ITEM_DB_READY"));
+    assert!(capture.contains("CapturedItemDbAction::RetryableFailure"));
     assert!(capture.contains("play_copy_success_sound_if_enabled(state, applied)"));
-    assert!(capture.contains("Err(()) => false"));
     assert!(!capture.contains("schedule_clipboard_retry"));
     assert!(state_runtime.contains("ClipItemAddOutcome::RetryableFailure"));
     assert!(state_runtime.contains("item.id = insert_result.unwrap_or(0);"));

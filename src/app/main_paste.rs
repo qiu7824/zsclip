@@ -334,7 +334,6 @@ pub(super) unsafe fn execute_paste_completion_plan_to_target(
         deferred_completion.send_paste_after_clipboard = false;
         deferred_completion.paste_hide_main = false;
         deferred_completion.paste_backspaces = 0;
-        deferred_completion.play_success_sound = false;
         paste_after_async_image_ready_to_target(
             hwnd,
             state,
@@ -492,10 +491,11 @@ pub(super) fn paste_focus_retry_delay_ms(
     target_exists: bool,
     foreground: HWND,
     target: HWND,
+    foreground_is_zsclip: bool,
 ) -> Option<u32> {
     (attempts < PASTE_FOCUS_RETRY_MAX_ATTEMPTS
         && target_exists
-        && (foreground.is_null() || foreground == target))
+        && (foreground.is_null() || foreground == target || foreground_is_zsclip))
         .then_some(PASTE_FOCUS_RETRY_DELAY_MS)
 }
 
@@ -576,11 +576,9 @@ pub(super) unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWN
     {
         return state.hotkey_passthrough_target;
     }
-    if state.role == WindowRole::Quick {
-        let fg = WindowsWindowIdentityHost::new().foreground_handle();
-        if is_viable_paste_window(fg, hwnd, skip_class_names) {
-            return fg;
-        }
+    let foreground = WindowsWindowIdentityHost::new().foreground_handle();
+    if is_viable_paste_window(foreground, hwnd, skip_class_names) {
+        return foreground;
     }
     find_next_paste_target(hwnd, skip_class_names)
 }
@@ -662,20 +660,33 @@ mod paste_focus_retry_tests {
         let target = 7usize as HWND;
         let other = 9usize as HWND;
         assert_eq!(
-            paste_focus_retry_delay_ms(0, true, null_mut(), target),
+            paste_focus_retry_delay_ms(0, true, null_mut(), target, false),
             Some(PASTE_FOCUS_RETRY_DELAY_MS)
         );
         assert_eq!(
-            paste_focus_retry_delay_ms(1, true, target, target),
+            paste_focus_retry_delay_ms(1, true, target, target, false),
             Some(PASTE_FOCUS_RETRY_DELAY_MS)
         );
-        assert_eq!(paste_focus_retry_delay_ms(1, true, other, target), None);
         assert_eq!(
-            paste_focus_retry_delay_ms(1, false, null_mut(), target),
+            paste_focus_retry_delay_ms(1, true, other, target, true),
+            Some(PASTE_FOCUS_RETRY_DELAY_MS)
+        );
+        assert_eq!(
+            paste_focus_retry_delay_ms(1, true, other, target, false),
             None
         );
         assert_eq!(
-            paste_focus_retry_delay_ms(PASTE_FOCUS_RETRY_MAX_ATTEMPTS, true, null_mut(), target),
+            paste_focus_retry_delay_ms(1, false, null_mut(), target, false),
+            None
+        );
+        assert_eq!(
+            paste_focus_retry_delay_ms(
+                PASTE_FOCUS_RETRY_MAX_ATTEMPTS,
+                true,
+                null_mut(),
+                target,
+                false,
+            ),
             None
         );
     }
