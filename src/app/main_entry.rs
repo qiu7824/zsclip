@@ -6,7 +6,7 @@ pub(crate) fn run() -> AppResult<()> {
     platform_appearance::set_dark_mode_enabled(boot_settings.dark_mode_enabled);
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     let (_single_instance_mutex, already_running) =
-        platform_process::create_named_mutex("Global\\ZsClipSingleInstance");
+        platform_process::create_named_mutex("Global\\ZsClipSingleInstanceV2");
     if already_running {
         // 已有实例：找到主窗口并激活
         let hwnd = platform_window::find_window_by_class(WindowRole::Main.class_name());
@@ -61,6 +61,8 @@ pub(crate) fn run() -> AppResult<()> {
         }
     }
 
+    crate::db_runtime::close_db();
+    crate::db_runtime::spawn_db_checkpoint_after_current_process_exit();
     Ok(())
 }
 
@@ -70,6 +72,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_CLIPBOARD_CAPTURE_READ_READY {
+        apply_clipboard_capture_read_ready(hwnd, lparam);
+        return 0;
+    }
     if msg == WM_DPICHANGED {
         apply_dpi_suggested_rect(hwnd, lparam);
     }

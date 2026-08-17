@@ -40,7 +40,7 @@ pub(super) fn preferred_secondary_drive_data_dir() -> Option<PathBuf> {
             continue;
         }
         let root = PathBuf::from(format!("{drive}\\"));
-        if !root.exists() {
+        if !platform_process::path_is_on_fixed_drive(&root) || !root.exists() {
             continue;
         }
         let candidate = PathBuf::from(format!("{drive}\\ZSClip\\data"));
@@ -110,12 +110,18 @@ fn migrate_legacy_data_dirs_to(target: &Path) {
 
 fn legacy_data_dir_candidates(target: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    push_unique_path(&mut dirs, local_app_data_dir());
+    push_unique_path(
+        &mut dirs,
+        local_app_data_dir().filter(|path| platform_process::path_is_on_fixed_drive(path)),
+    );
     for drive in ('D'..='Z').map(|letter| format!("{letter}:")) {
-        push_unique_path(
-            &mut dirs,
-            Some(PathBuf::from(format!("{drive}\\ZSClip\\data"))),
-        );
+        let root = PathBuf::from(format!("{drive}\\"));
+        if platform_process::path_is_on_fixed_drive(&root) {
+            push_unique_path(
+                &mut dirs,
+                Some(PathBuf::from(format!("{drive}\\ZSClip\\data"))),
+            );
+        }
     }
     if !target.ends_with("data") {
         push_unique_path(&mut dirs, Some(PathBuf::from("data")));

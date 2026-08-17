@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path, Prefix};
 
 #[link(name = "kernel32")]
 unsafe extern "system" {
@@ -6,6 +6,7 @@ unsafe extern "system" {
     fn GetCurrentProcessId() -> u32;
     fn GetCurrentThreadId() -> u32;
     fn GetLastError() -> u32;
+    fn GetDriveTypeW(lprootpathname: *const u16) -> u32;
     fn CreateMutexW(
         lp_attributes: *const core::ffi::c_void,
         b_initial_owner: i32,
@@ -16,6 +17,7 @@ unsafe extern "system" {
         binherithandle: i32,
         dwprocessid: u32,
     ) -> *mut core::ffi::c_void;
+    fn WaitForSingleObject(hhandle: *mut core::ffi::c_void, dwmilliseconds: u32) -> u32;
     fn QueryFullProcessImageNameW(
         hprocess: *mut core::ffi::c_void,
         dwflags: u32,
@@ -31,7 +33,11 @@ unsafe extern "system" {
 }
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+const SYNCHRONIZE: u32 = 0x0010_0000;
+const WAIT_OBJECT_0: u32 = 0;
+const INFINITE: u32 = u32::MAX;
 const ERROR_ALREADY_EXISTS: u32 = 183;
+const DRIVE_FIXED: u32 = 3;
 
 pub(crate) fn current_process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
@@ -39,6 +45,33 @@ pub(crate) fn current_process_id() -> u32 {
 
 pub(crate) fn current_thread_id() -> u32 {
     unsafe { GetCurrentThreadId() }
+}
+
+pub(crate) fn path_is_on_fixed_drive(path: &Path) -> bool {
+    let drive_letter = match path.components().next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => letter,
+            _ => return false,
+        },
+        _ => return false,
+    };
+    let root = [drive_letter as u16, b':' as u16, b'\\' as u16, 0];
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_FIXED }
+}
+
+pub(crate) fn wait_for_process_exit(pid: u32) -> bool {
+    if pid == 0 || pid == current_process_id() {
+        return false;
+    }
+    unsafe {
+        let handle = OpenProcess(SYNCHRONIZE, 0, pid);
+        if handle.is_null() {
+            return true;
+        }
+        let result = WaitForSingleObject(handle, INFINITE);
+        let _ = CloseHandle(handle);
+        result == WAIT_OBJECT_0
+    }
 }
 
 pub(crate) fn create_named_mutex(name: &str) -> (isize, bool) {
@@ -77,5 +110,22 @@ pub(crate) fn trim_current_working_set() -> bool {
     unsafe {
         let process = GetCurrentProcess();
         !process.is_null() && EmptyWorkingSet(process) != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixed_drive_probe_rejects_remote_unc_paths() {
+        let system_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+        assert!(path_is_on_fixed_drive(Path::new(&format!(
+            "{}\\",
+            system_drive.trim_end_matches('\\')
+        ))));
+        assert!(!path_is_on_fixed_drive(Path::new(
+            r"\\server\redirected-drive"
+        )));
     }
 }

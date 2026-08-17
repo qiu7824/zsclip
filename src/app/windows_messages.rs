@@ -1,7 +1,7 @@
 use super::main_startup_integrations::taskbar_created_message;
 use crate::app_core::{
-    ApplicationEvent, ImagePasteReadyResult, ImageThumbReadyResult, MainAsyncEvent,
-    NativeWindowToken, TextOperationReadyResult, UiEvent,
+    ApplicationEvent, CapturedItemDbReadyResult, ImagePasteReadyResult, ImageThumbReadyResult,
+    MainAsyncEvent, NativeWindowToken, TextOperationReadyResult, UiEvent,
 };
 use crate::platform::ui_event as platform_ui_event;
 use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
@@ -19,6 +19,7 @@ pub(super) const WM_IMAGE_THUMB_READY: u32 = WM_APP + 37;
 pub(crate) const WM_LAN_SYNC_READY: u32 = WM_APP + 38;
 pub(super) const WM_STARTUP_DATA_RECONCILED: u32 = WM_APP + 39;
 pub(super) const WM_OUTSIDE_CLICK_REQUESTED: u32 = WM_APP + 40;
+pub(super) const WM_CAPTURED_ITEM_DB_READY: u32 = WM_APP + 41;
 pub(super) const WM_SETTINGS_SCROLL_FRAME: u32 = WM_APP + 92;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 
@@ -44,7 +45,11 @@ pub(super) unsafe fn main_window_host_event_from_message(
 pub(super) fn is_main_async_result_message(msg: u32) -> bool {
     matches!(
         msg,
-        WM_IMAGE_PASTE_READY | WM_IMAGE_OCR_READY | WM_TEXT_TRANSLATE_READY | WM_IMAGE_THUMB_READY
+        WM_IMAGE_PASTE_READY
+            | WM_IMAGE_OCR_READY
+            | WM_TEXT_TRANSLATE_READY
+            | WM_IMAGE_THUMB_READY
+            | WM_CAPTURED_ITEM_DB_READY
     )
 }
 
@@ -56,6 +61,9 @@ pub(super) unsafe fn take_main_async_event_from_window_message(
         return None;
     }
     match msg {
+        WM_CAPTURED_ITEM_DB_READY => Some(MainAsyncEvent::CapturedItemDb(*Box::from_raw(
+            lparam as *mut CapturedItemDbReadyResult,
+        ))),
         WM_IMAGE_PASTE_READY => Some(MainAsyncEvent::ImagePaste(*Box::from_raw(
             lparam as *mut ImagePasteReadyResult,
         ))),

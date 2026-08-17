@@ -939,6 +939,7 @@ pub(crate) enum MacosApplicationEventRoute {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MacosMainAsyncEventRoute {
+    CapturedItemDb,
     PasteImage {
         has_image: bool,
         target: NativeWindowToken,
@@ -3122,6 +3123,7 @@ impl MacosBackgroundTaskState {
 
     fn accept_async_route(&mut self, route: MacosMainAsyncEventRoute) {
         match route {
+            MacosMainAsyncEventRoute::CapturedItemDb => {}
             MacosMainAsyncEventRoute::PasteImage { .. } => {
                 self.completed_image_pastes = self.completed_image_pastes.saturating_add(1);
             }
@@ -5973,6 +5975,7 @@ impl MacosMainEventModel {
         event: &MainAsyncEvent,
     ) -> MacosMainAsyncEventRoute {
         let route = match event {
+            MainAsyncEvent::CapturedItemDb(_) => MacosMainAsyncEventRoute::CapturedItemDb,
             MainAsyncEvent::ImagePaste(payload) => MacosMainAsyncEventRoute::PasteImage {
                 has_image: payload.image.is_some(),
                 target: payload.target,

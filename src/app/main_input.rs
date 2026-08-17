@@ -206,7 +206,7 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
                             item_id: 0,
                             move_pasted_item_to_top: false,
                             click_hide: state.settings.click_hide,
-                            paste_success_sound_enabled: false,
+                            paste_success_sound_enabled: state.settings.paste_success_sound_enabled,
                         },
                     );
                     execute_paste_completion_plan(hwnd, state, plan);
