@@ -98,6 +98,20 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
                     &hotkey_preview_text(&s.plain_paste_hotkey_mod, &s.plain_paste_hotkey_key),
                 );
             }
+            if !st.cb_mouse_side_button_1.is_null() {
+                settings_set_text(
+                    st.cb_mouse_side_button_1,
+                    mouse_side_button_action_display(&s.mouse_side_button_1_action),
+                );
+                settings_host_set_enabled(st.cb_mouse_side_button_1, s.mouse_side_button_enabled);
+            }
+            if !st.cb_mouse_side_button_2.is_null() {
+                settings_set_text(
+                    st.cb_mouse_side_button_2,
+                    mouse_side_button_action_display(&s.mouse_side_button_2_action),
+                );
+                settings_host_set_enabled(st.cb_mouse_side_button_2, s.mouse_side_button_enabled);
+            }
         }
         SettingsPage::Plugin => settings_sync_plugin_page_state(st),
         SettingsPage::Group => settings_sync_group_page(st),

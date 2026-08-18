@@ -1,14 +1,16 @@
 use super::prelude::*;
 pub(super) use crate::settings_model::{
     hotkey_preview_text, image_ocr_provider_display, image_ocr_provider_key_from_display,
-    normalize_hotkey_key, normalize_hotkey_mod, normalize_source_tab, paste_sound_display,
-    paste_sound_file_button_text, paste_sound_key_from_display, search_engine_display,
-    search_engine_key_from_display, search_engine_template, source_tab_all_label,
-    source_tab_category, source_tab_label, text_translate_provider_display,
-    text_translate_provider_key_from_display, text_translate_target_display,
-    text_translate_target_key_from_display, HOTKEY_KEY_OPTIONS, HOTKEY_MOD_OPTIONS,
-    IMAGE_OCR_PROVIDER_OPTIONS, PASTE_SOUND_OPTIONS, SEARCH_ENGINE_PRESETS,
-    TEXT_TRANSLATE_PROVIDER_OPTIONS, TEXT_TRANSLATE_TARGET_OPTIONS,
+    mouse_side_button_action_display, mouse_side_button_action_key_from_display,
+    normalize_hotkey_key, normalize_hotkey_mod, normalize_mouse_side_button_action,
+    normalize_source_tab, paste_sound_display, paste_sound_file_button_text,
+    paste_sound_key_from_display, search_engine_display, search_engine_key_from_display,
+    search_engine_template, source_tab_all_label, source_tab_category, source_tab_label,
+    text_translate_provider_display, text_translate_provider_key_from_display,
+    text_translate_target_display, text_translate_target_key_from_display, HOTKEY_KEY_OPTIONS,
+    HOTKEY_MOD_OPTIONS, IMAGE_OCR_PROVIDER_OPTIONS, MOUSE_SIDE_BUTTON_ACTION_OPTIONS,
+    PASTE_SOUND_OPTIONS, SEARCH_ENGINE_PRESETS, TEXT_TRANSLATE_PROVIDER_OPTIONS,
+    TEXT_TRANSLATE_TARGET_OPTIONS,
 };
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -17,6 +19,9 @@ pub(crate) struct AppSettings {
     pub(crate) hotkey_enabled: bool,
     pub(crate) hotkey_mod: String,
     pub(crate) hotkey_key: String,
+    pub(crate) mouse_side_button_enabled: bool,
+    pub(crate) mouse_side_button_1_action: String,
+    pub(crate) mouse_side_button_2_action: String,
     pub(crate) silent_start: bool,
     pub(crate) tray_icon_enabled: bool,
     pub(crate) app_icon_visible: bool,
@@ -100,6 +105,9 @@ impl Default for AppSettings {
             hotkey_enabled: true,
             hotkey_mod: "Win".to_string(),
             hotkey_key: "V".to_string(),
+            mouse_side_button_enabled: false,
+            mouse_side_button_1_action: "quick_window".to_string(),
+            mouse_side_button_2_action: "vv_mode".to_string(),
             silent_start: false,
             tray_icon_enabled: true,
             app_icon_visible: true,
@@ -192,7 +200,11 @@ pub(super) fn group_name_for_display(
 }
 
 pub(super) fn startup_can_hide(settings: &AppSettings) -> bool {
-    settings.silent_start && (settings.tray_icon_enabled || settings.hotkey_enabled)
+    let mouse_binding_available = settings.mouse_side_button_enabled
+        && (normalize_mouse_side_button_action(&settings.mouse_side_button_1_action) != "none"
+            || normalize_mouse_side_button_action(&settings.mouse_side_button_2_action) != "none");
+    settings.silent_start
+        && (settings.tray_icon_enabled || settings.hotkey_enabled || mouse_binding_available)
 }
 
 pub(super) fn tray_mode_enabled(settings: &AppSettings) -> bool {

@@ -33,6 +33,7 @@ pub(super) fn settings_owner_draw_is_toggle(cid: isize) -> bool {
             | IDC_SET_GROUP_TYPE_FILTER
             | IDC_SET_CLOUD_ENABLE
             | IDC_SET_LAN_ENABLE
+            | IDC_SET_MOUSE_SIDE_ENABLE
             | 6101
             | 7102
             | 7106
@@ -65,6 +66,8 @@ fn settings_owner_draw_is_dropdown(cid: isize) -> bool {
             | IDC_SET_PASTE_SOUND_KIND
             | IDC_SET_VV_GROUP
             | IDC_SET_VV_SOURCE
+            | IDC_SET_MOUSE_SIDE_BUTTON_1
+            | IDC_SET_MOUSE_SIDE_BUTTON_2
             | 6102
             | 6103
             | 7201

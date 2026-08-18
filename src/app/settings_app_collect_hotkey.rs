@@ -14,5 +14,17 @@ pub(super) unsafe fn settings_collect_hotkey_to_draft(st: &mut SettingsWndState)
             st.draft.plain_paste_hotkey_key =
                 normalize_hotkey_key(&settings_host_text(st.cb_plain_hk_key));
         }
+        if !st.cb_mouse_side_button_1.is_null() {
+            st.draft.mouse_side_button_1_action = mouse_side_button_action_key_from_display(
+                &settings_host_text(st.cb_mouse_side_button_1),
+            )
+            .to_string();
+        }
+        if !st.cb_mouse_side_button_2.is_null() {
+            st.draft.mouse_side_button_2_action = mouse_side_button_action_key_from_display(
+                &settings_host_text(st.cb_mouse_side_button_2),
+            )
+            .to_string();
+        }
     }
 }

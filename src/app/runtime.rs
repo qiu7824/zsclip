@@ -579,6 +579,22 @@ mod tests {
     }
 
     #[test]
+    fn mouse_side_button_settings_default_off_and_round_trip() {
+        let legacy = load_settings_from_text(r#"{"hotkey_enabled":false}"#);
+        assert!(!legacy.mouse_side_button_enabled);
+        assert_eq!(legacy.mouse_side_button_1_action, "quick_window");
+        assert_eq!(legacy.mouse_side_button_2_action, "vv_mode");
+
+        let configured = load_settings_from_text(
+            r#"{"mouse_side_button_enabled":true,"mouse_side_button_1_action":"vv_mode","mouse_side_button_2_action":"none"}"#,
+        );
+        let loaded = load_settings_from_text(&serialize_settings(&configured).unwrap());
+        assert!(loaded.mouse_side_button_enabled);
+        assert_eq!(loaded.mouse_side_button_1_action, "vv_mode");
+        assert_eq!(loaded.mouse_side_button_2_action, "none");
+    }
+
+    #[test]
     fn invalid_setting_field_does_not_reset_max_items_to_default() {
         let settings = load_settings_from_text(r#"{"max_items":1000,"lan_tcp_port":"not-a-port"}"#);
 

@@ -18,7 +18,12 @@ pub(super) unsafe fn handle_settings_control_selection(
         IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {
             handle_settings_cloud_selection(hwnd, st, control_id, index);
         }
-        IDC_SET_HOTKEY_MOD | IDC_SET_HOTKEY_KEY | IDC_SET_PLAIN_HK_MOD | IDC_SET_PLAIN_HK_KEY => {
+        IDC_SET_HOTKEY_MOD
+        | IDC_SET_HOTKEY_KEY
+        | IDC_SET_PLAIN_HK_MOD
+        | IDC_SET_PLAIN_HK_KEY
+        | IDC_SET_MOUSE_SIDE_BUTTON_1
+        | IDC_SET_MOUSE_SIDE_BUTTON_2 => {
             handle_settings_hotkey_selection(st, control_id, index);
         }
         IDC_SET_SEARCH_ENGINE

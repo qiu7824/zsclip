@@ -24,9 +24,12 @@ pub(super) unsafe fn open_settings_dropdown_for_control(
         IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {
             open_settings_cloud_dropdown(hwnd, st, control_id)
         }
-        IDC_SET_HOTKEY_MOD | IDC_SET_HOTKEY_KEY | IDC_SET_PLAIN_HK_MOD | IDC_SET_PLAIN_HK_KEY => {
-            open_settings_hotkey_dropdown(hwnd, st, control_id)
-        }
+        IDC_SET_HOTKEY_MOD
+        | IDC_SET_HOTKEY_KEY
+        | IDC_SET_PLAIN_HK_MOD
+        | IDC_SET_PLAIN_HK_KEY
+        | IDC_SET_MOUSE_SIDE_BUTTON_1
+        | IDC_SET_MOUSE_SIDE_BUTTON_2 => open_settings_hotkey_dropdown(hwnd, st, control_id),
         IDC_SET_VV_SOURCE | IDC_SET_VV_GROUP => open_settings_group_dropdown(hwnd, st, control_id),
         _ => settings_open_plugin_dropdown_for_control(hwnd, st, control_id),
     }

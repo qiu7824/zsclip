@@ -1563,9 +1563,9 @@ mod tests {
 
     #[test]
     fn update_check_does_not_report_current_four_part_version_as_newer() {
-        assert!(!version_is_newer("0.9.9.9", APP_VERSION));
-        assert!(!version_is_newer("v0.9.9.9", APP_VERSION));
-        assert!(version_is_newer("0.9.9.10", APP_VERSION));
+        assert!(!version_is_newer("1.0.0.0", APP_VERSION));
+        assert!(!version_is_newer("v1.0.0.0", APP_VERSION));
+        assert!(version_is_newer("1.0.0.1", APP_VERSION));
     }
 
     #[test]

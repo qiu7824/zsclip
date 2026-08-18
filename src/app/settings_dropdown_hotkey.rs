@@ -70,6 +70,24 @@ pub(super) unsafe fn open_settings_hotkey_dropdown(
             );
             true
         }
+        IDC_SET_MOUSE_SIDE_BUTTON_1 | IDC_SET_MOUSE_SIDE_BUTTON_2 => {
+            let control = if control_id == IDC_SET_MOUSE_SIDE_BUTTON_1 {
+                st.cb_mouse_side_button_1
+            } else {
+                st.cb_mouse_side_button_2
+            };
+            let options = MOUSE_SIDE_BUTTON_ACTION_OPTIONS
+                .map(|(key, _)| mouse_side_button_action_display(key));
+            let rc = settings_control_screen_rect_or_empty(control);
+            let current_text = settings_host_text(control);
+            let current = options
+                .iter()
+                .position(|label| *label == current_text)
+                .unwrap_or(0);
+            st.dropdown_popup =
+                present_settings_dropdown_popup(hwnd, control_id, &rc, &options, current, 220);
+            true
+        }
         _ => false,
     }
 }
