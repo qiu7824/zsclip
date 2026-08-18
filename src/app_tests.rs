@@ -1377,6 +1377,8 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_PASTE_SOUND_KIND,
         IDC_SET_PLAIN_HK_MOD,
         IDC_SET_PLAIN_HK_KEY,
+        IDC_SET_MOUSE_SIDE_BUTTON_1,
+        IDC_SET_MOUSE_SIDE_BUTTON_2,
         7201,
         IDC_SET_OCR_PROVIDER,
         IDC_SET_TRANSLATE_PROVIDER,
@@ -1419,6 +1421,7 @@ fn settings_window_buttons_map_to_stable_commands() {
         IDC_SET_LAN_ENABLE,
         6101,
         IDC_SET_PLAIN_HK_ENABLE,
+        IDC_SET_MOUSE_SIDE_ENABLE,
         7102,
         7106,
         7101,
@@ -1444,6 +1447,10 @@ fn settings_window_buttons_map_to_stable_commands() {
     assert_eq!(
         settings_page_to_sync_after_toggle(IDC_SET_LAN_ENABLE),
         Some(SettingsPage::Cloud.index())
+    );
+    assert_eq!(
+        settings_page_to_sync_after_toggle(IDC_SET_MOUSE_SIDE_ENABLE),
+        Some(SettingsPage::Hotkey.index())
     );
     assert_eq!(
         settings_page_to_sync_after_toggle(7106),

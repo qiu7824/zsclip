@@ -99,9 +99,11 @@ unsafe fn window_needs_outside_hide_timer(hwnd: HWND) -> bool {
 }
 
 unsafe fn refresh_outside_hide_timers() {
-    let needs_hook = window_host_hwnds_try()
+    let hosts = window_host_hwnds_try();
+    let needs_hook = hosts
         .into_iter()
-        .any(|hwnd| window_needs_outside_hide_timer(hwnd));
+        .any(|hwnd| window_needs_outside_hide_timer(hwnd))
+        || mouse_side_button_bindings_enabled(hosts[0]);
     if needs_hook {
         ensure_outside_click_mouse_hook();
     } else {
@@ -245,10 +247,16 @@ unsafe extern "system" fn outside_click_mouse_hook_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    let Some(event) = platform_hook::mouse_button_down_event(code, wparam, lparam) else {
+    let Some(event) = platform_hook::mouse_button_event(code, wparam, lparam) else {
         return platform_hook::call_next(code, wparam, lparam);
     };
     let hosts = window_host_hwnds_try();
+    if handle_mouse_side_button_binding(hosts[0], event) {
+        return 1;
+    }
+    if !event.button_down {
+        return platform_hook::call_next(code, wparam, lparam);
+    }
     if should_ignore_outside_click_for_point_in_hosts(event.point, hosts) {
         return platform_hook::call_next(code, wparam, lparam);
     }
@@ -258,6 +266,80 @@ unsafe extern "system" fn outside_click_mouse_hook_proc(
         }
     }
     platform_hook::call_next(code, wparam, lparam)
+}
+
+unsafe fn mouse_side_button_bindings_enabled(main: HWND) -> bool {
+    if !platform_window::exists(main) {
+        return false;
+    }
+    let ptr = get_state_ptr(main);
+    if ptr.is_null() {
+        return false;
+    }
+    let settings = &(*ptr).settings;
+    settings.mouse_side_button_enabled
+        && (normalize_mouse_side_button_action(&settings.mouse_side_button_1_action) != "none"
+            || normalize_mouse_side_button_action(&settings.mouse_side_button_2_action) != "none")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MouseSideBindingAction {
+    QuickWindow,
+    VvMode,
+}
+
+fn configured_mouse_side_button_action(
+    settings: &AppSettings,
+    button: platform_hook::MouseHookButton,
+) -> Option<MouseSideBindingAction> {
+    if !settings.mouse_side_button_enabled {
+        return None;
+    }
+    let configured = match button {
+        platform_hook::MouseHookButton::X1 => &settings.mouse_side_button_1_action,
+        platform_hook::MouseHookButton::X2 => &settings.mouse_side_button_2_action,
+        _ => return None,
+    };
+    match normalize_mouse_side_button_action(configured) {
+        "quick_window" => Some(MouseSideBindingAction::QuickWindow),
+        "vv_mode" => Some(MouseSideBindingAction::VvMode),
+        _ => None,
+    }
+}
+
+unsafe fn handle_mouse_side_button_binding(
+    main: HWND,
+    event: platform_hook::MouseHookEvent,
+) -> bool {
+    if event.is_injected_or_lower_integrity() || !mouse_side_button_bindings_enabled(main) {
+        return false;
+    }
+    let ptr = get_state_ptr(main);
+    if ptr.is_null() {
+        return false;
+    }
+    let Some(action) = configured_mouse_side_button_action(&(*ptr).settings, event.button) else {
+        return false;
+    };
+    match action {
+        MouseSideBindingAction::QuickWindow => {
+            if event.button_down {
+                platform_window::post_hwnd_message(main, WM_HOTKEY, HOTKEY_ID as usize, 0);
+            }
+            true
+        }
+        MouseSideBindingAction::VvMode => {
+            if !event.button_down {
+                return true;
+            }
+            let target = platform_window::foreground();
+            if target.is_null() {
+                return false;
+            }
+            platform_window::post_hwnd_message(main, WM_VV_SHOW, target as usize, 0);
+            true
+        }
+    }
 }
 
 unsafe fn ensure_outside_click_mouse_hook() {
@@ -353,4 +435,39 @@ pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
         return;
     }
     handle_outside_click_requested(hwnd);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn side_button_vv_binding_is_independent_of_regular_vv_switch() {
+        let mut settings = AppSettings::default();
+        settings.mouse_side_button_enabled = true;
+        settings.vv_mode_enabled = false;
+        settings.mouse_side_button_1_action = "vv_mode".to_string();
+
+        assert_eq!(
+            configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X1),
+            Some(MouseSideBindingAction::VvMode)
+        );
+    }
+
+    #[test]
+    fn standard_mouse4_and_mouse5_bindings_stay_independent() {
+        let mut settings = AppSettings::default();
+        settings.mouse_side_button_enabled = true;
+        settings.mouse_side_button_1_action = "quick_window".to_string();
+        settings.mouse_side_button_2_action = "vv_mode".to_string();
+
+        assert_eq!(
+            configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X1),
+            Some(MouseSideBindingAction::QuickWindow)
+        );
+        assert_eq!(
+            configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X2),
+            Some(MouseSideBindingAction::VvMode)
+        );
+    }
 }

@@ -44,7 +44,13 @@ fn is_general_surface_control(id: isize) -> bool {
 fn is_hotkey_surface_control(id: isize) -> bool {
     matches!(
         id,
-        IDC_SET_HK_RECORD | IDC_SET_PLAIN_HK_ENABLE | IDC_SET_PLAIN_HK_MOD | IDC_SET_PLAIN_HK_KEY
+        IDC_SET_HK_RECORD
+            | IDC_SET_PLAIN_HK_ENABLE
+            | IDC_SET_PLAIN_HK_MOD
+            | IDC_SET_PLAIN_HK_KEY
+            | IDC_SET_MOUSE_SIDE_ENABLE
+            | IDC_SET_MOUSE_SIDE_BUTTON_1
+            | IDC_SET_MOUSE_SIDE_BUTTON_2
     )
 }
 

@@ -46,6 +46,17 @@ pub(super) unsafe fn handle_settings_hotkey_selection(
                 repaint_settings_control(st.cb_plain_hk_key);
             }
         }
+        IDC_SET_MOUSE_SIDE_BUTTON_1 | IDC_SET_MOUSE_SIDE_BUTTON_2 => {
+            if let Some((key, _)) = MOUSE_SIDE_BUTTON_ACTION_OPTIONS.get(index) {
+                let control = if control_id == IDC_SET_MOUSE_SIDE_BUTTON_1 {
+                    st.cb_mouse_side_button_1
+                } else {
+                    st.cb_mouse_side_button_2
+                };
+                settings_set_text(control, mouse_side_button_action_display(key));
+                repaint_settings_control(control);
+            }
+        }
         _ => {}
     }
 }

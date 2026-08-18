@@ -488,9 +488,13 @@ pub struct SettingsFormCardSpec {
     pub extra_px: i32,
 }
 
-const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
+const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
     SettingsFormCardSpec {
         rows: 6,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 4,
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -503,8 +507,9 @@ const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     },
 ];
 
-const HOTKEY_TITLES: [&str; 3] = [
+const HOTKEY_TITLES: [&str; 4] = [
     "\u{4e3b}\u{5feb}\u{6377}\u{952e}",
+    "\u{9f20}\u{6807}\u{4fa7}\u{952e}",
     "\u{7cfb}\u{7edf}\u{526a}\u{8d34}\u{677f}\u{5386}\u{53f2}\u{ff08}Win+V\u{ff09}",
     "\u{529f}\u{80fd}\u{8bf4}\u{660e}",
 ];
@@ -1274,6 +1279,36 @@ pub const HOTKEY_MOD_OPTIONS: [&str; 8] = [
     "Alt+Shift",
     "Ctrl+Alt+Shift",
 ];
+
+pub const MOUSE_SIDE_BUTTON_ACTION_OPTIONS: [(&str, &str); 3] = [
+    ("none", "关闭"),
+    ("quick_window", "快速窗口"),
+    ("vv_mode", "VV 模式"),
+];
+
+pub fn normalize_mouse_side_button_action(action: &str) -> &'static str {
+    match action.trim() {
+        "quick_window" => "quick_window",
+        "vv_mode" => "vv_mode",
+        _ => "none",
+    }
+}
+
+pub fn mouse_side_button_action_display(action: &str) -> &'static str {
+    match normalize_mouse_side_button_action(action) {
+        "quick_window" => tr("快速窗口", "Quick Window"),
+        "vv_mode" => tr("VV 模式", "VV Mode"),
+        _ => tr("关闭", "Off"),
+    }
+}
+
+pub fn mouse_side_button_action_key_from_display(label: &str) -> &'static str {
+    match label.trim() {
+        "快速窗口" | "Quick Window" => "quick_window",
+        "VV 模式" | "VV Mode" => "vv_mode",
+        _ => "none",
+    }
+}
 
 pub const HOTKEY_KEY_OPTIONS: [&str; 51] = [
     "A",
@@ -2532,47 +2567,12 @@ pub fn settings_form_section_height_with_extra(rows: i32, extra_px: i32) -> i32 
         + settings_scale(extra_px.max(0))
 }
 
-fn settings_make_form_cards(
+fn settings_make_form_cards<const N: usize>(
     y0: i32,
-    titles: [&'static str; 3],
-    specs: [SettingsFormCardSpec; 3],
+    titles: [&'static str; N],
+    specs: [SettingsFormCardSpec; N],
 ) -> Vec<SettingsSection> {
-    let top0 = settings_scale(y0);
-    let gap = settings_scale(SETTINGS_FORM_SECTION_GAP);
-    let h0 = settings_form_section_height_with_extra(specs[0].rows, specs[0].extra_px);
-    let h1 = settings_form_section_height_with_extra(specs[1].rows, specs[1].extra_px);
-    let h2 = settings_form_section_height_with_extra(specs[2].rows, specs[2].extra_px);
-    let top1 = top0 + h0 + gap;
-    let top2 = top1 + h1 + gap;
-    vec![
-        SettingsSection {
-            title: titles[0],
-            rect: UiRect::new(
-                settings_content_x_scaled(),
-                settings_content_y_scaled() + top0,
-                settings_content_x_scaled() + settings_content_w_scaled(),
-                settings_content_y_scaled() + top0 + h0,
-            ),
-        },
-        SettingsSection {
-            title: titles[1],
-            rect: UiRect::new(
-                settings_content_x_scaled(),
-                settings_content_y_scaled() + top1,
-                settings_content_x_scaled() + settings_content_w_scaled(),
-                settings_content_y_scaled() + top1 + h1,
-            ),
-        },
-        SettingsSection {
-            title: titles[2],
-            rect: UiRect::new(
-                settings_content_x_scaled(),
-                settings_content_y_scaled() + top2,
-                settings_content_x_scaled() + settings_content_w_scaled(),
-                settings_content_y_scaled() + top2 + h2,
-            ),
-        },
-    ]
+    settings_make_form_cards_dyn(y0, &titles, &specs)
 }
 
 fn settings_make_form_cards_dyn(
@@ -2878,6 +2878,9 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "hotkey_modifier" => native_setting_binding("hotkey_mod"),
         "hotkey_key" => native_setting_binding("hotkey_key"),
         "hotkey_preview" => native_derived_binding("hotkey_preview_text"),
+        "mouse_side_button_enable" => native_setting_binding("mouse_side_button_enabled"),
+        "mouse_side_button_1" => native_setting_binding("mouse_side_button_1_action"),
+        "mouse_side_button_2" => native_setting_binding("mouse_side_button_2_action"),
         "plain_hotkey_enable" => native_setting_binding("plain_paste_hotkey_enabled"),
         "plain_hotkey_modifier" => native_setting_binding("plain_paste_hotkey_mod"),
         "plain_hotkey_key" => native_setting_binding("plain_paste_hotkey_key"),
@@ -3003,6 +3006,9 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "plain_hotkey_enable" => native_toggle_route(6108),
         "plain_hotkey_modifier" => native_dropdown_route(6109),
         "plain_hotkey_key" => native_dropdown_route(6110),
+        "mouse_side_button_enable" => native_toggle_route(6114),
+        "mouse_side_button_1" => native_dropdown_route(6115),
+        "mouse_side_button_2" => native_dropdown_route(6116),
         "clipboard_history_disable" => {
             native_action_route("settings_platform", "disable_system_clipboard_history")
         }
@@ -3180,6 +3186,22 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         SettingsPage::Hotkey,
         1,
         &[
+            ("mouse_side_button_enable", "启用鼠标侧键绑定", Toggle),
+            ("mouse_side_button_1", "侧键 1", Dropdown),
+            ("mouse_side_button_2", "侧键 2", Dropdown),
+            (
+                "mouse_side_button_note",
+                "绑定 VV 模式后，可独立于常规 VV 开关使用",
+                Label,
+            ),
+        ],
+    );
+    push_native_controls(
+        &mut controls,
+        &sections,
+        SettingsPage::Hotkey,
+        2,
+        &[
             ("clipboard_history_disable", "禁用系统剪贴板历史", Button),
             ("clipboard_history_enable", "启用系统剪贴板历史", Button),
             ("restart_shell", "重启系统外壳", Button),
@@ -3189,7 +3211,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         &mut controls,
         &sections,
         SettingsPage::Hotkey,
-        2,
+        3,
         &[
             ("hotkey_note_main", "快捷键说明", Label),
             ("hotkey_note_plain", "纯文本粘贴说明", Label),
@@ -3597,6 +3619,7 @@ fn settings_native_json_updates_for_applied_field(
         | "dark_mode_enabled"
         | "paste_target_skip_enabled"
         | "hotkey_enabled"
+        | "mouse_side_button_enabled"
         | "plain_paste_hotkey_enabled"
         | "quick_search_enabled"
         | "super_mail_merge_enabled"
@@ -3866,6 +3889,12 @@ pub fn settings_native_dropdown_options(
             control,
             settings_json,
             HOTKEY_KEY_OPTIONS.map(|label| (label, label.to_string())),
+        ),
+        "mouse_side_button_1" | "mouse_side_button_2" => native_dropdown_options_from_pairs(
+            control,
+            settings_json,
+            MOUSE_SIDE_BUTTON_ACTION_OPTIONS
+                .map(|(key, _)| (key, mouse_side_button_action_display(key).to_string())),
         ),
         "search_engine" => native_dropdown_options_from_pairs(
             control,
@@ -5229,6 +5258,16 @@ mod tests {
         assert_eq!(normalize_hotkey_key(" Enter "), "Enter");
         assert_eq!(normalize_hotkey_key("unknown"), "V");
         assert!(hotkey_preview_text("Ctrl+Shift", "V").contains("Ctrl+Shift + V"));
+        assert_eq!(MOUSE_SIDE_BUTTON_ACTION_OPTIONS.len(), 3);
+        assert_eq!(
+            normalize_mouse_side_button_action("quick_window"),
+            "quick_window"
+        );
+        assert_eq!(normalize_mouse_side_button_action("unknown"), "none");
+        assert_eq!(
+            mouse_side_button_action_key_from_display(mouse_side_button_action_display("vv_mode")),
+            "vv_mode"
+        );
 
         assert_eq!(PASTE_SOUND_OPTIONS.len(), 4);
         assert_eq!(paste_sound_display("soft"), "柔和");
@@ -5644,6 +5683,9 @@ mod tests {
         assert!(summaries[SettingsPage::Group.index()]
             .section_titles
             .contains(&"分组管理"));
+        assert!(summaries[SettingsPage::Hotkey.index()]
+            .section_titles
+            .contains(&"鼠标侧键"));
         assert!(summaries[SettingsPage::Cloud.index()]
             .section_titles
             .iter()
@@ -5709,6 +5751,18 @@ mod tests {
                 .as_ref()
                 .and_then(|binding| binding.field_name),
             Some("context_menu_copy_enabled")
+        );
+        let side_button_1 = control_summaries
+            .iter()
+            .find(|control| control.key == "mouse_side_button_1")
+            .unwrap();
+        assert_eq!(side_button_1.kind, SettingsNativeControlKind::Dropdown);
+        assert_eq!(
+            side_button_1
+                .binding
+                .as_ref()
+                .and_then(|binding| binding.field_name),
+            Some("mouse_side_button_1_action")
         );
         assert_eq!(
             context_menu_copy
@@ -6014,6 +6068,7 @@ mod tests {
             "cloud_sync_enabled": false,
             "lan_sync_enabled": true,
             "lan_receive_mode": "clipboard",
+            "mouse_side_button_1_action": "quick_window",
         });
         let dropdown_for_key = |key: &str| {
             let control = control_summaries
@@ -6042,6 +6097,11 @@ mod tests {
         assert_eq!(
             lan_receive.options[lan_receive.selected_index].raw_value,
             "clipboard"
+        );
+        let side_button_1 = dropdown_for_key("mouse_side_button_1");
+        assert_eq!(
+            side_button_1.options[side_button_1.selected_index].raw_value,
+            "quick_window"
         );
         let vv_group = control_summaries
             .iter()

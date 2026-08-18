@@ -62,6 +62,7 @@ use crate::win_system_params::{
     IDC_SET_IMAGE_PREVIEW, IDC_SET_LAN_ACCEPT_PAIR, IDC_SET_LAN_COPY_PAIR, IDC_SET_LAN_COPY_SETUP,
     IDC_SET_LAN_DOCS, IDC_SET_LAN_ENABLE, IDC_SET_LAN_PAIR, IDC_SET_LAN_RECEIVE_MODE,
     IDC_SET_LAN_REFRESH, IDC_SET_LAN_REJECT_PAIR, IDC_SET_MAX, IDC_SET_MULTI_SYNC_MODE,
+    IDC_SET_MOUSE_SIDE_BUTTON_1, IDC_SET_MOUSE_SIDE_BUTTON_2, IDC_SET_MOUSE_SIDE_ENABLE,
     IDC_SET_OCR_PROVIDER, IDC_SET_OCR_WECHAT_DETECT, IDC_SET_OPEN_SOURCE, IDC_SET_OPEN_UPDATE,
     IDC_SET_PASTE_MOVE_TOP, IDC_SET_PASTE_SOUND_ENABLE, IDC_SET_PASTE_SOUND_KIND,
     IDC_SET_PASTE_SOUND_PICK, IDC_SET_PERSIST_SEARCH, IDC_SET_PLAIN_HK_ENABLE,
@@ -615,6 +616,8 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_PASTE_SOUND_KIND
         | IDC_SET_PLAIN_HK_MOD
         | IDC_SET_PLAIN_HK_KEY
+        | IDC_SET_MOUSE_SIDE_BUTTON_1
+        | IDC_SET_MOUSE_SIDE_BUTTON_2
         | IDC_SET_SEARCH_ENGINE
         | IDC_SET_OCR_PROVIDER
         | IDC_SET_TRANSLATE_PROVIDER
@@ -648,6 +651,7 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_LAN_ENABLE
         | IDC_SET_HOTKEY_ENABLE
         | IDC_SET_PLAIN_HK_ENABLE
+        | IDC_SET_MOUSE_SIDE_ENABLE
         | IDC_SET_PLUGIN_AI_CLEAN
         | IDC_SET_PLUGIN_SUPER_MAIL_MERGE
         | IDC_SET_PLUGIN_SEARCH
@@ -793,6 +797,8 @@ pub(crate) fn settings_page_to_sync_after_toggle(control_id: isize) -> Option<us
         || control_id == IDC_SET_DEDUPE_FILTER
     {
         Some(SettingsPage::General.index())
+    } else if control_id == IDC_SET_MOUSE_SIDE_ENABLE {
+        Some(SettingsPage::Hotkey.index())
     } else if control_id == IDC_SET_CLOUD_ENABLE || control_id == IDC_SET_LAN_ENABLE {
         Some(SettingsPage::Cloud.index())
     } else if matches!(
@@ -2108,6 +2114,10 @@ mod tests {
         assert_eq!(
             settings_page_to_sync_after_toggle(IDC_SET_LAN_ENABLE),
             Some(SettingsPage::Cloud.index())
+        );
+        assert_eq!(
+            settings_page_to_sync_after_toggle(IDC_SET_MOUSE_SIDE_ENABLE),
+            Some(SettingsPage::Hotkey.index())
         );
         assert_eq!(
             settings_page_to_sync_after_toggle(IDC_SET_PLUGIN_SUPER_MAIL_MERGE),
