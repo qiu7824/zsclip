@@ -1,0 +1,7 @@
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\00-title.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\01-product-demo.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\02-feature-closeups.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\03-memory.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\04-token.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\05-roadmap.mp4'
+file 'E:\rust\zsclip\videos\zsclip-ai-competition\work\draft\06-dev-scroll.mp4'

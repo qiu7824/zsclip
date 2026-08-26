@@ -861,13 +861,17 @@ pub(super) unsafe fn apply_captured_item_db_ready(hwnd: HWND, payload: CapturedI
         CapturedItemDbAction::Promoted { old_id, new_id } => {
             state.remove_cached_item(old_id);
             state.remove_cached_item(new_id);
-            if !state.promote_loaded_item_to_top(old_id, new_id) {
+            if state.promote_loaded_item_to_top(old_id, new_id).is_none() {
                 reload_state_from_db_persisting(state);
             } else {
                 state.refilter();
             }
             if state.tab_index == 0 {
-                state.sel_idx = 0;
+                state.sel_idx = state
+                    .records
+                    .iter()
+                    .position(|item| item.id == new_id)
+                    .unwrap_or(0) as i32;
                 state.scroll_y = 0;
             }
         }
@@ -875,20 +879,22 @@ pub(super) unsafe fn apply_captured_item_db_ready(hwnd: HWND, payload: CapturedI
             state.cache_full_item(item.clone());
             let summary = clip_item_to_summary(&item);
             let visible_query = state.load_state_for_tab(0).query.clone();
-            if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
+            let inserted_index = if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
             {
-                state.records.insert(0, summary);
+                let index = state.insert_loaded_record_at_sorted_front(summary);
                 if state.tab_index == 0 {
                     state.list.apply_visible_len(state.records.len());
                 }
+                Some(index)
             } else {
                 state.invalidate_tab_query(0, state.tab_index == 0);
-            }
+                None
+            };
             if state.settings.max_items > 0 {
                 state.invalidate_tab_query(0, state.tab_index == 0);
             }
             if state.tab_index == 0 {
-                state.sel_idx = 0;
+                state.sel_idx = inserted_index.unwrap_or(0) as i32;
             }
             state.refilter();
             maybe_broadcast_lan_clip_item(state, &item, &payload.signature);

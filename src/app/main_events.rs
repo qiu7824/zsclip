@@ -149,6 +149,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
         MainTimerTask::Paste => {
             timer::stop(hwnd, ID_TIMER_PASTE);
             let mut should_send_paste = false;
+            let mut should_play_sound = false;
             let mut paste_target = null_mut();
             let mut paste_backspaces = 0;
             let mut retry_delay_ms = None;
@@ -164,13 +165,18 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     if !should_send_paste {
                         let identity_host = WindowsWindowIdentityHost::new();
                         let foreground = identity_host.foreground_handle();
-                        retry_delay_ms = paste_focus_retry_delay_ms(
-                            state.paste_focus_retry_attempts,
-                            identity_host.exists(target),
-                            foreground,
-                            target,
-                            identity_host.is_current_process_window(foreground),
+                        let elevated_target = platform_process::process_has_higher_elevation(
+                            platform_window::window_process_id(target),
                         );
+                        if !elevated_target {
+                            retry_delay_ms = paste_focus_retry_delay_ms(
+                                state.paste_focus_retry_attempts,
+                                identity_host.exists(target),
+                                foreground,
+                                target,
+                                identity_host.is_current_process_window(foreground),
+                            );
+                        }
                         if retry_delay_ms.is_some() {
                             state.paste_focus_retry_attempts =
                                 state.paste_focus_retry_attempts.saturating_add(1);
@@ -183,6 +189,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 }
                 if should_send_paste {
                     paste_backspaces = state.paste_backspace_count;
+                    should_play_sound = state.settings.paste_success_sound_enabled;
                 } else {
                     clear_pending_paste_completion(state);
                 }
@@ -192,11 +199,21 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 clear_hotkey_passthrough_state(state);
             }
             if should_send_paste {
-                let input_sent = platform_input::send_backspaces_then_ctrl_v(paste_backspaces);
+                let input_sent = if paste_backspaces == 0 {
+                    WindowsPasteTargetHost::new().send_paste_shortcut(paste_target)
+                } else {
+                    platform_input::send_backspaces_then_ctrl_v(paste_backspaces)
+                };
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     if input_sent {
                         execute_pending_paste_completion_after_focus(hwnd, &mut *ptr);
+                        if should_play_sound {
+                            play_paste_success_sound(
+                                &(*ptr).settings.paste_success_sound_kind,
+                                &(*ptr).settings.paste_success_sound_path,
+                            );
+                        }
                     } else {
                         clear_pending_paste_completion(&mut *ptr);
                         show_paste_failure_message(hwnd, &*ptr, paste_target);
@@ -436,6 +453,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() && (*ptr).role == WindowRole::Main {
                 let state = &mut *ptr;
+                state.tray_icon_registered = false;
                 state.startup_recovery_ticks = STARTUP_RECOVERY_TICKS;
                 retry_startup_integrations(hwnd, state);
             }

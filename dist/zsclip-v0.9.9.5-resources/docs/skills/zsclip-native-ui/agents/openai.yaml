@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZSClip Native UI"
+  short_description: "Work on ZSClip native AppKit and GTK UI hosts."
+  default_prompt: "Use this skill to modify or verify ZSClip native UI hosts without duplicating product behavior."

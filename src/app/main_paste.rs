@@ -284,7 +284,7 @@ unsafe fn maybe_promote_pasted_item_locked(hwnd: HWND, state: &mut AppState, ite
         let anchor = state.current_scroll_anchor();
         state.remove_cached_item(item_id);
         state.remove_cached_item(new_id);
-        if !state.promote_loaded_item_to_top(item_id, new_id) {
+        if state.promote_loaded_item_to_top(item_id, new_id).is_none() {
             state.reload_state_from_db_preserve_scroll(anchor);
         } else {
             state.refilter();
@@ -475,6 +475,9 @@ pub(super) unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -
     if !identity_host.exists(target) {
         return false;
     }
+    if platform_process::process_has_higher_elevation(platform_window::window_process_id(target)) {
+        return false;
+    }
     if !identity_host.is_foreground(target) {
         return false;
     }
@@ -505,6 +508,13 @@ unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> St
         tr(
             "目标窗口已经关闭。",
             "The target window is no longer available.",
+        )
+    } else if platform_process::process_has_higher_elevation(platform_window::window_process_id(
+        target,
+    )) {
+        tr(
+            "目标程序正在以管理员权限运行，而 ZSClip 当前不是管理员权限。Windows 会阻止跨权限模拟粘贴；请以管理员身份运行 ZSClip，或回到目标窗口后手动粘贴。",
+            "The target is running as administrator while ZSClip is not. Windows blocks cross-elevation paste injection; run ZSClip as administrator or paste manually in the target window.",
         )
     } else if !identity_host.is_foreground(target) {
         tr(
@@ -610,8 +620,9 @@ pub(super) unsafe fn paste_after_async_image_ready_to_target(
     target: HWND,
     hide_main_after_focus: bool,
     backspaces: u8,
-    completion: MainPasteCompletionPlan,
+    mut completion: MainPasteCompletionPlan,
 ) {
+    completion.play_success_sound = false;
     state.pending_paste_completion = Some(completion);
     state.pending_paste_hide_main = hide_main_after_focus;
     queue_paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);

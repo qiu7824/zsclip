@@ -1,0 +1,265 @@
+{
+  "ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113908D6CA258F841B9DE5BDDA"
+      },
+      "body": {
+        "available_training_times": 9,
+        "create_time": 1773508074000,
+        "demo_audio": "https://lf26-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884348&x-signature=YY%2FLKlcnRKOnBBUxsuYNLiAGF40%3D",
+        "extra_params": "{\"clone_source\": 1, \"design_finalize_type\": 1, \"reference_speaker_id\": \"MEGA_1774108105965_0\"}",
+        "icl_speaker_id": "saturn_69b595e3e4bdc448",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_bBxWfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oYIeDbETwarKvLrJ16FG9AApECBebRBAeAATIy?x-expires=1782884348&x-signature=A4%2BY04m8H3MHjTwTE0D375cvPcU%3D",
+            "icl_speaker_id": "ICL_69b595e4bcc8ed1b",
+            "model_type": 1,
+            "model_version": 1
+          },
+          {
+            "demo_audio": "https://lf6-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884348&x-signature=g0NLSJreWQyPWNb%2BkY7OCgj4BJc%3D",
+            "icl_speaker_id": "saturn_69b595e3e4bdc448",
+            "model_type": 4,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V6",
+        "voice_design_status": {
+          "preview_text": "大家好，我是森森",
+          "prompt_text": "更温柔，清晰"
+        }
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "202607011139087D93709120B228E00ABC"
+      },
+      "body": {
+        "available_training_times": 15,
+        "create_time": 1766310091000,
+        "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782884348&x-signature=l2d4rJz0UznzkbevBCTAtYn%2BC8k%3D",
+        "extra_params": "{\"enable_audio_denoise\": false}",
+        "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_0hFVfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782884348&x-signature=l2d4rJz0UznzkbevBCTAtYn%2BC8k%3D",
+            "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+            "model_type": 4,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V1"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139086CC1C916F383A1E45935"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139094880F1D7261990F66FE4"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113909A7ECC27F7DDB08F52D80"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-tts-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111390998A5DA39A626C17026CF"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139090A2BCE3D73398FB96078"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113909A2CC101819F6AA70BB8B"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139100147BB95C03670FA4212"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111391092D1CE46366DD276B98F"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "json: cannot unmarshal object into Go struct field TTSReqParams.req_params.additions of type string"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

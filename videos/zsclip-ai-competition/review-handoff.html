@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZSClip 视频素材审片交付页</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7fb;
+      --panel: #ffffff;
+      --ink: #172033;
+      --muted: #647084;
+      --line: #dfe5ee;
+      --accent: #1769e0;
+      --ok: #12845b;
+      --warn: #b45309;
+      --code: #eef2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      padding: 34px 42px 24px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.2; }
+    h1 { font-size: 32px; }
+    h2 { font-size: 22px; margin-bottom: 14px; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    p { margin: 0 0 10px; color: var(--muted); }
+    main { max-width: 1180px; margin: 0 auto; padding: 28px 24px 48px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin-bottom: 20px;
+    }
+    video {
+      width: 100%;
+      max-height: 640px;
+      background: #111827;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fff;
+    }
+    .item img {
+      width: 100%;
+      height: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      display: block;
+      margin-top: 10px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #e8f2ff;
+      color: var(--accent);
+      font-size: 13px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    .ok { color: var(--ok); font-weight: 700; }
+    .warn { color: var(--warn); font-weight: 700; }
+    code {
+      background: var(--code);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin: 10px 0 0;
+      color: #273246;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { margin: 8px 0 0 20px; padding: 0; color: var(--muted); }
+    li { margin: 4px 0; }
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+    @media (max-width: 760px) {
+      header { padding: 24px 20px 18px; }
+      main { padding: 18px 12px 36px; }
+      .grid, .three { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ZSClip 视频素材审片交付页</h1>
+    <p>本页用于集中检查无声草稿、单段录屏、口播稿、字幕、发布文案和后续有声合成步骤。</p>
+    <div class="meta">
+      <span class="badge">当前草稿 3:36</span>
+      <span class="badge">1280x720 / 30fps</span>
+      <span class="badge">H.264 yuv420p</span>
+      <span class="badge">双人口播 + BGM 已合成</span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>最终无声草稿</h2>
+      <p>先看这一条。功能顺序已经按当前口播稿排列：标题、主功能/VV、搜索分组、OCR、内存和 token、后续更新、多平台状态。</p>
+      <p><a href="START_HERE.md">打开 START_HERE 操作说明</a></p>
+      <video controls preload="metadata" src="zsclip-ai-competition-silent-draft.mp4"></video>
+      <ul>
+        <li><span class="ok">已完成：</span>右键分组、搜索组合、OCR 入口、内存截图、token 截图、多平台开发状态滚动。</li>
+        <li><span class="ok">已完成：</span>火山 TTS 双人口播、BGM 和最终有声版，可继续替换真人录音。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>B 站封面</h2>
+      <p>封面图已按 16:9 生成，主标题强调 AI 打磨和剪贴板办公副驾驶，右侧使用真实 ZSClip 右键菜单画面。</p>
+      <div class="item">
+        <img src="bilibili-cover-zsclip.png" alt="ZSClip B站封面图">
+        <p><a href="bilibili-cover-zsclip.png">打开封面 PNG</a></p>
+      </div>
+    </section>
+
+    <section>
+      <h2>单段录屏素材</h2>
+      <div class="grid">
+        <div class="item">
+          <h3>桌面主演示：搜索 + VV</h3>
+          <p>窗口不重叠，包含鼠标操作和真实产品 UI。</p>
+          <video controls preload="metadata" src="03-desktop-non-overlap-demo.mp4"></video>
+        </div>
+        <div class="item">
+          <h3>搜索 / 分组 / OCR 特写</h3>
+          <p>包含右键菜单里的快速搜索、添加到短语、添加到分组、图片转文字。</p>
+          <video controls preload="metadata" src="05-feature-closeups-search-group-ocr.mp4"></video>
+        </div>
+        <div class="item">
+          <h3>Codex 与多平台开发状态</h3>
+          <p>展示 Android、iOS、macOS、Linux 初代状态和后续测试说明。</p>
+          <video controls preload="metadata" src="04-dev-status-scroll.mp4"></video>
+        </div>
+        <div class="item">
+          <h3>早期搜索/VV 清洁录屏</h3>
+          <p>备用素材，不作为当前主草稿核心片段。</p>
+          <video controls preload="metadata" src="02-desktop-search-vv-clean.mp4"></video>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>关键截图</h2>
+      <div class="grid">
+        <div class="item">
+          <h3>任务管理器内存</h3>
+          <p>用于证明常驻占用和内存优化方向。</p>
+          <img src="06-task-manager-zsclip-memory.png" alt="任务管理器搜索 zsclip 内存截图">
+        </div>
+        <div class="item">
+          <h3>Codex token 使用量</h3>
+          <p>用于讲 AI 协作、测试和多平台打磨过程。</p>
+          <img src="07-codex-token-usage.png" alt="Codex token 使用量截图">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>口播与字幕</h2>
+      <div class="grid three">
+        <div class="item">
+          <h3>口播稿</h3>
+          <p>按当前 3:36 草稿写，口播约 3:30，并保留结尾收束。</p>
+          <p><a href="voiceover-final-2m11.md">打开口播稿</a></p>
+        </div>
+        <div class="item">
+          <h3>口播提词器</h3>
+          <p>播放无声草稿并按时间高亮当前口播段落。</p>
+          <p><a href="voiceover-teleprompter.html">打开提词器</a></p>
+        </div>
+        <div class="item">
+          <h3>字幕 SRT</h3>
+          <p>可导入剪辑软件或 B 站字幕。</p>
+          <p><a href="captions/voiceover-captions.srt">打开 SRT 字幕</a></p>
+        </div>
+        <div class="item">
+          <h3>字幕 JSON</h3>
+          <p>按 Remotion Caption 类型准备的字幕数据。</p>
+          <p><a href="captions/voiceover-captions.json">打开 JSON 字幕</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>有声版合成步骤</h2>
+      <p>你录好音频后，把文件命名为 <code>voiceover.wav</code>、<code>voiceover.mp3</code> 或 <code>voiceover.m4a</code>，放到仓库 <code>videos\zsclip-ai-competition\voiceover-input</code>，或直接放到 <code>C:\Users\xs\Desktop\ZSClip视频素材</code>。</p>
+      <pre>.\videos\zsclip-ai-competition\build_with_voiceover.ps1</pre>
+      <p>最终收口时可以运行：</p>
+      <pre>.\videos\zsclip-ai-competition\finalize_after_voiceover.ps1</pre>
+      <p>也可以先运行监听脚本，录完音频导出到素材目录后自动合成、QA、打包：</p>
+      <pre>.\videos\zsclip-ai-competition\watch_voiceover_and_finalize.ps1</pre>
+      <p>桌面素材目录里也有 <code>double_click_finalize.cmd</code>，录完口播后可以直接双击。</p>
+      <p>脚本会检查音频时长，标准化响度，然后输出有声版到桌面素材目录。合成管线已用临时音频跑通，测试输出包含 1280x720 H.264 视频流和 AAC 音频流。</p>
+      <p><a href="voiceover-input-README.md">打开口播音频放置说明</a></p>
+    </section>
+
+    <section>
+      <h2>B 站发布辅助</h2>
+      <p>发布标题、简介、标签和章节已经整理好。</p>
+      <p><a href="bilibili-release-copy.md">打开 B 站发布文案</a></p>
+      <p><a href="materials-manifest.md">打开素材清单</a></p>
+      <p><a href="materials-audit.html">打开录制素材核对表</a></p>
+      <p><a href="final-readiness.html">打开最终发布状态页</a></p>
+      <p><a href="delivery-qa-report.md">打开交付 QA 报告</a></p>
+      <p><a href="delivery-qa-final-report.md">打开最终严格 QA 报告</a></p>
+      <p><a href="ZSClip视频素材包.zip">下载/打开当前素材包</a></p>
+      <ul>
+        <li>标题方向：AI 打磨剪贴板办公副驾驶。</li>
+        <li>简介强调：Windows 主力版本，macOS / Linux 初代版本欢迎下载测试，加群反馈会第一时间修复。</li>
+        <li>后续更新：搜索“附近”、分组“文件类型选项”、继续打磨多平台。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

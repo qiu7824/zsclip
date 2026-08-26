@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZSClip 多平台开发记录</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #182033;
+      --muted: #5f6b7a;
+      --line: #d9e0ea;
+      --blue: #1769e0;
+      --green: #11845b;
+      --orange: #b65b00;
+      --purple: #7457c7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    .page {
+      width: min(1120px, calc(100vw - 80px));
+      margin: 0 auto;
+      padding: 34px 0 120px;
+    }
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: center;
+      padding: 18px 0 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 32px;
+      font-weight: 750;
+      line-height: 1.25;
+    }
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .badge-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .badge {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      padding: 7px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 18px;
+      margin-top: 22px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      box-shadow: 0 10px 28px rgba(27, 39, 64, .08);
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 21px;
+      line-height: 1.32;
+    }
+    .panel p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.8;
+      font-size: 15px;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcff;
+    }
+    .metric strong {
+      display: block;
+      font-size: 24px;
+      line-height: 1.1;
+      margin-bottom: 4px;
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .timeline {
+      display: grid;
+      gap: 18px;
+      margin-top: 18px;
+    }
+    .entry {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+    .stamp {
+      position: sticky;
+      top: 96px;
+      padding-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      box-shadow: 0 8px 24px rgba(27, 39, 64, .06);
+    }
+    .card h3 {
+      margin: 0 0 10px;
+      font-size: 20px;
+      line-height: 1.35;
+    }
+    .card p {
+      margin: 0 0 12px;
+      color: var(--muted);
+      line-height: 1.8;
+      font-size: 15px;
+    }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .tag {
+      border-radius: 999px;
+      padding: 6px 9px;
+      font-size: 12px;
+      background: #eef3fb;
+      color: #2d4d7f;
+    }
+    .tag.green { background: #eaf7f1; color: var(--green); }
+    .tag.orange { background: #fff2e5; color: var(--orange); }
+    .tag.purple { background: #f1edff; color: var(--purple); }
+    code {
+      background: #f0f3f8;
+      color: #23324d;
+      padding: 2px 5px;
+      border-radius: 5px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: .92em;
+    }
+    .code-list {
+      display: grid;
+      gap: 7px;
+      margin: 12px 0 0;
+      color: #2d3850;
+      font-size: 14px;
+    }
+    .callout {
+      border-left: 4px solid var(--blue);
+      padding: 10px 14px;
+      background: #eef5ff;
+      color: #25466f;
+      line-height: 1.75;
+      border-radius: 6px;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+    .footer {
+      margin-top: 28px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 15px;
+      padding: 26px;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div>
+        <h1>ZSClip 多平台开发记录</h1>
+        <div class="subtitle">从 Windows 主力版本，到 Android / iOS / macOS / Linux 初代验证。</div>
+      </div>
+      <div class="badge-row">
+        <span class="badge">Codex 协作</span>
+        <span class="badge">Android APK</span>
+        <span class="badge">iOS Shortcuts</span>
+        <span class="badge">ZSUI 原生 UI</span>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="panel">
+        <h2>这不是只展示一个成品，也展示构建过程</h2>
+        <p>视频里会把产品功能和开发过程放在同一个故事里：搜索、分组、VV、OCR、WPS、多端同步是用户看得见的能力；拆模块、写测试、跨平台原生 UI 契约，是背后持续打磨的部分。</p>
+        <p>Windows 是当前主力版本；其他系统先给出初代能力和验证入口，有兴趣的小伙伴可以下载测试、加群反馈，我会第一时间修复。</p>
+      </div>
+      <div class="panel">
+        <h2>当前素材要点</h2>
+        <div class="metric-grid">
+          <div class="metric"><strong>0.9.1</strong><span>Android Debug APK</span></div>
+          <div class="metric"><strong>3.06 MB</strong><span>release APK size</span></div>
+          <div class="metric"><strong>first-pass</strong><span>macOS / Linux native host</span></div>
+          <div class="metric"><strong>manual</strong><span>iOS Shortcuts sync</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="timeline">
+      <div class="entry">
+        <div class="stamp">Codex 记录</div>
+        <div class="card">
+          <h3>AI 协作把“功能列表”变成“可录制素材”</h3>
+          <p>这次不只写宣传词，而是围绕真实演示组织素材：桌面录制不让窗口重叠，保留鼠标操作；任务管理器搜索 <code>zsclip</code> 展示运行内存；搜索和 VV 使用真实产品 UI 录制。</p>
+          <div class="code-list">
+            <code>videos/zsclip-ai-competition-product-script.md</code>
+            <code>videos/zsclip-ai-competition/prepare_demo_runtime.py</code>
+            <code>videos/zsclip-ai-competition/record_desktop_demo.ps1</code>
+          </div>
+          <div class="tags">
+            <span class="tag">产品脚本</span>
+            <span class="tag">桌面素材</span>
+            <span class="tag">真实 UI</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="stamp">Android</div>
+        <div class="card">
+          <h3>Android 初代 App 已有 APK 和源码</h3>
+          <p>Android 版本聚焦多端同步：推送到电脑、拉取到手机、分享菜单入口、快捷设置磁贴、自动同步服务、图片预览和 FileProvider 打开/分享。</p>
+          <div class="code-list">
+            <code>release/0.9.1/android/zsclip-lan-debug.apk</code>
+            <code>mobile/android/app/src/main/java/com/zsclip/lan</code>
+            <code>ClipboardSyncActivity.kt / AutoSyncWorker.kt / LanProtocol.kt</code>
+          </div>
+          <div class="callout">状态：可下载测试；完整闭环仍需要更多 Android + Windows LAN + WebDAV + iOS Shortcuts 真实设备验证。</div>
+          <div class="tags">
+            <span class="tag green">APK 0.9.1</span>
+            <span class="tag green">Quick Settings Tile</span>
+            <span class="tag green">LAN Sync</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="stamp">iOS</div>
+        <div class="card">
+          <h3>iOS 第一版采用快捷指令</h3>
+          <p>iOS 不支持普通 App 长期后台读取系统剪贴板，所以第一版不硬做后台常驻，而是通过快捷指令、分享菜单、小组件、NFC 或自动化手动触发。</p>
+          <div class="code-list">
+            <code>docs/ios-shortcuts.md</code>
+            <code>docs/ios-shortcuts-config.example.json</code>
+            <code>/v1/clip /v1/latest /mobile/images</code>
+          </div>
+          <div class="callout">能做：文本推送到电脑、从 Windows 拉取最新文本、图片通过局域网页下载；图片不写入 iOS 系统剪贴板。</div>
+          <div class="tags">
+            <span class="tag orange">Shortcuts</span>
+            <span class="tag orange">Manual Trigger</span>
+            <span class="tag orange">Share Sheet</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="stamp">macOS / Linux</div>
+        <div class="card">
+          <h3>原生 UI first-pass：先把架构打通</h3>
+          <p>ZSUI 正在把产品行为和平台 UI 分开：共享层负责列表、搜索、设置、菜单、VV、AI 能力目录；平台层负责 AppKit / GTK 原生窗口、控件、菜单、剪贴板、渲染和系统权限。</p>
+          <div class="code-list">
+            <code>src/macos_app.rs / src/macos_native_host.rs</code>
+            <code>src/linux_app.rs / src/linux_native_host.rs</code>
+            <code>docs/ui-host-porting.md / docs/zsui.md</code>
+          </div>
+          <div class="callout">状态：macOS 和 Linux 目前是初代版本，不说已经完整可日常使用；需要真实系统 smoke 截图和交互测试后再升级为 runtime-ready。</div>
+          <div class="tags">
+            <span class="tag purple">AppKit</span>
+            <span class="tag purple">GTK4 / libadwaita</span>
+            <span class="tag purple">native_host_first_pass</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="entry">
+        <div class="stamp">后续更新</div>
+        <div class="card">
+          <h3>下一步继续打磨</h3>
+          <p>搜索会增加“附近”：不是地理位置，而是命中记录前后时间线里的相关复制内容；分组会增加“文件类型选项”；多平台继续从 first-pass 走向真实设备可用。</p>
+          <div class="tags">
+            <span class="tag">搜索附近</span>
+            <span class="tag">文件类型分组</span>
+            <span class="tag">多平台实测</span>
+            <span class="tag">加群反馈</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="footer">Windows 主力版本已可录制演示；其他平台欢迎下载初代版本测试反馈。</div>
+  </main>
+
+  <script>
+    window.addEventListener("load", () => {
+      const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (reduce) return;
+      const maxScroll = document.documentElement.scrollHeight - window.innerHeight;
+      const duration = 26000;
+      const delay = 3500;
+      let start = null;
+      window.scrollTo(0, 0);
+      function step(ts) {
+        if (start === null) start = ts;
+        const t = Math.min(1, (ts - start) / duration);
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        window.scrollTo(0, Math.round(maxScroll * eased));
+        if (t < 1) requestAnimationFrame(step);
+      }
+      setTimeout(() => requestAnimationFrame(step), delay);
+    });
+  </script>
+</body>
+</html>

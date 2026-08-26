@@ -1,0 +1,268 @@
+{
+  "ok": true,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113926F8E4E30D6AA57AF79174"
+      },
+      "body": {
+        "available_training_times": 9,
+        "create_time": 1773508074000,
+        "demo_audio": "https://lf26-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884366&x-signature=rWFIXShgLC1RBMdZbr3zzA5WmVs%3D",
+        "extra_params": "{\"clone_source\": 1, \"design_finalize_type\": 1, \"reference_speaker_id\": \"MEGA_1774108105965_0\"}",
+        "icl_speaker_id": "saturn_69b595e3e4bdc448",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_bBxWfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oYIeDbETwarKvLrJ16FG9AApECBebRBAeAATIy?x-expires=1782884366&x-signature=cvvfGFd37WuD1FwPHLztEp19G6M%3D",
+            "icl_speaker_id": "ICL_69b595e4bcc8ed1b",
+            "model_type": 1,
+            "model_version": 1
+          },
+          {
+            "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884366&x-signature=4sfao%2BvtS%2FFOCoX1rLr6nl5qoQ4%3D",
+            "icl_speaker_id": "saturn_69b595e3e4bdc448",
+            "model_type": 4,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V6",
+        "voice_design_status": {
+          "preview_text": "大家好，我是森森",
+          "prompt_text": "更温柔，清晰"
+        }
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113926395D19C125B225E1E0B8"
+      },
+      "body": {
+        "available_training_times": 15,
+        "create_time": 1766310091000,
+        "demo_audio": "https://lf26-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782884366&x-signature=3kWVwljJcvwh2Ikz5UgRFLQn7nQ%3D",
+        "extra_params": "{\"enable_audio_denoise\": false}",
+        "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_0hFVfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf6-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782884366&x-signature=njVKsDeiqncugUTCkO7Rm7ljI1M%3D",
+            "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+            "model_type": 4,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V1"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113926599393C7803D08770095"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":null,\"sentence\":{\"phonemes\":[],\"text\":\"你好，这是 ZSClip 音色接口测试。\",\"words\":[]}}\n{\"code\":20000000,\"message\":\"OK\",\"data\":null}\n",
+        "json_events": 2,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113927A7E0A7AFD6C4EE1F1B84"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":null,\"sentence\":{\"phonemes\":[],\"text\":\"你好，这是 ZSClip 音色接口测试。\",\"words\":[]}}\n{\"code\":20000000,\"message\":\"OK\",\"data\":null}\n",
+        "json_events": 2,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139286481C3CD509A44F27167"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-tts-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113928510F0F449B321406FCA4"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011139284E1A9854F5A39326C9D2"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":\"SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OExAAj+QYsAMsMMTjPVWQAJiLEXYBACAHAPg3EcSxLEszMzMwMDAwAAAAAAIEyZMmTJkyaZAgQIECBAgQJkyZMnd3aEREREQnYeHh4YAAAAAB4eHh4YAAAAAB4eHh4YAAAAAB4eHh4YAAAAAB4eHh/gHAAADw8PHpMAAAcHj44eGAAAAAAfmHh4YQMw/w8//+AZ+YeHv+T//+9HiKIde8a8kBgyAJMJYwBgDA2EEmlUknpNMTFadHSY+Ojpc88//OExCMkYxooKtMGOZVK2E5OVUSwpgIUwZmWrVoUlhs1HDYZtSUKq3TjSEZGoNSXpxGzdumyndbvW888yhGUJihrSzem+bsPDqQ81zM3myLT6lCmlOEHamhIW4M6xnxIQ+mQeKW1kNOh90K/7UDYBunXX2PG+Tu6dp9CajyOBJ480lfBggvDUsQQKEJHfGwk9ee1msfNX5aNbOXPZKuzMdlNPs/CLzX7mffrxCU42bfSe2zZjO94/O6pw7Hfm",
+        "json_events": 15,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 13,
+        "audio_bytes": 37293,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113929633BF9FA53E9DFF8396C"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":45000001,\"message\":\"[Invalid argument] InvalidModelType\",\"data\":null}\n",
+        "json_events": 1,
+        "codes": [
+          45000001
+        ],
+        "messages": [
+          "[Invalid argument] InvalidModelType"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113930D78C0A64B36A68E69075"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113930B3B4DF3EB95F67730A82"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

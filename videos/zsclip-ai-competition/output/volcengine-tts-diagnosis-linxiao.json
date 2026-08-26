@@ -1,0 +1,94 @@
+{
+  "ok": true,
+  "all_synthesis_ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "zh_female_linxiao_uranus_bigtts",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 500,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701121820A6F014CFB5C068F7C267"
+      },
+      "body": {
+        "code": 55000000,
+        "message": "resource ID is mismatched with speaker related resource"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "zh_female_linxiao_uranus_bigtts",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701121820496FE932716CBE750A2B"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":\"SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OExAAl0bokAMsMdT5LMZw0hDAAL4MQk0TZ2qRUixAOCIeVOxLBoDQRBIPHNXmZMMDAwWdq9eYGB4sQxzyYACCBCPdkyBAghHe7IECER3PJkIiP/dkIiI73ZAhGf+7QiIz3doQAeHhgAZmHgBnh4YAeHj8BH9DBHxw8Ad+YYAODw8R/xwwz8w8A/oeGf+YeAeXDwz/zDxH9D3/0PDzPjj9f1sPVO9i0DFZQFhqElIVIlUrEYeo5S/r+uS5L+w7T//OExBskisIsAOGG8X7jMZf2MxmW7skQUJAJFGnk0FIkUUanCKKKJGf+iajMz/MkVAVIrVqqq/VVVUj1UlVbktVVIslJSX5aqqpFqq1SpmSqoWYJ3q26l0qHJf7SUspKVEk/FAql1AVDX8UN07zTb6uKZdSKZv/QXGSHiTv4qs39Yk8eKjkc/EO7lBUsuFIUojLkf+hWqm6zb8S2M1zr7l0g2zda0VnSOjHedpmP/PyRUJazyfOndXaWWrD+x",
+        "json_events": 12,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 10,
+        "audio_bytes": 29229,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "zh_female_linxiao_uranus_bigtts",
+      "resource_id": "seed-tts-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701121821A54288936310E41790C5"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "zh_female_linxiao_uranus_bigtts",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011218210D82E0630A1A8D7B49B9"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

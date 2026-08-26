@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZSClip 视频素材录制核对表</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --ink: #182033;
+      --muted: #637087;
+      --line: #dde4ef;
+      --ok-bg: #e8f7ef;
+      --ok: #107448;
+      --wait-bg: #fff4df;
+      --wait: #9a5a00;
+      --info-bg: #eaf2ff;
+      --info: #1557b0;
+      --soft: #f0f4fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      padding: 32px 36px 24px;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px 22px 48px;
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.25; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 22px; margin-bottom: 12px; }
+    h3 { font-size: 17px; margin-bottom: 8px; }
+    p { margin: 0 0 10px; color: var(--muted); }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 18px;
+      padding: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { color: #33405a; background: var(--soft); }
+    tr:last-child td { border-bottom: 0; }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 12px;
+      line-height: 1;
+      padding: 5px 8px;
+      white-space: nowrap;
+    }
+    .done { background: var(--ok-bg); color: var(--ok); }
+    .wait { background: var(--wait-bg); color: var(--wait); }
+    .optional { background: var(--info-bg); color: var(--info); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+    }
+    video, img {
+      display: block;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #111827;
+      margin-top: 10px;
+    }
+    img { background: #fff; }
+    .meta {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+    .meta span {
+      background: var(--soft);
+      border-radius: 999px;
+      color: #3f4b61;
+      font-size: 13px;
+      padding: 4px 9px;
+    }
+    code {
+      background: var(--soft);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    a { color: var(--info); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { margin: 8px 0 0 20px; padding: 0; color: var(--muted); }
+    li { margin: 4px 0; }
+    @media (max-width: 760px) {
+      header { padding: 24px 18px 18px; }
+      main { padding: 18px 12px 36px; }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+      th, td { padding: 8px 6px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ZSClip 视频素材录制核对表</h1>
+    <p>按用户提出的镜头需求逐项核对：哪些已经录制，哪些已经进入剪辑，哪些已经完成配音和最终合成。</p>
+    <div class="meta">
+      <span>无声草稿：3:36</span>
+      <span>主录屏：24s</span>
+      <span>搜索/分组/OCR：56s</span>
+      <span>开发状态滚动：31s</span>
+      <span>最终版：双人口播 + BGM</span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <h2>结论</h2>
+      <p>当前不是缺大量素材，而是必需画面已经覆盖：产品主界面、VV、搜索、右键分组、OCR、内存、token、跨平台初代状态和后续更新都已有对应素材。新版画面已经扩展到 3:36，并完成双人口播、BGM 与最终合成。</p>
+      <ul>
+        <li>必需素材：已录制并进入无声草稿。</li>
+        <li>已完成：火山 TTS 双人口播音频，最终有声版和桌面副本。</li>
+        <li>可选补录：下载页、群二维码、macOS/Linux 真机画面；当前脚本已按“初代版本，欢迎测试反馈”的叙事处理。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>需求覆盖表</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>用户要求</th>
+            <th>证据素材</th>
+            <th>用于成片的讲法</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>单独运行程序，桌面录制，鼠标操作也录进去，窗口不重叠。</td>
+            <td><a href="03-desktop-non-overlap-demo.mp4">03-desktop-non-overlap-demo.mp4</a></td>
+            <td>真实桌面操作进入主草稿，用来建立“这是实际产品，不是概念图”。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>VV 模式作为剪贴板软件的独特点。</td>
+            <td><a href="03-desktop-non-overlap-demo.mp4">主演示录屏</a>、<a href="02-desktop-search-vv-clean.mp4">备用清洁录屏</a></td>
+            <td>口播中定位为高频文本快速复用，不只是普通历史列表。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>搜索功能要讲出剪贴板独特点。</td>
+            <td><a href="05-feature-closeups-search-group-ocr.mp4">05-feature-closeups-search-group-ocr.mp4</a></td>
+            <td>强调关键词、应用、日期、类型和右键快速搜索，后续再加“附近”。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>分组功能是通过右键“复制记录/常用记录”这类入口使用。</td>
+            <td><a href="05-feature-closeups-search-group-ocr.mp4">搜索/分组/OCR 特写</a></td>
+            <td>强调右键把记录加入短语、常用、分组，后续补文件类型选项。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>OCR 独特功能。</td>
+            <td><a href="05-feature-closeups-search-group-ocr.mp4">搜索/分组/OCR 特写</a></td>
+            <td>用图片转文字做差异点：不仅存文字，也能把图片里的文字拿出来。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已截图</span></td>
+            <td>任务管理器搜索 zsclip，看运行内存。</td>
+            <td><a href="06-task-manager-zsclip-memory.png">06-task-manager-zsclip-memory.png</a></td>
+            <td>展示轻量常驻和内存优化，不把剪贴板工具做成沉重后台。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已截图</span></td>
+            <td>Codex 交流录制、token 使用量截图。</td>
+            <td><a href="07-codex-token-usage.png">07-codex-token-usage.png</a>、<a href="04-dev-status-scroll.mp4">04-dev-status-scroll.mp4</a></td>
+            <td>用于讲 AI 协作开发、测试和多平台打磨过程。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已录制</span></td>
+            <td>查看 Android、iOS、macOS、Linux 开发情况，单独滚动录制。</td>
+            <td><a href="04-dev-status-scroll.mp4">04-dev-status-scroll.mp4</a></td>
+            <td>明确说明另外两个桌面系统是初代版本，未充分实测，欢迎下载测试和加群反馈。</td>
+          </tr>
+          <tr>
+            <td><span class="pill done">已制作</span></td>
+            <td>后续更新：搜索“附近”、分组“文件类型选项”、继续打磨多平台。</td>
+            <td><a href="05-roadmap-card.png">05-roadmap-card.png</a>、<a href="zsclip-ai-competition-silent-draft.mp4">无声草稿</a></td>
+            <td>放在视频尾段，作为邀请测试和持续更新承诺。</td>
+          </tr>
+          <tr>
+            <td><span class="pill wait">等待口播</span></td>
+            <td>你给口播文字，我来给口播文件。</td>
+            <td><a href="voiceover-final-2m11.md">voiceover-final-2m11.md</a>、<a href="voiceover-teleprompter.html">提词器</a></td>
+            <td>口播音频放入素材目录后，运行 <code>double_click_finalize.cmd</code> 自动合成有声版。</td>
+          </tr>
+          <tr>
+            <td><span class="pill optional">可选补录</span></td>
+            <td>群二维码、下载页、真实 macOS/Linux 设备画面。</td>
+            <td>当前未作为必需镜头。</td>
+            <td>如果要增强转化，可以补 5 到 8 秒下载/加群镜头；不补也不影响当前故事闭环。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>核心录屏预览</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>桌面主演示</h3>
+          <p>运行程序、真实鼠标、窗口不重叠，覆盖搜索和 VV 主线。</p>
+          <video controls preload="metadata" src="03-desktop-non-overlap-demo.mp4"></video>
+        </div>
+        <div class="card">
+          <h3>搜索 / 分组 / OCR 特写</h3>
+          <p>补足右键菜单、分组入口、常用记录、OCR 的讲解画面。</p>
+          <video controls preload="metadata" src="05-feature-closeups-search-group-ocr.mp4"></video>
+        </div>
+        <div class="card">
+          <h3>多平台开发状态</h3>
+          <p>展示 Android、iOS、macOS、Linux 的开发状态和测试邀请。</p>
+          <video controls preload="metadata" src="04-dev-status-scroll.mp4"></video>
+        </div>
+        <div class="card">
+          <h3>最终无声草稿</h3>
+          <p>所有素材已按故事顺序剪入 3:36 无声草稿。</p>
+          <video controls preload="metadata" src="zsclip-ai-competition-silent-draft.mp4"></video>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>关键截图与卡片</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>运行内存截图</h3>
+          <img src="06-task-manager-zsclip-memory.png" alt="任务管理器搜索 zsclip 的内存占用截图">
+        </div>
+        <div class="card">
+          <h3>Codex token 截图</h3>
+          <img src="07-codex-token-usage.png" alt="Codex token 使用量截图">
+        </div>
+        <div class="card">
+          <h3>后续更新卡片</h3>
+          <img src="05-roadmap-card.png" alt="ZSClip 后续更新路线卡片">
+        </div>
+        <div class="card">
+          <h3>B 站封面</h3>
+          <img src="bilibili-cover-zsclip.png" alt="ZSClip B站封面">
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

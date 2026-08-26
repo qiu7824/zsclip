@@ -1,0 +1,98 @@
+{
+  "ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "202607011140051CE01EC579C5E5F47033"
+      },
+      "body": {
+        "available_training_times": 9,
+        "create_time": 1773508074000,
+        "demo_audio": "https://lf6-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884406&x-signature=8Hudms3Ba8aYwA3dCOhyqqxq3s0%3D",
+        "extra_params": "{\"clone_source\": 1, \"design_finalize_type\": 1, \"reference_speaker_id\": \"MEGA_1774108105965_0\"}",
+        "icl_speaker_id": "saturn_69b595e3e4bdc448",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_bBxWfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf3-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oE2eru3gKQAkegANFrs4EQB7eK5AeQIUtAYfln?x-expires=1782884405&x-signature=OEC1oW6xfUV1PlrVwXnD%2F9phxP8%3D",
+            "icl_speaker_id": "saturn_69b595e3e4bdc448",
+            "model_type": 4,
+            "model_version": 2
+          },
+          {
+            "demo_audio": "https://lf26-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oYIeDbETwarKvLrJ16FG9AApECBebRBAeAATIy?x-expires=1782884405&x-signature=egy01Bku9wUCTZgFuxoa2MsUMZc%3D",
+            "icl_speaker_id": "ICL_69b595e4bcc8ed1b",
+            "model_type": 1,
+            "model_version": 1
+          }
+        ],
+        "status": 2,
+        "version": "V6",
+        "voice_design_status": {
+          "preview_text": "大家好，我是森森",
+          "prompt_text": "更温柔，清晰"
+        }
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701114006F9579CFE80BE19B87C44"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":null,\"sentence\":{\"phonemes\":[],\"text\":\"你好，这是音色接口测试。\",\"words\":[]}}\n{\"code\":20000000,\"message\":\"OK\",\"data\":null}\n",
+        "json_events": 2,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011140067CEB3EB45BE54E2149E6"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":null,\"sentence\":{\"phonemes\":[],\"text\":\"你好，这是音色接口测试。\",\"words\":[]}}\n{\"code\":20000000,\"message\":\"OK\",\"data\":null}\n",
+        "json_events": 2,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

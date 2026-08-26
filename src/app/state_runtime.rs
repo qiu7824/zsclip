@@ -24,6 +24,23 @@ enum ClipItemAddOutcome {
     RetryableFailure,
 }
 
+fn sorted_front_insert_index(items: &[ClipItem], pinned: bool) -> usize {
+    if pinned {
+        0
+    } else {
+        items
+            .iter()
+            .position(|item| !item.pinned)
+            .unwrap_or(items.len())
+    }
+}
+
+fn insert_loaded_item_at_sorted_front(items: &mut Vec<ClipItem>, item: ClipItem) -> usize {
+    let index = sorted_front_insert_index(items, item.pinned);
+    items.insert(index, clip_item_to_summary(&item));
+    index
+}
+
 impl AppState {
     pub(super) fn should_skip_transient_duplicate_capture(
         &mut self,
@@ -209,18 +226,21 @@ impl AppState {
         self.phrases.retain(|item| !id_set.contains(&item.id));
     }
 
-    pub(super) fn promote_loaded_item_to_top(&mut self, old_id: i64, new_id: i64) -> bool {
+    pub(super) fn promote_loaded_item_to_top(&mut self, old_id: i64, new_id: i64) -> Option<usize> {
         if old_id <= 0 || new_id <= 0 {
-            return false;
+            return None;
         }
         let items = self.items_for_tab_mut(self.tab_index);
         let Some(pos) = items.iter().position(|item| item.id == old_id) else {
-            return false;
+            return None;
         };
         let mut item = items.remove(pos);
         item.id = new_id;
-        items.insert(0, clip_item_to_summary(&item));
-        true
+        Some(insert_loaded_item_at_sorted_front(items, item))
+    }
+
+    pub(super) fn insert_loaded_record_at_sorted_front(&mut self, item: ClipItem) -> usize {
+        insert_loaded_item_at_sorted_front(&mut self.records, item)
     }
 
     pub(super) fn load_item_full_cached(&mut self, id: i64) -> Option<ClipItem> {
@@ -364,13 +384,20 @@ impl AppState {
                     remove_uninserted_image_file(&item);
                     self.remove_cached_item(existing_id);
                     self.remove_cached_item(new_id);
-                    if !self.promote_loaded_item_to_top(existing_id, new_id) {
+                    if self
+                        .promote_loaded_item_to_top(existing_id, new_id)
+                        .is_none()
+                    {
                         reload_state_from_db_persisting(self);
                     } else {
                         self.refilter();
                     }
                     if self.tab_index == 0 {
-                        self.sel_idx = 0;
+                        self.sel_idx = self
+                            .records
+                            .iter()
+                            .position(|item| item.id == new_id)
+                            .unwrap_or(0) as i32;
                         self.scroll_y = 0;
                     }
                     unsafe {
@@ -398,22 +425,24 @@ impl AppState {
         }
         let summary = clip_item_to_summary(&item);
         let visible_query = self.load_state_for_tab(0).query.clone();
-        if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
+        let inserted_index = if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
         {
-            self.records.insert(0, summary);
+            let index = self.insert_loaded_record_at_sorted_front(summary);
             if self.tab_index == 0 {
                 self.list.apply_visible_len(self.records.len());
             }
+            Some(index)
         } else {
             self.invalidate_tab_query(0, self.tab_index == 0);
-        }
+            None
+        };
         let max_items = self.settings.max_items;
         if max_items > 0 {
             db_prune_items(0, max_items);
             self.invalidate_tab_query(0, self.tab_index == 0);
         }
         if self.tab_index == 0 {
-            self.sel_idx = 0;
+            self.sel_idx = inserted_index.unwrap_or(0) as i32;
         }
         self.refilter();
         unsafe {
@@ -467,5 +496,53 @@ impl AppState {
             .filter_map(|i| self.active_items().get(i).map(|it| it.id))
             .filter(|id| *id > 0)
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod sorted_insert_tests {
+    use super::*;
+
+    fn item(id: i64, pinned: bool) -> ClipItem {
+        ClipItem {
+            id,
+            kind: ClipKind::Text,
+            preview: id.to_string(),
+            text: None,
+            rich_text_html: None,
+            source_app: String::new(),
+            file_paths: None,
+            image_bytes: None,
+            image_path: None,
+            image_width: 0,
+            image_height: 0,
+            pinned,
+            group_id: 0,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn sorted_front_insert_keeps_unpinned_items_below_pinned_items() {
+        let mut items = vec![item(3, true), item(2, true), item(1, false)];
+        let index = insert_loaded_item_at_sorted_front(&mut items, item(4, false));
+
+        assert_eq!(index, 2);
+        assert_eq!(
+            items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![3, 2, 4, 1]
+        );
+    }
+
+    #[test]
+    fn sorted_front_insert_puts_newest_pinned_item_first() {
+        let mut items = vec![item(3, true), item(2, false), item(1, false)];
+        let index = insert_loaded_item_at_sorted_front(&mut items, item(4, true));
+
+        assert_eq!(index, 0);
+        assert_eq!(
+            items.iter().map(|item| item.id).collect::<Vec<_>>(),
+            vec![4, 3, 2, 1]
+        );
     }
 }

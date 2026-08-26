@@ -1,0 +1,113 @@
+{
+  "ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "202607011132193FB9B240137A5877414F"
+      },
+      "body": {
+        "code": 45000010,
+        "message": "Invalid X-Api-Key"
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "202607011132193FE426CC168EA0E7DCF9"
+      },
+      "body": {
+        "code": 45000010,
+        "message": "Invalid X-Api-Key"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "2026070111321928F2E518098BB52419CE"
+      },
+      "body_summary": {
+        "raw_preview": "{\"header\":{\"reqid\":\"0d0467fd-71aa-4684-bbc3-a70b1e46fe8a\",\"code\":45000010,\"message\":\"Invalid X-Api-Key\"}}",
+        "json_events": 1,
+        "codes": [],
+        "messages": [],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_bBxWfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113219CD708540211153E1823E"
+      },
+      "body_summary": {
+        "raw_preview": "{\"header\":{\"reqid\":\"e843539b-7547-44b4-b4aa-b95f0c9c85ce\",\"code\":45000010,\"message\":\"Invalid X-Api-Key\"}}",
+        "json_events": 1,
+        "codes": [],
+        "messages": [],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113219896396E6719D1AE0082C"
+      },
+      "body_summary": {
+        "raw_preview": "{\"header\":{\"reqid\":\"cfb9edc4-6eb2-4cb0-aacb-a218c672814c\",\"code\":45000010,\"message\":\"Invalid X-Api-Key\"}}",
+        "json_events": 1,
+        "codes": [],
+        "messages": [],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 401,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "202607011132199CB65C4437617BDFA21E"
+      },
+      "body_summary": {
+        "raw_preview": "{\"header\":{\"reqid\":\"0d049619-a6b1-4a4b-8dc0-ff82cb631650\",\"code\":45000010,\"message\":\"Invalid X-Api-Key\"}}",
+        "json_events": 1,
+        "codes": [],
+        "messages": [],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

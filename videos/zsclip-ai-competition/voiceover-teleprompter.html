@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZSClip 口播提词器</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111827;
+      --panel2: #172033;
+      --ink: #f8fafc;
+      --muted: #cbd5e1;
+      --line: #334155;
+      --accent: #22c55e;
+      --warn: #facc15;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      padding: 22px 28px;
+      border-bottom: 1px solid var(--line);
+      background: #0f172a;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 28px; }
+    p { color: var(--muted); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.9fr);
+      gap: 18px;
+      padding: 20px;
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    video {
+      width: 100%;
+      border-radius: 8px;
+      background: #000;
+      border: 1px solid var(--line);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+      align-items: center;
+    }
+    button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #1e293b;
+      color: var(--ink);
+      padding: 8px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    .time {
+      font-family: "Cascadia Code", Consolas, monospace;
+      color: var(--warn);
+      font-size: 18px;
+      margin-left: auto;
+    }
+    .current {
+      min-height: 390px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .label {
+      display: inline-block;
+      color: var(--accent);
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .script {
+      font-size: 30px;
+      line-height: 1.55;
+      font-weight: 700;
+      white-space: pre-line;
+    }
+    .cue {
+      color: var(--warn);
+      font-size: 0.72em;
+      font-weight: 600;
+    }
+    .next {
+      margin-top: auto;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      white-space: pre-line;
+    }
+    .timeline {
+      grid-column: 1 / -1;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      gap: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      margin-bottom: 10px;
+      background: var(--panel2);
+      cursor: pointer;
+    }
+    .row.active {
+      border-color: var(--accent);
+      background: #123323;
+    }
+    .stamp {
+      color: var(--warn);
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-weight: 700;
+    }
+    .title {
+      color: var(--ink);
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .text {
+      color: var(--muted);
+      white-space: pre-line;
+    }
+    .text .cue, .next .cue {
+      font-size: 1em;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      .timeline { grid-column: auto; }
+      .script { font-size: 24px; }
+      .time { margin-left: 0; width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ZSClip 口播提词器</h1>
+    <p>播放无声草稿时自动高亮当前段落。方括号是表演提示，不用读出来；双人口播约 3:30，画面保留到 3:36 完整收束。</p>
+  </header>
+  <main>
+    <section>
+      <video id="video" controls preload="metadata" src="zsclip-ai-competition-silent-draft.mp4"></video>
+      <div class="toolbar">
+        <button id="restart">从头开始</button>
+        <button id="back5">后退 5 秒</button>
+        <button id="forward5">前进 5 秒</button>
+        <button id="toggle">播放 / 暂停</button>
+        <span class="time" id="clock">00:00 / 03:36</span>
+      </div>
+    </section>
+
+    <section class="current">
+      <div>
+        <span class="label" id="currentTime">0:00 - 0:04</span>
+        <h2 id="currentTitle">标题</h2>
+      </div>
+      <div class="script" id="currentText"></div>
+      <div class="next" id="nextText"></div>
+    </section>
+
+    <section class="timeline" id="timeline"></section>
+  </main>
+
+  <script>
+    const segments = [
+      {
+        start: 0.00,
+        end: 14.09,
+        time: "0:00 - 0:14",
+        title: "女声｜系统工具的开场",
+        text: "[眼神先落在桌面，语气克制，像把观众带进一个真实工作现场]\n如果一个工具每天都挂在系统里，它就不能只做功能堆叠。它要够轻、够稳，还要真的理解你每天复制过的那些碎片：合同、截图、发票、命令行、文件路径。"
+      },
+      {
+        start: 14.09,
+        end: 29.31,
+        time: "0:14 - 0:29",
+        title: "男声｜从 Python 开始",
+        text: "[微微笑一下，像讲自己的来路，不要播音腔]\nZSClip 不是我一上来就用 Rust 写出来的。最早它只是一个 Python 小工具，因为我每天处理资料时，复制过的东西太多，想找回来太麻烦。我先做了一个自己能用的版本，然后一直迭代到现在。"
+      },
+      {
+        start: 29.31,
+        end: 42.53,
+        time: "0:29 - 0:43",
+        title: "女声｜为什么迁到 Rust",
+        text: "[语速放慢，表情认真一点]\n那为什么后来一定要迁到 Rust？剪贴板看起来只是一个小工具，但它是常驻系统里的工具。你越依赖它，越会在意它是不是卡、是不是重、是不是和系统隔了一层。"
+      },
+      {
+        start: 42.53,
+        end: 59.35,
+        time: "0:43 - 0:59",
+        title: "男声｜纯原生 UI",
+        text: "[身体略微前倾，像在强调技术选择]\n所以主力版本我迁到了 Rust，并且开始做纯原生 UI。我的目标不是套一个网页壳，而是让窗口、托盘、热键、剪贴板、弹窗这些能力都尽量贴着系统运行。常驻工具的第一层体验，其实就是安静。"
+      },
+      {
+        start: 59.35,
+        end: 77.66,
+        time: "0:59 - 1:18",
+        title: "女声｜VV 模式",
+        text: "[看着画面讲，语气轻快一点]\n先看最常用的 VV 模式。复制过的文本、图片、文件会进入记录，也可以变成常用短语。输入 vv，候选窗贴着光标出来，按数字就能粘贴。这个动作很小，但每天用几十次，就会变成真正的效率。"
+      },
+      {
+        start: 77.66,
+        end: 98.52,
+        time: "1:18 - 1:39",
+        title: "男声｜搜索的独特点",
+        text: "[手势像在筛选条件，语气具体]\n搜索是我觉得 ZSClip 和普通剪贴板软件不一样的地方。它不是只搜文字。比如我想找今天 WPS 里的合同、刚才那张截图、某个文件记录，可以按应用、日期、时间、类型一起筛。后面我还会加附近记录，直接看命中内容前后的复制时间线。"
+      },
+      {
+        start: 98.52,
+        end: 114.00,
+        time: "1:39 - 1:54",
+        title: "女声｜右键分组",
+        text: "[右手轻轻点一下，像点开右键菜单]\n分组也不是单独开一个复杂入口。复制记录、常用记录里都可以右键处理：继续搜索、加入短语、加入分组。后续分组还会加文件类型选项，让文本、图片、文件这些素材更容易被整理。"
+      },
+      {
+        start: 114.00,
+        end: 133.22,
+        time: "1:54 - 2:13",
+        title: "男声｜OCR 素材化",
+        text: "[语气带一点“这个真的有用”的兴奋]\nOCR 是另一个特别适合办公的能力。很多资料不是以文档形式出现，而是先变成截图。ZSClip 可以把图片里的字取出来，再清洗、翻译、存成短语。它不是只保存历史，而是把复制过的东西重新变成可复用素材。"
+      },
+      {
+        start: 133.22,
+        end: 148.70,
+        time: "2:13 - 2:29",
+        title: "女声｜0.1M 内存占用美学",
+        text: "[这里收住，留一点停顿，让任务管理器画面自己说话]\n再看任务管理器。对常驻系统工具来说，内存占用不是一个冷冰冰的数字，它是产品气质的一部分。ZSClip 想追求的是 0.1M 级的内存占用美学：能不占就不占，能晚加载就晚加载。"
+      },
+      {
+        start: 148.70,
+        end: 165.76,
+        time: "2:29 - 2:46",
+        title: "男声｜分页与缓存释放",
+        text: "[语气沉稳，像讲自己的工程打磨]\n为了这个方向，我做了分页加载、虚拟列表，只画可见区域，正文和图片按需补全，窗口隐藏后释放缓存。它不是为了跑分，而是因为剪贴板这种工具应该像系统的一部分，存在感越低，越说明它做对了。"
+      },
+      {
+        start: 165.76,
+        end: 186.18,
+        time: "2:46 - 3:06",
+        title: "女声｜ZSUI 开放工程",
+        text: "[眼神抬起来一点，像讲更远的愿景]\nZSUI 是这个项目后面更大的部分。但我不想把它讲成一个人维护三平台 UI 框架。它更像一个开放工程：把托盘、热键、弹窗、设置页、列表这些系统工具能力写成明确合同，让 AI 和贡献者可以按合同补组件、补平台、补测试。"
+      },
+      {
+        start: 186.18,
+        end: 210.23,
+        time: "3:06 - 3:30",
+        title: "男声｜Rust 原生系统工具框架",
+        text: "[收尾真诚一点，语气坚定]\n所以 ZSUI 不是另一个通用 UI 框架，而是 Rust 原生系统工具应用框架。它应该类型安全、显式、组合式、低魔法、可降级，少运行时反射，少全局状态。Windows 是主力版，其它平台还在初代测试，欢迎下载试用、加群反馈，我会第一时间修。"
+      }
+    ];
+
+    const video = document.getElementById("video");
+    const currentTime = document.getElementById("currentTime");
+    const currentTitle = document.getElementById("currentTitle");
+    const currentText = document.getElementById("currentText");
+    const nextText = document.getElementById("nextText");
+    const clock = document.getElementById("clock");
+    const timeline = document.getElementById("timeline");
+
+    function fmt(sec) {
+      const s = Math.max(0, Math.floor(sec));
+      const m = Math.floor(s / 60).toString().padStart(2, "0");
+      const r = (s % 60).toString().padStart(2, "0");
+      return `${m}:${r}`;
+    }
+
+    function segmentAt(sec) {
+      return segments.findIndex((s) => sec >= s.start && sec < s.end);
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function formatPromptText(text) {
+      return text.split("\n").map((line) => {
+        const safe = escapeHtml(line);
+        return /^\[.*\]$/.test(line.trim()) ? `<span class="cue">${safe}</span>` : safe;
+      }).join("\n");
+    }
+
+    function renderTimeline() {
+      timeline.innerHTML = "";
+      segments.forEach((seg, index) => {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.dataset.index = index;
+        row.innerHTML = `
+          <div class="stamp">${seg.time}</div>
+          <div>
+            <div class="title">${seg.title}</div>
+            <div class="text">${formatPromptText(seg.text)}</div>
+          </div>
+        `;
+        row.addEventListener("click", () => {
+          video.currentTime = seg.start;
+          video.play();
+        });
+        timeline.appendChild(row);
+      });
+    }
+
+    function update() {
+      const sec = video.currentTime || 0;
+      const index = Math.max(0, segmentAt(sec));
+      const seg = segments[index] || segments[0];
+      const next = segments[index + 1];
+      currentTime.textContent = seg.time;
+      currentTitle.textContent = seg.title;
+      currentText.innerHTML = formatPromptText(seg.text);
+      nextText.innerHTML = next
+        ? `${escapeHtml(`下一段：${next.time} ${next.title}`)}\n${formatPromptText(next.text)}`
+        : "已经是最后一段。";
+      clock.textContent = `${fmt(sec)} / 03:36`;
+      document.querySelectorAll(".row").forEach((row) => {
+        row.classList.toggle("active", Number(row.dataset.index) === index);
+      });
+    }
+
+    document.getElementById("restart").addEventListener("click", () => {
+      video.currentTime = 0;
+      video.play();
+    });
+    document.getElementById("back5").addEventListener("click", () => {
+      video.currentTime = Math.max(0, video.currentTime - 5);
+    });
+    document.getElementById("forward5").addEventListener("click", () => {
+      video.currentTime = Math.min(216, video.currentTime + 5);
+    });
+    document.getElementById("toggle").addEventListener("click", () => {
+      if (video.paused) video.play(); else video.pause();
+    });
+    video.addEventListener("timeupdate", update);
+    video.addEventListener("loadedmetadata", update);
+
+    renderTimeline();
+    update();
+  </script>
+</body>
+</html>

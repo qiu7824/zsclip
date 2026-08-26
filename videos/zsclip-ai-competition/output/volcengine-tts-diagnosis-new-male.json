@@ -1,0 +1,219 @@
+{
+  "ok": true,
+  "all_synthesis_ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "S_WgFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701115102395D19C125B225E297A8"
+      },
+      "body": {
+        "available_training_times": 14,
+        "create_time": 1782877728000,
+        "demo_audio": "https://lf9-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/o0zEOPciAyW2AA1EyBi1GjBBQtGKAgYhfkI6Zx?x-expires=1782885062&x-signature=1%2BLigPx0SvMnMc9rKabkqMcDMRc%3D",
+        "extra_params": "{\"enable_audio_denoise\": true}",
+        "icl_speaker_id": "ICL_uranus_6a448e1918a051bb",
+        "language": 0,
+        "model_type": 5,
+        "model_version": 2,
+        "speaker_id": "S_WgFVfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf3-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/oo6CVPEQGpGiJikjB9W3wIfHAcBHgBAACAh1KE?x-expires=1782885062&x-signature=yg8ij536sP%2BWam4QjrdgpMOF4T8%3D",
+            "icl_speaker_id": "ICL_6a448e1962075ef6",
+            "model_type": 1,
+            "model_version": 1
+          },
+          {
+            "demo_audio": "https://lf6-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/o0zEOPciAyW2AA1EyBi1GjBBQtGKAgYhfkI6Zx?x-expires=1782885062&x-signature=9%2FyFH0JAwLw03zoVjhbCxQNMbWI%3D",
+            "icl_speaker_id": "ICL_uranus_6a448e1918a051bb",
+            "model_type": 5,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V1"
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701115102C35900D2E15CACE38CB3"
+      },
+      "body": {
+        "available_training_times": 15,
+        "create_time": 1766310091000,
+        "demo_audio": "https://lf3-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782885062&x-signature=ZRbqQNTxnVIBn%2FZj6G5pWbKYA0s%3D",
+        "extra_params": "{\"enable_audio_denoise\": false}",
+        "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+        "language": 0,
+        "model_type": 4,
+        "model_version": 2,
+        "speaker_id": "S_0hFVfXhO1",
+        "speaker_status": [
+          {
+            "demo_audio": "https://lf6-lab-speech-tt-sign.bytespeech.com/tos-cn-o-14155/osADwfp8BABMgHzAGqiABQWycBvl0AgEiyQn6o?x-expires=1782885062&x-signature=oXvnFd%2FSZ9cdchltzck7N22tRkE%3D",
+            "icl_speaker_id": "saturn_6947c0c2f2d5e4ec",
+            "model_type": 4,
+            "model_version": 2
+          }
+        ],
+        "status": 2,
+        "version": "V1"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "S_WgFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111510207CB59BEB8E74928222C"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":\"SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OExAAjQ8I0BMGGfQWNYW+Zw1xhjEHcfyHIfjcbAYDAYDBwsgACBAgQQMIEyd3ZNM8mQMQgwhERd3d2ndxEIiIiO7u7u7oiIiJ70O7ufoiIXEKu7n7uiInERN3frnoXEQoju/Xd3QtE0Qun7u+cRERPdz/rvon90c/d93L04iIfu7/xE4n7nXdz+IiAAjhge88ef4A4DH5nxwT4C8gNJMZqaAqigiBq0Rsw6MEhiI0sUtiRS4FMxeomjeRVBVmJ//OExCYkbC48yMGGfTQc5cvppsb6TOHMNGERy6V6bvDMHQ0UYcqP0FL6TdSjzW5g2QhUcHX4ZbFdB7ri8sUJj3IY66QltZw+mwI386Mehnu9ZHXQqzMYIiY1HtPrZIKy63m1yirDhPvEyI62pSvR889peGY3zj4KOgeAlJTKGsHFgZrW2d/VjbiRxhxDhMGFgjZaIYJSEHHozQkyRoEzEdNzgeZCJsCfhZFwwgW4OC1MGbhPQEMHhIJKBiUaC",
+        "json_events": 13,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 11,
+        "audio_bytes": 32301,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_WgFVfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111510383940BDE863E43A36C61"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":\"SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OExAAkOMYwAssMTQnKan8gomIsRnDOHIcgD4NxLEsnmZmZmZgYGB4QIECBALJkyZMmTJkyBAgQIIREEyadh4eGAAAAAAeHh4eGAAAAAAeHh4eGAAAAAAeHh4eGAABgAB4eHh4YAAAAAJw8PPWwAAAQHh4eHpAAAADP/46QAAAD/jn+GCAAz3/1//4B/h78wwAAAAQHjx/8AAAz//oWWq+dGYGNhCAIQ4hRCjSOpDk6rVaAQkiRIkSRI4kSARIk//OExCIiCXYwUtvMCUiMyiRIkSKIpI4klVJVMz5ycmqKpoO2v3mZnJ+Lo50mXlIozmS6+SEiIQv5OE1xSpjaHE8L8S7R+Z7xJDkf6+fzD/ximLnhj+/j3X5f8yk17P9e1TtMt+my0yzdncuTT8UOLOSbylU9kWUFd4FClEn8NZ/DqXW6YXaGQQRlCVHDGYSGix0T+rK6CTVVLysBcMOKN2CBUWuZJXMGca07AQkgghYOJeOaoBlFDuZkRQMpE",
+        "json_events": 10,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 8,
+        "audio_bytes": 27693,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_WgFVfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701115104F7AC0BCD03CAE6413097"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "202607011151042FF4124A6BDD85F3A7E9"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":0,\"message\":\"\",\"data\":\"SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//OExAAkmPosAsMMNQn1qxkHFBFiLsAgBADgHwbiWJYliWZmZmYGBgYGB4sMDwLJkyZMmTJkyBAgQIQYQQsmnZ5NO7iDCEQYgBh5cPDwAAABGYeHvjgAAAAAGPDw8PAAAAAAMPDw8PAAAAAAMPDw8PAAAAADI58/QBgAMzH5+HgBmvA3xw8f8DgAJ6Hv8R4A7/6P8AAADADD2w8fg4R+agRgUavBwkFrljLGZ05TlQ9DMZjIBAISChIKSSJEiSQM//OExCAju/Iw6MmGfRSRE1EiaAZNwpKh0sSWiJQS4LGzraSc4yoisdWx2nI1VgEBRzlEqzEKwJE7DIlBlTfecZb7Uqa0yb+nL0gTX80qep/mRmXSnaXUa7/CNb2twzL2p36R3rRcx5/S+Ccp/8Pner5HtntivJ44uG7oKzrrVzQzNWmSYWSXBzlk5hnxvrNjI9pXh5VF/z3IllpnZbMc8VW7SGKamybp0sh2j8vVxJuQi53v0+wnu9mataCb3",
+        "json_events": 13,
+        "codes": [
+          0,
+          20000000
+        ],
+        "messages": [
+          "OK"
+        ],
+        "audio_chunks": 11,
+        "audio_bytes": 32493,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701115105C0BC04284885CDB839B3"
+      },
+      "body_summary": {
+        "raw_preview": "{\"code\":45000001,\"message\":\"[Invalid argument] InvalidModelType\",\"data\":null}\n",
+        "json_events": 1,
+        "codes": [
+          45000001
+        ],
+        "messages": [
+          "[Invalid argument] InvalidModelType"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "S_0hFVfXhO1",
+      "resource_id": "seed-tts-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701115105BCE5C30E633F1FF4A134"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

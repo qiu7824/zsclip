@@ -6,7 +6,7 @@ use windows_sys::Win32::{
         Controls::EM_SETSEL,
         WindowsAndMessaging::{
             DLGC_HASSETSEL, DLGC_WANTARROWS, DLGC_WANTCHARS, DLGC_WANTTAB, GUITHREADINFO,
-            WM_GETDLGCODE, WM_SETTEXT,
+            WM_GETDLGCODE, WM_PASTE, WM_SETTEXT,
         },
     },
 };
@@ -90,6 +90,35 @@ fn has_default_ime_window(focus: HWND) -> bool {
 
 fn has_accessible_caret(focus: HWND) -> bool {
     unsafe { platform_accessibility::caret_rect(focus).is_some() }
+}
+
+fn class_accepts_direct_paste_message(class_name: &str) -> bool {
+    let class_name = class_name.trim().to_ascii_lowercase();
+    class_name == "edit"
+        || class_name.ends_with("edit")
+        || class_name.contains("richedit")
+        || class_name == "scintilla"
+}
+
+fn focused_direct_paste_control(target: HWND) -> HWND {
+    let thread_id = platform_window::window_thread_id(target);
+    if thread_id == 0 {
+        return core::ptr::null_mut();
+    }
+    let mut info: GUITHREADINFO = unsafe { zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if !platform_window::gui_thread_info(thread_id, &mut info) {
+        return core::ptr::null_mut();
+    }
+    for candidate in [info.hwndFocus, info.hwndCaret] {
+        if candidate.is_null() || platform_window::root_ancestor(candidate) != target {
+            continue;
+        }
+        if class_accepts_direct_paste_message(&platform_window::class_name(candidate)) {
+            return candidate;
+        }
+    }
+    core::ptr::null_mut()
 }
 
 impl NativePasteTargetHost for WindowsPasteTargetHost {
@@ -291,19 +320,34 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
         !info.hwndCaret.is_null()
     }
 
-    fn send_paste_shortcut(&mut self, _target: Self::Handle) -> bool {
+    fn send_paste_shortcut(&mut self, target: Self::Handle) -> bool {
+        let control = focused_direct_paste_control(target);
+        if !control.is_null() && platform_window::post_hwnd_message(control, WM_PASTE, 0, 0) {
+            return true;
+        }
         platform_input::send_ctrl_v()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_telegram_process;
+    use super::{class_accepts_direct_paste_message, is_telegram_process};
 
     #[test]
     fn telegram_desktop_process_names_are_recognized() {
         assert!(is_telegram_process("Telegram.exe"));
         assert!(is_telegram_process("TelegramDesktop.exe"));
         assert!(!is_telegram_process("notepad.exe"));
+    }
+
+    #[test]
+    fn native_edit_classes_use_direct_paste_messages() {
+        assert!(class_accepts_direct_paste_message("Edit"));
+        assert!(class_accepts_direct_paste_message("TNewEdit"));
+        assert!(class_accepts_direct_paste_message("RICHEDIT50W"));
+        assert!(class_accepts_direct_paste_message("Scintilla"));
+        assert!(!class_accepts_direct_paste_message(
+            "Chrome_RenderWidgetHostHWND"
+        ));
     }
 }

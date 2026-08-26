@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZSClip 最终发布状态</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f8fb;
+      --panel: #fff;
+      --ink: #182033;
+      --muted: #647084;
+      --line: #dce3ee;
+      --ok: #0f7a4f;
+      --ok-bg: #e7f7ee;
+      --wait: #a15d00;
+      --wait-bg: #fff2d9;
+      --warn: #9a4d00;
+      --warn-bg: #fff0df;
+      --accent: #1665d8;
+      --soft: #eef2f7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Microsoft YaHei UI", "Segoe UI", Arial, sans-serif;
+      line-height: 1.65;
+    }
+    header {
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+      padding: 34px 38px 24px;
+    }
+    main { max-width: 1080px; margin: 0 auto; padding: 24px 20px 48px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    h1, h2, h3 { margin: 0; line-height: 1.25; }
+    h1 { font-size: 30px; }
+    h2 { font-size: 22px; margin-bottom: 12px; }
+    p { margin: 0 0 10px; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: var(--soft); color: #33405a; }
+    tr:last-child td { border-bottom: 0; }
+    .hero-status {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      font-weight: 700;
+      padding: 7px 12px;
+      margin-top: 12px;
+    }
+    .hero-status.ok, .pill.ok { color: var(--ok); background: var(--ok-bg); }
+    .hero-status.wait, .pill.wait { color: var(--wait); background: var(--wait-bg); }
+    .hero-status.warn, .pill.warn { color: var(--warn); background: var(--warn-bg); }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 12px;
+      line-height: 1;
+      padding: 5px 8px;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px;
+    }
+    video, img {
+      width: 100%;
+      display: block;
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #111827;
+    }
+    img { background: #fff; }
+    code {
+      background: var(--soft);
+      border-radius: 4px;
+      padding: 2px 5px;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: "Cascadia Code", Consolas, monospace;
+      font-size: 13px;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { color: var(--muted); margin: 8px 0 0 20px; padding: 0; }
+    li { margin: 4px 0; }
+    @media (max-width: 760px) {
+      header { padding: 24px 18px 18px; }
+      main { padding: 18px 12px 36px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ZSClip 最终发布状态</h1>
+    <p>生成时间：2026-07-01 12:31:59</p>
+    <p>这页只回答一个问题：现在能不能拿去发布。它会随着打包脚本自动刷新。</p>
+    <span class="hero-status ok">可以发布</span>
+  </header>
+  <main>
+    <section>
+      <h2>发布检查</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>状态</th>
+            <th>项目</th>
+            <th>说明</th>
+            <th>文件</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="pill ok">已就绪</span></td><td>无声草稿</td><td>剪辑底片，3:36</td><td><a href="zsclip-ai-competition-silent-draft.mp4">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>TTS / 口播音频</td><td>volcengine-voiceover.mp3 / 1,682,156 bytes</td><td><a href="voiceover-input-README.md">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>最终有声版</td><td>生成后用于上传 B 站</td><td><a href="zsclip-ai-competition-voiceover-draft.mp4">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>封面</td><td>1920x1080 B 站封面</td><td><a href="bilibili-cover-zsclip.png">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>发布文案</td><td>标题、简介、标签、章节</td><td><a href="bilibili-release-copy.md">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>普通 QA</td><td>汇总：INFO: 1 / PASS: 46 / PENDING: 2</td><td><a href="delivery-qa-report.md">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>最终严格 QA</td><td>汇总：INFO: 1 / PASS: 60</td><td><a href="delivery-qa-final-report.md">打开</a></td></tr>
+          <tr><td><span class="pill ok">已就绪</span></td><td>素材包</td><td>207,326,022 bytes</td><td><a href="ZSClip视频素材包.zip">打开</a></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>口播音频</h2>
+      <p>当前检测：<code>E:\rust\zsclip\videos\zsclip-ai-competition\voiceover-input\volcengine-voiceover.mp3</code></p>
+      <p>推荐放置位置：</p>
+      <pre>C:\Users\xs\Desktop\ZSClip视频素材\voiceover-input
+E:\rust\zsclip\videos\zsclip-ai-competition\voiceover-input</pre>
+      <p>录完口播后，双击桌面素材目录里的 <code>double_click_finalize.cmd</code>，它会自动合成有声版、严格 QA、重新打包。</p>
+    </section>
+
+    <section>
+      <h2>快速预览</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>无声草稿</h3>
+          <video controls preload="metadata" src="zsclip-ai-competition-silent-draft.mp4"></video>
+        </div>
+        <div class="card">
+          <h3>B 站封面</h3>
+          <img src="bilibili-cover-zsclip.png" alt="ZSClip B站封面">
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>发布前动作</h2>
+      <ul>
+        <li>打开 <a href="voiceover-teleprompter.html">口播提词器</a> 检查双人口播稿；口播约 3:30，画面保留到 3:36 完整收束。</li>
+        <li>运行 <code>build_final_with_bgm.ps1</code> 生成 <code>zsclip-ai-competition-final-with-bgm.mp4</code>。</li>
+        <li>严格 QA 通过后，使用 <a href="bilibili-release-copy.md">B 站发布文案</a> 和 <a href="bilibili-cover-zsclip.png">封面</a> 发布。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

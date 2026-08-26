@@ -27,6 +27,22 @@ unsafe extern "system" {
     fn CloseHandle(hobject: *mut core::ffi::c_void) -> i32;
 }
 
+#[link(name = "advapi32")]
+unsafe extern "system" {
+    fn OpenProcessToken(
+        process_handle: *mut core::ffi::c_void,
+        desired_access: u32,
+        token_handle: *mut *mut core::ffi::c_void,
+    ) -> i32;
+    fn GetTokenInformation(
+        token_handle: *mut core::ffi::c_void,
+        token_information_class: i32,
+        token_information: *mut core::ffi::c_void,
+        token_information_length: u32,
+        return_length: *mut u32,
+    ) -> i32;
+}
+
 #[link(name = "psapi")]
 unsafe extern "system" {
     fn EmptyWorkingSet(hprocess: *mut core::ffi::c_void) -> i32;
@@ -38,6 +54,42 @@ const WAIT_OBJECT_0: u32 = 0;
 const INFINITE: u32 = u32::MAX;
 const ERROR_ALREADY_EXISTS: u32 = 183;
 const DRIVE_FIXED: u32 = 3;
+const TOKEN_QUERY: u32 = 0x0008;
+const TOKEN_ELEVATION_CLASS: i32 = 20;
+
+#[repr(C)]
+struct TokenElevation {
+    token_is_elevated: u32,
+}
+
+fn process_handle_is_elevated(process: *mut core::ffi::c_void) -> Option<bool> {
+    if process.is_null() {
+        return None;
+    }
+    unsafe {
+        let mut token = core::ptr::null_mut();
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 || token.is_null() {
+            return None;
+        }
+        let mut elevation = TokenElevation {
+            token_is_elevated: 0,
+        };
+        let mut returned = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TOKEN_ELEVATION_CLASS,
+            &mut elevation as *mut TokenElevation as *mut core::ffi::c_void,
+            core::mem::size_of::<TokenElevation>() as u32,
+            &mut returned,
+        ) != 0;
+        let _ = CloseHandle(token);
+        ok.then_some(elevation.token_is_elevated != 0)
+    }
+}
+
+fn elevation_boundary_blocks_input(current: Option<bool>, target: Option<bool>) -> bool {
+    matches!((current, target), (Some(false), Some(true)))
+}
 
 pub(crate) fn current_process_id() -> u32 {
     unsafe { GetCurrentProcessId() }
@@ -106,6 +158,32 @@ pub(crate) fn process_image_name(pid: u32) -> String {
     }
 }
 
+pub(crate) fn current_process_is_elevated() -> Option<bool> {
+    unsafe { process_handle_is_elevated(GetCurrentProcess()) }
+}
+
+pub(crate) fn process_is_elevated(pid: u32) -> Option<bool> {
+    if pid == 0 {
+        return None;
+    }
+    if pid == current_process_id() {
+        return current_process_is_elevated();
+    }
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let elevated = process_handle_is_elevated(process);
+        let _ = CloseHandle(process);
+        elevated
+    }
+}
+
+pub(crate) fn process_has_higher_elevation(pid: u32) -> bool {
+    elevation_boundary_blocks_input(current_process_is_elevated(), process_is_elevated(pid))
+}
+
 pub(crate) fn trim_current_working_set() -> bool {
     unsafe {
         let process = GetCurrentProcess();
@@ -127,5 +205,13 @@ mod tests {
         assert!(!path_is_on_fixed_drive(Path::new(
             r"\\server\redirected-drive"
         )));
+    }
+
+    #[test]
+    fn elevation_boundary_only_blocks_lower_to_higher_input() {
+        assert!(elevation_boundary_blocks_input(Some(false), Some(true)));
+        assert!(!elevation_boundary_blocks_input(Some(true), Some(false)));
+        assert!(!elevation_boundary_blocks_input(Some(false), Some(false)));
+        assert!(!elevation_boundary_blocks_input(None, Some(true)));
     }
 }

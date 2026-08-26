@@ -1,0 +1,189 @@
+{
+  "ok": false,
+  "auth": "api-key",
+  "has_auth": true,
+  "voice_status": [
+    {
+      "speaker": "saturn_69b595e3e4bdc448",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 500,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113955641DAF7FD3B98EB4DA5D"
+      },
+      "body": {
+        "code": 55000000,
+        "message": "resource ID is mismatched with speaker related resource"
+      }
+    },
+    {
+      "speaker": "ICL_69b595e4bcc8ed1b",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 500,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "2026070111395539E6D443400169E30322"
+      },
+      "body": {
+        "code": 55000000,
+        "message": "resource ID is mismatched with speaker related resource"
+      }
+    },
+    {
+      "speaker": "saturn_6947c0c2f2d5e4ec",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 500,
+      "headers": {
+        "content_type": "application/json; charset=utf-8",
+        "x_tt_logid": "20260701113956C9C76B6812F13085AE04"
+      },
+      "body": {
+        "code": 55000000,
+        "message": "resource ID is mismatched with speaker related resource"
+      }
+    }
+  ],
+  "synthesis": [
+    {
+      "speaker": "saturn_69b595e3e4bdc448",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111395603E87282F9E3B0F4C311"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "saturn_69b595e3e4bdc448",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111395631E17E1DB0FBD074911E"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "ICL_69b595e4bcc8ed1b",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "2026070111395683C31FCDF2FD50E03D5B"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "ICL_69b595e4bcc8ed1b",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113957A8749AE1FE038504A573"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "saturn_6947c0c2f2d5e4ec",
+      "resource_id": "seed-icl-2.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113957F99149C2FCFA72117A9D"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    },
+    {
+      "speaker": "saturn_6947c0c2f2d5e4ec",
+      "resource_id": "seed-icl-1.0",
+      "auth": "api-key",
+      "http_status": 200,
+      "headers": {
+        "content_type": "text/plain; charset=utf-8",
+        "x_tt_logid": "20260701113957377FD2B31570B0226623"
+      },
+      "body_summary": {
+        "raw_preview": "{\"reqid\":\"\",\"code\":55000000,\"message\":\"resource ID is mismatched with speaker related resource\"}",
+        "json_events": 1,
+        "codes": [
+          55000000
+        ],
+        "messages": [
+          "resource ID is mismatched with speaker related resource"
+        ],
+        "audio_chunks": 0,
+        "audio_bytes": 0,
+        "parse_error": ""
+      }
+    }
+  ]
+}

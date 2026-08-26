@@ -5657,6 +5657,25 @@ fn windows_startup_integrations_live_outside_hosts_rs() {
 }
 
 #[test]
+fn windows_shell_restart_invalidates_stale_tray_registration_before_recovery() {
+    let main_events = main_events_source();
+    let start = main_events
+        .find("ApplicationEvent::ShellIntegrationRestored =>")
+        .unwrap();
+    let end = main_events[start..]
+        .find("\n        ApplicationEvent::TrayCallback")
+        .map(|offset| start + offset)
+        .unwrap();
+    let block = &main_events[start..end];
+
+    let invalidate = block.find("state.tray_icon_registered = false;").unwrap();
+    let retry = block
+        .find("retry_startup_integrations(hwnd, state);")
+        .unwrap();
+    assert!(invalidate < retry);
+}
+
+#[test]
 fn windows_main_window_refresh_lives_outside_hosts_rs() {
     let app = include_str!("app.rs").replace("\r\n", "\n");
     let prelude = app_prelude_source();
@@ -5954,6 +5973,26 @@ fn windows_clipboard_paste_defers_success_side_effects_until_input_succeeds() {
     assert!(ready.contains(
         "queue_paste_after_clipboard_ready_to_target(hwnd, state, target, false, backspaces);"
     ));
+    let async_ready_start = main_paste
+        .find("pub(super) unsafe fn paste_after_async_image_ready_to_target")
+        .unwrap();
+    let async_ready_end = main_paste[async_ready_start..]
+        .find("\nunsafe fn queue_paste_after_clipboard_ready_to_target")
+        .map(|offset| async_ready_start + offset)
+        .unwrap();
+    let async_ready = &main_paste[async_ready_start..async_ready_end];
+    assert!(async_ready.contains("completion.play_success_sound = false;"));
+
+    let main_events = main_events_source();
+    let paste_timer_start = main_events.find("MainTimerTask::Paste => {").unwrap();
+    let paste_timer_end = main_events[paste_timer_start..]
+        .find("\n        MainTimerTask::SearchDebounce")
+        .map(|offset| paste_timer_start + offset)
+        .unwrap();
+    let paste_timer = &main_events[paste_timer_start..paste_timer_end];
+    assert!(paste_timer.contains("let mut should_play_sound = false;"));
+    assert!(paste_timer.contains("WindowsPasteTargetHost::new().send_paste_shortcut"));
+    assert!(paste_timer.contains("if should_play_sound {"));
 }
 
 #[test]
