@@ -1,7 +1,13 @@
 use super::prelude::*;
 
 pub(super) fn is_settings_surface_control(id: isize) -> bool {
-    is_general_surface_control(id)
+    matches!(
+        crate::settings_ui_host::settings_control_role_for_control(id),
+        Some(
+            crate::app_core::SettingsControlRole::Toggle
+                | crate::app_core::SettingsControlRole::Dropdown
+        )
+    ) || is_general_surface_control(id)
         || is_hotkey_surface_control(id)
         || is_group_surface_control(id)
         || is_cloud_surface_control(id)
@@ -15,6 +21,7 @@ fn is_general_surface_control(id: isize) -> bool {
         IDC_SET_AUTOSTART
             | IDC_SET_SILENTSTART
             | IDC_SET_TRAYICON
+            | IDC_SET_SHOW_PIN_BUTTON
             | IDC_SET_APP_ICON_VISIBLE
             | IDC_SET_DARK_MODE
             | IDC_SET_CLOSETRAY
@@ -34,6 +41,9 @@ fn is_general_surface_control(id: isize) -> bool {
             | IDC_SET_QUICK_DELETE
             | IDC_SET_CONTEXT_MENU_COPY
             | IDC_SET_MAX
+            | IDC_SET_IMAGE_ROW_HEIGHT
+            | IDC_SET_TEXT_ROW_HEIGHT
+            | IDC_SET_FILE_ROW_HEIGHT
             | IDC_SET_POSMODE
             | IDC_SET_PASTE_SOUND_KIND
             | IDC_SET_PASTE_SOUND_PICK
@@ -45,6 +55,9 @@ fn is_hotkey_surface_control(id: isize) -> bool {
     matches!(
         id,
         IDC_SET_HK_RECORD
+            | 6101
+            | 6102
+            | 6103
             | IDC_SET_PLAIN_HK_ENABLE
             | IDC_SET_PLAIN_HK_MOD
             | IDC_SET_PLAIN_HK_KEY
@@ -57,7 +70,17 @@ fn is_hotkey_surface_control(id: isize) -> bool {
 fn is_group_surface_control(id: isize) -> bool {
     matches!(
         id,
-        IDC_SET_GROUP_ENABLE | IDC_SET_GROUP_TYPE_FILTER | IDC_SET_VV_SOURCE | IDC_SET_VV_GROUP
+        IDC_SET_GROUP_ENABLE
+            | IDC_SET_GROUP_TYPE_FILTER
+            | IDC_SET_VV_SOURCE
+            | IDC_SET_VV_GROUP
+            | IDC_SET_GROUP_VIEW_RECORDS
+            | IDC_SET_GROUP_VIEW_PHRASES
+            | IDC_SET_GROUP_ADD
+            | IDC_SET_GROUP_RENAME
+            | IDC_SET_GROUP_DELETE
+            | IDC_SET_GROUP_UP
+            | IDC_SET_GROUP_DOWN
     )
 }
 

@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::{
@@ -20,6 +21,14 @@ pub(crate) const SETTINGS_NATIVE_TAB_ACTIONS_SECTIONS: [&str; 3] =
     ["settings_actions", "platform_actions", "dialog_actions"];
 
 static SETTINGS_UI_DPI: AtomicU32 = AtomicU32::new(96);
+
+thread_local! {
+    static SETTINGS_CLIENT_WIDTH: Cell<Option<i32>> = const { Cell::new(None) };
+}
+
+pub(crate) fn set_settings_client_width(width: i32) {
+    SETTINGS_CLIENT_WIDTH.with(|value| value.set((width > 0).then_some(width)));
+}
 
 pub(crate) fn set_settings_ui_dpi(dpi: u32) {
     SETTINGS_UI_DPI.store(dpi.max(96), Ordering::Relaxed);
@@ -55,7 +64,10 @@ pub(crate) fn settings_content_x_scaled() -> i32 {
 }
 
 pub(crate) fn settings_content_w_scaled() -> i32 {
-    settings_w_scaled() - settings_content_x_scaled() - settings_scale(28)
+    let client_width = SETTINGS_CLIENT_WIDTH
+        .with(|value| value.get())
+        .unwrap_or_else(settings_w_scaled);
+    (client_width - settings_content_x_scaled() - settings_scale(28)).max(settings_scale(100))
 }
 
 pub(crate) fn settings_content_y_scaled() -> i32 {

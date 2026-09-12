@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.0.1"
+        default: "1.0.0.2"
   push:
     branches:
       - main
@@ -104,6 +104,11 @@ jobs:
           git -C ../zsui fetch --depth 1 origin $revision
           git -C ../zsui checkout --detach FETCH_HEAD
       - uses: dtolnay/rust-toolchain@stable
+      - name: Test Windows settings regressions
+        shell: pwsh
+        run: |
+          cargo test --locked --bin zsclip app::settings_layout_tests -- --test-threads=1
+          exit $LASTEXITCODE
       - name: Build Windows release
         shell: pwsh
         run: |
@@ -765,11 +770,13 @@ jobs:
           # ZSClip __RELEASE_VERSION__
 
           ## 更新内容
-          - 新增 Mouse4 / Mouse5 侧键绑定，可分别设置为快速窗口、VV 模式或关闭。
-          - 侧键触发 VV 窗口时不依赖常规 VV 开关，兼容需要保留数字输入的双拼输入法。
-          - 修复复制成功与粘贴成功提示音相互影响，以及粘贴提示音无法播放的问题。
-          - 优化剪贴板采集、搜索内存回收和隐藏窗口资源占用。
-          - 完善 VV 弹窗、高 DPI 定位、深色界面和设置页交互。
+          - 修复设置页面切换时窗口失焦、缩放后右侧卡片和控件被裁切的问题。
+          - 修复保存设置后插件控件出现在“关于”等其他页面，以及窗口缩放后隐藏控件重新出现的问题。
+          - 修复纯文本粘贴快捷键开关显示为空白、启用后下拉框仍不可用及缺少箭头的问题。
+          - 统一主窗口标签选中背景，修复选中与未选中状态不易区分的问题。
+          - 压缩分组列表和“关于”页布局，分组操作按钮在默认窗口内完整显示。
+          - 保留切换页面、缩放窗口和切换插件开关前尚未保存的输入。
+          - 优化粘贴、标签状态恢复、列表时间浏览及窗口资源释放。
 
           ## 下载与安装
           - Windows: 普通用户下载 `zsclip-v__RELEASE_VERSION__-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v__RELEASE_VERSION__-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。

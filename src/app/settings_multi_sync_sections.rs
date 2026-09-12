@@ -49,7 +49,6 @@ pub(super) unsafe fn settings_refresh_multi_sync_cards(st: &mut SettingsWndState
 
 pub(super) unsafe fn settings_rebuild_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
     let page = SettingsPage::Cloud.index();
-    platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
     set_settings_viewport_child_visible(st.viewport_hwnd, false);
     st.ui.clear_page(page);
     settings_reset_cloud_page_handles(st);
@@ -64,7 +63,6 @@ pub(super) unsafe fn settings_rebuild_cloud_page(hwnd: HWND, st: &mut SettingsWn
         settings_repos_controls(hwnd, st, true);
     }
     set_settings_viewport_child_visible(st.viewport_hwnd, true);
-    platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
     platform_gdi::invalidate_rect(hwnd, null(), 1);
     platform_gdi::redraw_window(
         hwnd,

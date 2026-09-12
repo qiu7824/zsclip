@@ -14,14 +14,14 @@ pub(super) unsafe fn settings_create_about_update_section(
         latest_tag: update_state.latest_tag.clone(),
         error: update_state.error.clone(),
     });
-    let update_rect = flow.full_rect(settings_scale(64));
+    let update_rect = flow.full_rect(settings_scale(40));
     let (status_label, update_h) = b.label_auto(
         st,
         &update.status_text,
         update_rect.left,
         update_rect.top,
         update_rect.right - update_rect.left,
-        settings_scale(64),
+        settings_scale(40),
     );
     st.lb_update_status = status_label;
     flow.consume_full(update_h, settings_scale(8));
@@ -34,6 +34,7 @@ pub(super) unsafe fn settings_create_about_update_section(
         update_button.top,
         update_button.right - update_button.left,
     );
+    settings_host_set_enabled(st.btn_open_update, !update_state.checking);
     if !st.btn_open_update.is_null() {
         st.ownerdraw_ctrls.push(st.btn_open_update);
     }

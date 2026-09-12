@@ -8,6 +8,9 @@ use crate::win_system_ui::{settings_host_set_visible, settings_host_text};
 pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, page: usize) {
     let page_count = SETTINGS_PAGE_LABELS.len();
     let target_page = settings_normalized_page_index(page, page_count);
+    if target_page != st.cur_page {
+        settings_collect_current_page_to_draft(st);
+    }
     let plan = settings_page_switch_plan(
         st.cur_page,
         page,
@@ -52,10 +55,6 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
         st.dropdown_popup = null_mut();
     }
 
-    let redraw_suspended = platform_window::is_visible(hwnd);
-    if redraw_suspended {
-        platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
-    }
     set_settings_viewport_child_visible(st.viewport_hwnd, false);
     st.cur_page = page;
     if let Some(scroll_state) = plan.scroll_state {
@@ -81,9 +80,6 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
 
     settings_sync_page_state(st, page);
     set_settings_viewport_child_visible(st.viewport_hwnd, true);
-    if redraw_suspended {
-        platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
-    }
     platform_gdi::invalidate_rect(hwnd, null(), 1);
     platform_gdi::redraw_window(
         hwnd,

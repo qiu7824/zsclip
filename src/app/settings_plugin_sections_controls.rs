@@ -10,7 +10,11 @@ pub(super) unsafe fn settings_plugin_show_enable(
         return;
     }
     st.ui.set_control_visible(hwnd, visible);
-    settings_show_enable(hwnd, visible, enabled);
+    settings_show_enable(
+        hwnd,
+        visible && st.cur_page == SettingsPage::Plugin.index(),
+        enabled,
+    );
 }
 
 pub(super) unsafe fn settings_plugin_move_control(

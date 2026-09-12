@@ -635,12 +635,12 @@ fn plugin_form_sections(
 
 const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
     SettingsFormCardSpec {
-        rows: 3,
+        rows: 4,
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 10,
-        extra_px: 0,
+        rows: 5,
+        extra_px: 16,
     },
 ];
 
@@ -689,16 +689,16 @@ const MULTI_SYNC_LAN_SPECS: [SettingsFormCardSpec; 3] = [
 
 const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec {
-        rows: 3,
+        rows: 2,
+        extra_px: 24,
+    },
+    SettingsFormCardSpec {
+        rows: 2,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 2,
         extra_px: 16,
-    },
-    SettingsFormCardSpec {
-        rows: 3,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 5,
-        extra_px: 0,
     },
 ];
 const ABOUT_TITLES: [&str; 3] = ["软件信息", "更新", "数据"];
@@ -5742,7 +5742,7 @@ mod tests {
         assert!(section_summaries.iter().any(|section| {
             section.page == SettingsPage::Group
                 && section.section_title == "分组管理"
-                && section.control_rows >= 10
+                && section.control_rows == 5
         }));
         assert!(section_summaries.iter().any(|section| {
             section.page == SettingsPage::Cloud

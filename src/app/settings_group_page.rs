@@ -94,9 +94,9 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     st.lb_group_current = b.label(
         st,
         "当前分组：全部记录",
-        sec1.left(),
-        sec1.row_y(1),
-        sec1.full_w(),
+        sec1.left() + (tab_w + settings_scale(10)) * 2,
+        sec1.label_y(0, settings_scale(24)),
+        sec1.full_w() - (tab_w + settings_scale(10)) * 2,
         settings_scale(24),
     );
     b.label(
@@ -106,29 +106,20 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
             "Tip: Right-click the Clipboard Records or Phrases tab in the main window to switch groups quickly.",
         ),
         sec1.left(),
-        sec1.row_y(2),
+        sec1.row_y(1),
         sec1.full_w(),
         settings_scale(24),
     );
-    b.label(
-        st,
-        "分组列表：",
-        sec1.left(),
-        sec1.row_y(3),
-        settings_scale(220),
-        settings_scale(22),
-    );
-
     st.lb_groups = b.listbox(
         st,
         IDC_SET_GROUP_LIST,
         sec1.left(),
-        sec1.row_y(4),
+        sec1.row_y(2),
         sec1.full_w(),
-        settings_scale(170),
+        settings_scale(104),
     );
 
-    let btn_y = sec1.row_y(4) + settings_scale(186);
+    let btn_y = sec1.row_y(2) + settings_scale(116);
     let bw = settings_scale(90);
     let gap = settings_scale(10);
     let x0 = sec1.left();

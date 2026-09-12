@@ -20,6 +20,7 @@ unsafe fn execute_settings_toggle_control(
     st: &mut SettingsWndState,
     control_id: isize,
 ) {
+    settings_collect_current_page_to_draft(st);
     settings_toggle_flip(st, control_id);
     if control_id == IDC_SET_EDGEHIDE {
         settings_sync_pos_fields_enabled(st);

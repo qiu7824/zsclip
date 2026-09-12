@@ -31,6 +31,7 @@ pub(super) fn settings_scroll_layout_for_state(
 }
 
 pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut SettingsWndState) {
+    settings_collect_current_page_to_draft(st);
     let dpi = settings_window_layout_dpi(hwnd).max(96);
     st.ui_dpi = dpi;
     set_settings_ui_dpi(dpi);
@@ -38,10 +39,7 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
     let Some(crc) = settings_window_client_bounds(hwnd).map(RECT::from) else {
         return;
     };
-    let redraw_suspended = platform_window::is_visible(hwnd);
-    if redraw_suspended {
-        platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
-    }
+    crate::app_core::set_settings_client_width(crc.right - crc.left);
     set_settings_viewport_child_visible(st.viewport_hwnd, false);
     if !st.nav_font.is_null() {
         platform_gdi::delete_object(st.nav_font as _);
@@ -125,7 +123,7 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
     for page in 0..SETTINGS_PAGE_LABELS.len() {
         for reg in st.ui.page_regs(page) {
             if !reg.hwnd.is_null() {
-                settings_host_set_visible(reg.hwnd, page == current_page);
+                settings_host_set_visible(reg.hwnd, page == current_page && reg.visible);
             }
         }
     }
@@ -133,8 +131,5 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
         settings_repos_controls(hwnd, st, true);
     }
     set_settings_viewport_child_visible(st.viewport_hwnd, true);
-    if redraw_suspended {
-        platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
-    }
     repaint_settings_window(hwnd, true);
 }

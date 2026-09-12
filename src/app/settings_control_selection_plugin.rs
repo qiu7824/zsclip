@@ -5,6 +5,7 @@ pub(super) unsafe fn handle_settings_plugin_selection(
     control_id: isize,
     index: usize,
 ) {
+    settings_collect_plugin_to_draft(st);
     match control_id {
         IDC_SET_SEARCH_ENGINE => {
             if let Some((_, label, template)) = SEARCH_ENGINE_PRESETS.get(index) {

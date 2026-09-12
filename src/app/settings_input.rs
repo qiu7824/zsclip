@@ -26,6 +26,9 @@ pub(super) unsafe fn route_settings_child_mouse_wheel(message: &MSG) -> bool {
     if message.message != WM_MOUSEWHEEL || message.hwnd.is_null() {
         return false;
     }
+    if platform_window::class_name(message.hwnd).eq_ignore_ascii_case("ListBox") {
+        return false;
+    }
     let root = platform_window::root_ancestor(message.hwnd);
     if root.is_null() || root == message.hwnd || platform_window::class_name(root) != SETTINGS_CLASS
     {

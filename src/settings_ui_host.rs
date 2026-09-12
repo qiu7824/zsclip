@@ -815,7 +815,7 @@ pub(crate) fn settings_page_to_sync_after_toggle(control_id: isize) -> Option<us
         || control_id == IDC_SET_DEDUPE_FILTER
     {
         Some(SettingsPage::General.index())
-    } else if control_id == IDC_SET_MOUSE_SIDE_ENABLE {
+    } else if control_id == IDC_SET_MOUSE_SIDE_ENABLE || control_id == IDC_SET_PLAIN_HK_ENABLE {
         Some(SettingsPage::Hotkey.index())
     } else if control_id == IDC_SET_CLOUD_ENABLE || control_id == IDC_SET_LAN_ENABLE {
         Some(SettingsPage::Cloud.index())

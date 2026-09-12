@@ -22,6 +22,14 @@ pub(super) unsafe extern "system" fn settings_wnd_proc(
     }
 
     match msg {
+        WM_GETMINMAXINFO => {
+            let info = &mut *(lparam as *mut MINMAXINFO);
+            let work = platform_monitor::nearest_work_rect_for_window(hwnd);
+            let dpi = settings_window_layout_dpi(hwnd).max(96) as i32;
+            info.ptMinTrackSize.x = (920 * dpi / 96).min(work.right - work.left);
+            info.ptMinTrackSize.y = (560 * dpi / 96).min(work.bottom - work.top);
+            0
+        }
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let parent_hwnd = cs.lpCreateParams as HWND;

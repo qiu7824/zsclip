@@ -1205,7 +1205,7 @@ fn rich_text_setting_defaults_off_and_is_bound_to_native_settings_ui() {
     assert!(settings_model.contains("\"rich_text\" => native_toggle_route(5096)"));
     assert!(startup.contains("IDC_SET_RICH_TEXT"));
     assert!(toggle_general.contains("IDC_SET_RICH_TEXT"));
-    assert!(owner_draw_roles.contains("IDC_SET_RICH_TEXT"));
+    assert!(owner_draw_roles.contains("settings_control_role_for_control(cid)"));
     assert!(surface_controls.contains("IDC_SET_RICH_TEXT"));
 }
 
@@ -4008,7 +4008,7 @@ fn windows_settings_owner_draw_lives_outside_hosts_rs() {
     assert!(owner_draw_link.contains("open_source_url()"));
     assert!(owner_draw_roles.contains("pub(super) fn settings_owner_draw_is_toggle"));
     assert!(owner_draw_roles.contains("pub(super) fn settings_owner_draw_button_kind"));
-    assert!(owner_draw_roles.contains("IDC_SET_AUTOSTART"));
+    assert!(owner_draw_roles.contains("settings_control_role_for_control(cid)"));
     assert!(owner_draw_roles.contains("IDC_SET_GROUP_VIEW_RECORDS"));
 }
 
@@ -4386,10 +4386,9 @@ fn windows_settings_dpi_and_rebuild_paths_hide_viewport_child_during_refresh() {
     assert!(window_lifecycle.contains("(*st_ptr).suppress_size_refresh = false"));
 
     for source in [metrics, navigation_switch, multi_sync_sections] {
-        assert!(source.contains("platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0)"));
+        assert!(!source.contains("platform_window::send_message(hwnd, WM_SETREDRAW"));
         assert!(source.contains("set_settings_viewport_child_visible(st.viewport_hwnd, false)"));
         assert!(source.contains("set_settings_viewport_child_visible(st.viewport_hwnd, true)"));
-        assert!(source.contains("platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0)"));
     }
 }
 
