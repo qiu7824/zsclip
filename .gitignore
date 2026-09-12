@@ -26,3 +26,14 @@ windowsappsdk-samples.zip
 /tools/windows-app-sdk-ocr-helper/publish/
 /tools/windows-app-sdk-ocr-helper/**/*.msix
 /tools/windows-app-sdk-ocr-helper/**/*.pfx
+
+# Local databases and SQLite sidecar files
+*.[dD][bB]
+*.[dD][bB]-*
+*.[dD][bB].*
+*.[sS][qQ][lL][iI][tT][eE]
+*.[sS][qQ][lL][iI][tT][eE]-*
+*.[sS][qQ][lL][iI][tT][eE].*
+*.[sS][qQ][lL][iI][tT][eE]3
+*.[sS][qQ][lL][iI][tT][eE]3-*
+*.[sS][qQ][lL][iI][tT][eE]3.*
