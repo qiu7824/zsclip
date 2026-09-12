@@ -167,3 +167,6 @@ pub(crate) use self::windows_messages::{WM_LAN_SYNC_READY, WM_TRAYICON};
 #[cfg(test)]
 #[path = "app_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod settings_layout_tests;

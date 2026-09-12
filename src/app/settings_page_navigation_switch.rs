@@ -52,7 +52,10 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
         st.dropdown_popup = null_mut();
     }
 
-    platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    let redraw_suspended = platform_window::is_visible(hwnd);
+    if redraw_suspended {
+        platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    }
     set_settings_viewport_child_visible(st.viewport_hwnd, false);
     st.cur_page = page;
     if let Some(scroll_state) = plan.scroll_state {
@@ -78,7 +81,9 @@ pub(super) unsafe fn settings_show_page(hwnd: HWND, st: &mut SettingsWndState, p
 
     settings_sync_page_state(st, page);
     set_settings_viewport_child_visible(st.viewport_hwnd, true);
-    platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
+    if redraw_suspended {
+        platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
+    }
     platform_gdi::invalidate_rect(hwnd, null(), 1);
     platform_gdi::redraw_window(
         hwnd,

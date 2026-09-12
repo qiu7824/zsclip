@@ -29,7 +29,7 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
         "Win",
         6102,
         sec0.field_x(),
-        sec0.row_y(2),
+        sec0.row_y(1),
         settings_scale(170),
     );
     if !st.cb_hk_mod.is_null() {
@@ -40,7 +40,7 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
         st,
         "按键：",
         key_label_x,
-        sec0.label_y(2, line_h),
+        sec0.label_y(1, line_h),
         settings_scale(50),
         line_h,
     );
@@ -49,7 +49,7 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
         "V",
         6103,
         key_label_x + settings_scale(50),
-        sec0.row_y(2),
+        sec0.row_y(1),
         settings_scale(120),
     );
     if !st.cb_hk_key.is_null() {
@@ -59,7 +59,7 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
         st,
         "当前设置：Win + V",
         sec0.left(),
-        sec0.label_y(3, line_h),
+        sec0.label_y(2, line_h),
         sec0.full_w() - settings_scale(124),
         line_h,
     );
@@ -68,7 +68,7 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
         tr("录制热键", "Record Hotkey"),
         IDC_SET_HK_RECORD,
         sec0.left() + sec0.full_w() - settings_scale(110),
-        sec0.row_y(2) - settings_scale(2),
+        sec0.row_y(2),
         settings_scale(110),
     );
     if !st.btn_hk_record.is_null() {
@@ -86,10 +86,10 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
     st.chk_plain_hk_enable = plain_btn;
     b.label(
         st,
-        tr("纯文本修饰键：", "Plain modifiers:"),
+        tr("修饰键：", "Modifiers:"),
         sec0.left(),
         sec0.label_y(4, line_h),
-        settings_scale(110),
+        sec0.label_w(),
         line_h,
     );
     st.cb_plain_hk_mod = b.dropdown(
@@ -106,17 +106,17 @@ pub(super) unsafe fn settings_create_hotkey_shortcut_controls(
     let plain_key_label_x = sec0.field_x() + settings_scale(186);
     b.label(
         st,
-        tr("纯文本按键：", "Plain key:"),
+        tr("按键：", "Key:"),
         plain_key_label_x,
         sec0.label_y(4, line_h),
-        settings_scale(90),
+        settings_scale(50),
         line_h,
     );
     st.cb_plain_hk_key = b.dropdown(
         st,
         "V",
         IDC_SET_PLAIN_HK_KEY,
-        plain_key_label_x + settings_scale(90),
+        plain_key_label_x + settings_scale(50),
         sec0.row_y(4),
         settings_scale(120),
     );

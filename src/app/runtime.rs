@@ -78,6 +78,12 @@ pub(crate) fn data_dir() -> PathBuf {
                     return path;
                 }
             }
+            if cfg!(test) {
+                let path =
+                    std::env::temp_dir().join(format!("zsclip-test-data-{}", std::process::id()));
+                let _ = fs::create_dir_all(&path);
+                return path;
+            }
             if let Some(exe_dir) = install_data_dir() {
                 if dir_is_writable(&exe_dir) {
                     migrate_legacy_data_dirs_to(&exe_dir);

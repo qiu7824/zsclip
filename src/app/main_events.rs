@@ -275,7 +275,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     state.scroll_fade_alpha = 255;
                 } else {
                     state.scroll_fade_alpha = state.scroll_fade_alpha.saturating_sub(30);
-                    if state.scroll_fade_alpha == 0 {
+                    if state.scroll_fade_alpha == 0 && !scroll_time_hint_visible(state) {
                         stop_flagged_timer(
                             hwnd,
                             ID_TIMER_SCROLL_FADE,
@@ -457,6 +457,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
         ApplicationEvent::UpdateCheckReady => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
+                refresh_about_update_status((*ptr).settings_hwnd);
                 request_settings_window_repaint((*ptr).settings_hwnd);
             }
         }

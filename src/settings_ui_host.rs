@@ -1,3 +1,4 @@
+use crate::i18n::tr;
 use crate::win_system_params::IDC_SET_SHOW_PIN_BUTTON;
 use crate::win_system_params::{
     IDC_SET_FILE_ROW_HEIGHT, IDC_SET_IMAGE_ROW_HEIGHT, IDC_SET_TEXT_ROW_HEIGHT,
@@ -264,8 +265,9 @@ pub(crate) fn settings_control_is_viewport_child(hwnd: HWND) -> bool {
 pub unsafe fn present_settings_window(
     request: WindowsSettingsWindowRequest,
 ) -> WindowsSettingsWindowPresentation {
-    if !request.existing.is_null() {
-        platform_window::show(request.existing);
+    if !request.existing.is_null() && platform_window::exists(request.existing) {
+        platform_window::hide(request.owner);
+        platform_window::restore(request.existing);
         platform_window::set_foreground(request.existing);
         return WindowsSettingsWindowPresentation::FocusedExisting(request.existing);
     }
@@ -274,14 +276,13 @@ pub unsafe fn present_settings_window(
     let hwnd = platform_window::create_window_ex(
         WS_EX_APPWINDOW | WS_EX_DLGMODALFRAME | WS_EX_COMPOSITED,
         to_wide(SETTINGS_CLASS).as_ptr(),
-        to_wide("").as_ptr(),
+        to_wide(tr("设置 - 剪贴板", "Settings - ZSClip")).as_ptr(),
         WS_OVERLAPPED
             | WS_CAPTION
             | WS_SYSMENU
             | WS_MINIMIZEBOX
             | WS_MAXIMIZEBOX
             | WS_THICKFRAME
-            | WS_VISIBLE
             | WS_CLIPCHILDREN
             | WS_CLIPSIBLINGS,
         request.x,
@@ -299,7 +300,16 @@ pub unsafe fn present_settings_window(
 
     platform_appearance::set_rounded_corners(hwnd);
     platform_appearance::apply_dark_mode_to_window(hwnd);
+    platform_window::hide(request.owner);
+    platform_window::show(hwnd);
+    platform_window::set_foreground(hwnd);
     WindowsSettingsWindowPresentation::Created(hwnd)
+}
+
+pub(crate) fn is_settings_window(hwnd: HWND) -> bool {
+    platform_window::exists(hwnd)
+        && platform_window::window_process_id(hwnd) == std::process::id()
+        && platform_window::class_name(hwnd) == SETTINGS_CLASS
 }
 
 impl NativeSettingsWindowHost for WindowsSettingsWindowHost {

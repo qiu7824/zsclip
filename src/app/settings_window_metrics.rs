@@ -38,7 +38,10 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
     let Some(crc) = settings_window_client_bounds(hwnd).map(RECT::from) else {
         return;
     };
-    platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    let redraw_suspended = platform_window::is_visible(hwnd);
+    if redraw_suspended {
+        platform_window::send_message(hwnd, WM_SETREDRAW, 0, 0);
+    }
     set_settings_viewport_child_visible(st.viewport_hwnd, false);
     if !st.nav_font.is_null() {
         platform_gdi::delete_object(st.nav_font as _);
@@ -130,6 +133,8 @@ pub(super) unsafe fn refresh_settings_window_metrics(hwnd: HWND, st: &mut Settin
         settings_repos_controls(hwnd, st, true);
     }
     set_settings_viewport_child_visible(st.viewport_hwnd, true);
-    platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
+    if redraw_suspended {
+        platform_window::send_message(hwnd, WM_SETREDRAW, 1, 0);
+    }
     repaint_settings_window(hwnd, true);
 }

@@ -88,6 +88,10 @@ pub(super) unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_MAIN_COMMANDS_READY {
+        drain_main_ui_commands(hwnd);
+        return 0;
+    }
     if msg == WM_PASTE_FAILURE_HELP {
         if lparam != 0 {
             let notice = Box::from_raw(lparam as *mut PasteFailureNotice);

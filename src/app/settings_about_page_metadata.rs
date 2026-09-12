@@ -22,27 +22,20 @@ pub(super) unsafe fn settings_create_about_metadata_section(
     );
     flow.consume_full(version_h, settings_scale(8));
 
-    let summary_text = format!(
-        "{}\r\n{}",
-        tr(
-            "设置界面现在统一使用同一套 section/form 布局。",
-            "The settings window now uses a unified section/form layout.",
-        ),
-        tr(
-            "新增设置项时可以直接复用卡片、字段列、按钮行和统一间距。",
-            "New settings can reuse the same cards, field columns, action rows, and spacing.",
-        )
+    let summary_text = tr(
+        "本地剪贴板管理工具，支持文本、图片、文件和常用短语。",
+        "Local clipboard history for text, images, files, and reusable phrases.",
     );
-    let summary_rect = flow.full_rect(settings_scale(72));
+    let summary_rect = flow.full_rect(settings_scale(36));
     let (_, summary_h) = b.label_auto(
         st,
-        &summary_text,
+        summary_text,
         summary_rect.left,
         summary_rect.top,
-        summary_rect.right - summary_rect.left,
-        settings_scale(72),
+        summary_rect.width(),
+        settings_scale(36),
     );
-    flow.consume_full(summary_h, settings_scale(10));
+    flow.consume_full(summary_h, settings_scale(8));
 
     let source_label_w = sec.label_w();
     let source_row_h = settings_scale(34);

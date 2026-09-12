@@ -13,29 +13,35 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
     if pst.is_null() {
         return;
     }
-    let app = &mut *pst;
-    if !app.settings_hwnd.is_null() {
-        app.edge_hide_pending_until = None;
-        app.edge_hide_grace_until = None;
-        let st_ptr = platform_window::user_data(app.settings_hwnd) as *mut SettingsWndState;
+    let existing = (*pst).settings_hwnd;
+    let valid_existing = crate::settings_ui_host::is_settings_window(existing);
+    if !valid_existing {
+        (*pst).settings_hwnd = null_mut();
+    }
+    if valid_existing {
+        (*pst).edge_hide_pending_until = None;
+        (*pst).edge_hide_grace_until = None;
+        let st_ptr = platform_window::user_data(existing) as *mut SettingsWndState;
         if !st_ptr.is_null() {
-            let next_dpi = settings_window_layout_dpi(app.settings_hwnd).max(96);
+            let next_dpi = settings_window_layout_dpi(existing).max(96);
             let old_dpi = (*st_ptr).ui_dpi.max(96);
             if old_dpi != next_dpi {
                 (*st_ptr).ui_dpi = next_dpi;
                 (*st_ptr).suppress_size_refresh = true;
-                resize_settings_window_for_dpi_transition(app.settings_hwnd, old_dpi, next_dpi);
+                resize_settings_window_for_dpi_transition(existing, old_dpi, next_dpi);
                 (*st_ptr).suppress_size_refresh = false;
-                refresh_settings_window_metrics(app.settings_hwnd, &mut *st_ptr);
+                refresh_settings_window_metrics(existing, &mut *st_ptr);
             }
         }
         let mut settings_host = WindowsSettingsWindowHost::new(Some(settings_wnd_proc));
         let _ = settings_host.present_settings_window(NativeSettingsWindowRequest {
             owner: owner_hwnd,
-            existing: Some(app.settings_hwnd),
+            existing: Some(existing),
             bounds: UiRect::new(0, 0, 0, 0),
         });
-        WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(owner_hwnd);
+        if hwnd != owner_hwnd {
+            hide_main_window(hwnd);
+        }
         refresh_low_level_input_hooks();
         return;
     }
@@ -68,11 +74,20 @@ pub(super) unsafe fn open_settings_window(hwnd: HWND) {
             bounds: UiRect::new(x, y, x + settings_w, y + settings_h),
         })
     {
-        app.settings_hwnd = settings_hwnd;
-        app.edge_hide_pending_until = None;
-        app.edge_hide_grace_until = None;
-        WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(owner_hwnd);
+        (*pst).settings_hwnd = settings_hwnd;
+        (*pst).edge_hide_pending_until = None;
+        (*pst).edge_hide_grace_until = None;
+        if hwnd != owner_hwnd {
+            hide_main_window(hwnd);
+        }
         refresh_low_level_input_hooks();
+    } else {
+        platform_dialog::WindowsDialogHost::new().show_message(
+            owner_hwnd,
+            tr("无法打开设置", "Unable to open settings"),
+            &std::io::Error::last_os_error().to_string(),
+            NativeDialogLevel::Error,
+        );
     }
 }
 

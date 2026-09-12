@@ -6,7 +6,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::*,
 };
 
-use crate::app::state::{apply_shared_tab_view_state, AppSettings};
+use crate::app::state::AppSettings;
 use crate::app::{get_state_ptr, AppState};
 use crate::app::{TRAY_UID, WM_TRAYICON};
 use crate::app_core::{
@@ -384,12 +384,16 @@ unsafe fn apply_show_prepare_plan(hwnd: HWND, state: &mut AppState, plan: MainSh
 }
 
 unsafe fn prepare_main_window_for_show(hwnd: HWND, state: &mut AppState) {
-    let shared_tab_changed = apply_shared_tab_view_state(state);
     let plan = main_show_prepare_plan(MainShowPrepareInput {
-        shared_tab_changed,
+        shared_tab_changed: false,
         persistent_search_box: state.settings.persistent_search_box,
     });
     apply_show_prepare_plan(hwnd, state, plan);
+}
+
+#[cfg(test)]
+pub(crate) unsafe fn prepare_panel_selection_for_test(state: &mut AppState) {
+    prepare_main_window_for_show(state.hwnd, state);
 }
 
 pub(crate) unsafe fn show_main_window(hwnd: HWND, by_hotkey: bool) {

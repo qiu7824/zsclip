@@ -115,6 +115,16 @@ pub(crate) fn format_created_at_local(created_at: &str, fallback: &str) -> Strin
     format!("{:02}-{:02} {:02}:{:02}", lm, ld, lh, lmin)
 }
 
+pub(crate) fn scroll_created_at_label(created_at: &str) -> Option<String> {
+    let (year, month, day, hour, minute) = parse_created_at_prefix(created_at)?;
+    let utc_secs =
+        gregorian_to_days(year, month, day) * 86400 + hour as i64 * 3600 + minute as i64 * 60;
+    let (year, month, day, hour, minute, _) = utc_secs_to_local_parts(utc_secs);
+    Some(format!(
+        "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}"
+    ))
+}
+
 pub(crate) fn format_local_time_for_image_preview() -> String {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

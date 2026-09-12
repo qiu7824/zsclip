@@ -17,6 +17,10 @@ pub(super) unsafe fn handle_mouse_wheel(hwnd: HWND, delta: i32) {
             .layout()
             .scroll_update_for_wheel(state.scroll_y, state.visible_count(), delta);
     state.list.apply_scroll_update(update);
+    if update.changed {
+        note_scroll_time_hint(state);
+        hide_hover_preview();
+    }
     state.maybe_request_more_for_active_tab();
     show_main_scrollbar_feedback(hwnd, state, true);
 }
@@ -58,6 +62,10 @@ pub(super) unsafe fn handle_mouse_move(hwnd: HWND, position: UiPoint) {
         if let Some(target_scroll) = transition.drag_scroll_y {
             let update = state.list.scroll_position_update_plan(target_scroll);
             state.list.apply_scroll_update(update);
+            if update.changed {
+                note_scroll_time_hint(state);
+                hide_hover_preview();
+            }
             state.maybe_request_more_for_active_tab();
             show_main_scrollbar_feedback(hwnd, state, false);
             return;
@@ -114,6 +122,14 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
         return;
     }
     let state = &mut *ptr;
+    if scroll_time_hint_rect(state)
+        .map(|rect| pt_in_rect(position.x, position.y, &rect))
+        .unwrap_or(false)
+    {
+        state.down_row = -1;
+        state.down_btn = "";
+        return;
+    }
     let x = position.x;
     let y = position.y;
     let layout = state.layout();
@@ -160,6 +176,7 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
         }
         MainPointerDownTarget::ScrollbarThumb => {
             apply_main_pointer_down_state_plan(state, down_state_plan);
+            note_scroll_time_hint(state);
             show_main_scrollbar_feedback(hwnd, state, false);
             capture_main_pointer(hwnd);
             return;
@@ -172,12 +189,17 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
                 y,
             ) {
                 state.list.apply_scroll_update(update);
+                if update.changed {
+                    note_scroll_time_hint(state);
+                    hide_hover_preview();
+                }
                 state.maybe_request_more_for_active_tab();
                 show_main_scrollbar_feedback(hwnd, state, false);
             }
             return;
         }
         MainPointerDownTarget::Tab(tab) => {
+            state.scroll_date_hint_until = None;
             apply_main_pointer_down_state_plan(state, down_state_plan);
             let plan = state.list.tab_switch_plan(tab);
             state.list.apply_tab_switch_plan(plan);
@@ -284,9 +306,6 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
             queue_main_window_command_intent(hwnd, state, window_command);
             state.hover_btn = "";
             repaint_main_window(hwnd, false);
-            if matches!(window_command, MainWindowCommandIntent::OpenSettings) {
-                hide_main_window(hwnd);
-            }
             return;
         }
         MainPointerUpTarget::ScrollToTop { activated } => {
@@ -362,6 +381,12 @@ pub(super) unsafe fn handle_lbutton_dblclk(hwnd: HWND, position: UiPoint) {
         return;
     }
     let state = &mut *ptr;
+    if scroll_time_hint_rect(state)
+        .map(|rect| pt_in_rect(position.x, position.y, &rect))
+        .unwrap_or(false)
+    {
+        return;
+    }
     let x = position.x;
     let y = position.y;
     let idx = hit_test_row(state, x, y);
@@ -529,7 +554,7 @@ unsafe fn queue_main_window_command_intent(
     state
         .ui_commands
         .push(main_window_command_for_intent(window_command));
-    drain_main_ui_commands(hwnd);
+    platform_window::post_hwnd_message(hwnd, WM_MAIN_COMMANDS_READY, 0, 0);
 }
 
 unsafe fn execute_main_shortcut_action(

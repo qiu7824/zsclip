@@ -439,6 +439,21 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         MainTextLayer::Overlay,
         th,
     );
+    if let Some(rect) = scroll_time_hint_rect(state) {
+        if let Some(label) = scroll_time_hint_label(state) {
+            draw_round_rect(memdc as _, &rect, th.surface2, th.stroke, 6);
+            draw_text_ex(
+                memdc as _,
+                &label,
+                &rect,
+                th.text,
+                11,
+                false,
+                true,
+                ui_text_font_family(),
+            );
+        }
+    }
     platform_gdi::restore_dc(memdc, saved_clip);
 
     platform_gdi::copy_bits(hdc, 0, 0, w, h, memdc, 0, 0);

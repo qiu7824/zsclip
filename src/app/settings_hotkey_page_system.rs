@@ -14,25 +14,25 @@ pub(super) unsafe fn settings_create_hotkey_system_controls(
         st,
         "屏蔽 Win+V",
         6111,
-        sec1.action_x(0, settings_scale(110)),
+        sec1.action_x(0, settings_scale(136)),
         sec1.row_y(1),
-        settings_scale(110),
+        settings_scale(136),
     );
     st.btn_clip_hist_restore = b.button(
         st,
         "恢复 Win+V",
         6112,
-        sec1.action_x(1, settings_scale(110)),
+        sec1.action_x(1, settings_scale(136)),
         sec1.row_y(1),
-        settings_scale(110),
+        settings_scale(136),
     );
     st.btn_restart_explorer = b.button(
         st,
         "重启资源管理器",
         6113,
-        sec1.action_x(2, settings_scale(130)),
+        sec1.action_x(2, settings_scale(136)),
         sec1.row_y(1),
-        settings_scale(130),
+        settings_scale(136),
     );
     for &hh in &[
         st.btn_clip_hist_block,

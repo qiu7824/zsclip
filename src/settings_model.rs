@@ -687,11 +687,21 @@ const MULTI_SYNC_LAN_SPECS: [SettingsFormCardSpec; 3] = [
     },
 ];
 
-const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 1] = [SettingsFormCardSpec {
-    rows: 12,
-    extra_px: 96,
-}];
-const ABOUT_TITLES: [&str; 1] = ["\u{5173}\u{4e8e}"];
+const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
+    SettingsFormCardSpec {
+        rows: 3,
+        extra_px: 16,
+    },
+    SettingsFormCardSpec {
+        rows: 3,
+        extra_px: 0,
+    },
+    SettingsFormCardSpec {
+        rows: 5,
+        extra_px: 0,
+    },
+];
+const ABOUT_TITLES: [&str; 3] = ["软件信息", "更新", "数据"];
 
 pub fn settings_title_rect() -> UiRect {
     UiRect::new(
@@ -3408,9 +3418,21 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         &[
             ("about_version", "版本信息", Label),
             ("open_source", "打开源码仓库", Button),
-            ("check_updates", "检查更新", Button),
-            ("data_directory", "数据目录", Label),
         ],
+    );
+    push_native_controls(
+        &mut controls,
+        &sections,
+        SettingsPage::About,
+        1,
+        &[("check_updates", "检查更新", Button)],
+    );
+    push_native_controls(
+        &mut controls,
+        &sections,
+        SettingsPage::About,
+        2,
+        &[("data_directory", "数据目录", Label)],
     );
 
     controls
@@ -4146,7 +4168,14 @@ pub fn settings_update_presentation(
         format!(
             "{} {}",
             tr("更新检查失败：", "Update check failed: "),
-            state.error
+            state
+                .error
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(72)
+                .collect::<String>()
         )
     } else {
         tr(

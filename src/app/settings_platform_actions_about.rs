@@ -31,6 +31,7 @@ pub(super) unsafe fn execute_settings_platform_about_action(
                     start_update_check(|| unsafe {
                         notify_update_state_changed();
                     });
+                    refresh_about_update_status(hwnd);
                     repaint_settings_window(hwnd, true);
                 }
             }

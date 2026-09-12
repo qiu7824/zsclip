@@ -2620,12 +2620,18 @@ fn windows_settings_window_open_path_uses_settings_ui_host() {
     assert!(open_block.contains("present_settings_window("));
     assert!(open_block.contains("NativeSettingsWindowRequest"));
     assert!(open_block.contains("NativeSettingsWindowPresentation::Created"));
-    assert_eq!(
-        open_block.matches("hide_main_window(owner_hwnd)").count(),
-        2
-    );
-    assert!(main_input.contains("MainWindowCommandIntent::OpenSettings"));
-    assert!(main_input.contains("hide_main_window(hwnd)"));
+    assert!(!open_block.contains("hide_main_window(owner_hwnd)"));
+    assert!(main_input.contains("WM_MAIN_COMMANDS_READY"));
+    let host = include_str!("settings_ui_host.rs");
+    let show = host.find("platform_window::show(hwnd);").unwrap();
+    let hide = host[..show]
+        .rfind("platform_window::hide(request.owner);")
+        .unwrap();
+    let activate = host[show..]
+        .find("platform_window::set_foreground(hwnd);")
+        .unwrap()
+        + show;
+    assert!(hide < show && show < activate);
     assert!(!open_block.contains("WindowsSettingsWindowRequest"));
     assert!(!open_block.contains("WindowsSettingsWindowPresentation::Created"));
     assert!(!open_block.contains("register_class_ex"));
@@ -2735,11 +2741,10 @@ fn windows_settings_window_layout_dpi_uses_settings_host() {
     assert!(settings_create.contains("settings_window_layout_dpi(hwnd).max(96)"));
     assert!(settings_state.contains("ui_dpi,"));
     assert!(settings_paint.contains("let paint_dpi = settings_window_layout_dpi(hwnd)"));
-    assert!(open_block.contains("settings_window_layout_dpi(app.settings_hwnd).max(96)"));
+    assert!(open_block.contains("settings_window_layout_dpi(existing).max(96)"));
     assert!(open_block.contains("let old_dpi = (*st_ptr).ui_dpi.max(96)"));
-    assert!(open_block.contains(
-        "resize_settings_window_for_dpi_transition(app.settings_hwnd, old_dpi, next_dpi)"
-    ));
+    assert!(open_block
+        .contains("resize_settings_window_for_dpi_transition(existing, old_dpi, next_dpi)"));
     for block in [
         refresh_block,
         system_block,
