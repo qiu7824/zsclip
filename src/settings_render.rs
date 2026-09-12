@@ -73,6 +73,24 @@ unsafe fn draw_settings_text_command(
     th: Theme,
 ) {
     let rc: RECT = command.rect.into();
+    if let SettingsTextContent::Icon(icon) = command.content {
+        let glyph = match icon {
+            crate::zsui::ZsIcon::Code => "\u{E765}",
+            crate::zsui::ZsIcon::Inspector => "\u{E946}",
+            _ => icon.windows_fluent_glyph(),
+        };
+        draw_text_ex(
+            hdc,
+            glyph,
+            &rc,
+            settings_theme_role_color(command.color, th),
+            command.size,
+            false,
+            true,
+            "Segoe MDL2 Assets",
+        );
+        return;
+    }
     draw_text_ex(
         hdc,
         settings_text_content(command.content),
@@ -132,7 +150,7 @@ fn settings_text_font(font: SettingsTextFontRole) -> &'static str {
     match font {
         SettingsTextFontRole::UiText => "Segoe UI Variable Text",
         SettingsTextFontRole::Display => "Segoe UI Variable Display",
-        SettingsTextFontRole::FluentIcon => "Segoe Fluent Icons",
+        SettingsTextFontRole::FluentIcon => "Segoe MDL2 Assets",
     }
 }
 

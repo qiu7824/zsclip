@@ -2,6 +2,7 @@ use super::prelude::*;
 
 pub(super) fn settings_toggle_general_get(st: &SettingsWndState, cid: isize) -> Option<bool> {
     match cid {
+        IDC_SET_SHOW_PIN_BUTTON => Some(st.draft.show_pin_button),
         IDC_SET_AUTOSTART => Some(st.draft.auto_start),
         IDC_SET_SILENTSTART => Some(st.draft.silent_start),
         IDC_SET_TRAYICON => Some(st.draft.tray_icon_enabled),
@@ -29,6 +30,7 @@ pub(super) fn settings_toggle_general_get(st: &SettingsWndState, cid: isize) -> 
 
 pub(super) fn settings_toggle_general_flip(st: &mut SettingsWndState, cid: isize) -> bool {
     match cid {
+        IDC_SET_SHOW_PIN_BUTTON => st.draft.show_pin_button = !st.draft.show_pin_button,
         IDC_SET_AUTOSTART => st.draft.auto_start = !st.draft.auto_start,
         IDC_SET_SILENTSTART => st.draft.silent_start = !st.draft.silent_start,
         IDC_SET_TRAYICON => st.draft.tray_icon_enabled = !st.draft.tray_icon_enabled,

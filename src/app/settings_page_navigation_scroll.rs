@@ -20,6 +20,7 @@ pub(super) unsafe fn invalidate_settings_scrollbar_and_mask(hwnd: HWND) {
 }
 
 pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, new_y: i32) {
+    close_settings_dropdown_popup(st);
     let Some(crc) = platform_window::client_rect(hwnd) else {
         return;
     };

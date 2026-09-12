@@ -1,6 +1,27 @@
 use super::prelude::*;
 use crate::win_system_params::SETTINGS_CLASS;
 
+pub(super) unsafe fn dismiss_settings_dropdown_for_message(message: &MSG) -> bool {
+    let root = platform_window::root_ancestor(message.hwnd);
+    if platform_window::class_name(root) != SETTINGS_CLASS {
+        return false;
+    }
+    let ptr = platform_window::user_data(root) as *mut SettingsWndState;
+    if ptr.is_null() || !settings_dropdown_popup_exists((*ptr).dropdown_popup) {
+        return false;
+    }
+    let escape = message.message == WM_KEYDOWN && hotkey::is_escape_vk(message.wParam as u32);
+    if escape
+        || matches!(
+            message.message,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_MOUSEWHEEL
+        )
+    {
+        close_settings_dropdown_popup(&mut *ptr);
+    }
+    escape
+}
+
 pub(super) unsafe fn route_settings_child_mouse_wheel(message: &MSG) -> bool {
     if message.message != WM_MOUSEWHEEL || message.hwnd.is_null() {
         return false;

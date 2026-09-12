@@ -292,7 +292,7 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                 platform_window::show(handle);
                 platform_window::set_pos(
                     handle,
-                    HWND_TOPMOST,
+                    unsafe { main_window_z_order(handle) },
                     0,
                     0,
                     0,
@@ -312,7 +312,7 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                 platform_window::show_no_activate(handle);
                 platform_window::set_pos(
                     handle,
-                    HWND_TOPMOST,
+                    unsafe { main_window_z_order(handle) },
                     0,
                     0,
                     0,
@@ -345,7 +345,7 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
         platform_window::show(handle);
         platform_window::set_pos(
             handle,
-            HWND_TOPMOST,
+            unsafe { main_window_z_order(handle) },
             0,
             0,
             0,

@@ -11,6 +11,7 @@ pub(super) fn settings_owner_draw_is_toggle(cid: isize) -> bool {
         IDC_SET_AUTOSTART
             | IDC_SET_SILENTSTART
             | IDC_SET_TRAYICON
+            | IDC_SET_SHOW_PIN_BUTTON
             | IDC_SET_APP_ICON_VISIBLE
             | IDC_SET_DARK_MODE
             | IDC_SET_CLOSETRAY

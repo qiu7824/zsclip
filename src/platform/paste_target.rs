@@ -186,7 +186,8 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
         &mut self,
         target: Self::Handle,
     ) -> PasteTargetTextInputCapabilities {
-        let dlg_code = platform_window::send_message(target, WM_GETDLGCODE, 0, 0) as u32;
+        let dlg_code =
+            platform_window::send_message_bounded(target, WM_GETDLGCODE, 0, 0).unwrap_or(0) as u32;
         PasteTargetTextInputCapabilities {
             has_selection: (dlg_code & DLGC_HASSETSEL) != 0,
             wants_chars: (dlg_code & DLGC_WANTCHARS) != 0,

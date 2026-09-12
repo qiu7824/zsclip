@@ -182,6 +182,15 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
         return platform_hook::call_next(code, wparam, lparam);
     }
     let main_hwnd = hook.main_hwnd as HWND;
+    if hook.popup_active && hotkey::is_escape_vk(event.vk_code) {
+        hook.popup_active = false;
+        hook.popup_target = 0;
+        hook.last_was_v = false;
+        hook.last_v_target = 0;
+        hook.last_v_at = None;
+        platform_window::post_hwnd_message(main_hwnd, WM_VV_HIDE, 0, 0);
+        return 1;
+    }
     let trigger_vk = hook.trigger_vk;
     let menu_active = hook.popup_menu_active
         || hook

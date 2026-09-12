@@ -121,6 +121,54 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
         sec0.full_w(),
     );
 
+    let _ = b.own_toggle_row(
+        st,
+        tr("显示图钉按钮", "Show pin button"),
+        IDC_SET_SHOW_PIN_BUTTON,
+        sec0.left(),
+        sec0.row_y(13),
+        sec0.full_w(),
+    );
+    let heights = [
+        st.draft.image_row_height,
+        st.draft.text_row_height,
+        st.draft.file_row_height,
+    ];
+    let labels = [
+        tr("图片行高：", "Image row height:"),
+        tr("文本行高：", "Text row height:"),
+        tr("文件行高：", "File row height:"),
+    ];
+    let ids = [
+        IDC_SET_IMAGE_ROW_HEIGHT,
+        IDC_SET_TEXT_ROW_HEIGHT,
+        IDC_SET_FILE_ROW_HEIGHT,
+    ];
+    for index in 0..3 {
+        let row = index as i32 + 2;
+        b.form_label(st, &sec1, row, labels[index]);
+        st.row_height_edits[index] = b.edit(
+            st,
+            &heights[index].to_string(),
+            ids[index],
+            sec1.field_x(),
+            sec1.row_y(row),
+            settings_scale(80),
+        );
+        b.label(
+            st,
+            if index == 0 {
+                tr("px（80–320）", "px (80–320)")
+            } else {
+                tr("px（32–160）", "px (32–160)")
+            },
+            sec1.field_x() + settings_scale(92),
+            sec1.label_y(row, settings_scale(24)),
+            settings_scale(170),
+            settings_scale(24),
+        );
+    }
+
     b.label(
         st,
         "最大保存条数：",

@@ -1,1 +1,1 @@
-rust_clipboard_ui_fixed_v26b
+1.0.0.1

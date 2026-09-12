@@ -73,6 +73,11 @@ pub(super) fn dir_is_writable(dir: &Path) -> bool {
 pub(crate) fn data_dir() -> PathBuf {
     DATA_DIR_CACHE
         .get_or_init(|| {
+            if let Some(path) = std::env::var_os("ZSCLIP_DATA_DIR").map(PathBuf::from) {
+                if path.is_absolute() && fs::create_dir_all(&path).is_ok() {
+                    return path;
+                }
+            }
             if let Some(exe_dir) = install_data_dir() {
                 if dir_is_writable(&exe_dir) {
                     migrate_legacy_data_dirs_to(&exe_dir);
@@ -353,6 +358,40 @@ fn load_settings_from_text(text: &str) -> AppSettings {
         return load_settings_from_value(value);
     }
     AppSettings::default()
+}
+
+#[cfg(test)]
+mod row_display_settings_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_settings_hide_pin_and_new_row_heights_round_trip() {
+        let old = load_settings_from_text("{}");
+        assert!(!old.show_pin_button);
+        assert_eq!(
+            (
+                old.image_row_height,
+                old.text_row_height,
+                old.file_row_height
+            ),
+            (132, 44, 44)
+        );
+        let mut configured = old;
+        configured.show_pin_button = true;
+        configured.image_row_height = 200;
+        configured.text_row_height = 56;
+        configured.file_row_height = 72;
+        let loaded = load_settings_from_text(&serde_json::to_string(&configured).unwrap());
+        assert!(loaded.show_pin_button);
+        assert_eq!(
+            (
+                loaded.image_row_height,
+                loaded.text_row_height,
+                loaded.file_row_height
+            ),
+            (200, 56, 72)
+        );
+    }
 }
 
 fn load_settings_from_value(value: serde_json::Value) -> AppSettings {

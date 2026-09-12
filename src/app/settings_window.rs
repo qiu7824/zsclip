@@ -6,6 +6,12 @@ pub(super) unsafe extern "system" fn settings_wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_ACTIVATEAPP && wparam == 0 || msg == WM_CANCELMODE || msg == WM_MOVE {
+        let ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
+        if !ptr.is_null() {
+            close_settings_dropdown_popup(&mut *ptr);
+        }
+    }
     if msg == WM_SETTINGS_SCROLL_FRAME {
         return handle_settings_scroll_frame(hwnd);
     }

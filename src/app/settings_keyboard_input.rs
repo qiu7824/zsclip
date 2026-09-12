@@ -12,6 +12,10 @@ pub(super) unsafe fn handle_settings_key_down(
         return 0;
     }
     let st = &mut *st_ptr;
+    if hotkey::is_escape_vk(code) && settings_dropdown_popup_exists(st.dropdown_popup) {
+        close_settings_dropdown_popup(st);
+        return 0;
+    }
     if !st.hotkey_recording {
         return platform_window::default_window_proc(hwnd, msg, wparam, lparam);
     }

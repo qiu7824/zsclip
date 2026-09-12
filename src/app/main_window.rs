@@ -186,7 +186,11 @@ pub(super) unsafe fn handle_main_window_move_completed(hwnd: HWND) {
 
 pub(super) unsafe fn handle_main_close_requested(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
-    if !ptr.is_null() && close_to_tray_enabled(&(*ptr).settings) {
+    if !ptr.is_null()
+        && ((*ptr).role == WindowRole::Quick || close_to_tray_enabled(&(*ptr).settings))
+    {
+        cancel_queued_paste_attempt(hwnd, &mut *ptr);
+        hide_hover_preview();
         hide_main_window(hwnd);
         return;
     }

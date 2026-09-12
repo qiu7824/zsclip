@@ -44,6 +44,10 @@ pub(crate) struct AppSettings {
     pub(crate) vv_source_tab: usize,
     pub(crate) vv_group_id: i64,
     pub(crate) image_preview_enabled: bool,
+    pub(crate) show_pin_button: bool,
+    pub(crate) image_row_height: i32,
+    pub(crate) text_row_height: i32,
+    pub(crate) file_row_height: i32,
     pub(crate) rich_text_clipboard_enabled: bool,
     pub(crate) quick_delete_button: bool,
     pub(crate) context_menu_copy_enabled: bool,
@@ -129,7 +133,11 @@ impl Default for AppSettings {
             vv_mode_enabled: true,
             vv_source_tab: 0,
             vv_group_id: 0,
-            image_preview_enabled: false,
+            image_preview_enabled: true,
+            show_pin_button: false,
+            image_row_height: 132,
+            text_row_height: 44,
+            file_row_height: 44,
             rich_text_clipboard_enabled: false,
             quick_delete_button: true,
             context_menu_copy_enabled: false,
@@ -366,6 +374,7 @@ pub(crate) struct AppState {
     pub(super) payload_cache: ItemPayloadCache,
     pub(super) image_thumb_cache: ImageThumbnailCache,
     pub(super) image_thumb_loading: HashSet<i64>,
+    pub(super) image_thumb_failed: HashSet<i64>,
     pub(crate) image_paste_generation: u64,
     pub(crate) pending_image_paste_generation: Option<u64>,
     pub(crate) pending_paste_completion: Option<MainPasteCompletionPlan>,
@@ -387,6 +396,7 @@ pub(crate) struct AppState {
     pub(crate) hotkey_passthrough_edit: HWND,
     pub(crate) plain_text_paste_mode: bool,
     pub(crate) main_window_noactivate: bool,
+    pub(crate) window_pinned: bool,
     pub(crate) edge_hidden: bool,
     pub(crate) edge_hidden_side: i32,
     pub(crate) edge_restore_x: i32,
@@ -527,7 +537,14 @@ impl ImageThumbnailCache {
         }
         self.entries.insert(id, image);
         self.touch(id);
-        while self.order.len() > IMAGE_THUMB_CACHE_LIMIT {
+        while self.order.len() > IMAGE_THUMB_CACHE_LIMIT
+            || self
+                .entries
+                .values()
+                .map(|image| image.bytes.len())
+                .sum::<usize>()
+                > 24 * 1024 * 1024
+        {
             if let Some(evicted) = self.order.pop_front() {
                 self.entries.remove(&evicted);
             }
@@ -780,6 +797,7 @@ impl AppState {
             payload_cache: ItemPayloadCache::default(),
             image_thumb_cache: ImageThumbnailCache::default(),
             image_thumb_loading: HashSet::new(),
+            image_thumb_failed: HashSet::new(),
             image_paste_generation: 0,
             pending_image_paste_generation: None,
             pending_paste_completion: None,
@@ -801,6 +819,7 @@ impl AppState {
             hotkey_passthrough_edit: null_mut(),
             plain_text_paste_mode: false,
             main_window_noactivate: false,
+            window_pinned: false,
             edge_hidden: false,
             edge_hidden_side: EDGE_AUTO_HIDE_NONE,
             edge_restore_x: 0,
@@ -994,8 +1013,10 @@ impl AppState {
         if loaded == 0 {
             return;
         }
-        let last_visible = ((self.scroll_y + self.list_view_height()) / self.layout().row_h).max(0)
-            as usize
+        let last_visible = self
+            .layout()
+            .row_index_at_offset(self.scroll_y + self.list_view_height())
+            .max(0) as usize
             + ITEMS_LOAD_AHEAD_ROWS as usize;
         if last_visible >= loaded {
             self.request_tab_page(tab, query, cursor, false);

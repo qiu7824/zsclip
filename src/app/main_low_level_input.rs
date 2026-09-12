@@ -212,6 +212,11 @@ unsafe extern "system" fn quick_escape_keyboard_hook_proc(
     if !platform_hotkey::is_escape_vk(event.vk_code) {
         return platform_hook::call_next(code, wparam, lparam);
     }
+    let ptr = get_state_ptr(main);
+    if !ptr.is_null() && (*ptr).vv_popup_visible {
+        platform_window::post_hwnd_message(main, WM_VV_HIDE, 0, 0);
+        return 1;
+    }
     if platform_window::is_visible(quick) {
         platform_window::post_hwnd_message(quick, WM_KEYDOWN, platform_hotkey::escape_wparam(), 0);
         return 1;

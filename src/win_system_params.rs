@@ -100,6 +100,9 @@ pub const IDC_SET_MOUSE_SIDE_BUTTON_2: isize = 6116;
 pub const IDC_SET_SKIP_WINDOW_ENABLE: isize = 6201;
 pub const IDC_SET_SKIP_WINDOW_CLASSNAMES: isize = 6202;
 pub const IDC_SET_SKIP_WINDOW_CAPTURE: isize = 6203;
+pub const IDC_SET_IMAGE_ROW_HEIGHT: isize = 6204;
+pub const IDC_SET_TEXT_ROW_HEIGHT: isize = 6205;
+pub const IDC_SET_FILE_ROW_HEIGHT: isize = 6206;
 pub const IDC_SET_PLUGIN_SEARCH: isize = 7101;
 pub const IDC_SET_PLUGIN_AI_CLEAN: isize = 7102;
 pub const IDC_SET_PLUGIN_QR_QUICK: isize = 7103;
@@ -107,3 +110,5 @@ pub const IDC_SET_PLUGIN_WPS_TASKPANE: isize = 7104;
 pub const IDC_SET_PLUGIN_SUPER_MAIL_MERGE: isize = 7106;
 pub const IDC_SET_SEARCH_ENGINE: isize = 7201;
 pub const IDC_SET_SEARCH_ENGINE_RESET: isize = 7203;
+
+pub const IDC_SET_SHOW_PIN_BUTTON: isize = 6207;

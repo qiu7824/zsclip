@@ -2845,7 +2845,7 @@ pub(crate) enum MainEmptyStateKind {
     Phrases,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MainUiLayout {
     pub(crate) win_w: i32,
     pub(crate) title_h: i32,
@@ -2859,6 +2859,8 @@ pub(crate) struct MainUiLayout {
     pub(crate) list_h: i32,
     pub(crate) list_pad: i32,
     pub(crate) row_h: i32,
+    pub(crate) row_offsets: Option<std::sync::Arc<[i32]>>,
+    pub(crate) pin_button_visible: bool,
     pub(crate) btn_w: i32,
     pub(crate) btn_gap: i32,
     pub(crate) search_left: i32,
@@ -2882,6 +2884,8 @@ impl MainUiLayout {
             list_h: 538,
             list_pad: 4,
             row_h: 44,
+            row_offsets: None,
+            pin_button_visible: false,
             btn_w: 32,
             btn_gap: 2,
             search_left: 58,
@@ -2909,6 +2913,10 @@ impl MainUiLayout {
             list_h: scale(self.list_h, dpi),
             list_pad: scale(self.list_pad, dpi),
             row_h: scale(self.row_h, dpi),
+            row_offsets: self
+                .row_offsets
+                .map(|v| v.iter().map(|x| scale(*x, dpi)).collect()),
+            pin_button_visible: self.pin_button_visible,
             btn_w: scale(self.btn_w, dpi),
             btn_gap: scale(self.btn_gap, dpi),
             search_left: scale(self.search_left, dpi),
@@ -2928,32 +2936,76 @@ impl MainUiLayout {
         self
     }
 
-    pub(crate) fn list_view_height(self) -> i32 {
+    pub(crate) fn with_image_rows(mut self, images: impl Iterator<Item = bool>) -> Self {
+        let row_h = self.row_h;
+        self = self.with_row_heights(images.map(|image| if image { row_h * 3 } else { row_h }));
+        self
+    }
+
+    pub(crate) fn with_pin_button(mut self, visible: bool) -> Self {
+        self.pin_button_visible = visible;
+        self
+    }
+
+    pub(crate) fn with_row_heights(mut self, heights: impl Iterator<Item = i32>) -> Self {
+        let mut offsets = vec![0i32];
+        for height in heights {
+            offsets.push(
+                offsets
+                    .last()
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(height.max(1)),
+            );
+        }
+        self.row_offsets = Some(offsets.into());
+        self
+    }
+
+    pub(crate) fn row_offset(&self, index: usize) -> i32 {
+        self.row_offsets
+            .as_ref()
+            .and_then(|v| v.get(index))
+            .copied()
+            .unwrap_or_else(|| (index as i32).saturating_mul(self.row_h))
+    }
+
+    pub(crate) fn row_index_at_offset(&self, offset: i32) -> i32 {
+        if offset < 0 {
+            return -1;
+        }
+        if let Some(offsets) = &self.row_offsets {
+            return offsets.partition_point(|v| *v <= offset).saturating_sub(1) as i32;
+        }
+        offset / self.row_h.max(1)
+    }
+
+    pub(crate) fn list_view_height(&self) -> i32 {
         self.list_h - 2 * self.list_pad
     }
 
-    pub(crate) fn row_text_size(self) -> i32 {
+    pub(crate) fn row_text_size(&self) -> i32 {
         ((self.row_h * 12) / 44).clamp(12, 16)
     }
 
-    pub(crate) fn row_muted_text_size(self) -> i32 {
+    pub(crate) fn row_muted_text_size(&self) -> i32 {
         (self.row_text_size() - 1).max(11)
     }
 
-    pub(crate) fn total_content_height(self, filtered_len: usize) -> i32 {
-        filtered_len as i32 * self.row_h
+    pub(crate) fn total_content_height(&self, filtered_len: usize) -> i32 {
+        self.row_offset(filtered_len)
     }
 
-    pub(crate) fn max_scroll(self, filtered_len: usize) -> i32 {
+    pub(crate) fn max_scroll(&self, filtered_len: usize) -> i32 {
         (self.total_content_height(filtered_len) - self.list_view_height()).max(0)
     }
 
-    pub(crate) fn clamp_scroll(self, scroll_y: i32, filtered_len: usize) -> i32 {
+    pub(crate) fn clamp_scroll(&self, scroll_y: i32, filtered_len: usize) -> i32 {
         scroll_y.clamp(0, self.max_scroll(filtered_len))
     }
 
     pub(crate) fn scroll_update_for_target(
-        self,
+        &self,
         current_scroll_y: i32,
         filtered_len: usize,
         target_scroll_y: i32,
@@ -2966,7 +3018,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn scroll_update_for_wheel(
-        self,
+        &self,
         current_scroll_y: i32,
         filtered_len: usize,
         wheel_delta: i32,
@@ -2979,7 +3031,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn wheel_scroll_target(
-        self,
+        &self,
         scroll_y: i32,
         filtered_len: usize,
         wheel_delta: i32,
@@ -2993,12 +3045,12 @@ impl MainUiLayout {
         self.clamp_scroll(next, filtered_len)
     }
 
-    pub(crate) fn ensure_visible(self, scroll_y: i32, idx: i32, filtered_len: usize) -> i32 {
+    pub(crate) fn ensure_visible(&self, scroll_y: i32, idx: i32, filtered_len: usize) -> i32 {
         if idx < 0 {
             return self.clamp_scroll(scroll_y, filtered_len);
         }
-        let top = idx * self.row_h;
-        let bottom = top + self.row_h;
+        let top = self.row_offset(idx as usize);
+        let bottom = self.row_offset(idx as usize + 1);
         let view_top = scroll_y;
         let view_bottom = scroll_y + self.list_view_height();
         let next = if top < view_top {
@@ -3012,7 +3064,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn row_rect(
-        self,
+        &self,
         visible_idx: i32,
         filtered_len: usize,
         scroll_y: i32,
@@ -3022,16 +3074,16 @@ impl MainUiLayout {
         }
         let inner_l = self.list_x + self.list_pad;
         let inner_t = self.list_y + self.list_pad;
-        let y0 = inner_t + visible_idx * self.row_h - scroll_y;
+        let y0 = inner_t + self.row_offset(visible_idx as usize) - scroll_y;
         Some(UiRect::new(
             inner_l,
             y0,
             inner_l + self.list_w - 2 * self.list_pad,
-            y0 + self.row_h,
+            inner_t + self.row_offset(visible_idx as usize + 1) - scroll_y,
         ))
     }
 
-    pub(crate) fn list_inner_rect(self) -> UiRect {
+    pub(crate) fn list_inner_rect(&self) -> UiRect {
         UiRect::new(
             self.list_x + self.list_pad,
             self.list_y + self.list_pad,
@@ -3040,13 +3092,13 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn hit_test_row(self, x: i32, y: i32, filtered_len: usize, scroll_y: i32) -> i32 {
+    pub(crate) fn hit_test_row(&self, x: i32, y: i32, filtered_len: usize, scroll_y: i32) -> i32 {
         let inner = self.list_inner_rect();
         if !inner.contains(x, y) {
             return -1;
         }
         let yy = y - inner.top + scroll_y;
-        let idx = yy / self.row_h;
+        let idx = self.row_index_at_offset(yy);
         if idx < 0 || idx >= filtered_len as i32 {
             -1
         } else {
@@ -3055,7 +3107,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn quick_action_rect(
-        self,
+        &self,
         visible_idx: i32,
         filtered_len: usize,
         scroll_y: i32,
@@ -3067,12 +3119,12 @@ impl MainUiLayout {
         let right_pad = (self.row_h * 10 / 44).max(10);
         let icon_offset = (self.row_h * 12 / 44).max(12);
         let left = row.right - right_pad - size - icon_offset - slot.max(0) * (size + gap);
-        let top = row.top + (self.row_h - size) / 2;
+        let top = row.top + (row.height() - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
     pub(crate) fn row_icon_rect(
-        self,
+        &self,
         visible_idx: i32,
         filtered_len: usize,
         scroll_y: i32,
@@ -3081,12 +3133,12 @@ impl MainUiLayout {
         let size = (self.row_h * 20 / 44).max(18);
         let left_pad = (self.row_h * 12 / 44).max(12);
         let left = row.left + left_pad;
-        let top = row.top + (self.row_h - size) / 2;
+        let top = row.top + (row.height() - size) / 2;
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
     pub(crate) fn row_pin_rect(
-        self,
+        &self,
         visible_idx: i32,
         filtered_len: usize,
         scroll_y: i32,
@@ -3107,17 +3159,17 @@ impl MainUiLayout {
         Some(UiRect::new(left, top, left + size, top + size))
     }
 
-    fn quick_action_rect_for_row(self, row: UiRect, slot: i32) -> UiRect {
+    fn quick_action_rect_for_row(&self, row: UiRect, slot: i32) -> UiRect {
         let size = (self.row_h * 16 / 44).max(16);
         let gap = (self.row_h * 8 / 44).max(8);
         let right_pad = (self.row_h * 10 / 44).max(10);
         let icon_offset = (self.row_h * 12 / 44).max(12);
         let left = row.right - right_pad - size - icon_offset - slot.max(0) * (size + gap);
-        let top = row.top + (self.row_h - size) / 2;
+        let top = row.top + (row.height() - size) / 2;
         UiRect::new(left, top, left + size, top + size)
     }
 
-    fn title_button_icon_rect(self, rect: UiRect) -> UiRect {
+    fn title_button_icon_rect(&self, rect: UiRect) -> UiRect {
         let slot = rect.width();
         let min_size = (self.title_h * 18 / 35).max(18);
         let iw = ((slot * 18 / 36).max(min_size)).min((slot - 4).max(min_size));
@@ -3126,7 +3178,7 @@ impl MainUiLayout {
         UiRect::new(ix, iy, ix + iw, iy + iw)
     }
 
-    pub(crate) fn app_icon_rect(self) -> UiRect {
+    pub(crate) fn app_icon_rect(&self) -> UiRect {
         let min_pad = (self.title_h * 6 / 35).max(6);
         let min_size = (self.title_h * 20 / 35).max(20);
         let size = ((self.title_h * 24) / 35)
@@ -3138,7 +3190,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn row_content_plan(
-        self,
+        &self,
         row: &MainRowRender,
         input: MainRowContentInput,
     ) -> MainRowContentPlan {
@@ -3191,7 +3243,25 @@ impl MainUiLayout {
             (self.row_h * 18 / 44).max(18)
         };
 
-        let preview_rect = if input.show_preview {
+        let preview_rect = if input.show_preview && row.rect.height() > self.row_h {
+            let pad = (self.row_h * 8 / 44).max(8);
+            let caption_h = (self.row_h * 22 / 44).max(22);
+            let preview = UiRect::new(
+                text_rect.left,
+                row.rect.top + pad,
+                text_rect.right.max(text_rect.left + 24),
+                row.rect.bottom - caption_h - pad,
+            );
+            text_rect.top = preview.bottom + 2;
+            text_rect.bottom = row.rect.bottom - 2;
+            paint_commands.push(MainPaintCommand::RoundRect {
+                rect: preview.inflate(2, 2),
+                fill: MainPaintFill::Theme(MainThemeRole::Surface2),
+                stroke: Some(MainThemeRole::Stroke),
+                radius: 6,
+            });
+            Some(preview)
+        } else if input.show_preview {
             let size = (text_rect.height() - 8).max(24);
             let left = text_rect.left + 2;
             let top = text_rect.top + (text_rect.height() - size) / 2;
@@ -3227,7 +3297,7 @@ impl MainUiLayout {
         }
     }
 
-    pub(crate) fn scroll_to_top_button_rect(self) -> UiRect {
+    pub(crate) fn scroll_to_top_button_rect(&self) -> UiRect {
         let size = (self.row_h * 36 / 44).max(32);
         let margin = (self.row_h * 10 / 44).max(10);
         let bottom = self.list_y + self.list_h - self.list_pad - margin;
@@ -3239,7 +3309,7 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn search_rect(self) -> UiRect {
+    pub(crate) fn search_rect(&self) -> UiRect {
         let search_button = self.title_button_rect("search");
         let control_gap = (self.btn_gap * 4).max(self.btn_gap);
         let right = (self.search_left + self.search_w).min(search_button.left - control_gap);
@@ -3251,7 +3321,7 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn search_host_plan(self, visible: bool) -> MainSearchHostPlan {
+    pub(crate) fn search_host_plan(&self, visible: bool) -> MainSearchHostPlan {
         let outer_rect = self.search_rect();
         MainSearchHostPlan {
             visible,
@@ -3265,13 +3335,19 @@ impl MainUiLayout {
         }
     }
 
-    pub(crate) fn title_button_rect(self, key: &str) -> UiRect {
+    pub(crate) fn title_button_rect(&self, key: &str) -> UiRect {
         let x_close = self.win_w - 4 - self.btn_w;
         let x_min = x_close - self.btn_gap - self.btn_w;
         let x_set = x_min - self.btn_gap - self.btn_w;
-        let x_search = x_set - self.btn_gap - self.btn_w;
+        let x_pin = x_set - self.btn_gap - self.btn_w;
+        let x_search = if self.pin_button_visible {
+            x_pin - self.btn_gap - self.btn_w
+        } else {
+            x_pin
+        };
         let x = match key {
             "search" => x_search,
+            "window_pin" => x_pin,
             "setting" => x_set,
             "min" => x_min,
             _ => x_close,
@@ -3280,7 +3356,7 @@ impl MainUiLayout {
         UiRect::new(x, top, x + self.btn_w, top + self.btn_w)
     }
 
-    pub(crate) fn segment_rects(self) -> (UiRect, UiRect) {
+    pub(crate) fn segment_rects(&self) -> (UiRect, UiRect) {
         let inner_l = self.seg_x + 1;
         let inner_t = self.seg_y + 1;
         let inner_w = self.seg_w - 2;
@@ -3298,7 +3374,7 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn segment_rect(self) -> UiRect {
+    pub(crate) fn segment_rect(&self) -> UiRect {
         UiRect::new(
             self.seg_x,
             self.seg_y,
@@ -3307,7 +3383,7 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn list_rect(self) -> UiRect {
+    pub(crate) fn list_rect(&self) -> UiRect {
         UiRect::new(
             self.list_x,
             self.list_y,
@@ -3316,7 +3392,7 @@ impl MainUiLayout {
         )
     }
 
-    pub(crate) fn render_plan(self, input: MainRenderInput) -> MainRenderPlan {
+    pub(crate) fn render_plan(&self, input: MainRenderInput) -> MainRenderPlan {
         let title_buttons: Vec<MainTitleButtonRender> = ["search", "setting", "min", "close"]
             .into_iter()
             .filter(|key| input.title_buttons.is_visible(key))
@@ -3466,9 +3542,9 @@ impl MainUiLayout {
         if input.visible_len > 0 {
             let view_top = self.list_y + self.list_pad;
             let view_bottom = self.list_y + self.list_h - self.list_pad;
-            let start_idx = (input.scroll_y / self.row_h).max(0);
+            let start_idx = self.row_index_at_offset(input.scroll_y).max(0);
             let end_idx = (input.visible_len as i32)
-                .min((input.scroll_y + self.list_view_height()) / self.row_h + 2);
+                .min(self.row_index_at_offset(input.scroll_y + self.list_view_height()) + 2);
             for index in start_idx..end_idx {
                 let Some(rect) = self.row_rect(index, input.visible_len, input.scroll_y) else {
                     continue;
@@ -3639,7 +3715,7 @@ impl MainUiLayout {
         }
     }
 
-    pub(crate) fn scrollbar_track_rect(self, filtered_len: usize) -> Option<UiRect> {
+    pub(crate) fn scrollbar_track_rect(&self, filtered_len: usize) -> Option<UiRect> {
         if self.total_content_height(filtered_len) <= self.list_view_height() {
             return None;
         }
@@ -3653,7 +3729,11 @@ impl MainUiLayout {
         ))
     }
 
-    pub(crate) fn scrollbar_thumb_rect(self, filtered_len: usize, scroll_y: i32) -> Option<UiRect> {
+    pub(crate) fn scrollbar_thumb_rect(
+        &self,
+        filtered_len: usize,
+        scroll_y: i32,
+    ) -> Option<UiRect> {
         let track = self.scrollbar_track_rect(filtered_len)?;
         let track_h = track.bottom - track.top;
         let total_h = self.total_content_height(filtered_len);
@@ -3672,7 +3752,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn scrollbar_track_click_scroll_target(
-        self,
+        &self,
         filtered_len: usize,
         pointer_y: i32,
     ) -> Option<i32> {
@@ -3690,7 +3770,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn scroll_update_for_track_click(
-        self,
+        &self,
         current_scroll_y: i32,
         filtered_len: usize,
         pointer_y: i32,
@@ -3700,7 +3780,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn scrollbar_drag_scroll_target(
-        self,
+        &self,
         filtered_len: usize,
         drag_start_y: i32,
         drag_start_scroll: i32,
@@ -3721,7 +3801,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn hover_target(
-        self,
+        &self,
         x: i32,
         y: i32,
         filtered_len: usize,
@@ -3772,7 +3852,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn pointer_move_transition(
-        self,
+        &self,
         x: i32,
         y: i32,
         filtered_len: usize,
@@ -3816,7 +3896,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn pointer_down_target(
-        self,
+        &self,
         x: i32,
         y: i32,
         filtered_len: usize,
@@ -3877,7 +3957,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn pointer_down_state_plan(
-        self,
+        &self,
         target: MainPointerDownTarget,
         x: i32,
         y: i32,
@@ -3934,7 +4014,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn pointer_up_transition(
-        self,
+        &self,
         x: i32,
         y: i32,
         filtered_len: usize,
@@ -3977,7 +4057,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn row_release_action(
-        self,
+        &self,
         release: MainRowRelease,
         x: i32,
         y: i32,
@@ -4010,7 +4090,7 @@ impl MainUiLayout {
     }
 
     pub(crate) fn frame_hit_target(
-        self,
+        &self,
         x: i32,
         y: i32,
         title_buttons: TitleButtonVisibility,
@@ -4018,6 +4098,9 @@ impl MainUiLayout {
         caption_draggable: bool,
     ) -> MainFrameHitTarget {
         if !(0..self.title_h).contains(&y) {
+            return MainFrameHitTarget::Client;
+        }
+        if self.pin_button_visible && self.title_button_rect("window_pin").contains(x, y) {
             return MainFrameHitTarget::Client;
         }
         if search_on && self.search_rect().contains(x, y) {
@@ -4054,6 +4137,8 @@ mod tests {
             list_h: 220,
             list_pad: 10,
             row_h: 20,
+            row_offsets: None,
+            pin_button_visible: false,
             btn_w: 32,
             btn_gap: 4,
             search_left: 70,
@@ -4061,6 +4146,51 @@ mod tests {
             search_w: 120,
             search_h: 28,
         }
+    }
+
+    #[test]
+    fn mixed_image_rows_keep_hit_testing_scrolling_and_preview_consistent() {
+        let layout = MainUiLayout::zsclip().with_image_rows([false, true, false, true].into_iter());
+        assert_eq!(layout.row_offset(0), 0);
+        assert_eq!(layout.row_offset(1), 44);
+        assert_eq!(layout.row_offset(2), 176);
+        assert_eq!(layout.total_content_height(4), 352);
+        let row = layout.row_rect(1, 4, 0).unwrap();
+        assert_eq!(row.height(), 132);
+        assert_eq!(layout.hit_test_row(row.left + 2, row.bottom - 1, 4, 0), 1);
+        assert_eq!(layout.hit_test_row(row.left + 2, row.bottom, 4, 0), 2);
+        for offset in 0..352 {
+            let index = layout.row_index_at_offset(offset) as usize;
+            assert!(layout.row_offset(index) <= offset);
+            assert!(layout.row_offset(index + 1) > offset);
+        }
+    }
+
+    #[test]
+    fn custom_category_heights_scale_and_keep_row_boundaries() {
+        let layout = MainUiLayout::zsclip()
+            .with_row_heights([36, 160, 64].into_iter())
+            .scaled(144);
+        assert_eq!(layout.row_offset(1), 54);
+        assert_eq!(layout.row_offset(2), 294);
+        assert_eq!(layout.row_offset(3), 390);
+        assert_eq!(layout.row_index_at_offset(293), 1);
+        assert_eq!(layout.row_index_at_offset(294), 2);
+    }
+
+    #[test]
+    fn optional_pin_button_joins_right_title_buttons_without_overlap() {
+        let hidden = MainUiLayout::zsclip();
+        assert!(!hidden.pin_button_visible);
+        let shown = hidden.clone().with_pin_button(true);
+        let keys = ["search", "window_pin", "setting", "min", "close"];
+        for pair in keys.windows(2) {
+            assert!(shown.title_button_rect(pair[0]).right < shown.title_button_rect(pair[1]).left);
+        }
+        assert_eq!(
+            hidden.title_button_rect("search"),
+            shown.title_button_rect("window_pin")
+        );
     }
 
     #[test]
@@ -4122,7 +4252,7 @@ mod tests {
     fn hiding_app_icon_expands_search_box_to_the_left() {
         for dpi in [96, 120, 144, 192] {
             let visible = MainUiLayout::zsclip().scaled(dpi);
-            let hidden = visible.with_app_icon_visible(false);
+            let hidden = visible.clone().with_app_icon_visible(false);
             assert_eq!(hidden.search_rect().left, visible.app_icon_rect().left);
             assert_eq!(hidden.search_rect().right, visible.search_rect().right);
             assert!(hidden.search_rect().width() > visible.search_rect().width());

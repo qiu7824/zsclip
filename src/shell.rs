@@ -1563,9 +1563,19 @@ mod tests {
 
     #[test]
     fn update_check_does_not_report_current_four_part_version_as_newer() {
-        assert!(!version_is_newer("1.0.0.0", APP_VERSION));
-        assert!(!version_is_newer("v1.0.0.0", APP_VERSION));
-        assert!(version_is_newer("1.0.0.1", APP_VERSION));
+        assert!(!version_is_newer(APP_VERSION, APP_VERSION));
+        assert!(!version_is_newer(&format!("v{APP_VERSION}"), APP_VERSION));
+        let mut parts = APP_VERSION
+            .split('.')
+            .map(|v| v.parse::<u32>().unwrap())
+            .collect::<Vec<_>>();
+        *parts.last_mut().unwrap() += 1;
+        let next = parts
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(".");
+        assert!(version_is_newer(&next, APP_VERSION));
     }
 
     #[test]

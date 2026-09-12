@@ -1,4 +1,6 @@
 /target
+/dist/
+/release/
 /target*/
 /target_codex2
 /target_codex*

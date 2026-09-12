@@ -6,6 +6,15 @@ pub(super) unsafe fn settings_refresh_windows_after_commit(
     app: &mut AppState,
     baseline: &SettingsAppEffectBaseline,
 ) {
+    platform_window::set_pos(
+        st.parent_hwnd,
+        main_window_z_order(st.parent_hwnd),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
     if baseline.dark_mode_enabled != app.settings.dark_mode_enabled {
         platform_appearance::set_dark_mode_enabled(app.settings.dark_mode_enabled);
         platform_appearance::init_dark_mode_for_process();

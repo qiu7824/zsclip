@@ -5,8 +5,16 @@ pub(crate) fn run() -> AppResult<()> {
     let boot_settings = load_settings();
     platform_appearance::set_dark_mode_enabled(boot_settings.dark_mode_enabled);
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
+    let mutex_name = std::env::var_os("ZSCLIP_DATA_DIR")
+        .map(|path| {
+            format!(
+                "Local\\ZSClipData-{:x}",
+                md5::compute(path.to_string_lossy().as_bytes())
+            )
+        })
+        .unwrap_or_else(|| "Global\\ZsClipSingleInstanceV2".to_string());
     let (_single_instance_mutex, already_running) =
-        platform_process::create_named_mutex("Global\\ZsClipSingleInstanceV2");
+        platform_process::create_named_mutex(&mutex_name);
     if already_running {
         // 已有实例：找到主窗口并激活
         let hwnd = platform_window::find_window_by_class(WindowRole::Main.class_name());
@@ -33,7 +41,7 @@ pub(crate) fn run() -> AppResult<()> {
             .visible(!startup_can_hide(&boot_settings))
             .resizable(false)
             .decorations(false)
-            .always_on_top(true);
+            .always_on_top(false);
         let mut main_window_host = WindowsMainWindowHost::new(Some(wnd_proc));
         if let NativeMainWindowPresentation::Failed = main_window_host.create_main_windows(
             NativeMainWindowRequest::from_zsui_window_for_host(
@@ -53,7 +61,15 @@ pub(crate) fn run() -> AppResult<()> {
             if code == 0 {
                 break;
             }
-            if route_settings_child_mouse_wheel(&msg) {
+            if msg.message == WM_KEYDOWN && hotkey::is_escape_vk(msg.wParam as u32) {
+                let root = platform_window::root_ancestor(msg.hwnd);
+                if root != msg.hwnd && window_host_hwnds().contains(&root) {
+                    platform_window::send_message(root, WM_KEYDOWN, msg.wParam, msg.lParam);
+                    continue;
+                }
+            }
+            if dismiss_settings_dropdown_for_message(&msg) || route_settings_child_mouse_wheel(&msg)
+            {
                 continue;
             }
             platform_window::translate_message(&msg);

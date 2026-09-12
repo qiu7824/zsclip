@@ -130,7 +130,7 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
     }
 }
 
-fn remove_stored_image_files(paths: Vec<String>) {
+fn remove_stored_image_files(conn: &rusqlite::Connection, paths: Vec<String>) {
     if paths.is_empty() {
         return;
     }
@@ -143,7 +143,14 @@ fn remove_stored_image_files(paths: Vec<String>) {
         }
         let path = PathBuf::from(raw);
         let path_canon = path.canonicalize().unwrap_or(path);
-        if path_canon.starts_with(&root_canon) {
+        let still_referenced = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM items WHERE image_path = ? COLLATE NOCASE)",
+                [raw],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true);
+        if path_canon.starts_with(&root_canon) && !still_referenced {
             let _ = fs::remove_file(path_canon);
         }
     }
@@ -199,6 +206,13 @@ pub(super) fn db_cleanup_orphan_image_files() -> rusqlite::Result<usize> {
                 let path_canon = path.canonicalize().unwrap_or(path);
                 if path_canon.starts_with(&root_canon)
                     && !referenced.contains(&path_canon)
+                    && entry
+                        .metadata()
+                        .ok()
+                        .and_then(|m| m.modified().ok())
+                        .and_then(|t| t.elapsed().ok())
+                        .map(|age| age.as_secs() >= 3600)
+                        .unwrap_or(false)
                     && fs::remove_file(&path_canon).is_ok()
                 {
                     removed += 1;
@@ -714,7 +728,15 @@ fn build_image_thumbnail_rgba(
     height: usize,
     max_side: usize,
 ) -> Option<ImageThumbnail> {
-    if bytes.len() < 4 || width == 0 || height == 0 || max_side == 0 {
+    if width == 0
+        || height == 0
+        || max_side == 0
+        || width
+            .checked_mul(height)
+            .and_then(|n| n.checked_mul(4))
+            .map(|n| n > bytes.len())
+            .unwrap_or(true)
+    {
         return None;
     }
     if width <= max_side && height <= max_side {
@@ -748,13 +770,18 @@ fn spawn_image_thumbnail_load(
     hwnd: HWND,
     item_id: i64,
     app_data_generation: u64,
-    path: String,
+    path: Option<String>,
     max_side: usize,
 ) {
     let hwnd_raw = hwnd as isize;
     std::thread::spawn(move || {
         let image = crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
-            load_image_bytes_from_path(&path).and_then(|(bytes, width, height)| {
+            let loaded = if let Some(path) = path.as_deref() {
+                load_image_bytes_from_path(path)
+            } else {
+                db_load_item_full(item_id).and_then(|item| ensure_item_image_bytes(&item))
+            };
+            loaded.and_then(|(bytes, width, height)| {
                 build_image_thumbnail_rgba(&bytes, width, height, max_side)
             })
         })
@@ -780,27 +807,20 @@ pub(super) fn ensure_item_thumbnail_bytes(
             return Some((image.bytes, image.width, image.height));
         }
     }
-    let (bytes, width, height) = if let Some(bytes) = &item.image_bytes {
-        (bytes.clone(), item.image_width, item.image_height)
-    } else if let Some(path) = item.image_path.as_ref() {
-        if item.id > 0 && state.image_thumb_loading.insert(item.id) {
-            spawn_image_thumbnail_load(
-                state.hwnd,
-                item.id,
-                state.app_data_generation,
-                path.clone(),
-                max_side,
-            );
-        }
-        return None;
-    } else {
-        return None;
-    };
-    let thumb = build_image_thumbnail_rgba(&bytes, width, height, max_side)?;
-    if item.id > 0 {
-        state.image_thumb_cache.put(item.id, thumb.clone());
+    if item.id > 0
+        && !state.image_thumb_failed.contains(&item.id)
+        && state.image_thumb_loading.len() < 2
+        && state.image_thumb_loading.insert(item.id)
+    {
+        spawn_image_thumbnail_load(
+            state.hwnd,
+            item.id,
+            state.app_data_generation,
+            item.image_path.clone(),
+            max_side,
+        );
     }
-    Some((thumb.bytes, thumb.width, thumb.height))
+    None
 }
 
 fn current_search_date_context() -> SearchDateContext {
@@ -1453,11 +1473,11 @@ fn db_reconcile_dedupe_signatures_impl(
             tx.execute("DELETE FROM items WHERE id=?", params![id])?;
         }
         tx.commit()?;
-        remove_stored_image_files(deleted_image_paths);
+        remove_stored_image_files(conn, deleted_image_paths);
         Ok(delete_ids.len())
     })?;
 
-    let _ = db_cleanup_orphan_image_files();
+    schedule_storage_maintenance();
     Ok(deleted)
 }
 
@@ -1543,35 +1563,80 @@ pub(super) fn db_update_item_pinned(id: i64, pinned: bool) -> rusqlite::Result<(
     })
 }
 
+const HISTORY_PAYLOAD_BUDGET: u64 = 512 * 1024 * 1024;
+
+fn history_row_should_prune(index: usize, max_items: usize, total_bytes: u64) -> bool {
+    max_items > 0 && (index >= max_items || (index > 0 && total_bytes > HISTORY_PAYLOAD_BUDGET))
+}
+
 pub(super) fn db_prune_items(category: i64, max_items: usize) {
-    if max_items == 0 {
-        let _ = db_cleanup_orphan_image_files();
+    if max_items > 0 {
+        let _ = with_db(|conn| {
+            let mut stmt = conn.prepare("SELECT id, image_path,
+                COALESCE(length(CAST(text_data AS BLOB)),0) + COALESCE(length(CAST(rich_text_html AS BLOB)),0) + COALESCE(length(image_data),0)
+                FROM items WHERE category=? AND pinned=0 ORDER BY id DESC")?;
+            let rows = stmt
+                .query_map([category], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(stmt);
+            let mut total = 0u64;
+            let mut paths = Vec::new();
+            for (index, (id, path, bytes)) in rows.into_iter().enumerate() {
+                let file_bytes = path
+                    .as_ref()
+                    .and_then(|p| fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                total = total
+                    .saturating_add(bytes.max(0) as u64)
+                    .saturating_add(file_bytes);
+                if history_row_should_prune(index, max_items, total) {
+                    conn.execute("DELETE FROM items WHERE id=? AND pinned=0", [id])?;
+                    if let Some(path) = path {
+                        paths.push(path);
+                    }
+                }
+            }
+            remove_stored_image_files(conn, paths);
+            Ok(())
+        });
+    }
+    schedule_storage_maintenance();
+}
+
+fn schedule_storage_maintenance() {
+    if cfg!(test) {
         return;
     }
-    let _ = with_db(|conn| {
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM items WHERE category=? AND pinned=0",
-                params![category],
-                |row| row.get::<_, i64>(0),
-            )
-            .unwrap_or(0);
-        let excess = count - max_items as i64;
-        if excess > 0 {
-            let paths = collect_image_paths_for_delete(
-                conn,
-                "SELECT image_path FROM items WHERE category=? AND pinned=0 ORDER BY id ASC LIMIT ?",
-                &[&category, &excess],
-            )?;
-            conn.execute(
-                "DELETE FROM items WHERE id IN (SELECT id FROM items WHERE category=? AND pinned=0 ORDER BY id ASC LIMIT ?)",
-                params![category, excess],
-            )?;
-            remove_stored_image_files(paths);
-        }
-        Ok(())
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = LAST.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 60
+        || LAST
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    let generation = crate::db_runtime::current_app_data_generation();
+    std::thread::spawn(move || {
+        crate::db_runtime::with_shared_app_data_generation(generation, || {
+            let _ = db_cleanup_orphan_image_files();
+            let _ = with_db(|conn| {
+                // PASSIVE never waits for readers; completed WAL frames can be reused.
+                conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")
+            });
+        });
     });
-    let _ = db_cleanup_orphan_image_files();
 }
 
 pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {
@@ -1582,7 +1647,7 @@ pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {
             &[&id],
         )?;
         conn.execute("DELETE FROM items WHERE id=?", params![id])?;
-        remove_stored_image_files(paths);
+        remove_stored_image_files(conn, paths);
         Ok(())
     })
 }
@@ -1598,7 +1663,7 @@ pub(super) fn db_delete_unpinned_items(category: i64) -> rusqlite::Result<usize>
             "DELETE FROM items WHERE category=? AND pinned=0",
             params![category],
         )?;
-        remove_stored_image_files(paths);
+        remove_stored_image_files(conn, paths);
         Ok(affected)
     })
 }
@@ -1782,6 +1847,67 @@ fn reload_state_from_db_locked(state: &mut AppState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_budget_keeps_latest_and_respects_unlimited() {
+        assert!(!history_row_should_prune(
+            0,
+            200,
+            HISTORY_PAYLOAD_BUDGET + 1
+        ));
+        assert!(history_row_should_prune(1, 200, HISTORY_PAYLOAD_BUDGET + 1));
+        assert!(!history_row_should_prune(199, 200, 100));
+        assert!(history_row_should_prune(200, 200, 100));
+        assert!(!history_row_should_prune(999, 0, u64::MAX));
+    }
+
+    #[test]
+    fn history_prune_preserves_pinned_and_phrases() {
+        crate::db_runtime::with_test_db(|| {
+            let old = insert_item(0, "text", "old", 0, "2026-09-12 10:00:00")?;
+            let pinned = insert_item(0, "text", "pinned", 0, "2026-09-12 10:01:00")?;
+            db_update_item_pinned(pinned, true)?;
+            let phrase = insert_item(1, "phrase", "phrase", 0, "2026-09-12 10:02:00")?;
+            let latest = insert_item(0, "text", "latest", 0, "2026-09-12 10:03:00")?;
+            db_prune_items(0, 1);
+            assert!(db_load_item_full(old).is_none());
+            assert!(db_load_item_full(pinned).is_some());
+            assert!(db_load_item_full(phrase).is_some());
+            assert!(db_load_item_full(latest).is_some());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn deleting_history_keeps_image_referenced_by_phrase() {
+        crate::db_runtime::with_test_db(|| {
+            let path = data_dir().join("images").join("shared-retention-test.bmp");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"shared-image-fixture").unwrap();
+            let history = insert_item(0, "image", "shared", 0, "2026-09-12 11:00:00")?;
+            let phrase = insert_item(1, "image", "saved", 0, "2026-09-12 11:01:00")?;
+            with_db(|conn| {
+                conn.execute(
+                    "UPDATE items SET image_path=? WHERE id IN (?,?)",
+                    params![path.to_string_lossy().as_ref(), history, phrase],
+                )?;
+                Ok(())
+            })?;
+            db_delete_item(history)?;
+            assert!(path.exists());
+            db_delete_item(phrase)?;
+            assert!(!path.exists());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn malformed_image_dimensions_do_not_panic_thumbnail_worker() {
+        assert!(build_image_thumbnail_rgba(&[0; 4], 100, 100, 96).is_none());
+        assert!(build_image_thumbnail_rgba(&[0; 4], usize::MAX, 2, 96).is_none());
+    }
 
     fn page_load_task(hwnd: isize, tab: usize, request_seq: u64) -> ItemsPageLoadTask {
         ItemsPageLoadTask {

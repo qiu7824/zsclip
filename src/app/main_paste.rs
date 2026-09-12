@@ -538,8 +538,8 @@ unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> St
                 "The current focus is no longer inside the target input area.",
             ),
             PasteTargetFocusStatus::InsideTarget => tr(
-                "目标窗口拒绝了粘贴。",
-                "The target window rejected the paste action.",
+                "Windows 未能完整发送粘贴按键，请回到目标窗口后手动粘贴。",
+                "Windows could not send the complete paste shortcut. Return to the target window and paste manually.",
             ),
         }
     };

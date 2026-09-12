@@ -9,6 +9,29 @@ pub(super) unsafe fn settings_collect_general_to_draft(st: &mut SettingsWndState
             st.draft.max_items = max_items;
         }
     }
+    if st.ui.is_built(SettingsPage::General.index()) {
+        let old = [
+            st.draft.image_row_height,
+            st.draft.text_row_height,
+            st.draft.file_row_height,
+        ];
+        let mut values = old;
+        for index in 0..3 {
+            if !st.row_height_edits[index].is_null() {
+                values[index] = settings_host_text(st.row_height_edits[index])
+                    .trim()
+                    .parse::<i32>()
+                    .unwrap_or(old[index])
+                    .clamp(
+                        if index == 0 { 80 } else { 32 },
+                        if index == 0 { 320 } else { 160 },
+                    );
+            }
+        }
+        st.draft.image_row_height = values[0];
+        st.draft.text_row_height = values[1];
+        st.draft.file_row_height = values[2];
+    }
     st.draft.show_mouse_dx = settings_host_text(st.ed_dx)
         .parse::<i32>()
         .ok()

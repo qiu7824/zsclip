@@ -171,12 +171,7 @@ pub(super) fn windows_native_clip_row_component_specs_for_items(
     )
 }
 
-unsafe fn draw_main_icon_command(
-    hdc: HDC,
-    command: MainIconCommand,
-    dark: bool,
-    app_icon: isize,
-) {
+unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, dark: bool, app_icon: isize) {
     let rect: RECT = command.rect.into();
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
@@ -232,18 +227,22 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
     let oldbmp = platform_gdi::select_object(memdc, membmp as _);
 
     let layout = state.layout();
-    let dynamic_row_specs = windows_native_clip_row_component_specs_for_items(state.active_items());
-    let row_icon_kinds = state
-        .active_items()
-        .iter()
-        .map(|item| {
-            let presentation = crate::app_core::native_host_clip_row_presentation_for_clip_item(
-                item,
-                is_directory_item(item),
-            );
-            main_row_icon_kind_for_clip_presentation(presentation.kind_icon)
-        })
-        .collect();
+    let mut row_icon_kinds = vec![MainIconKind::Text; state.visible_count()];
+    let first = layout.row_index_at_offset(state.scroll_y).max(0) as usize;
+    let end = (layout
+        .row_index_at_offset(state.scroll_y + layout.list_view_height())
+        .max(0) as usize
+        + 2)
+    .min(state.visible_count());
+    for i in first..end {
+        let item = &state.active_items()[i];
+        row_icon_kinds[i] = match item.kind {
+            ClipKind::Image => MainIconKind::Image,
+            ClipKind::Files if is_directory_item(item) => MainIconKind::Folder,
+            ClipKind::Files => MainIconKind::File,
+            _ => MainIconKind::Text,
+        };
+    }
     let render_plan = layout.render_plan(MainRenderInput {
         client_rect: client_bounds,
         visible_len: state.visible_count(),
@@ -274,6 +273,36 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
             continue;
         }
         draw_main_icon_command(memdc, *command, dark, state.icons.app);
+    }
+
+    if window_pin_visible(state) {
+        let pin_rect = window_pin_rect(state);
+        if state.window_pinned || state.hover_btn == "window_pin" {
+            draw_round_fill(
+                memdc as _,
+                &pin_rect,
+                if state.window_pinned {
+                    th.nav_sel_fill
+                } else {
+                    th.button_hover
+                },
+                5,
+            );
+        }
+        draw_text_ex(
+            memdc as _,
+            "\u{E718}",
+            &pin_rect,
+            if state.window_pinned {
+                th.accent
+            } else {
+                th.text_muted
+            },
+            16,
+            false,
+            true,
+            "Segoe MDL2 Assets",
+        );
     }
 
     for command in &render_plan.segment_commands {
@@ -309,15 +338,10 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         for row_plan in &render_plan.visible_rows {
             let i = row_plan.index;
             let item = state.active_items()[i as usize].clone();
-            let dynamic_row_item_id = dynamic_row_specs
-                .get(i as usize)
-                .and_then(|spec| spec.action.has_item().then_some(spec.action.item_id))
-                .unwrap_or(item.id);
             let row_presentation = crate::app_core::native_host_clip_row_presentation_for_clip_item(
                 &item,
                 is_directory_item(&item),
             );
-            debug_assert_eq!(dynamic_row_item_id, row_presentation.item_id);
 
             if let Some(command) = row_plan.item_icon_command {
                 draw_main_icon_command(memdc, command, dark, state.icons.app);
@@ -345,7 +369,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                 let thumb_px = ((preview_rc.right - preview_rc.left)
                     .max(preview_rc.bottom - preview_rc.top)
                     + 8)
-                .clamp(32, 96) as usize;
+                .clamp(64, 768) as usize;
                 if let Some((bytes, width, height)) =
                     ensure_item_thumbnail_bytes(state, &item, thumb_px)
                 {
@@ -356,6 +380,22 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                         height,
                         &preview_rc,
                         th.surface2,
+                    );
+                } else {
+                    let label = if state.image_thumb_failed.contains(&item.id) {
+                        tr("图片不可用", "Image unavailable")
+                    } else {
+                        tr("加载中…", "Loading…")
+                    };
+                    draw_text_ex(
+                        memdc as _,
+                        label,
+                        &preview_rc,
+                        th.text_muted,
+                        layout.row_text_size(),
+                        false,
+                        true,
+                        ui_text_font_family(),
                     );
                 }
             }

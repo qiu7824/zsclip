@@ -17,6 +17,13 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
         st.cb_max,
         settings_dropdown_label_for_max_items(s.max_items),
     );
+    for (handle, value) in
+        st.row_height_edits
+            .iter()
+            .zip([s.image_row_height, s.text_row_height, s.file_row_height])
+    {
+        settings_set_text(*handle, &value.to_string());
+    }
     settings_set_text(st.ed_dx, &s.show_mouse_dx.to_string());
     settings_set_text(st.ed_dy, &s.show_mouse_dy.to_string());
     settings_set_text(st.ed_fx, &s.show_fixed_x.to_string());

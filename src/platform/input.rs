@@ -165,6 +165,12 @@ fn complete_input_injection(sent: u32, expected: usize) -> bool {
     sent as usize == expected
 }
 
+pub(crate) fn paste_command_modifiers_down() -> bool {
+    [0x10, 0x11, 0x12, 0x5B, 0x5C]
+        .iter()
+        .any(|key| is_key_down(*key))
+}
+
 pub(crate) fn send_ctrl_v() -> bool {
     send_backspaces_then_ctrl_v(0)
 }

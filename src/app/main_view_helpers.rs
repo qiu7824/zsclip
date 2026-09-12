@@ -1,5 +1,52 @@
 use super::prelude::*;
 
+pub(super) fn window_pin_rect(state: &AppState) -> RECT {
+    main_layout_for_dpi(state.ui_dpi)
+        .with_pin_button(window_pin_visible(state))
+        .title_button_rect("window_pin")
+        .into()
+}
+
+pub(super) fn window_pin_visible(state: &AppState) -> bool {
+    state.role == WindowRole::Main && state.settings.show_pin_button
+}
+
+pub(super) unsafe fn main_window_z_order(hwnd: HWND) -> HWND {
+    let ptr = get_state_ptr(hwnd);
+    if !ptr.is_null() {
+        if (*ptr).role == WindowRole::Quick {
+            return HWND_TOPMOST;
+        }
+        if !(*ptr).settings.show_pin_button {
+            (*ptr).window_pinned = false;
+        }
+        if (*ptr).window_pinned {
+            return HWND_TOPMOST;
+        }
+    }
+    HWND_NOTOPMOST
+}
+
+pub(super) unsafe fn toggle_window_pin(hwnd: HWND, state: &mut AppState) {
+    let next = !state.window_pinned;
+    if platform_window::set_pos(
+        hwnd,
+        if next {
+            HWND_TOPMOST
+        } else {
+            HWND_NOTOPMOST
+        },
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    ) {
+        state.window_pinned = next;
+    }
+    repaint_main_window(hwnd, false);
+}
+
 pub(super) fn main_theme_role_color(role: MainThemeRole, th: Theme) -> u32 {
     match role {
         MainThemeRole::Surface => th.surface,

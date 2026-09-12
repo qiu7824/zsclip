@@ -168,6 +168,7 @@ impl AppState {
         self.payload_cache.clear();
         self.image_thumb_cache.clear();
         self.image_thumb_loading.clear();
+        self.image_thumb_failed.clear();
     }
 
     pub(super) fn cache_full_item(&mut self, item: ClipItem) {
@@ -178,12 +179,12 @@ impl AppState {
         self.payload_cache.remove(id);
         self.image_thumb_cache.remove(id);
         self.image_thumb_loading.remove(&id);
+        self.image_thumb_failed.remove(&id);
     }
 
     pub(super) fn current_scroll_anchor(&self) -> Option<(i64, i32)> {
-        let row_h = self.layout().row_h.max(1);
-        let top_visible = (self.scroll_y / row_h).max(0) as usize;
-        let offset = self.scroll_y - (top_visible as i32 * row_h);
+        let top_visible = self.layout().row_index_at_offset(self.scroll_y).max(0) as usize;
+        let offset = self.scroll_y - self.layout().row_offset(top_visible);
         let item = self.active_items().get(top_visible)?;
         if item.id > 0 {
             Some((item.id, offset))
@@ -194,9 +195,8 @@ impl AppState {
 
     pub(super) fn restore_scroll_anchor(&mut self, anchor: Option<(i64, i32)>) {
         if let Some((id, offset)) = anchor {
-            let row_h = self.layout().row_h.max(1);
             if let Some(visible_idx) = self.active_items().iter().position(|item| item.id == id) {
-                self.scroll_y = visible_idx as i32 * row_h + offset;
+                self.scroll_y = self.layout().row_offset(visible_idx) + offset;
             }
         }
         self.clamp_scroll();
@@ -438,7 +438,6 @@ impl AppState {
         };
         let max_items = self.settings.max_items;
         if max_items > 0 {
-            db_prune_items(0, max_items);
             self.invalidate_tab_query(0, self.tab_index == 0);
         }
         if self.tab_index == 0 {
@@ -472,7 +471,23 @@ impl AppState {
     }
 
     pub(super) fn layout(&self) -> MainUiLayout {
-        main_layout_for_dpi(self.ui_dpi).with_app_icon_visible(self.settings.app_icon_visible)
+        let mut layout =
+            main_layout_for_dpi(self.ui_dpi).with_app_icon_visible(self.settings.app_icon_visible);
+        layout = layout.with_pin_button(window_pin_visible(self));
+        let search_right = layout.title_button_rect("search").left - 4;
+        layout.search_w = (search_right - layout.search_left).max(30);
+        let scale = layout.row_h;
+        layout = layout.with_row_heights(self.active_items().iter().map(|item| {
+            let height = match item.kind {
+                ClipKind::Image if self.settings.image_preview_enabled => {
+                    self.settings.image_row_height.clamp(80, 320)
+                }
+                ClipKind::Files => self.settings.file_row_height.clamp(32, 160),
+                _ => self.settings.text_row_height.clamp(32, 160),
+            };
+            (height * scale + 22) / 44
+        }));
+        layout
     }
 
     pub(super) fn quick_action_rect_slot(&self, visible_idx: i32, slot: i32) -> Option<RECT> {

@@ -351,7 +351,7 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
         EDGE_AUTO_HIDE_ANIM_MS,
     );
     state.edge_hidden = false;
-    state.edge_hide_armed = false;
+    state.edge_hide_armed = true;
     state.edge_hide_pending_until = None;
     state.edge_restore_wait_leave = false;
     edge_set_grace(state, EDGE_AUTO_HIDE_RESTORE_GRACE_MS);
@@ -422,10 +422,10 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
     }
     let state = &mut *ptr;
     if state.edge_anim_until.is_some() {
-        if !edge_step_animation(hwnd, state) {
-            refresh_low_level_input_hooks();
+        if edge_step_animation(hwnd, state) {
+            return;
         }
-        return;
+        refresh_low_level_input_hooks();
     }
     if !state.settings.edge_auto_hide {
         restore_edge_hidden_window(hwnd, state);
@@ -480,14 +480,14 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
 pub(crate) unsafe fn note_window_moved_for_edge_hide(hwnd: HWND, state: &mut AppState) {
     if !state.settings.edge_auto_hide
         || state.edge_hidden
-        || edge_animation_active(state)
+        || state.edge_anim_until.is_some()
         || !platform_window::is_visible(hwnd)
     {
         return;
     }
     let rc = platform_window::dock_rect(hwnd);
     if update_edge_dock_state(hwnd, state, &rc) {
-        state.edge_hide_armed = false;
+        state.edge_hide_armed = true;
         state.edge_hide_pending_until = None;
         edge_set_grace(state, edge_interaction_grace_ms());
     } else {

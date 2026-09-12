@@ -750,9 +750,7 @@ fn process_captured_item_db_request_locked(
     if item.created_at.is_empty() {
         item.created_at = now_utc_sqlite();
     }
-    if max_items > 0 {
-        db_prune_items(0, max_items);
-    }
+    db_prune_items(0, max_items);
     CapturedItemDbAction::Inserted { item }
 }
 

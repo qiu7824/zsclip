@@ -510,6 +510,33 @@ pub(crate) fn send_message(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -
     unsafe { SendMessageW(hwnd, msg, wparam, lparam) }
 }
 
+pub(crate) fn send_message_bounded(
+    hwnd: HWND,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> Option<isize> {
+    if hwnd.is_null() {
+        return None;
+    }
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+    };
+    let mut result = 0usize;
+    let ok = unsafe {
+        SendMessageTimeoutW(
+            hwnd,
+            msg,
+            wparam,
+            lparam,
+            SMTO_ABORTIFHUNG | SMTO_BLOCK,
+            50,
+            &mut result,
+        )
+    };
+    (ok != 0).then_some(result as isize)
+}
+
 pub(crate) fn get_window_long_ptr(hwnd: HWND, index: i32) -> isize {
     if hwnd.is_null() {
         return 0;

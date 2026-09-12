@@ -33,6 +33,14 @@ pub(super) unsafe fn handle_mouse_move(hwnd: HWND, position: UiPoint) {
     let layout = state.layout();
     let title_buttons = main_title_button_visibility(&state.settings);
     let current_hover = main_hover_target_from_state(state);
+    if window_pin_visible(state) && pt_in_rect(x, y, &window_pin_rect(state)) {
+        if state.hover_btn != "window_pin" {
+            state.hover_btn = "window_pin";
+            hide_hover_preview();
+            repaint_main_window(hwnd, false);
+        }
+        return;
+    }
 
     if state.scroll_dragging {
         let transition = layout.pointer_move_transition(
@@ -109,6 +117,12 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
     let x = position.x;
     let y = position.y;
     let layout = state.layout();
+    if window_pin_visible(state) && pt_in_rect(x, y, &window_pin_rect(state)) {
+        state.down_btn = "window_pin";
+        capture_main_pointer(hwnd);
+        repaint_main_window(hwnd, false);
+        return;
+    }
     let target = layout.pointer_down_target(
         x,
         y,
@@ -230,6 +244,14 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
     let state = &mut *ptr;
     let x = position.x;
     let y = position.y;
+    if state.down_btn == "window_pin" {
+        state.down_btn = "";
+        release_main_pointer(hwnd);
+        if window_pin_visible(state) && pt_in_rect(x, y, &window_pin_rect(state)) {
+            toggle_window_pin(hwnd, state);
+        }
+        return;
+    }
     let transition = state.layout().pointer_up_transition(
         x,
         y,
@@ -254,6 +276,11 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
             }
 
             let window_command = main_title_button_window_command_for_key(key);
+            if key == "close" {
+                state.hover_btn = "";
+                handle_main_close_requested(hwnd);
+                return;
+            }
             queue_main_window_command_intent(hwnd, state, window_command);
             state.hover_btn = "";
             repaint_main_window(hwnd, false);
@@ -510,6 +537,13 @@ unsafe fn execute_main_shortcut_action(
     state: &mut AppState,
     action: MainShortcutAction,
 ) {
+    if matches!(action, MainShortcutAction::Escape) {
+        cancel_queued_paste_attempt(hwnd, state);
+        vv_popup_hide(hwnd, state);
+        hide_hover_preview();
+        hide_main_window(hwnd);
+        return;
+    }
     let escape_plan =
         matches!(action, MainShortcutAction::Escape).then(|| state.list.escape_shortcut_plan());
     match main_shortcut_execution_plan(action, escape_plan) {

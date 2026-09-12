@@ -158,6 +158,17 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 let state = &mut *ptr;
                 let target = state.paste_target_override;
                 paste_target = target;
+                if platform_input::paste_command_modifiers_down()
+                    && state.paste_focus_retry_attempts < 20
+                {
+                    state.paste_focus_retry_attempts += 1;
+                    timer::start(hwnd, ID_TIMER_PASTE, 50);
+                    return;
+                }
+                if platform_input::paste_command_modifiers_down() {
+                    cancel_queued_paste_attempt(hwnd, state);
+                    return;
+                }
                 if !target.is_null() {
                     WindowsPasteTargetHost::new().force_paste_target_foreground(target);
                     restore_hotkey_focus_target(state, target);
@@ -617,8 +628,10 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 state.image_thumb_loading.remove(&payload.item_id);
                 if let Some(image) = payload.image {
                     state.image_thumb_cache.put(payload.item_id, image);
-                    repaint_main_window(hwnd, false);
+                } else {
+                    state.image_thumb_failed.insert(payload.item_id);
                 }
+                repaint_main_window(hwnd, false);
             }
         }
     }
