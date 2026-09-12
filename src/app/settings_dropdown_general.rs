@@ -6,6 +6,27 @@ pub(super) unsafe fn open_settings_general_dropdown(
     control_id: isize,
 ) -> bool {
     match control_id {
+        IDC_SET_IMAGE_ROW_HEIGHT | IDC_SET_TEXT_ROW_HEIGHT | IDC_SET_FILE_ROW_HEIGHT => {
+            let slot = (control_id - IDC_SET_IMAGE_ROW_HEIGHT) as usize;
+            let values = row_height_choices(
+                slot,
+                [
+                    st.draft.image_row_height,
+                    st.draft.text_row_height,
+                    st.draft.file_row_height,
+                ][slot],
+            );
+            let labels = values.iter().map(|v| format!("{v} px")).collect::<Vec<_>>();
+            let refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+            let selected = labels
+                .iter()
+                .position(|label| *label == settings_host_text(st.row_height_edits[slot]))
+                .unwrap_or(0);
+            let rc = settings_control_screen_rect_or_empty(st.row_height_edits[slot]);
+            st.dropdown_popup =
+                present_settings_dropdown_popup(hwnd, control_id, &rc, &refs, selected, 150);
+            true
+        }
         IDC_SET_MAX => {
             let rc = settings_control_screen_rect_or_empty(st.cb_max);
             let current = settings_dropdown_index_for_max_items(
@@ -61,4 +82,21 @@ pub(super) unsafe fn open_settings_general_dropdown(
         }
         _ => false,
     }
+}
+
+pub(super) fn row_height_choices(slot: usize, current: i32) -> Vec<i32> {
+    let mut values = if slot == 0 {
+        vec![80, 100, 120, 132, 160, 200, 240, 280, 320]
+    } else {
+        vec![32, 36, 40, 44, 48, 56, 64, 80, 100, 120, 160]
+    };
+    let value = current.clamp(
+        if slot == 0 { 80 } else { 32 },
+        if slot == 0 { 320 } else { 160 },
+    );
+    if !values.contains(&value) {
+        values.push(value);
+        values.sort_unstable();
+    }
+    values
 }

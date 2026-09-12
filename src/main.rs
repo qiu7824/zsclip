@@ -11,6 +11,8 @@ mod hover_preview;
 #[path = "i18n_runtime.rs"]
 mod i18n;
 #[cfg(target_os = "windows")]
+mod image_preview_jobs;
+#[cfg(target_os = "windows")]
 mod lan_sync;
 mod lan_sync_core;
 #[cfg(any(target_os = "linux", test))]

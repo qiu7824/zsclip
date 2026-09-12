@@ -89,7 +89,10 @@ fn has_default_ime_window(focus: HWND) -> bool {
 }
 
 fn has_accessible_caret(focus: HWND) -> bool {
-    unsafe { platform_accessibility::caret_rect(focus).is_some() }
+    unsafe {
+        platform_accessibility::caret_rect(focus).is_some()
+            || platform_accessibility::has_recent_caret(focus)
+    }
 }
 
 fn class_accepts_direct_paste_message(class_name: &str) -> bool {
@@ -133,6 +136,9 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
             if target.is_null() || !platform_window::exists(focus) {
                 return;
             }
+            if platform_window::is_hung(target) || platform_window::is_hung(focus) {
+                return;
+            }
             if platform_window::root_ancestor(focus) != target {
                 return;
             }
@@ -174,10 +180,13 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
 
     fn set_paste_target_text(&mut self, target: Self::Handle, text: &str) -> bool {
         let wide = to_wide(text);
-        let ok = platform_window::send_message(target, WM_SETTEXT, 0, wide.as_ptr() as LPARAM) != 0;
+        let ok =
+            platform_window::send_message_bounded(target, WM_SETTEXT, 0, wide.as_ptr() as LPARAM)
+                .unwrap_or(0)
+                != 0;
         if ok {
             let caret = text.encode_utf16().count() as isize;
-            platform_window::send_message(target, EM_SETSEL, caret as usize, caret);
+            let _ = platform_window::send_message_bounded(target, EM_SETSEL, caret as usize, caret);
         }
         ok
     }
@@ -223,7 +232,7 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
 
     fn paste_target_text_input_ready(&mut self, target: Self::Handle) -> bool {
         let identity_host = WindowsWindowIdentityHost::new();
-        if !identity_host.exists(target) {
+        if !identity_host.exists(target) || platform_window::is_hung(target) {
             return false;
         }
 

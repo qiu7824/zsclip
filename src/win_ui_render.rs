@@ -19,7 +19,80 @@ pub(crate) const DT_END_ELLIPSIS: u32 = 0x0000_8000;
 pub(crate) const DT_NOPREFIX: u32 = 0x0000_0800;
 pub(crate) const TRANSPARENT: i32 = 1;
 
+struct IconSurface {
+    dc: *mut core::ffi::c_void,
+    bitmap: *mut core::ffi::c_void,
+    previous: *mut core::ffi::c_void,
+    pixels: *mut u32,
+}
+
+impl IconSurface {
+    unsafe fn new(hdc: *mut core::ffi::c_void, w: i32, h: i32) -> Option<Self> {
+        let dc = platform_gdi::create_compatible_dc(hdc);
+        if dc.is_null() {
+            return None;
+        }
+        let (bitmap, pixels) = platform_gdi::create_top_down_32bpp_dib(dc, w, h);
+        if bitmap.is_null() || pixels.is_null() {
+            if !bitmap.is_null() {
+                platform_gdi::delete_object(bitmap);
+            }
+            platform_gdi::delete_dc(dc);
+            return None;
+        }
+        let previous = platform_gdi::select_object(dc, bitmap);
+        if previous.is_null() || previous as isize == -1 {
+            platform_gdi::delete_object(bitmap);
+            platform_gdi::delete_dc(dc);
+            return None;
+        }
+        Some(Self {
+            dc,
+            bitmap,
+            previous,
+            pixels: pixels as *mut u32,
+        })
+    }
+}
+
+impl Drop for IconSurface {
+    fn drop(&mut self) {
+        platform_gdi::select_object(self.dc, self.previous);
+        platform_gdi::delete_object(self.bitmap);
+        platform_gdi::delete_dc(self.dc);
+    }
+}
+
 static DARK_ICON_CACHE: OnceLock<Mutex<HashMap<(isize, i32, i32, u8), Vec<u32>>>> = OnceLock::new();
+
+#[cfg(test)]
+mod resource_tests {
+    use super::*;
+    use windows_sys::Win32::{
+        System::Threading::{GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS},
+        UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION},
+    };
+
+    #[test]
+    fn repeated_dark_icon_paint_releases_selected_bitmaps() {
+        unsafe {
+            let canvas = IconSurface::new(core::ptr::null_mut(), 64, 64).unwrap();
+            let icon = LoadIconW(core::ptr::null_mut(), IDI_APPLICATION);
+            assert!(!icon.is_null());
+            draw_icon_tinted_soft(canvas.dc, 0, 0, icon as isize, 24, 24, true, 0);
+            let before = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+            for _ in 0..1000 {
+                draw_icon_tinted_soft(canvas.dc, 0, 0, icon as isize, 24, 24, true, 0);
+            }
+            let after = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+            eprintln!("GDI handles before={before}, after={after}, iterations=1000");
+            assert!(
+                after <= before + 2,
+                "GDI handles grew from {before} to {after}"
+            );
+        }
+    }
+}
 
 pub(crate) fn release_idle_memory() {
     if let Some(cache) = DARK_ICON_CACHE.get() {
@@ -246,7 +319,10 @@ pub unsafe fn draw_icon_tinted_soft(
         platform_gdi::draw_icon_normal(hdc, x, y, icon as _, w, h);
         return;
     }
-    let n = (w * h) as usize;
+    if w <= 0 || h <= 0 || w > 512 || h > 512 {
+        return;
+    }
+    let n = (w as usize) * (h as usize);
     let derived = {
         let cache = DARK_ICON_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         let mut cache = match cache.lock() {
@@ -259,46 +335,29 @@ pub unsafe fn draw_icon_tinted_soft(
         if let Some(cached) = cache.get(&(icon, w, h, soften)) {
             cached.clone()
         } else {
-            let make_dib = |bg: u32| -> (*mut core::ffi::c_void, *mut core::ffi::c_void, *mut u32) {
-                let dc = platform_gdi::create_compatible_dc(hdc);
-                let (dib, ptr) = platform_gdi::create_top_down_32bpp_dib(dc, w, h);
-                if dib.is_null() || ptr.is_null() {
-                    platform_gdi::delete_dc(dc);
-                    return (
-                        core::ptr::null_mut(),
-                        core::ptr::null_mut(),
-                        core::ptr::null_mut(),
-                    );
-                }
-                platform_gdi::select_object(dc, dib as _);
+            let make_dib = |bg: u32| -> Option<IconSurface> {
+                let surface = IconSurface::new(hdc, w, h)?;
                 let br = platform_gdi::create_solid_brush(bg);
-                let rc = RECT {
-                    left: 0,
-                    top: 0,
-                    right: w,
-                    bottom: h,
-                };
-                platform_gdi::fill_rect(dc, &rc, br);
+                platform_gdi::fill_rect(
+                    surface.dc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: w,
+                        bottom: h,
+                    },
+                    br,
+                );
                 platform_gdi::delete_object(br as _);
-                platform_gdi::draw_icon_normal(dc, 0, 0, icon as _, w, h);
-                (dc, dib, ptr as *mut u32)
+                platform_gdi::draw_icon_normal(surface.dc, 0, 0, icon as _, w, h);
+                Some(surface)
             };
-
-            let (dc_w, dib_w, px_w) = make_dib(0x00FFFFFFu32);
-            let (dc_b, dib_b, px_b) = make_dib(0x00000000u32);
-            if dc_w.is_null() || dc_b.is_null() {
-                if !dc_w.is_null() {
-                    platform_gdi::delete_dc(dc_w);
-                }
-                if !dc_b.is_null() {
-                    platform_gdi::delete_dc(dc_b);
-                }
+            let (Some(white), Some(black)) = (make_dib(0x00FFFFFF), make_dib(0)) else {
                 platform_gdi::draw_icon_normal(hdc, x, y, icon as _, w, h);
                 return;
-            }
-
-            let src_w = core::slice::from_raw_parts(px_w, n);
-            let src_b = core::slice::from_raw_parts(px_b, n);
+            };
+            let src_w = core::slice::from_raw_parts(white.pixels, n);
+            let src_b = core::slice::from_raw_parts(black.pixels, n);
             let mut derived = vec![0u32; n];
             for i in 0..n {
                 let w_px = src_w[i];
@@ -337,38 +396,25 @@ pub unsafe fn draw_icon_tinted_soft(
                 }
                 derived[i] = (alpha << 24) | (out_r << 16) | (out_g << 8) | out_b;
             }
-            platform_gdi::delete_object(dib_w as _);
-            platform_gdi::delete_object(dib_b as _);
-            platform_gdi::delete_dc(dc_w);
-            platform_gdi::delete_dc(dc_b);
+            if cache.len() >= 128
+                || cache.values().map(|v| v.len() * 4).sum::<usize>() >= 4 * 1024 * 1024
+            {
+                cache.clear();
+            }
             cache.insert((icon, w, h, soften), derived.clone());
             derived
         }
     };
 
-    let dc_bg = platform_gdi::create_compatible_dc(hdc);
-    let (dib_bg, px_bg_ptr) = platform_gdi::create_top_down_32bpp_dib(dc_bg, w, h);
-    platform_gdi::select_object(dc_bg, dib_bg as _);
-    platform_gdi::copy_bits(dc_bg, 0, 0, w, h, hdc, x, y);
-    let src_bg = if !dib_bg.is_null() && !px_bg_ptr.is_null() {
-        core::slice::from_raw_parts(px_bg_ptr as *const u32, n)
-    } else {
-        &[] as &[u32]
-    };
-
-    let dc_out = platform_gdi::create_compatible_dc(hdc);
-    let (dib_out, px_out_ptr) = platform_gdi::create_top_down_32bpp_dib(dc_out, w, h);
-    if dib_out.is_null() || px_out_ptr.is_null() {
-        if !dib_bg.is_null() {
-            platform_gdi::delete_object(dib_bg as _);
-        }
-        platform_gdi::delete_dc(dc_bg);
-        platform_gdi::delete_dc(dc_out);
+    let (Some(background), Some(output)) =
+        (IconSurface::new(hdc, w, h), IconSurface::new(hdc, w, h))
+    else {
         platform_gdi::draw_icon_normal(hdc, x, y, icon as _, w, h);
         return;
-    }
-    platform_gdi::select_object(dc_out, dib_out as _);
-    let dst = core::slice::from_raw_parts_mut(px_out_ptr as *mut u32, n);
+    };
+    platform_gdi::copy_bits(background.dc, 0, 0, w, h, hdc, x, y);
+    let src_bg = core::slice::from_raw_parts(background.pixels, n);
+    let dst = core::slice::from_raw_parts_mut(output.pixels, n);
 
     let blend = |fg: u32, bg: u32, a: u32| -> u32 { (fg * a + bg * (255 - a)) / 255 };
     for i in 0..n {
@@ -393,12 +439,5 @@ pub unsafe fn draw_icon_tinted_soft(
         dst[i] = (final_r << 16) | (final_g << 8) | final_b;
     }
 
-    platform_gdi::copy_bits(hdc, x, y, w, h, dc_out, 0, 0);
-
-    if !dib_bg.is_null() {
-        platform_gdi::delete_object(dib_bg as _);
-    }
-    platform_gdi::delete_object(dib_out as _);
-    platform_gdi::delete_dc(dc_bg);
-    platform_gdi::delete_dc(dc_out);
+    platform_gdi::copy_bits(hdc, x, y, w, h, output.dc, 0, 0);
 }

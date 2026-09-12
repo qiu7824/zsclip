@@ -231,7 +231,7 @@ fn row_to_clip_item_summary(row: DbItem) -> ClipItem {
     row_to_clip_item_impl(row, true)
 }
 
-pub(super) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
+pub(crate) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
     let file_paths = if matches!(item.kind, ClipKind::Files) {
         item.file_paths.clone()
     } else {
@@ -683,8 +683,26 @@ pub(super) fn write_image_bytes_to_output_path(
 }
 
 pub(super) fn load_image_bytes_from_path(path: &str) -> Option<(Vec<u8>, usize, usize)> {
-    let bytes = fs::read(path).ok()?;
-    let image = image::load_from_memory(&bytes).ok()?;
+    use image::ImageDecoder;
+    const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
+    if fs::metadata(path).ok()?.len() > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let mut reader = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(32768);
+    limits.max_image_height = Some(32768);
+    limits.max_alloc = Some(MAX_IMAGE_BYTES);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().ok()?;
+    let (width, height) = decoder.dimensions();
+    if (width as u64).checked_mul(height as u64)?.checked_mul(4)? > MAX_IMAGE_BYTES {
+        return None;
+    }
+    let image = image::DynamicImage::from_decoder(decoder).ok()?;
     let rgba = image.to_rgba8();
     let (width, height) = rgba.dimensions();
     Some((rgba.into_raw(), width as usize, height as usize))
@@ -722,7 +740,7 @@ pub(crate) fn ensure_item_image_bytes(item: &ClipItem) -> Option<(Vec<u8>, usize
         .and_then(load_image_bytes_from_path)
 }
 
-fn build_image_thumbnail_rgba(
+pub(crate) fn build_image_thumbnail_rgba(
     bytes: &[u8],
     width: usize,
     height: usize,
@@ -734,7 +752,7 @@ fn build_image_thumbnail_rgba(
         || width
             .checked_mul(height)
             .and_then(|n| n.checked_mul(4))
-            .map(|n| n > bytes.len())
+            .map(|n| n != bytes.len())
             .unwrap_or(true)
     {
         return None;
@@ -772,19 +790,23 @@ fn spawn_image_thumbnail_load(
     app_data_generation: u64,
     path: Option<String>,
     max_side: usize,
-) {
+) -> bool {
     let hwnd_raw = hwnd as isize;
-    std::thread::spawn(move || {
-        let image = crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
-            let loaded = if let Some(path) = path.as_deref() {
-                load_image_bytes_from_path(path)
-            } else {
-                db_load_item_full(item_id).and_then(|item| ensure_item_image_bytes(&item))
-            };
-            loaded.and_then(|(bytes, width, height)| {
-                build_image_thumbnail_rgba(&bytes, width, height, max_side)
+    crate::image_preview_jobs::submit(move || {
+        let image = std::panic::catch_unwind(|| {
+            crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
+                let loaded = if let Some(path) = path.as_deref() {
+                    load_image_bytes_from_path(path)
+                } else {
+                    db_load_item_full(item_id).and_then(|item| ensure_item_image_bytes(&item))
+                };
+                loaded.and_then(|(bytes, width, height)| {
+                    build_image_thumbnail_rgba(&bytes, width, height, max_side)
+                })
             })
+            .flatten()
         })
+        .ok()
         .flatten();
         let payload = Box::new(ImageThumbReadyResult {
             item_id,
@@ -794,7 +816,7 @@ fn spawn_image_thumbnail_load(
         unsafe {
             let _ = post_boxed_message(hwnd_raw, WM_IMAGE_THUMB_READY, 0, payload);
         }
-    });
+    })
 }
 
 pub(super) fn ensure_item_thumbnail_bytes(
@@ -812,13 +834,15 @@ pub(super) fn ensure_item_thumbnail_bytes(
         && state.image_thumb_loading.len() < 2
         && state.image_thumb_loading.insert(item.id)
     {
-        spawn_image_thumbnail_load(
+        if !spawn_image_thumbnail_load(
             state.hwnd,
             item.id,
             state.app_data_generation,
             item.image_path.clone(),
             max_side,
-        );
+        ) {
+            state.image_thumb_loading.remove(&item.id);
+        }
     }
     None
 }
@@ -841,7 +865,11 @@ fn db_load_items_page_from_connection(
     let date_context = current_search_date_context();
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(query.search_text.trim(), date_context);
-    let select_columns = "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at";
+    let select_columns = if near_query.is_some() {
+        "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at"
+    } else {
+        "id, kind, preview, CASE WHEN kind='files' THEN text_data ELSE NULL END AS text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at"
+    };
     let mut sql = if near_query.is_some() {
         format!(
                 "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE category=?"
@@ -1088,6 +1116,7 @@ fn run_items_page_load_worker() {
             && platform_window::is_window_alive(task.hwnd)
         {
             if let Ok(mut queue) = page_load_results().lock() {
+                queue.retain(|queued| queued.hwnd != task.hwnd || queued.tab != task.tab);
                 queue.push_back(result);
             }
             platform_window::post_message(task.hwnd, WM_ITEMS_PAGE_READY, 0, 0);

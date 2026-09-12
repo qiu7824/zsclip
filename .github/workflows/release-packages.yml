@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.0.1"
+        default: "1.0.0.2"
   push:
     branches:
       - main

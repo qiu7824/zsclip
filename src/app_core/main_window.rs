@@ -3254,12 +3254,6 @@ impl MainUiLayout {
             );
             text_rect.top = preview.bottom + 2;
             text_rect.bottom = row.rect.bottom - 2;
-            paint_commands.push(MainPaintCommand::RoundRect {
-                rect: preview.inflate(2, 2),
-                fill: MainPaintFill::Theme(MainThemeRole::Surface2),
-                stroke: Some(MainThemeRole::Stroke),
-                radius: 6,
-            });
             Some(preview)
         } else if input.show_preview {
             let size = (text_rect.height() - 8).max(24);
@@ -3267,12 +3261,6 @@ impl MainUiLayout {
             let top = text_rect.top + (text_rect.height() - size) / 2;
             let preview = UiRect::new(left, top, left + size, top + size);
             text_rect.left = preview.right + (self.row_h * 10 / 44).clamp(10, 16);
-            paint_commands.push(MainPaintCommand::RoundRect {
-                rect: preview.inflate(2, 2),
-                fill: MainPaintFill::Theme(MainThemeRole::Surface2),
-                stroke: Some(MainThemeRole::Stroke),
-                radius: 8,
-            });
             Some(preview)
         } else {
             None
@@ -5963,20 +5951,12 @@ mod tests {
         assert_eq!(expanded.text_command.rect, expanded.text_rect);
         assert_eq!(
             expanded.paint_commands,
-            vec![
-                MainPaintCommand::RoundRect {
-                    rect: UiRect::new(230, 105, 250, 125),
-                    fill: MainPaintFill::Theme(MainThemeRole::Surface),
-                    stroke: Some(MainThemeRole::Stroke),
-                    radius: 10,
-                },
-                MainPaintCommand::RoundRect {
-                    rect: UiRect::new(70, 101, 98, 129),
-                    fill: MainPaintFill::Theme(MainThemeRole::Surface2),
-                    stroke: Some(MainThemeRole::Stroke),
-                    radius: 8,
-                },
-            ]
+            vec![MainPaintCommand::RoundRect {
+                rect: UiRect::new(230, 105, 250, 125),
+                fill: MainPaintFill::Theme(MainThemeRole::Surface),
+                stroke: Some(MainThemeRole::Stroke),
+                radius: 10,
+            },]
         );
         assert_eq!(
             expanded

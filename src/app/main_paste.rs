@@ -1,4 +1,14 @@
 use super::prelude::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static PASTE_FAILURE_HELP_PENDING: AtomicBool = AtomicBool::new(false);
+
+struct PasteFailureHelpGuard;
+impl Drop for PasteFailureHelpGuard {
+    fn drop(&mut self) {
+        PASTE_FAILURE_HELP_PENDING.store(false, Ordering::Release);
+    }
+}
 
 pub(super) unsafe fn copy_selection_to_clipboard(state: &mut AppState) -> bool {
     let current = state.current_item_for_use();
@@ -156,21 +166,25 @@ fn spawn_async_image_paste_load(
     hide_main: bool,
     backspaces: u8,
     completion: MainPasteCompletionPlan,
-) {
+) -> bool {
     let hwnd_raw = hwnd as isize;
     let target_token = NativeWindowToken(target as usize);
-    std::thread::spawn(move || {
-        let image = crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
-            db_load_item_full(item_id).and_then(|full| {
-                if let Some(bytes) = full.image_bytes {
-                    Some((bytes, full.image_width, full.image_height))
-                } else {
-                    full.image_path
-                        .as_deref()
-                        .and_then(load_image_bytes_from_path)
-                }
+    crate::image_preview_jobs::submit_paste(move || {
+        let image = std::panic::catch_unwind(|| {
+            crate::db_runtime::with_shared_app_data_generation(app_data_generation, || {
+                db_load_item_full(item_id).and_then(|full| {
+                    if let Some(bytes) = full.image_bytes {
+                        Some((bytes, full.image_width, full.image_height))
+                    } else {
+                        full.image_path
+                            .as_deref()
+                            .and_then(load_image_bytes_from_path)
+                    }
+                })
             })
+            .flatten()
         })
+        .ok()
         .flatten();
         let payload = Box::new(ImagePasteReadyResult {
             image,
@@ -186,7 +200,7 @@ fn spawn_async_image_paste_load(
         unsafe {
             let _ = post_boxed_message(hwnd_raw, WM_IMAGE_PASTE_READY, 0, payload);
         }
-    });
+    })
 }
 
 pub(super) unsafe fn queue_async_image_paste_if_needed(
@@ -199,21 +213,27 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
     backspaces: u8,
     completion: MainPasteCompletionPlan,
 ) -> bool {
-    if item_ref.kind != ClipKind::Image
-        || item_ref.id <= 0
-        || item_ref.image_bytes.is_some()
-        || item_ref.image_path.is_some()
-    {
-        return false;
-    }
-    if !WindowsWindowIdentityHost::new().exists(target) {
+    if item_ref.kind != ClipKind::Image || item_ref.id <= 0 || item_ref.image_bytes.is_some() {
         return false;
     }
     cancel_queued_paste_attempt(hwnd, state);
+    if !WindowsWindowIdentityHost::new().exists(target) {
+        post_paste_failure_help(
+            hwnd,
+            state,
+            target,
+            tr(
+                "未找到可用粘贴窗口，记录仍保留在列表中。",
+                "No paste target is available. The item remains in history.",
+            )
+            .to_string(),
+        );
+        return true;
+    }
     let generation = next_image_paste_generation(state.image_paste_generation);
     state.image_paste_generation = generation;
     state.pending_image_paste_generation = Some(generation);
-    spawn_async_image_paste_load(
+    if !spawn_async_image_paste_load(
         hwnd,
         generation,
         state.app_data_generation,
@@ -223,7 +243,19 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
         hide_main,
         backspaces,
         completion,
-    );
+    ) {
+        state.pending_image_paste_generation = None;
+        post_paste_failure_help(
+            hwnd,
+            state,
+            target,
+            tr(
+                "图片处理队列繁忙，请稍后重试；记录仍保留在列表中。",
+                "Image processing is busy. Retry shortly; the item remains in history.",
+            )
+            .to_string(),
+        );
+    }
     true
 }
 
@@ -390,6 +422,7 @@ pub(super) unsafe fn execute_pending_paste_completion_after_focus(
 
 pub(super) unsafe fn cancel_queued_paste_attempt(hwnd: HWND, state: &mut AppState) {
     timer::stop(hwnd, ID_TIMER_PASTE);
+    state.pending_image_paste_generation = None;
     state.paste_target_override = null_mut();
     state.paste_backspace_count = 0;
     state.paste_focus_retry_attempts = 0;
@@ -475,6 +508,9 @@ pub(super) unsafe fn can_send_ctrl_v_to_target(state: &AppState, target: HWND) -
     if !identity_host.exists(target) {
         return false;
     }
+    if platform_window::is_hung(target) {
+        return false;
+    }
     if platform_process::process_has_higher_elevation(platform_window::window_process_id(target)) {
         return false;
     }
@@ -516,6 +552,11 @@ unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> St
             "目标程序正在以管理员权限运行，而 ZSClip 当前不是管理员权限。Windows 会阻止跨权限模拟粘贴；请以管理员身份运行 ZSClip，或回到目标窗口后手动粘贴。",
             "The target is running as administrator while ZSClip is not. Windows blocks cross-elevation paste injection; run ZSClip as administrator or paste manually in the target window.",
         )
+    } else if platform_window::is_hung(target) {
+        tr(
+            "目标程序暂时无响应（PASTE_TARGET_BUSY），请稍后重试。",
+            "The target is not responding (PASTE_TARGET_BUSY). Retry shortly.",
+        )
     } else if !identity_host.is_foreground(target) {
         tr(
             "未能把目标窗口切到前台。",
@@ -555,9 +596,109 @@ unsafe fn paste_failure_message_for_target(state: &AppState, target: HWND) -> St
 
 pub(super) unsafe fn show_paste_failure_message(hwnd: HWND, state: &AppState, target: HWND) {
     let text = paste_failure_message_for_target(state, target);
+    post_paste_failure_help(hwnd, state, target, text);
+}
+
+pub(super) struct PasteFailureNotice {
+    pub(super) generation: u64,
+    pub(super) text: String,
+    pub(super) rule: Option<String>,
+}
+
+unsafe fn post_paste_failure_help(hwnd: HWND, state: &AppState, target: HWND, text: String) {
+    if PASTE_FAILURE_HELP_PENDING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let notice = Box::new(PasteFailureNotice {
+        generation: state.app_data_generation,
+        text,
+        rule: automatic_skip_rule_for_failed_target(target),
+    });
+    if !post_boxed_message(hwnd as isize, WM_PASTE_FAILURE_HELP, 0, notice) {
+        PASTE_FAILURE_HELP_PENDING.store(false, Ordering::Release);
+    }
+}
+
+pub(super) unsafe fn open_paste_failure_help(hwnd: HWND, notice: PasteFailureNotice) {
+    let _pending_guard = PasteFailureHelpGuard;
+    let owner = main_window_hwnd();
+    let owner = if owner.is_null() { hwnd } else { owner };
+    let ptr = get_state_ptr(owner);
+    if ptr.is_null() || notice.generation != (*ptr).app_data_generation {
+        return;
+    }
+    let mut saved_rule = None;
+    if let Some(rule) = notice.rule.as_ref() {
+        let mut settings = (*ptr).settings.clone();
+        settings.paste_target_skip_class_names =
+            append_unique_skip_class_name(&settings.paste_target_skip_class_names, rule);
+        settings.paste_target_skip_enabled = true;
+        if crate::app::runtime::save_settings_for_generation(&settings, notice.generation) {
+            for peer in window_host_hwnds() {
+                let peer_ptr = get_state_ptr(peer);
+                if !peer_ptr.is_null() {
+                    (*peer_ptr).settings.paste_target_skip_enabled = true;
+                    (*peer_ptr).settings.paste_target_skip_class_names =
+                        settings.paste_target_skip_class_names.clone();
+                }
+            }
+            saved_rule = Some(settings.paste_target_skip_class_names);
+        }
+    }
+    if hwnd != owner {
+        hide_main_window(hwnd);
+    }
+    open_settings_window(owner);
+    let settings_hwnd = (*ptr).settings_hwnd;
+    let st_ptr = platform_window::user_data(settings_hwnd) as *mut SettingsWndState;
+    if st_ptr.is_null() {
+        return;
+    }
+    {
+        let st = &mut *st_ptr;
+        settings_show_page(settings_hwnd, st, SettingsPage::General.index());
+        if let Some(rules) = saved_rule.as_ref() {
+            // Preserve other edits in an already-open settings window.
+            let merged = notice
+                .rule
+                .as_ref()
+                .map(|rule| {
+                    append_unique_skip_class_name(&st.draft.paste_target_skip_class_names, rule)
+                })
+                .unwrap_or_else(|| rules.clone());
+            st.draft.paste_target_skip_enabled = true;
+            st.draft.paste_target_skip_class_names = merged.clone();
+            settings_set_text(st.ed_skip_class_names, &merged);
+            settings_sync_page_state(st, SettingsPage::General.index());
+        }
+        let builder = SettingsPageBuilder {
+            hwnd: settings_hwnd,
+            page: SettingsPage::General.index(),
+            font: st.ui_font,
+        };
+        let section = builder.section(2, 0);
+        settings_scroll_to(
+            settings_hwnd,
+            st,
+            section.row_y(8) - settings_content_y_scaled() - settings_scale(24),
+        );
+        repaint_settings_window(settings_hwnd, true);
+    }
+    let text = if saved_rule.is_some() {
+        format!(
+            "{}\r\n\r\n{}",
+            notice.text,
+            tr(
+                "异常窗口已自动加入窗口跳过。",
+                "The non-input window was automatically added to the skip list."
+            )
+        )
+    } else {
+        notice.text
+    };
     platform_dialog::WindowsDialogHost::new().show_message(
-        hwnd,
-        translate("粘贴失败").as_ref(),
+        settings_hwnd,
+        tr("粘贴窗口识别", "Paste target detection"),
         &text,
         NativeDialogLevel::Warning,
     );
@@ -653,11 +794,11 @@ unsafe fn queue_paste_after_clipboard_ready_to_target(
         if state.search_on {
             WindowsMainSearchControlHost::new().focus_search(state.search_hwnd);
         }
-        platform_dialog::WindowsDialogHost::new().show_message(
+        post_paste_failure_help(
             hwnd,
-            translate("粘贴失败").as_ref(),
-            translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").as_ref(),
-            NativeDialogLevel::Warning,
+            state,
+            target,
+            translate("没有找到可粘贴的目标窗口，内容已经保留在剪贴板中。").to_string(),
         );
     }
 }

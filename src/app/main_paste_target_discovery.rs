@@ -34,9 +34,89 @@ pub(super) unsafe fn paste_window_class_is_skipped(hwnd: HWND, skip_class_names:
     if class_name.is_empty() {
         return false;
     }
-    paste_skip_class_tokens(skip_class_names)
-        .iter()
-        .any(|item| item == &class_name)
+    let process = WindowsWindowIdentityHost::new().process_name(hwnd);
+    skip_rule_matches(skip_class_names, &process, &class_name)
+}
+
+pub(super) fn skip_rule_matches(rules: &str, process: &str, class: &str) -> bool {
+    paste_skip_class_tokens(rules).iter().any(|rule| {
+        if let Some((rule_process, rule_class)) = rule.split_once('|') {
+            rule_process.eq_ignore_ascii_case(process) && rule_class.eq_ignore_ascii_case(class)
+        } else {
+            rule.eq_ignore_ascii_case(class)
+        }
+    })
+}
+
+fn automatic_skip_rule(process: &str, class: &str, title: &str) -> Option<String> {
+    let known_non_input = matches!(
+        class.to_ascii_lowercase().as_str(),
+        "progman" | "workerw" | "shell_traywnd" | "shell_secondarytraywnd" | "tooltips_class32"
+    ) || matches!(
+        title,
+        "dummyLayeredWnd" | "Float" | "屏幕录制" | "RecBackgroundForm"
+    ) || (process.eq_ignore_ascii_case("textinputhost.exe")
+        && title == "Microsoft Text Input Application");
+    if !known_non_input || process.is_empty() || class.is_empty() {
+        return None;
+    }
+    if process.contains([',', ';', '|']) || class.contains([',', ';', '|']) {
+        return None;
+    }
+    Some(format!("{process}|{class}"))
+}
+
+pub(super) unsafe fn automatic_skip_rule_for_failed_target(target: HWND) -> Option<String> {
+    let candidates = [target, platform_window::foreground()];
+    for window in candidates {
+        let identity = WindowsWindowIdentityHost::new();
+        if !identity.exists(window) || identity.is_current_process_window(window) {
+            continue;
+        }
+        if platform_process::process_has_higher_elevation(platform_window::window_process_id(
+            window,
+        )) {
+            continue;
+        }
+        if let Some(rule) = automatic_skip_rule(
+            &identity.process_name(window),
+            &identity.class_name(window),
+            &platform_window::text(window),
+        ) {
+            return Some(rule);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod automatic_skip_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_rule_is_scoped_to_process_and_legacy_class_rules_still_work() {
+        assert!(skip_rule_matches(
+            "recorder.exe|FloatWnd, OldPopup",
+            "Recorder.exe",
+            "FloatWnd"
+        ));
+        assert!(!skip_rule_matches(
+            "recorder.exe|FloatWnd",
+            "editor.exe",
+            "FloatWnd"
+        ));
+        assert!(skip_rule_matches("OldPopup", "editor.exe", "OldPopup"));
+    }
+
+    #[test]
+    fn automatic_skip_does_not_blacklist_normal_editors_for_transient_failures() {
+        assert!(automatic_skip_rule("chrome.exe", "Chrome_WidgetWin_1", "Document").is_none());
+        assert!(automatic_skip_rule("notepad.exe", "Notepad", "Notes").is_none());
+        assert_eq!(
+            automatic_skip_rule("recorder.exe", "FloatWnd", "Float"),
+            Some("recorder.exe|FloatWnd".into())
+        );
+    }
 }
 
 pub(super) unsafe fn paste_window_is_zsclip(hwnd: HWND) -> bool {

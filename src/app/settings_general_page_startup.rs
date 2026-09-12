@@ -147,26 +147,17 @@ pub(super) unsafe fn settings_create_general_startup_behavior_page(
     for index in 0..3 {
         let row = index as i32 + 2;
         b.form_label(st, &sec1, row, labels[index]);
-        st.row_height_edits[index] = b.edit(
+        st.row_height_edits[index] = b.dropdown(
             st,
-            &heights[index].to_string(),
+            &format!("{} px", heights[index]),
             ids[index],
             sec1.field_x(),
             sec1.row_y(row),
-            settings_scale(80),
+            settings_scale(150),
         );
-        b.label(
-            st,
-            if index == 0 {
-                tr("px（80–320）", "px (80–320)")
-            } else {
-                tr("px（32–160）", "px (32–160)")
-            },
-            sec1.field_x() + settings_scale(92),
-            sec1.label_y(row, settings_scale(24)),
-            settings_scale(170),
-            settings_scale(24),
-        );
+        if !st.row_height_edits[index].is_null() {
+            st.ownerdraw_ctrls.push(st.row_height_edits[index]);
+        }
     }
 
     b.label(

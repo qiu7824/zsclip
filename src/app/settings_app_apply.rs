@@ -22,7 +22,7 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
             .iter()
             .zip([s.image_row_height, s.text_row_height, s.file_row_height])
     {
-        settings_set_text(*handle, &value.to_string());
+        settings_set_text(*handle, &format!("{value} px"));
     }
     settings_set_text(st.ed_dx, &s.show_mouse_dx.to_string());
     settings_set_text(st.ed_dy, &s.show_mouse_dy.to_string());

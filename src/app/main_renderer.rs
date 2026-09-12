@@ -224,6 +224,16 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
 
     let memdc = platform_gdi::create_compatible_dc(hdc);
     let membmp = platform_gdi::create_compatible_bitmap(hdc, w, h);
+    if memdc.is_null() || membmp.is_null() {
+        if !membmp.is_null() {
+            platform_gdi::delete_object(membmp as _);
+        }
+        if !memdc.is_null() {
+            platform_gdi::delete_dc(memdc);
+        }
+        platform_gdi::end_paint(hwnd, &ps);
+        return;
+    }
     let oldbmp = platform_gdi::select_object(memdc, membmp as _);
 
     let layout = state.layout();
@@ -373,14 +383,14 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                 if let Some((bytes, width, height)) =
                     ensure_item_thumbnail_bytes(state, &item, thumb_px)
                 {
-                    draw_rgba_image_fit(
-                        memdc as _,
-                        &bytes,
-                        width,
-                        height,
-                        &preview_rc,
-                        th.surface2,
-                    );
+                    let image_bg = if state.sel_idx == i || state.selected_rows.contains(&i) {
+                        th.item_selected
+                    } else if state.hover_idx == i {
+                        th.item_hover
+                    } else {
+                        th.surface
+                    };
+                    draw_rgba_image_fit(memdc as _, &bytes, width, height, &preview_rc, image_bg);
                 } else {
                     let label = if state.image_thumb_failed.contains(&item.id) {
                         tr("图片不可用", "Image unavailable")
@@ -451,12 +461,10 @@ unsafe fn draw_rgba_image_fit(
     }
     let avail_w = (dest.right - dest.left).max(1);
     let avail_h = (dest.bottom - dest.top).max(1);
-    let scale = (avail_w as f32 / width as f32)
-        .min(avail_h as f32 / height as f32)
-        .max(0.01);
+    let scale = (avail_w as f32 / width as f32).min(avail_h as f32 / height as f32);
     let draw_w = ((width as f32) * scale).round().max(1.0) as i32;
     let draw_h = ((height as f32) * scale).round().max(1.0) as i32;
-    let draw_x = dest.left + (avail_w - draw_w) / 2;
+    let draw_x = dest.left;
     let draw_y = dest.top + (avail_h - draw_h) / 2;
 
     let bgra = crate::ui::rgba_to_opaque_bgra_on_bg(bytes, bg);
@@ -471,4 +479,163 @@ unsafe fn draw_rgba_image_fit(
         height as i32,
         &bgra,
     );
+}
+
+#[cfg(test)]
+mod visual_regression_tests {
+    use super::*;
+
+    #[test]
+    fn image_rows_have_no_frame_and_heights_use_dropdown_rendering() {
+        let layout = MainUiLayout::zsclip().with_image_rows([false, true].into_iter());
+        let row = crate::app_core::main_window::MainRowRender {
+            index: 1,
+            rect: layout.row_rect(1, 2, 0).unwrap(),
+            icon_rect: layout.row_icon_rect(1, 2, 0),
+            item_icon_command: None,
+            pin_rect: None,
+            selected: false,
+            hovered: false,
+            background: None,
+        };
+        let content = layout.row_content_plan(
+            &row,
+            MainRowContentInput {
+                pinned: false,
+                show_delete: false,
+                delete_hovered: false,
+                show_preview: true,
+            },
+        );
+        assert!(content.paint_commands.is_empty());
+        for id in [
+            IDC_SET_IMAGE_ROW_HEIGHT,
+            IDC_SET_TEXT_ROW_HEIGHT,
+            IDC_SET_FILE_ROW_HEIGHT,
+        ] {
+            assert_eq!(
+                crate::settings_ui_host::settings_control_role_for_control(id),
+                Some(crate::app_core::SettingsControlRole::Dropdown)
+            );
+        }
+        let Some(path) = std::env::var_os("ZSCLIP_QA_IMAGE") else {
+            return;
+        };
+        unsafe {
+            let (width, height) = (320, 430);
+            let dc = platform_gdi::create_compatible_dc(null_mut());
+            let (bitmap, pixels) = platform_gdi::create_top_down_32bpp_dib(dc, width, height);
+            assert!(!dc.is_null() && !bitmap.is_null() && !pixels.is_null());
+            let old = platform_gdi::select_object(dc, bitmap);
+            let theme = Theme::default();
+            let brush = platform_gdi::create_solid_brush(theme.surface);
+            platform_gdi::fill_rect(
+                dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width,
+                    bottom: height,
+                },
+                brush,
+            );
+            platform_gdi::delete_object(brush as _);
+            let title = RECT {
+                left: 22,
+                top: 18,
+                right: 294,
+                bottom: 48,
+            };
+            draw_text_ex(
+                dc,
+                "图片记录",
+                &title,
+                theme.text,
+                16,
+                false,
+                false,
+                ui_text_font_family(),
+            );
+            let icon = row.icon_rect.unwrap();
+            draw_main_icon_command(
+                dc,
+                MainIconCommand {
+                    kind: MainIconKind::Image,
+                    rect: icon,
+                    color_mode: MainIconColorMode::ThemeAware,
+                },
+                false,
+                0,
+            );
+            let rgba = [45u8, 145, 210, 255].repeat(160 * 90);
+            draw_rgba_image_fit(
+                dc,
+                &rgba,
+                160,
+                90,
+                &content.preview_rect.unwrap().into(),
+                theme.surface,
+            );
+            draw_main_row_text_command(dc, content.text_command, "09-12 19:16", theme);
+            for (index, (label, value)) in [
+                ("图片行高：", "132 px"),
+                ("文本行高：", "44 px"),
+                ("文件行高：", "44 px"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let top = 280 + index as i32 * 44;
+                draw_text_ex(
+                    dc,
+                    label,
+                    &RECT {
+                        left: 22,
+                        top,
+                        right: 124,
+                        bottom: top + 32,
+                    },
+                    theme.text,
+                    14,
+                    false,
+                    false,
+                    ui_text_font_family(),
+                );
+                crate::settings_ui_host::draw_settings_dropdown_button(
+                    dc,
+                    &RECT {
+                        left: 126,
+                        top,
+                        right: 296,
+                        bottom: top + 32,
+                    },
+                    value,
+                    false,
+                    false,
+                    theme,
+                );
+            }
+            let mut rgb = Vec::with_capacity(width as usize * height as usize * 3);
+            for pixel in std::slice::from_raw_parts(
+                pixels as *const u8,
+                width as usize * height as usize * 4,
+            )
+            .chunks_exact(4)
+            {
+                rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+            }
+            let file = std::fs::File::create(path).unwrap();
+            let mut encoder = png::Encoder::new(file, width as u32, height as u32);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&rgb)
+                .unwrap();
+            platform_gdi::select_object(dc, old);
+            platform_gdi::delete_object(bitmap);
+            platform_gdi::delete_dc(dc);
+        }
+    }
 }

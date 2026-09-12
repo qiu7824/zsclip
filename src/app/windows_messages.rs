@@ -21,6 +21,7 @@ pub(super) const WM_STARTUP_DATA_RECONCILED: u32 = WM_APP + 39;
 pub(super) const WM_OUTSIDE_CLICK_REQUESTED: u32 = WM_APP + 40;
 pub(super) const WM_CAPTURED_ITEM_DB_READY: u32 = WM_APP + 41;
 pub(super) const WM_SETTINGS_SCROLL_FRAME: u32 = WM_APP + 92;
+pub(super) const WM_PASTE_FAILURE_HELP: u32 = WM_APP + 93;
 pub(crate) const WM_TRAYICON: u32 = WM_APP + 1;
 
 pub(super) enum MainWindowHostEvent {

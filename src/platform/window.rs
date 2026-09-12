@@ -257,7 +257,7 @@ pub(crate) fn try_set_foreground(hwnd: HWND) -> bool {
 }
 
 pub(crate) fn force_foreground(hwnd: HWND) -> bool {
-    if hwnd.is_null() {
+    if hwnd.is_null() || is_hung(hwnd) {
         return false;
     }
     if try_set_foreground(hwnd) {
@@ -265,6 +265,11 @@ pub(crate) fn force_foreground(hwnd: HWND) -> bool {
     }
     platform_input::send_alt_tap();
     try_set_foreground(hwnd)
+}
+
+pub(crate) fn is_hung(hwnd: HWND) -> bool {
+    !hwnd.is_null()
+        && unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsHungAppWindow(hwnd) != 0 }
 }
 
 pub(crate) fn show(hwnd: HWND) {

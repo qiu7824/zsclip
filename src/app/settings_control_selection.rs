@@ -12,7 +12,12 @@ pub(super) unsafe fn handle_settings_control_selection(
     let st = &mut *st_ptr;
     st.dropdown_popup = null_mut();
     match control_id {
-        IDC_SET_MAX | IDC_SET_POSMODE | IDC_SET_PASTE_SOUND_KIND => {
+        IDC_SET_MAX
+        | IDC_SET_POSMODE
+        | IDC_SET_PASTE_SOUND_KIND
+        | IDC_SET_IMAGE_ROW_HEIGHT
+        | IDC_SET_TEXT_ROW_HEIGHT
+        | IDC_SET_FILE_ROW_HEIGHT => {
             handle_settings_general_selection(st, control_id, index);
         }
         IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {

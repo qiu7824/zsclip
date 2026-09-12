@@ -874,7 +874,7 @@ pub(super) unsafe fn apply_captured_item_db_ready(hwnd: HWND, payload: CapturedI
             }
         }
         CapturedItemDbAction::Inserted { item } => {
-            state.cache_full_item(item.clone());
+            state.cache_full_item(&item);
             let summary = clip_item_to_summary(&item);
             let visible_query = state.load_state_for_tab(0).query.clone();
             let inserted_index = if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())

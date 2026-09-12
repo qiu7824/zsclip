@@ -291,15 +291,11 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
                 platform_window::post_hwnd_message(main_hwnd, WM_VV_SHOW, target as usize, 0);
             }
         } else {
-            if vv_target_is_text_input_ready(fg) {
-                hook.last_was_v = true;
-                hook.last_v_target = fg as isize;
-                hook.last_v_at = Some(Instant::now());
-            } else {
-                hook.last_was_v = false;
-                hook.last_v_target = 0;
-                hook.last_v_at = None;
-            }
+            // Warm the asynchronous caret probe; validate readiness on the second key.
+            let _ = vv_target_is_text_input_ready(fg);
+            hook.last_was_v = true;
+            hook.last_v_target = fg as isize;
+            hook.last_v_at = Some(Instant::now());
         }
     } else if !hotkey::is_modifier_vk(event.vk_code) {
         hook.last_was_v = false;

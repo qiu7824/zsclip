@@ -465,6 +465,59 @@ impl Default for VvHookState {
 const ITEM_PAYLOAD_CACHE_LIMIT: usize = 256;
 const IMAGE_THUMB_CACHE_LIMIT: usize = 96;
 
+#[cfg(test)]
+mod payload_cache_tests {
+    use super::*;
+
+    fn item(id: i64) -> ClipItem {
+        ClipItem {
+            id,
+            kind: ClipKind::Text,
+            preview: "sample".into(),
+            text: None,
+            rich_text_html: None,
+            source_app: String::new(),
+            file_paths: None,
+            image_bytes: None,
+            image_path: None,
+            image_width: 0,
+            image_height: 0,
+            pinned: false,
+            group_id: 0,
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn payload_cache_bounds_large_text_by_bytes_not_just_record_count() {
+        let mut cache = ItemPayloadCache::default();
+        let mut text = item(1);
+        text.text = Some("x".repeat(8 * 1024 * 1024));
+        for id in 1..=12 {
+            text.id = id;
+            cache.put(&text);
+        }
+        assert!(cache.entries.values().map(item_payload_size).sum::<usize>() <= 32 * 1024 * 1024);
+        assert!(cache.entries.len() < 5);
+        assert!(cache.entries.contains_key(&12));
+        assert!(!cache.entries.contains_key(&1));
+    }
+
+    #[test]
+    fn file_backed_image_cache_keeps_path_instead_of_duplicate_pixels() {
+        let mut cache = ItemPayloadCache::default();
+        let mut image = item(7);
+        image.kind = ClipKind::Image;
+        image.image_path = Some("image.bmp".into());
+        image.image_bytes = Some(vec![0; 32 * 1024 * 1024]);
+        cache.put(&image);
+        let cached = cache.get(7).unwrap();
+        assert!(cached.image_bytes.is_none());
+        assert_eq!(cached.image_path, image.image_path);
+        assert!(image.image_bytes.is_some());
+    }
+}
+
 #[derive(Default)]
 pub(super) struct ItemPayloadCache {
     entries: HashMap<i64, ClipItem>,
@@ -488,14 +541,45 @@ impl ItemPayloadCache {
         Some(item)
     }
 
-    pub(super) fn put(&mut self, item: ClipItem) {
+    pub(super) fn put(&mut self, item: &ClipItem) {
         let id = item.id;
         if id <= 0 {
             return;
         }
-        self.entries.insert(id, item);
+        let discarded_image_bytes = if item.image_path.is_some() {
+            item.image_bytes.as_ref().map(Vec::capacity).unwrap_or(0)
+        } else {
+            0
+        };
+        if item_payload_size(item).saturating_sub(discarded_image_bytes) > 32 * 1024 * 1024 {
+            self.remove(id);
+            return;
+        }
+        let cached = ClipItem {
+            id,
+            kind: item.kind,
+            preview: item.preview.clone(),
+            text: item.text.clone(),
+            rich_text_html: item.rich_text_html.clone(),
+            source_app: item.source_app.clone(),
+            file_paths: item.file_paths.clone(),
+            image_bytes: if item.image_path.is_some() {
+                None
+            } else {
+                item.image_bytes.clone()
+            },
+            image_path: item.image_path.clone(),
+            image_width: item.image_width,
+            image_height: item.image_height,
+            pinned: item.pinned,
+            group_id: item.group_id,
+            created_at: item.created_at.clone(),
+        };
+        self.entries.insert(id, cached);
         self.touch(id);
-        while self.order.len() > ITEM_PAYLOAD_CACHE_LIMIT {
+        while self.order.len() > ITEM_PAYLOAD_CACHE_LIMIT
+            || self.entries.values().map(item_payload_size).sum::<usize>() > 32 * 1024 * 1024
+        {
             if let Some(evicted) = self.order.pop_front() {
                 self.entries.remove(&evicted);
             }
@@ -506,6 +590,32 @@ impl ItemPayloadCache {
         self.order.retain(|cached| *cached != id);
         self.order.push_back(id);
     }
+}
+
+fn item_payload_size(item: &ClipItem) -> usize {
+    item.text.as_ref().map(|s| s.capacity()).unwrap_or(0)
+        + item
+            .rich_text_html
+            .as_ref()
+            .map(|s| s.capacity())
+            .unwrap_or(0)
+        + item
+            .image_bytes
+            .as_ref()
+            .map(|bytes| bytes.capacity())
+            .unwrap_or(0)
+        + item.preview.capacity()
+        + item.source_app.capacity()
+        + item.created_at.capacity()
+        + item.image_path.as_ref().map(String::capacity).unwrap_or(0)
+        + item
+            .file_paths
+            .as_ref()
+            .map(|paths| {
+                paths.capacity() * std::mem::size_of::<String>()
+                    + paths.iter().map(String::capacity).sum::<usize>()
+            })
+            .unwrap_or(0)
 }
 
 #[derive(Default)]

@@ -35,6 +35,7 @@ const WM_HOVER_IMAGE_READY: u32 = WM_APP + 41;
 
 struct HoverPreviewImageResult {
     item_id: i64,
+    app_data_generation: u64,
     image: Option<(Vec<u8>, usize, usize)>,
 }
 
@@ -198,7 +199,10 @@ unsafe extern "system" fn preview_wnd_proc(
             let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
             if !ptr.is_null() {
                 let data = &mut *ptr;
-                if data.item_id == payload.item_id {
+                if data.item_id == payload.item_id
+                    && payload.app_data_generation
+                        == crate::db_runtime::current_app_data_generation()
+                {
                     data.image = payload.image;
                     data.loading_item_id = 0;
                     platform_gdi::invalidate_rect(hwnd, null(), 0);
@@ -409,17 +413,30 @@ fn preview_origin_near_cursor(
     )
 }
 
-fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) {
+fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) -> bool {
     let hwnd_raw = hwnd as isize;
-    std::thread::spawn(move || {
+    let generation = crate::db_runtime::current_app_data_generation();
+    crate::image_preview_jobs::submit(move || {
+        let image = std::panic::catch_unwind(|| {
+            crate::db_runtime::with_shared_app_data_generation(generation, || {
+                ensure_item_image_bytes(&item).and_then(|(bytes, width, height)| {
+                    crate::app::data::build_image_thumbnail_rgba(&bytes, width, height, 1024)
+                        .map(|image| (image.bytes, image.width, image.height))
+                })
+            })
+            .flatten()
+        })
+        .ok()
+        .flatten();
         let payload = Box::new(HoverPreviewImageResult {
             item_id: item.id,
-            image: ensure_item_image_bytes(&item),
+            app_data_generation: generation,
+            image,
         });
         unsafe {
             let _ = post_boxed_message(hwnd_raw, WM_HOVER_IMAGE_READY, 0, payload);
         }
-    });
+    })
 }
 
 pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y: i32) {
@@ -524,15 +541,13 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
     }
 
     let image = if item.kind == ClipKind::Image {
-        if let Some(bytes) = item.image_bytes.as_ref() {
-            Some((bytes.clone(), item.image_width, item.image_height))
-        } else {
-            if data.loading_item_id != item.id {
-                data.loading_item_id = item.id;
-                spawn_hover_image_load(hwnd, item.clone());
+        if data.loading_item_id != item.id {
+            data.loading_item_id = item.id;
+            if !spawn_hover_image_load(hwnd, crate::app::data::clip_item_to_summary(item)) {
+                data.loading_item_id = 0;
             }
-            None
         }
+        None
     } else {
         data.loading_item_id = 0;
         None

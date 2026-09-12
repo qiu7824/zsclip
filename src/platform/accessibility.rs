@@ -1,4 +1,6 @@
 use std::ffi::c_void;
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{HWND, RECT};
 
@@ -82,7 +84,92 @@ fn variant_child_self() -> RawVariant {
     }
 }
 
+struct CaretProbe {
+    sender: mpsc::SyncSender<(isize, u32)>,
+    latest: Arc<Mutex<Option<(isize, u32, Instant, Option<RECT>)>>>,
+}
+
+static CARET_PROBE: OnceLock<Option<CaretProbe>> = OnceLock::new();
+
+impl CaretProbe {
+    fn new() -> Option<Self> {
+        let (sender, receiver) = mpsc::sync_channel::<(isize, u32)>(1);
+        let latest = Arc::new(Mutex::new(None));
+        let worker_latest = latest.clone();
+        std::thread::Builder::new()
+            .name("caret-probe".into())
+            .spawn(move || {
+                use windows_sys::Win32::System::Com::{
+                    CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED,
+                };
+                let initialized =
+                    unsafe { CoInitializeEx(std::ptr::null(), COINIT_MULTITHREADED as u32) } >= 0;
+                if !initialized {
+                    return;
+                }
+                while let Ok((handle, pid)) = receiver.recv() {
+                    let rect = std::panic::catch_unwind(|| unsafe {
+                        let window = handle as HWND;
+                        if platform_window::window_process_id(window) != pid
+                            || platform_window::is_hung(window)
+                        {
+                            return None;
+                        }
+                        query_caret_rect(window)
+                    })
+                    .ok()
+                    .flatten();
+                    if let Ok(mut cached) = worker_latest.lock() {
+                        *cached = Some((handle, pid, Instant::now(), rect));
+                    }
+                }
+                unsafe {
+                    CoUninitialize();
+                }
+            })
+            .ok()?;
+        Some(Self { sender, latest })
+    }
+}
+
+// Accessibility providers belong to other processes and can stall. Never wait
+// for one from the keyboard hook or the UI thread; callers have native fallbacks.
 pub(crate) unsafe fn caret_rect(hwnd: HWND) -> Option<RECT> {
+    if !platform_window::exists(hwnd) {
+        return None;
+    }
+    let probe = CARET_PROBE.get_or_init(CaretProbe::new).as_ref()?;
+    let key = (hwnd as isize, platform_window::window_process_id(hwnd));
+    if let Ok(cached) = probe.latest.try_lock() {
+        if let Some((window, pid, at, rect)) = *cached {
+            if (window, pid) == key && at.elapsed() < Duration::from_millis(150) {
+                return rect;
+            }
+        }
+    }
+    let _ = probe.sender.try_send(key);
+    None
+}
+
+pub(crate) fn has_recent_caret(hwnd: HWND) -> bool {
+    let Some(Some(probe)) = CARET_PROBE.get() else {
+        return false;
+    };
+    let Ok(cached) = probe.latest.try_lock() else {
+        return false;
+    };
+    cached
+        .as_ref()
+        .map(|(window, pid, at, rect)| {
+            *window == hwnd as isize
+                && *pid == platform_window::window_process_id(hwnd)
+                && at.elapsed() < Duration::from_secs(1)
+                && rect.is_some()
+        })
+        .unwrap_or(false)
+}
+
+unsafe fn query_caret_rect(hwnd: HWND) -> Option<RECT> {
     const OBJID_CARET_V: i32 = -8;
     const IID_IACCESSIBLE_RAW: windows_sys::core::GUID =
         windows_sys::core::GUID::from_u128(0x618736e0_3c3d_11cf_810c_00aa00389b71);
@@ -113,7 +200,7 @@ pub(crate) unsafe fn caret_rect(hwnd: HWND) -> Option<RECT> {
     Some(RECT {
         left,
         top,
-        right: left + width,
-        bottom: top + height,
+        right: left.checked_add(width)?,
+        bottom: top.checked_add(height)?,
     })
 }

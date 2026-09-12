@@ -171,7 +171,7 @@ impl AppState {
         self.image_thumb_failed.clear();
     }
 
-    pub(super) fn cache_full_item(&mut self, item: ClipItem) {
+    pub(super) fn cache_full_item(&mut self, item: &ClipItem) {
         self.payload_cache.put(item);
     }
 
@@ -251,7 +251,7 @@ impl AppState {
             return Some(item);
         }
         let item = db_load_item_full(id)?;
-        self.payload_cache.put(item.clone());
+        self.payload_cache.put(&item);
         Some(item)
     }
 
@@ -421,7 +421,7 @@ impl AppState {
             item.created_at = now_utc_sqlite();
         }
         if item.id > 0 {
-            self.cache_full_item(item.clone());
+            self.cache_full_item(&item);
         }
         let summary = clip_item_to_summary(&item);
         let visible_query = self.load_state_for_tab(0).query.clone();

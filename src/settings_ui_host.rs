@@ -1,4 +1,7 @@
 use crate::win_system_params::IDC_SET_SHOW_PIN_BUTTON;
+use crate::win_system_params::{
+    IDC_SET_FILE_ROW_HEIGHT, IDC_SET_IMAGE_ROW_HEIGHT, IDC_SET_TEXT_ROW_HEIGHT,
+};
 use std::ffi::c_void;
 use std::ptr::{null, null_mut};
 
@@ -608,6 +611,9 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         IDC_SET_CLOSE => Some(SettingsControlRole::Close),
         IDC_SET_BTN_OPENCFG => Some(SettingsControlRole::OpenConfig),
         IDC_SET_MAX
+        | IDC_SET_IMAGE_ROW_HEIGHT
+        | IDC_SET_TEXT_ROW_HEIGHT
+        | IDC_SET_FILE_ROW_HEIGHT
         | IDC_SET_POSMODE
         | IDC_SET_CLOUD_INTERVAL
         | IDC_SET_MULTI_SYNC_MODE

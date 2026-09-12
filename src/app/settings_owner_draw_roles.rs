@@ -61,6 +61,9 @@ fn settings_owner_draw_is_dropdown(cid: isize) -> bool {
     matches!(
         cid,
         IDC_SET_MAX
+            | IDC_SET_IMAGE_ROW_HEIGHT
+            | IDC_SET_TEXT_ROW_HEIGHT
+            | IDC_SET_FILE_ROW_HEIGHT
             | IDC_SET_POSMODE
             | IDC_SET_MULTI_SYNC_MODE
             | IDC_SET_CLOUD_INTERVAL

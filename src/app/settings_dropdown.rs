@@ -18,9 +18,12 @@ pub(super) unsafe fn open_settings_dropdown_for_control(
 ) -> bool {
     close_settings_dropdown_popup(st);
     match control_id {
-        IDC_SET_MAX | IDC_SET_POSMODE | IDC_SET_PASTE_SOUND_KIND => {
-            open_settings_general_dropdown(hwnd, st, control_id)
-        }
+        IDC_SET_MAX
+        | IDC_SET_POSMODE
+        | IDC_SET_PASTE_SOUND_KIND
+        | IDC_SET_IMAGE_ROW_HEIGHT
+        | IDC_SET_TEXT_ROW_HEIGHT
+        | IDC_SET_FILE_ROW_HEIGHT => open_settings_general_dropdown(hwnd, st, control_id),
         IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {
             open_settings_cloud_dropdown(hwnd, st, control_id)
         }
