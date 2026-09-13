@@ -3454,7 +3454,7 @@ impl MainUiLayout {
         let tab_rects = [tab0, tab1];
         let mut segment_commands = vec![MainPaintCommand::RoundRect {
             rect: segment_rect,
-            fill: MainPaintFill::Theme(MainThemeRole::Background),
+            fill: MainPaintFill::Theme(MainThemeRole::Surface),
             stroke: Some(MainThemeRole::Stroke),
             radius: 4,
         }];
@@ -4809,7 +4809,7 @@ mod tests {
             vec![
                 MainPaintCommand::RoundRect {
                     rect: layout.segment_rect(),
-                    fill: MainPaintFill::Theme(MainThemeRole::Background),
+                    fill: MainPaintFill::Theme(MainThemeRole::Surface),
                     stroke: Some(MainThemeRole::Stroke),
                     radius: 4,
                 },

@@ -48,7 +48,13 @@ pub(super) fn main_theme_role_color(role: MainThemeRole, th: Theme) -> u32 {
         MainThemeRole::Surface => th.surface,
         MainThemeRole::Surface2 => th.surface2,
         MainThemeRole::Stroke => th.stroke,
-        MainThemeRole::SegmentSelected => th.nav_sel_fill,
+        MainThemeRole::SegmentSelected => {
+            if th.bg == rgb(255, 255, 255) {
+                th.surface2
+            } else {
+                th.nav_sel_fill
+            }
+        }
         MainThemeRole::Background => th.bg,
         MainThemeRole::ControlBg => th.control_bg,
         MainThemeRole::ControlStroke => th.control_stroke,
