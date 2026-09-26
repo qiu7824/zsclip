@@ -75,7 +75,9 @@ fn public_file_url(file: &Value, id: &str, uuid: &str, now: &str) -> Result<Stri
     // iconId classifies a filename; it does not describe authentication requirements.
     // The anonymous redirect endpoint decides whether this public file is downloadable.
     let file_id = id_string(file.get("fileId")).ok_or("蓝奏文件缺少有效标识。")?;
-    Ok(format!("https://apix.ilanzou.com/unproved/file/redirect?downloadId={}&enable=0&devType=6&uuid={uuid}&shareId={id}&timestamp={}&auth={}",site_hex(&format!("{file_id}|")),site_hex(now),site_hex(&format!("{file_id}|{now}"))))
+    // Keep the public site's field order: the service rejects otherwise identical
+    // signed URLs with "missing parameters" when shareId precedes timestamp/auth.
+    Ok(format!("https://apix.ilanzou.com/unproved/file/redirect?downloadId={}&enable=0&devType=6&uuid={uuid}&timestamp={}&auth={}&shareId={id}",site_hex(&format!("{file_id}|")),site_hex(now),site_hex(&format!("{file_id}|{now}"))))
 }
 
 fn named_file<'a>(entries: &'a [Value], file_name: &str) -> Result<Option<&'a Value>, String> {
@@ -239,6 +241,23 @@ mod tests {
         assert!(open.starts_with("https://apix.ilanzou.com/unproved/file/redirect?"));
         assert!(open.contains("shareId=PyjrO6mP"));
         assert!(!open.contains("userId="));
+        assert_eq!(
+            open.split_once('?')
+                .unwrap()
+                .1
+                .split('&')
+                .map(|pair| pair.split_once('=').unwrap().0)
+                .collect::<Vec<_>>(),
+            [
+                "downloadId",
+                "enable",
+                "devType",
+                "uuid",
+                "timestamp",
+                "auth",
+                "shareId"
+            ]
+        );
         assert_eq!(
             site_hex("1789290000000"),
             "F16A22A15ABAECC6326021AECF7FA260"

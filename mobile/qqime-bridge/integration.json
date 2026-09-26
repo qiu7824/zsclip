@@ -2,7 +2,7 @@
   "package": "com.tencent.qqpinyin",
   "base_version": "8.7.15",
   "base_sha256": "8a89043aff22a11ee46a2d794e0e50cf6f1d80a29b4e8504fda728e02fb5bd2b",
-  "version_name": "8.7.15-zsclip.7",
+  "version_name": "8.7.15-zsclip.8",
   "activity": "com.zsclip.qqime.BridgeActivity",
   "method_replacements": [
     {
