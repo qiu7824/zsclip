@@ -2,6 +2,7 @@ use super::prelude::*;
 use crate::win_system_ui::settings_host_text;
 
 pub(super) unsafe fn settings_collect_cloud_to_draft(st: &mut SettingsWndState) {
+    if !st.cb_lan_sync_mode.is_null() { st.draft.lan_sync_mode=crate::settings_model::lan_sync_mode_from_label(&settings_host_text(st.cb_lan_sync_mode)).into(); }
     if st.ui.is_built(SettingsPage::Cloud.index()) && !st.cb_cloud_interval.is_null() {
         st.draft.cloud_sync_interval = {
             let label = settings_host_text(st.cb_cloud_interval);

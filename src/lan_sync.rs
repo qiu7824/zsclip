@@ -27,17 +27,13 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows_sys::Win32::Foundation::HWND;
 
-const CREATE_NO_WINDOW_FLAG: u32 = 0x0800_0000;
 
 static SERVICE: OnceLock<Mutex<Option<LanServiceHandle>>> = OnceLock::new();
 static DISCOVERED: OnceLock<Mutex<Vec<LanDevice>>> = OnceLock::new();
@@ -49,7 +45,18 @@ static STATUS_TEXT: OnceLock<Mutex<String>> = OnceLock::new();
 static LATEST_CLIP: OnceLock<Mutex<Option<LanClipEnvelope>>> = OnceLock::new();
 static FILE_SESSIONS: OnceLock<Mutex<HashMap<String, FileSession>>> = OnceLock::new();
 static LOCAL_LAN_HOST_CACHE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-static ORIGIN_SEQ: AtomicU64 = AtomicU64::new(1);
+static LOCAL_LAN_ADDRESSES: OnceLock<Mutex<Vec<LocalLanAddress>>> = OnceLock::new();
+static FIREWALL_STATUS: OnceLock<Mutex<String>> = OnceLock::new();
+static FIREWALL_BUSY: AtomicBool = AtomicBool::new(false);
+static FIREWALL_ELEVATION_REQUESTED: AtomicBool = AtomicBool::new(false);
+static DISCOVERY_BIND_FAILED: AtomicBool = AtomicBool::new(false);
+static SYNC_MODE: AtomicU8 = AtomicU8::new(0);
+pub(crate) fn sync_mode() -> crate::lan_sync_core::LanSyncMode {
+    crate::lan_sync_core::LanSyncMode::from_byte(SYNC_MODE.load(Ordering::Acquire))
+}
+fn is_manual_request(req: &HttpRequest) -> bool { query_param(&req.path,"mode")=="manual" }
+fn policy_json(device_id: &str) -> serde_json::Value { sync_mode().policy(device_id) }
+
 
 struct LanServiceHandle {
     stop: Arc<AtomicBool>,
@@ -57,7 +64,16 @@ struct LanServiceHandle {
     workers: Vec<JoinHandle<()>>,
 }
 
+#[derive(Clone, Debug)]
+struct LocalLanAddress {
+    ip: std::net::Ipv4Addr,
+    prefix: u8,
+    name: String,
+    preferred: bool,
+}
+
 struct FileSession {
+    manual: bool,
     source_device_id: String,
     source_device_name: String,
     transfer_id: String,
@@ -160,11 +176,8 @@ fn windows_lan_runtime_context(event_sink: LanRuntimeEventSink) -> LanRuntimePla
     )
 }
 
-pub(crate) fn next_origin_seq() -> u64 {
-    ORIGIN_SEQ.fetch_add(1, Ordering::Relaxed)
-}
-
 pub(crate) fn set_latest_clip(clip: Option<LanClipEnvelope>) {
+    let clip = clip.filter(|value| !value.text.as_deref().is_some_and(crate::db_runtime::text_is_protected));
     if let Some(clip) = clip {
         if let Ok(mut latest) = latest_clip_slot().lock() {
             *latest = Some(clip);
@@ -186,6 +199,7 @@ fn remember_seen_message_key(key: String) -> bool {
 }
 
 pub(crate) fn refresh_service(hwnd: HWND, settings: &AppSettings) {
+    SYNC_MODE.store(crate::lan_sync_core::LanSyncMode::from_key(&settings.lan_sync_mode) as u8,Ordering::Release);
     let runtime_settings = lan_runtime_settings_from_app(settings);
     if !runtime_settings.runtime_enabled() {
         stop_service();
@@ -204,7 +218,7 @@ pub(crate) fn refresh_service(hwnd: HWND, settings: &AppSettings) {
     let should_restart = guard
         .as_ref()
         .map(|handle| handle.state.requires_restart_for(&core_config))
-        .unwrap_or(true);
+        .unwrap_or(true) || DISCOVERY_BIND_FAILED.load(Ordering::Acquire);
     if !should_restart {
         return;
     }
@@ -220,16 +234,12 @@ pub(crate) fn refresh_service(hwnd: HWND, settings: &AppSettings) {
     match start_handle(config) {
         Ok(handle) => {
             if handle.state.lan_enabled {
-                refresh_lan_host_cache_in_background(host_refresh_sink);
-                let firewall_note =
-                    ensure_firewall_rules(handle.state.tcp_port, handle.state.udp_port)
-                        .err()
-                        .map(|err| format!("；防火墙自动放行失败：{err}"));
+                refresh_lan_host_cache_in_background(host_refresh_sink.clone());
+                check_firewall_in_background(handle.state.tcp_port, handle.state.udp_port, host_refresh_sink.clone());
                 set_status(&format!(
-                    "已启动：UDP {} / TCP {}{}",
+                    "已启动：UDP {} / TCP {}",
                     handle.state.udp_port,
-                    handle.state.tcp_port,
-                    firewall_note.unwrap_or_default()
+                    handle.state.tcp_port
                 ));
             } else {
                 set_status(&format!(
@@ -310,10 +320,14 @@ pub(crate) fn trigger_discovery(settings: &AppSettings) {
     }
     let mut runtime_settings = lan_runtime_settings_from_app(&s);
     runtime_settings.lan_sync_enabled = true;
+    if let Some(port) = service_slot().lock().ok().and_then(|guard| guard.as_ref().map(|h| h.state.tcp_port)) {
+        runtime_settings.tcp_port = port;
+    }
     let config = LanRuntimeConfig::from_core_config(
         windows_lan_runtime_context(LanRuntimeEventSink::None),
         runtime_settings.core_config(),
     );
+    refresh_lan_host_cache_in_background(config.platform.event_sink.clone());
     send_discovery_once(&config);
 }
 
@@ -377,7 +391,11 @@ fn clear_lan_host_cache() {
 
 fn refresh_lan_host_cache_in_background(event_sink: LanRuntimeEventSink) {
     thread::spawn(move || {
-        let host = probe_local_lan_host();
+        let addresses = enumerate_local_lan_addresses();
+        let host = addresses.first().map(|a| a.ip.to_string()).unwrap_or_else(probe_local_lan_host);
+        if let Ok(mut cached) = LOCAL_LAN_ADDRESSES.get_or_init(|| Mutex::new(Vec::new())).lock() {
+            *cached = addresses;
+        }
         if let Ok(mut cached) = lan_host_cache_slot().lock() {
             *cached = Some(host);
         }
@@ -408,6 +426,115 @@ fn probe_local_lan_host() -> String {
         .unwrap_or_else(|| "127.0.0.1".to_string())
 }
 
+fn enumerate_local_lan_addresses() -> Vec<LocalLanAddress> {
+    use windows_sys::Win32::NetworkManagement::IpHelper::*;
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+    let mut size = 16_384u32;
+    for _ in 0..3 {
+        // u64 storage provides the alignment required by IP_ADAPTER_ADDRESSES.
+        let mut buffer = vec![0u64; (size as usize + 7) / 8];
+        let first = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        let result = unsafe { GetAdaptersAddresses(AF_INET as u32,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS,
+            std::ptr::null(), first, &mut size) };
+        if result == 111 { continue; } // ERROR_BUFFER_OVERFLOW
+        if result != 0 { return Vec::new(); }
+        let mut addresses = Vec::new();
+        unsafe {
+            let mut current = first;
+            while let Some(adapter) = current.as_ref() {
+                current = adapter.Next;
+                if adapter.OperStatus != IfOperStatusUp || adapter.IfType == IF_TYPE_SOFTWARE_LOOPBACK || adapter.IfType == IF_TYPE_TUNNEL {
+                    continue;
+                }
+                let mut name_len = 0;
+                if !adapter.FriendlyName.is_null() {
+                    while name_len < 256 && *adapter.FriendlyName.add(name_len) != 0 { name_len += 1; }
+                }
+                let name = if name_len > 0 {
+                    String::from_utf16_lossy(std::slice::from_raw_parts(adapter.FriendlyName, name_len))
+                } else { "网络".to_string() };
+                let mut unicast = adapter.FirstUnicastAddress;
+                while let Some(address) = unicast.as_ref() {
+                    unicast = address.Next;
+                    if address.Address.lpSockaddr.is_null() || address.Address.iSockaddrLength < std::mem::size_of::<SOCKADDR_IN>() as i32 {
+                        continue;
+                    }
+                    let socket = &*address.Address.lpSockaddr.cast::<SOCKADDR_IN>();
+                    if socket.sin_family != AF_INET { continue; }
+                    let ip = std::net::Ipv4Addr::from(socket.sin_addr.S_un.S_addr.to_ne_bytes());
+                    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_link_local() { continue; }
+                    addresses.push(LocalLanAddress { ip, prefix: address.OnLinkPrefixLength,
+                        name: name.clone(), preferred: !adapter.FirstGatewayAddress.is_null() });
+                }
+            }
+        }
+        addresses.sort_by(|a, b| b.preferred.cmp(&a.preferred).then_with(|| a.ip.cmp(&b.ip)));
+        addresses.dedup_by_key(|a| a.ip);
+        return addresses;
+    }
+    Vec::new()
+}
+
+pub(crate) fn local_connection_summary(settings: &AppSettings) -> String {
+    let port = service_slot().lock().ok().and_then(|guard| guard.as_ref().map(|h| h.state.tcp_port))
+        .unwrap_or(settings.lan_tcp_port.max(1));
+    let addresses = LOCAL_LAN_ADDRESSES.get().and_then(|slot| slot.lock().ok()).map(|items| items.clone()).unwrap_or_default();
+    if !addresses.is_empty() {
+        return addresses.iter().map(|a| format!("{}:{}（{}）", a.ip, port, a.name)).collect::<Vec<_>>().join("\r\n");
+    }
+    match cached_local_lan_host().filter(|host| host != "127.0.0.1") {
+        Some(host) => format!("{host}:{port}"),
+        None => "未检测到可连接的 IPv4；请连接 Wi-Fi 或有线网络，再点击刷新。".to_string(),
+    }
+}
+
+pub(crate) fn firewall_status_summary() -> String {
+    FIREWALL_STATUS.get_or_init(|| Mutex::new(String::new())).lock()
+        .map(|text| if text.is_empty() { "服务开启后检查连接权限。".to_string() } else { text.clone() })
+        .unwrap_or_else(|_| "无法读取防火墙状态，请点击刷新 / 修复连接。".to_string())
+}
+
+fn set_firewall_status(text: &str) {
+    if let Ok(mut value) = FIREWALL_STATUS.get_or_init(|| Mutex::new(String::new())).lock() { *value = text.to_string(); }
+}
+
+/// Only called in response to choosing a sync mode or pressing Repair.
+pub(crate) fn request_firewall_repair(hwnd: HWND) {
+    let Some((tcp, udp)) = service_slot().lock().ok().and_then(|guard| guard.as_ref()
+        .filter(|h| h.state.lan_enabled).map(|h| (h.state.tcp_port, h.state.udp_port))) else { return; };
+    FIREWALL_ELEVATION_REQUESTED.store(true, Ordering::Release);
+    check_firewall_in_background(tcp, udp, LanRuntimeEventSink::platform_main_window(hwnd as isize));
+}
+
+fn check_firewall_in_background(tcp: u16, udp: u16, event_sink: LanRuntimeEventSink) {
+    if FIREWALL_BUSY.swap(true, Ordering::AcqRel) { return; }
+    set_firewall_status("正在检查当前程序的 TCP / UDP 入站权限…");
+    thread::spawn(move || {
+        let mut result = ensure_firewall_rules(tcp, udp);
+        if FIREWALL_ELEVATION_REQUESTED.swap(false, Ordering::AcqRel) && result.is_err()
+            && !result.as_ref().err().is_some_and(|error|error.contains("管理策略") || error.contains("其他宽范围")) {
+            set_firewall_status("需要 Windows 管理员确认以允许手机连接；请在系统提示中确认。");
+            post_ready(&event_sink);
+            #[cfg(feature = "lan-sync")]
+            { result = crate::lan_firewall::repair_elevated(tcp, udp); }
+            #[cfg(not(feature = "lan-sync"))]
+            { result = Err("当前版本不包含局域网连接。".into()); }
+        }
+        match result {
+            Ok(()) => set_firewall_status("已核验 TCP / UDP 允许规则：专用、公用及域网络，仅限本地子网。"),
+            Err(error) => set_firewall_status(&error),
+        }
+        FIREWALL_BUSY.store(false, Ordering::Release);
+        post_ready(&event_sink);
+        // A user may request repair while the preceding check is finishing.
+        if FIREWALL_ELEVATION_REQUESTED.load(Ordering::Acquire) {
+            check_firewall_in_background(tcp, udp, event_sink);
+        }
+    });
+}
+
 fn local_lan_host() -> String {
     if let Ok(cached) = lan_host_cache_slot().lock() {
         if let Some(host) = cached.as_ref().filter(|host| !host.trim().is_empty()) {
@@ -422,6 +549,8 @@ fn local_lan_host() -> String {
 }
 
 pub(crate) fn broadcast_clip(settings: &AppSettings, envelope: LanClipEnvelope) {
+    if !crate::lan_sync_core::LanSyncMode::from_key(&settings.lan_sync_mode).send_automatic() { return; }
+    if envelope.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) { return; }
     let runtime_settings = lan_runtime_settings_from_app(settings);
     if !runtime_settings.lan_sync_enabled {
         return;
@@ -435,12 +564,15 @@ pub(crate) fn broadcast_clip(settings: &AppSettings, envelope: LanClipEnvelope) 
         let env = envelope.clone();
         let sender_id = token_device_id.clone();
         thread::spawn(move || {
+            if !sync_mode().send_automatic() { return; }
+            if env.origin_device_id == device.device_id { return; }
+            if env.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) { return; }
             let addr = format!("{}:{}", device.addr, device.tcp_port);
             let body = serde_json::to_vec(&env).unwrap_or_default();
             let _ = http_request(
                 "POST",
                 &addr,
-                "/v1/clip",
+                "/v1/clip?mode=auto",
                 &[
                     ("Content-Type", "application/json"),
                     ("X-ZSClip-Device", &sender_id),
@@ -483,6 +615,7 @@ pub(crate) fn push_small_files_to_trusted(settings: &AppSettings, paths: Vec<Str
 }
 
 fn push_files_to_trusted_inner(settings: &AppSettings, paths: Vec<String>, limit: u64, auto: bool) {
+    if auto && !crate::lan_sync_core::LanSyncMode::from_key(&settings.lan_sync_mode).send_automatic() { return; }
     let runtime_settings = lan_runtime_settings_from_app(settings);
     if !runtime_settings.lan_sync_enabled {
         set_status("局域网同步未开启，无法推送文件");
@@ -541,7 +674,8 @@ fn push_files_to_trusted_inner(settings: &AppSettings, paths: Vec<String>, limit
         let mut ok_count = 0usize;
         for device in devices {
             for path in &files {
-                if push_one_file(&sender_id, &device, path).is_ok() {
+                if auto && !sync_mode().send_automatic() { break; }
+                if push_one_file(&sender_id, &device, path, !auto).is_ok() {
                     ok_count += 1;
                 }
             }
@@ -563,6 +697,18 @@ pub(crate) fn drain_incoming_clips() -> Vec<LanIncomingClip> {
         .lock()
         .map(|mut q| q.drain(..).collect())
         .unwrap_or_default()
+}
+
+pub(crate) struct IncomingClipReservation(String);
+impl Drop for IncomingClipReservation {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = seen_slot().lock() { pending.remove(&self.0); }
+    }
+}
+
+pub(crate) fn incoming_clip_reservation(envelope: &LanClipEnvelope) -> IncomingClipReservation {
+    // Reservations last through persistence; failed work never becomes a durable receipt.
+    IncomingClipReservation(crate::lan_sync_core::lan_message_identity(envelope))
 }
 
 pub(crate) fn drain_pair_prompts() -> Vec<LanPairPrompt> {
@@ -729,19 +875,23 @@ pub(crate) fn start_pair_with_host(hwnd: HWND, settings: AppSettings, host: Stri
 }
 
 pub(crate) fn status_summary(settings: &AppSettings) -> String {
+    let label = "局域网同步";
     if !lan_runtime_settings_from_app(settings).lan_sync_enabled {
-        return "局域网同步：关闭".to_string();
+        return format!("{label}：关闭");
+    }
+    if DISCOVERY_BIND_FAILED.load(Ordering::Acquire) {
+        return format!("{label}：UDP {} 被占用，自动发现不可用；请在手机填写电脑地址。", settings.lan_udp_port);
     }
     status_slot()
         .lock()
         .map(|s| {
             if s.trim().is_empty() {
-                "局域网同步：已开启".to_string()
+                format!("{label}：已开启")
             } else {
-                format!("局域网同步：{}", s.as_str())
+                format!("{label}：{}", s.as_str())
             }
         })
-        .unwrap_or_else(|_| "局域网同步：状态异常".to_string())
+        .unwrap_or_else(|_| format!("{label}：状态异常"))
 }
 
 pub(crate) fn trusted_summary() -> String {
@@ -757,7 +907,7 @@ pub(crate) fn trusted_summary() -> String {
         let mode = if lan_device_can_receive_clip(device) {
             "自动同步"
         } else if is_mobile_client {
-            "手机客户端：可推送/可拉取"
+            "手机已配对（手机开启自动同步后生效）"
         } else {
             "仅拉取/客户端"
         };
@@ -772,11 +922,12 @@ pub(crate) fn trusted_summary() -> String {
 }
 
 fn start_handle(config: LanRuntimeConfig) -> std::io::Result<LanServiceHandle> {
+    DISCOVERY_BIND_FAILED.store(false, Ordering::Release);
     let stop = Arc::new(AtomicBool::new(false));
     let lifecycle = LanServiceLifecyclePlan::for_config(&config.core_config());
     let listener = bind_tcp_listener(lifecycle.tcp_port, lifecycle.bind_loopback_only)?;
     let actual_tcp_port = listener.local_addr()?.port();
-    listener.set_nonblocking(true)?;
+    listener.set_nonblocking(false)?;
     let mut tcp_config = config.clone();
     tcp_config.tcp_port = actual_tcp_port;
 
@@ -805,17 +956,17 @@ fn start_handle(config: LanRuntimeConfig) -> std::io::Result<LanServiceHandle> {
 }
 
 fn stop_handle(mut handle: LanServiceHandle) {
-    handle.stop.store(true, Ordering::Relaxed);
-    let _ = TcpStream::connect(("127.0.0.1", handle.state.tcp_port));
+    handle.stop.store(true, Ordering::Release);
+    let wake = SocketAddr::from(([127, 0, 0, 1], handle.state.tcp_port));
+    let _ = TcpStream::connect_timeout(&wake, Duration::from_millis(100));
     let lifecycle = LanServiceLifecyclePlan::for_state(&handle.state);
     if lifecycle.wake_udp_on_stop {
         let _ = UdpSocket::bind("0.0.0.0:0").and_then(|sock| {
-            sock.set_broadcast(true)?;
-            let addr = format!("255.255.255.255:{}", handle.state.udp_port);
-            let _ = sock.send_to(b"stop", addr);
+            let _ = sock.send_to(b"stop", ("127.0.0.1", handle.state.udp_port));
             Ok(())
         });
     }
+    for worker in &handle.workers { worker.thread().unpark(); }
     for worker in handle.workers.drain(..) {
         let _ = worker.join();
     }
@@ -832,127 +983,21 @@ fn bind_tcp_listener(base: u16, loopback_only: bool) -> std::io::Result<TcpListe
     Err(last_err.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse)))
 }
 
-fn ensure_firewall_rules(tcp_port: u16, udp_port: u16) -> Result<(), String> {
-    let exe = std::env::current_exe()
-        .map_err(|err| format!("读取程序路径失败 {err}"))?
-        .to_string_lossy()
-        .to_string();
-    let exe_key = lan_hash_string(&exe).chars().take(8).collect::<String>();
-    ensure_firewall_rule(
-        &format!("ZSClip LAN Sync TCP {tcp_port} {exe_key} LocalSubnetV2"),
-        "TCP",
-        tcp_port,
-        &exe,
-    )?;
-    ensure_firewall_rule(
-        &format!("ZSClip LAN Discovery UDP {udp_port} {exe_key} LocalSubnetV2"),
-        "UDP",
-        udp_port,
-        &exe,
-    )?;
-    Ok(())
-}
-
-fn ensure_firewall_rule(
-    name: &str,
-    protocol: &str,
-    local_port: u16,
-    exe: &str,
-) -> Result<(), String> {
-    if firewall_rule_exists(name) {
-        return Ok(());
-    }
-    let port = local_port.to_string();
-    let output = run_netsh(&[
-        "advfirewall",
-        "firewall",
-        "add",
-        "rule",
-        &format!("name={name}"),
-        "dir=in",
-        "action=allow",
-        &format!("program={exe}"),
-        &format!("protocol={protocol}"),
-        &format!("localport={port}"),
-        "profile=any",
-        "remoteip=localsubnet",
-        "enable=yes",
-    ])?;
-    if output.status.success() || firewall_rule_exists(name) {
-        Ok(())
-    } else {
-        Err(format!(
-            "{}；请以管理员身份运行一次，或在 Windows 防火墙中允许 ZSClip 局域子网访问",
-            command_output_summary(&output)
-        ))
-    }
-}
-
-fn firewall_rule_exists(name: &str) -> bool {
-    run_netsh(&[
-        "advfirewall",
-        "firewall",
-        "show",
-        "rule",
-        &format!("name={name}"),
-    ])
-    .map(|output| {
-        let text = command_output_summary(&output);
-        output.status.success()
-            && !text.trim().is_empty()
-            && !text.to_ascii_lowercase().contains("no rules match")
-            && !text.contains("没有与指定条件匹配的规则")
-            && !text.contains("找不到")
-    })
-    .unwrap_or(false)
-}
-
-fn run_netsh(args: &[&str]) -> Result<std::process::Output, String> {
-    let mut command = Command::new("netsh");
-    command
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        command.creation_flags(CREATE_NO_WINDOW_FLAG);
-    }
-    command
-        .output()
-        .map_err(|err| format!("无法执行 netsh：{err}"))
-}
-
-fn command_output_summary(output: &std::process::Output) -> String {
-    let mut text = String::new();
-    text.push_str(&String::from_utf8_lossy(&output.stdout));
-    if !output.stderr.is_empty() {
-        if !text.trim().is_empty() {
-            text.push(' ');
-        }
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-    }
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if compact.chars().count() > 160 {
-        compact.chars().take(160).collect()
-    } else if compact.is_empty() {
-        format!("netsh 退出码 {:?}", output.status.code())
-    } else {
-        compact
-    }
-}
+#[cfg(feature = "lan-sync")]
+fn ensure_firewall_rules(tcp: u16, udp: u16) -> Result<(), String> { crate::lan_firewall::ensure(tcp, udp) }
+#[cfg(not(feature = "lan-sync"))]
+fn ensure_firewall_rules(_tcp: u16, _udp: u16) -> Result<(), String> { Err("当前版本不包含局域网连接。".into()) }
 
 fn tcp_server_loop(listener: TcpListener, config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, peer)) => {
+                if stop.load(Ordering::Relaxed) { break; }
                 let cfg = config.clone();
                 thread::spawn(move || handle_http_stream(stream, peer, cfg));
             }
-            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(80));
-            }
-            Err(_) => thread::sleep(Duration::from_millis(200)),
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => thread::park_timeout(Duration::from_secs(1)),
         }
     }
 }
@@ -974,6 +1019,36 @@ fn route_available_for_config(config: &LanRuntimeConfig, route: LanHttpRoute) ->
 
 fn route_http_request(stream: &mut TcpStream, req: HttpRequest, config: LanRuntimeConfig) {
     let path = req.path_without_query();
+    if req.method=="GET" && path=="/v1/sync-policy" {
+        if !config.lan_enabled { let _=write_http_json(stream,404,&json!({"error":"not_found"})); }
+        else if authenticated_device(&req).is_none() { let _=write_http_json(stream,401,&json!({"error":"unauthorized"})); }
+        else { let _=write_http_json(stream,200,&policy_json(&config.device_id)); }
+        return;
+    }
+    #[cfg(feature = "lan-sync")]
+    if matches!((req.method.as_str(), path),
+        ("GET", "/v1/qq-cloud/authorization") | ("POST", "/v1/qq-cloud/authorize")) {
+        if !config.core_config().lan_enabled {
+            let _ = write_http_json(stream, 404, &json!({"error":"not_found"}));
+            return;
+        }
+        let Some(device) = authenticated_device(&req) else {
+            let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
+            return;
+        };
+        if req.method == "GET" {
+            match crate::qq_cloud_auth::authorization_descriptor(&device.device_id) {
+                Ok(value) => { let _ = write_http_json(stream, 200, &value); }
+                Err(error) => { let _ = write_http_json(stream, 409, &json!({"error":error})); }
+            }
+        } else {
+            match crate::qq_cloud_auth::accept_authorization(&device.device_id, &req.body) {
+                Ok(code) => { let _ = write_http_json(stream, 200, &json!({"ok":true,"confirmation_code":code})); }
+                Err(error) => { let _ = write_http_json(stream, 400, &json!({"error":error})); }
+            }
+        }
+        return;
+    }
     let route = lan_http_route_for(req.method.as_str(), path);
     if !route_available_for_config(&config, route) {
         let _ = write_http_json(stream, 404, &json!({"error":"not_found"}));
@@ -997,7 +1072,7 @@ fn route_http_request(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
         LanHttpRoute::PairRequest => handle_pair_request(stream, req, config),
         LanHttpRoute::PairStatus => handle_pair_status(stream, req, config),
         LanHttpRoute::Clip => handle_clip_post(stream, req, config),
-        LanHttpRoute::Latest => handle_latest(stream, req),
+        LanHttpRoute::Latest => handle_latest(stream, req, &config.device_id),
         LanHttpRoute::WpsTaskpane => handle_wps_taskpane(stream, req),
         LanHttpRoute::WpsItems => handle_wps_taskpane_items(stream, req),
         LanHttpRoute::WpsImage => handle_wps_taskpane_image(stream, req),
@@ -1079,60 +1154,52 @@ fn handle_pair_status(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
 }
 
 fn handle_clip_post(stream: &mut TcpStream, req: HttpRequest, config: LanRuntimeConfig) {
-    let Some(device) = authenticated_device(&req) else {
-        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
-        return;
+    let Some(device)=authenticated_device(&req) else { let _=write_http_json(stream,401,&json!({"error":"unauthorized"}));return; };
+    let manual=is_manual_request(&req);
+    let policy=policy_json(&config.device_id);
+    if !manual && !sync_mode().receive_automatic() {
+        let _=write_http_json(stream,200,&json!({"ok":true,"applied":false,"ignored":"direction","sync_policy":policy}));return;
+    }
+    let Ok(envelope)=serde_json::from_slice::<LanClipEnvelope>(&req.body) else { let _=write_http_json(stream,400,&json!({"error":"invalid_clip"}));return; };
+    if envelope.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+        let _=write_http_json(stream,200,&json!({"ok":true,"applied":false,"ignored":"protected","sync_policy":policy}));return;
+    }
+    if envelope.origin_device_id==config.device_id {
+        let _=write_http_json(stream,200,&json!({"ok":true,"applied":false,"ignored":"self","sync_policy":policy}));return;
+    }
+    if envelope.message_id.trim().is_empty() || envelope.origin_device_id.trim().is_empty()
+        || envelope.message_id.len()>256 || envelope.origin_device_id.len()>256
+        || envelope.origin_seq==0 || envelope.origin_seq>i64::MAX as u64 || envelope.hash.trim().is_empty() || envelope.hash.len()>512 {
+        let _=write_http_json(stream,400,&json!({"error":"invalid_message_identity"}));return;
+    }
+    if envelope.kind=="image" {
+        let Some(image)=&envelope.image_png_base64 else { let _=write_http_json(stream,400,&json!({"error":"missing_image"}));return; };
+        if image.len()>LAN_IMAGE_MAX_BYTES*2 { let _=write_http_json(stream,413,&json!({"error":"image_too_large"}));return; }
+    }
+    let persisted = match crate::db_runtime::has_lan_receipt(&envelope.origin_device_id, &envelope.message_id) {
+        Ok(value) => value,
+        Err(_) => { let _=write_http_json(stream,503,&json!({"error":"storage_unavailable"})); return; }
     };
-    let Ok(envelope) = serde_json::from_slice::<LanClipEnvelope>(&req.body) else {
-        let _ = write_http_json(stream, 400, &json!({"error":"invalid_clip"}));
-        return;
-    };
-    if envelope.origin_device_id == config.device_id {
-        let _ = write_http_json(stream, 200, &json!({"ok":true,"ignored":"self"}));
-        return;
+    if persisted || !remember_seen_message_key(crate::lan_sync_core::lan_message_identity(&envelope)) {
+        let _=write_http_json(stream,200,&json!({"ok":true,"applied":false,"duplicate":true,"sync_policy":policy}));return;
     }
-    if envelope.kind == "image" {
-        let Some(image) = &envelope.image_png_base64 else {
-            let _ = write_http_json(stream, 400, &json!({"error":"missing_image"}));
-            return;
-        };
-        if image.len() > LAN_IMAGE_MAX_BYTES * 2 {
-            let _ = write_http_json(stream, 413, &json!({"error":"image_too_large"}));
-            return;
-        }
-    }
-    let dedupe_key = format!(
-        "{}:{}:{}",
-        envelope.origin_device_id, envelope.origin_seq, envelope.hash
-    );
-    if !remember_seen_message_key(dedupe_key) {
-        let _ = write_http_json(stream, 200, &json!({"ok":true,"duplicate":true}));
-        return;
-    }
-    if let Ok(mut q) = incoming_slot().lock() {
-        q.push_back(LanIncomingClip {
-            envelope,
-            source_device_name: device.name.clone(),
-        });
-    }
-    let mut updated = device;
-    updated.addr = req.peer.ip().to_string();
-    updated.last_seen_ms = now_ms();
-    upsert_device(updated);
+    if let Ok(mut q)=incoming_slot().lock() { q.push_back(LanIncomingClip {envelope,source_device_name:device.name.clone(),manual}); }
+    let mut updated=device;updated.addr=req.peer.ip().to_string();updated.last_seen_ms=now_ms();upsert_device(updated);
     post_ready(&config.platform.event_sink);
-    let _ = write_http_json(stream, 200, &json!({"ok":true}));
+    let _=write_http_json(stream,200,&json!({"ok":true,"queued":true,"sync_policy":policy}));
 }
 
-fn handle_latest(stream: &mut TcpStream, req: HttpRequest) {
-    if authenticated_device(&req).is_none() {
-        let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
-        return;
-    }
-    let latest = latest_clip_slot()
-        .lock()
-        .ok()
-        .and_then(|latest| latest.clone());
-    let _ = write_http_json(stream, 200, &json!({"clip": latest}));
+fn latest_for_request(latest: Option<&LanClipEnvelope>, requester: &str, mode: crate::lan_sync_core::LanSyncMode, manual: bool) -> Option<LanClipEnvelope> {
+    if !manual && !mode.send_automatic() { return None; }
+    latest.filter(|value|value.origin_device_id!=requester)
+        .filter(|value|!value.text.as_deref().is_some_and(crate::db_runtime::text_is_protected)).cloned()
+}
+
+fn handle_latest(stream: &mut TcpStream, req: HttpRequest, server_device_id: &str) {
+    let Some(device)=authenticated_device(&req) else { let _=write_http_json(stream,401,&json!({"error":"unauthorized"}));return; };
+    let mode=sync_mode();
+    let latest=latest_clip_slot().lock().ok().and_then(|latest|latest_for_request(latest.as_ref(),&device.device_id,mode,is_manual_request(&req)));
+    let _=write_http_json(stream,200,&json!({"clip":latest,"sync_policy":mode.policy(server_device_id)}));
 }
 
 fn handle_wps_taskpane(stream: &mut TcpStream, req: HttpRequest) {
@@ -1436,7 +1503,7 @@ fn load_mobile_image_list(limit: i64) -> rusqlite::Result<Vec<MobileImageListIte
             "SELECT id, preview, COALESCE(source_app, ''), COALESCE(image_path, ''), \
              COALESCE(length(image_data), 0), image_width, image_height, \
              COALESCE(created_at, '') \
-             FROM items WHERE category=0 AND kind='image' ORDER BY id DESC LIMIT ?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind='image' ORDER BY id DESC LIMIT ?",
         )?;
         let rows = stmt.query_map(params![limit.max(1)], |row| {
             Ok((
@@ -1478,7 +1545,7 @@ fn load_mobile_item_list(limit: i64) -> rusqlite::Result<Vec<MobileItemListItem>
              CASE WHEN kind='text' THEN COALESCE(text_data, '') ELSE COALESCE(file_paths, '') END, \
              COALESCE(image_path, ''), COALESCE(length(image_data), 0), image_width, image_height, \
              COALESCE(created_at, '') \
-             FROM items WHERE category=0 AND kind IN ('text', 'image', 'files') ORDER BY id DESC LIMIT ?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind IN ('text', 'image', 'files') ORDER BY id DESC LIMIT ?",
         )?;
         let rows = stmt.query_map(params![limit.max(1)], |row| {
             Ok((
@@ -1567,7 +1634,7 @@ fn load_mobile_item_image_png(id: i64) -> rusqlite::Result<Option<(Vec<u8>, Stri
     with_db(|conn| {
         conn.query_row(
             "SELECT image_data, COALESCE(image_path, ''), preview \
-             FROM items WHERE category=0 AND kind='image' AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind='image' AND id=?",
             params![id],
             |row| {
                 Ok((
@@ -1597,7 +1664,7 @@ fn load_mobile_item_file_path(id: i64, index: usize) -> rusqlite::Result<Option<
     with_db(|conn| {
         conn.query_row(
             "SELECT COALESCE(file_paths, text_data, '') \
-             FROM items WHERE category=0 AND kind='files' AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind='files' AND id=?",
             params![id],
             |row| row.get::<_, String>(0),
         )
@@ -1698,7 +1765,7 @@ fn load_wps_taskpane_items(
         "SELECT id, kind, COALESCE(preview, ''), COALESCE(text_data, ''), \
          COALESCE(source_app, ''), COALESCE(created_at, ''), \
          COALESCE(image_path, ''), COALESCE(length(image_data), 0), image_width, image_height \
-         FROM items WHERE category=? AND kind IN {kind_filter} \
+         FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND kind IN {kind_filter} \
          ORDER BY pinned DESC, id DESC LIMIT ?"
     );
     with_db(|conn| {
@@ -1776,13 +1843,13 @@ fn wps_taskpane_fingerprint() -> rusqlite::Result<String> {
     with_db(|conn| {
         let records: (i64, i64, String) = conn.query_row(
             "SELECT COALESCE(MAX(id), 0), COUNT(*), COALESCE(MAX(created_at), '') \
-             FROM items WHERE category=0 AND kind IN ('text', 'image')",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind IN ('text', 'image')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let phrases: (i64, i64, String) = conn.query_row(
             "SELECT COALESCE(MAX(id), 0), COUNT(*), COALESCE(MAX(created_at), '') \
-             FROM items WHERE category=1 AND kind IN ('text', 'phrase')",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=1 AND kind IN ('text', 'phrase')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
@@ -1822,7 +1889,7 @@ fn load_mobile_image_png(id: i64) -> rusqlite::Result<Option<(Vec<u8>, String)>>
         conn.query_row(
             "SELECT COALESCE(preview, ''), image_data, COALESCE(image_path, ''), \
              image_width, image_height \
-             FROM items WHERE category=0 AND kind='image' AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind='image' AND id=?",
             params![id],
             |row| {
                 Ok((
@@ -2283,6 +2350,10 @@ fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         let _ = write_http_json(stream, 401, &json!({"error":"unauthorized"}));
         return;
     };
+    let manual=is_manual_request(&req);
+    if !manual && !sync_mode().receive_automatic() {
+        let _=write_http_json(stream,403,&json!({"error":"direction_disabled","sync_policy":policy_json(&_config.device_id)}));return;
+    }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&req.body) else {
         let _ = write_http_json(stream, 400, &json!({"error":"invalid_file_start"}));
         return;
@@ -2322,6 +2393,7 @@ fn handle_file_start(stream: &mut TcpStream, req: HttpRequest, _config: LanRunti
         .to_string_lossy()
         .replace('\\', "/");
     let session = FileSession {
+        manual,
         source_device_id: device.device_id.clone(),
         source_device_name: device.name.clone(),
         transfer_id: transfer_id.clone(),
@@ -2414,6 +2486,10 @@ fn handle_file_finish(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
         let _ = write_http_json(stream, 404, &json!({"error":"missing_session"}));
         return;
     };
+    if !session.manual && !sync_mode().receive_automatic() {
+        let _=fs::remove_file(&session.part_path);
+        let _=write_http_json(stream,403,&json!({"error":"direction_disabled","sync_policy":policy_json(&config.device_id)}));return;
+    }
     if session.received != session.total_size {
         let _ = fs::remove_file(&session.part_path);
         let _ = write_http_json(stream, 409, &json!({"error":"incomplete_file"}));
@@ -2424,15 +2500,6 @@ fn handle_file_finish(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
         return;
     }
     let content_signature = format!("crc:{:08x}", session.content_crc.finalize());
-    let seen_key = format!(
-        "{}:{}:{}",
-        session.source_device_id, session.transfer_id, content_signature
-    );
-    if !remember_seen_message_key(seen_key) {
-        let _ = fs::remove_file(&session.final_path);
-        let _ = write_http_json(stream, 200, &json!({"ok":true,"duplicate":true}));
-        return;
-    }
     let envelope = LanClipEnvelope {
         message_id: format!("file-{}-{}", session.source_device_id, session.transfer_id),
         origin_device_id: session.source_device_id.clone(),
@@ -2449,10 +2516,22 @@ fn handle_file_finish(stream: &mut TcpStream, req: HttpRequest, config: LanRunti
             relative_path: session.relative_path,
         }],
     };
+    let persisted = crate::db_runtime::has_lan_receipt(&envelope.origin_device_id, &envelope.message_id);
+    if persisted.is_err() {
+        let _ = fs::remove_file(&session.final_path);
+        let _ = write_http_json(stream, 503, &json!({"error":"storage_unavailable"}));
+        return;
+    }
+    if matches!(persisted, Ok(true)) || !remember_seen_message_key(crate::lan_sync_core::lan_message_identity(&envelope)) {
+        let _ = fs::remove_file(&session.final_path);
+        let _ = write_http_json(stream, 200, &json!({"ok":true,"duplicate":true}));
+        return;
+    }
     if let Ok(mut q) = incoming_slot().lock() {
         q.push_back(LanIncomingClip {
             envelope,
             source_device_name: session.source_device_name,
+            manual: session.manual,
         });
     }
     post_ready(&config.platform.event_sink);
@@ -2470,11 +2549,7 @@ fn authenticated_device(req: &HttpRequest) -> Option<LanDevice> {
 fn udp_discovery_sender(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         send_discovery_once(&config);
-        let mut waited = 0;
-        while waited < DISCOVERY_INTERVAL_MS && !stop.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(250));
-            waited += 250;
-        }
+        thread::park_timeout(Duration::from_millis(DISCOVERY_INTERVAL_MS));
     }
 }
 
@@ -2498,19 +2573,42 @@ fn send_discovery_once(config: &LanRuntimeConfig) {
         &body,
         format!("255.255.255.255:{}", config.udp_port).as_str(),
     );
+    let addresses = LOCAL_LAN_ADDRESSES.get().and_then(|slot| slot.lock().ok())
+        .map(|items| items.clone()).unwrap_or_default();
+    for address in addresses {
+        let Some(broadcast) = crate::lan_sync_core::lan_ipv4_broadcast(address.ip, address.prefix) else { continue; };
+        if let Ok(interface_socket) = UdpSocket::bind((address.ip, 0)) {
+            let _ = interface_socket.set_broadcast(true);
+            let _ = interface_socket.send_to(&body, (broadcast, config.udp_port));
+        }
+    }
 }
 
 fn udp_discovery_listener(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
     let Ok(sock) = UdpSocket::bind(("0.0.0.0", config.udp_port)) else {
+        DISCOVERY_BIND_FAILED.store(true, Ordering::Release);
         set_status("UDP 发现端口绑定失败，仍可手动 IP 配对");
+        post_ready(&config.platform.event_sink);
         return;
     };
-    let _ = sock.set_read_timeout(Some(Duration::from_millis(800)));
+    udp_discovery_loop(sock, config, stop);
+}
+
+fn udp_discovery_loop(sock: UdpSocket, config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
+    let _ = sock.set_read_timeout(None);
     let mut buf = [0u8; 4096];
     while !stop.load(Ordering::Relaxed) {
         let Ok((len, peer)) = sock.recv_from(&mut buf) else {
             continue;
         };
+        if stop.load(Ordering::Relaxed) { break; }
+        if crate::lan_sync_core::is_lan_discovery_probe(&buf[..len]) {
+            let packet = DiscoveryPacket::new(&config.core_config(), lan_desktop_capabilities());
+            if let Ok(body) = serde_json::to_vec(&packet) {
+                let _ = sock.send_to(&body, peer);
+            }
+            continue;
+        }
         let Ok(packet) = serde_json::from_slice::<DiscoveryPacket>(&buf[..len]) else {
             continue;
         };
@@ -2543,8 +2641,8 @@ fn udp_discovery_listener(config: LanRuntimeConfig, stop: Arc<AtomicBool>) {
     }
 }
 
-fn push_one_file(sender_id: &str, device: &LanDevice, path: &PathBuf) -> std::io::Result<()> {
-    push_lan_file_payload_to_device(sender_id, device, path, Duration::from_secs(20))
+fn push_one_file(sender_id: &str, device: &LanDevice, path: &PathBuf,manual:bool) -> std::io::Result<()> {
+    crate::lan_sync_core::push_lan_file_payload_to_device_mode(sender_id, device, path, Duration::from_secs(20),manual)
 }
 
 fn html_escape(value: &str) -> String {
@@ -2675,6 +2773,169 @@ fn file_session_slot() -> &'static Mutex<HashMap<String, FileSession>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trusted_http_direction_policy_manual_requests_and_replay_are_enforced() {
+        use std::io::Read;
+        use crate::lan_sync_core::LanSyncMode;
+        struct Restore { devices: Vec<LanDevice>, mode: u8, latest: Option<LanClipEnvelope> }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                save_devices(&self.devices);
+                SYNC_MODE.store(self.mode,Ordering::Release);
+                *latest_clip_slot().lock().unwrap()=self.latest.take();
+                incoming_slot().lock().unwrap().retain(|v|!v.envelope.message_id.starts_with("direction-http-"));
+            }
+        }
+        let _restore=Restore {devices:load_devices(),mode:SYNC_MODE.load(Ordering::Acquire),latest:latest_clip_slot().lock().unwrap().clone()};
+        let device=LanDevice {device_id:"direction-phone".into(),name:"Synthetic phone".into(),addr:"127.0.0.1".into(),tcp_port:0,token:"synthetic-direction-token".into(),last_seen_ms:0,trusted:true,capabilities:vec!["pull_only".into()]};
+        let mut devices=_restore.devices.clone();devices.push(device.clone());save_devices(&devices);
+        let config=LanRuntimeConfig::from_core_config(windows_lan_runtime_context(LanRuntimeEventSink::None),crate::lan_sync_core::LanRuntimeCoreConfig {
+            device_id:"direction-pc".into(),device_name:"Synthetic PC".into(),tcp_port:1,udp_port:1,lan_enabled:true,wps_taskpane_enabled:false,
+        });
+        let call=|method:&str,path:&str,envelope:Option<&LanClipEnvelope>,trusted:bool| {
+            let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client=TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let (mut server,peer)=listener.accept().unwrap();
+            route_http_request(&mut server,HttpRequest {method:method.into(),path:path.into(),peer,
+                headers:if trusted {vec![("x-zsclip-device".into(),device.device_id.clone()),("x-zsclip-token".into(),device.token.clone())]} else {Vec::new()},
+                body:envelope.map(|v|serde_json::to_vec(v).unwrap()).unwrap_or_default()},config.clone());
+            drop(server);
+            let mut bytes=String::new();client.read_to_string(&mut bytes).unwrap();
+            let (head,body)=bytes.split_once("\r\n\r\n").unwrap();
+            (head.split_whitespace().nth(1).unwrap().parse::<u16>().unwrap(),serde_json::from_str::<serde_json::Value>(body).unwrap())
+        };
+        crate::db_runtime::with_test_db(|| {
+            let mut envelope=LanClipEnvelope {message_id:"direction-http-local".into(),origin_device_id:"direction-pc".into(),origin_seq:7,kind:"text".into(),hash:format!("text:sha256:{}","b".repeat(64)),created_at_ms:0,preview:"synthetic direction text".into(),text:Some("synthetic direction text".into()),image_png_base64:None,file_meta:Vec::new()};
+            *latest_clip_slot().lock().unwrap()=Some(envelope.clone());
+            assert_eq!(call("GET","/v1/sync-policy",None,false).0,401);
+            assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),false).0,401);
+            for key in ["manual","phone_to_pc","pc_to_phone","bidirectional"] {
+                let mode=LanSyncMode::from_key(key);SYNC_MODE.store(mode as u8,Ordering::Release);
+                let (status,policy)=call("GET","/v1/sync-policy",None,true);
+                assert_eq!(status,200);assert_eq!(policy["sync_mode"],key);
+                assert_eq!(!call("GET","/v1/latest?mode=auto",None,true).1["clip"].is_null(),mode.send_automatic());
+                assert!(!call("GET","/v1/latest?mode=manual",None,true).1["clip"].is_null());
+                envelope.origin_device_id=device.device_id.clone();envelope.message_id=format!("direction-http-auto-{key}");
+                let (_,response)=call("POST","/v1/clip?mode=auto",Some(&envelope),true);
+                assert_eq!(response["queued"]==true,mode.receive_automatic());
+                if !mode.receive_automatic() {assert_eq!(response["ignored"],"direction");}
+                envelope.message_id=format!("direction-http-manual-{key}");
+                assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).1["queued"],true);
+                envelope.hash="legacy-hash-changed".into();
+                assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).1["duplicate"],true);
+            }
+            *latest_clip_slot().lock().unwrap()=Some(envelope.clone());
+            assert!(call("GET","/v1/latest?mode=manual",None,true).1["clip"].is_null(),"same-origin message must never echo back");
+            let queued=drain_incoming_clips();
+            assert!(queued.iter().filter(|clip|clip.envelope.message_id.starts_with("direction-http-manual-")).all(|clip|clip.manual));
+            for clip in &queued { drop(incoming_clip_reservation(&clip.envelope)); }
+            assert!(!crate::db_runtime::has_lan_receipt(&envelope.origin_device_id,&envelope.message_id)?, "queueing is not a durable receipt");
+            assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).1["queued"],true, "uncommitted work can be retried");
+            for clip in drain_incoming_clips() { drop(incoming_clip_reservation(&clip.envelope)); }
+            crate::db_runtime::with_db_mut(|conn| {
+                let tx=conn.transaction()?;
+                tx.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','synthetic receipt','synthetic receipt')",[])?;
+                crate::db_runtime::record_lan_receipt(&tx,&envelope.origin_device_id,&envelope.message_id)?;
+                tx.commit()
+            })?;
+            envelope.text=Some("different synthetic replay".into());
+            assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).1["duplicate"],true);
+            envelope.message_id="direction-http-storage-failure".into();
+            with_db(|conn|conn.execute_batch("ALTER TABLE lan_receipts RENAME TO unavailable_lan_receipts;"))?;
+            assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).0,503);
+            with_db(|conn|conn.execute_batch("ALTER TABLE unavailable_lan_receipts RENAME TO lan_receipts;"))?;
+            assert_eq!(call("POST","/v1/clip?mode=manual",Some(&envelope),true).1["queued"],true);
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn direction_and_origin_filter_stop_automatic_echo_but_allow_explicit_manual_pull() {
+        use crate::lan_sync_core::LanSyncMode;
+        let envelope=LanClipEnvelope {message_id:"phone-message-1".into(),origin_device_id:"phone-a".into(),origin_seq:42,kind:"text".into(),hash:format!("text:sha256:{}","a".repeat(64)),created_at_ms:1,preview:"hello".into(),text:Some("hello".into()),image_png_base64:None,file_meta:Vec::new()};
+        for key in ["manual","phone_to_pc","pc_to_phone","bidirectional"] {
+            let mode=LanSyncMode::from_key(key);
+            assert!(latest_for_request(Some(&envelope),"phone-a",mode,false).is_none());
+            assert_eq!(latest_for_request(Some(&envelope),"phone-b",mode,false).is_some(),mode.send_automatic());
+            let manual=latest_for_request(Some(&envelope),"phone-b",mode,true).unwrap();
+            assert_eq!(manual,envelope);
+        }
+        let key=crate::lan_sync_core::lan_message_identity(&envelope);
+        let mut replay=envelope.clone();replay.hash="crc:different".into();replay.origin_seq+=1;
+        assert_eq!(crate::lan_sync_core::lan_message_identity(&replay),key);
+    }
+
+    #[test]
+    fn idle_blocking_lan_workers_stop_promptly_without_client_requests() {
+        for _ in 0..3 {
+            let reserve=UdpSocket::bind("127.0.0.1:0").unwrap();
+            let udp_port=reserve.local_addr().unwrap().port(); drop(reserve);
+            let reserve=TcpListener::bind("127.0.0.1:0").unwrap();
+            let tcp_port=reserve.local_addr().unwrap().port(); drop(reserve);
+            let config=LanRuntimeConfig::from_core_config(windows_lan_runtime_context(LanRuntimeEventSink::None),
+                crate::lan_sync_core::LanRuntimeCoreConfig {device_id:"idle-stop-test".into(),device_name:"Idle test".into(),tcp_port,udp_port,lan_enabled:true,wps_taskpane_enabled:false});
+            let handle=start_handle(config).unwrap();
+            let started=std::time::Instant::now();stop_handle(handle);
+            assert!(started.elapsed()<Duration::from_secs(1),"idle listener/sender did not wake promptly: {:?}",started.elapsed());
+        }
+    }
+
+    #[test]
+    fn protected_text_is_absent_from_mobile_and_wps_history_exports() {
+        crate::db_runtime::with_test_protected_texts(&["synthetic-lan-secret"], || {
+            crate::db_runtime::with_test_db(|| {
+                with_db(|conn| {
+                    for category in [0, 1] {
+                        conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(?1,'text','synthetic-lan-secret','synthetic-lan-secret')", [category])?;
+                        conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(?1,'text','ordinary','ordinary')", [category])?;
+                    }
+                    Ok(())
+                })?;
+                let mobile = load_mobile_item_list(20)?;
+                assert_eq!(mobile.len(), 1);
+                assert_eq!(mobile[0].text, "ordinary");
+                for category in [WpsTaskPaneCategory::Records, WpsTaskPaneCategory::Phrases] {
+                    let items = load_wps_taskpane_items(20, "", category)?;
+                    assert_eq!(items.len(), 1);
+                    assert_eq!(items[0].text, "ordinary");
+                }
+                Ok(())
+            }).unwrap();
+        });
+    }
+
+    #[test]
+    fn mobile_udp_probe_receives_unicast_reply_with_actual_tcp_port() {
+        let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let udp_port = socket.local_addr().unwrap().port();
+        let config = LanRuntimeConfig::from_core_config(windows_lan_runtime_context(LanRuntimeEventSink::None),
+            crate::lan_sync_core::LanRuntimeCoreConfig {
+                device_id: "udp-probe-test".to_string(), device_name: "Probe PC".to_string(),
+                tcp_port: 38481, udp_port, lan_enabled: true, wps_taskpane_enabled: false,
+            });
+        let stop = Arc::new(AtomicBool::new(false));
+        let listener_stop = stop.clone();
+        let listener = thread::spawn(move || udp_discovery_loop(socket, config, listener_stop));
+        let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
+        let mut response = None;
+        let mut bytes = [0u8; 4096];
+        for _ in 0..10 {
+            client.send_to(br#"{"magic":"ZSCLIP_LAN_V1","protocol":1,"action":"discover"}"#, ("127.0.0.1", udp_port)).unwrap();
+            if let Ok((length, peer)) = client.recv_from(&mut bytes) {
+                response = Some((serde_json::from_slice::<DiscoveryPacket>(&bytes[..length]).unwrap(), peer));
+                break;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = client.send_to(b"stop", ("127.0.0.1", udp_port));
+        listener.join().unwrap();
+        let (reply, peer) = response.expect("UDP discovery did not reply to the phone's ephemeral socket");
+        assert_eq!(reply.device_id, "udp-probe-test");
+        assert_eq!(reply.tcp_port, 38481);
+        assert_eq!(peer.port(), udp_port);
+    }
 
     fn lan_host_cache_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -2998,7 +3259,7 @@ mod tests {
 
     #[test]
     fn bdd_firewall_allow_rules_cover_local_subnet_on_every_profile() {
-        let source = include_str!("lan_sync.rs");
+        let source = include_str!("lan_firewall.rs");
 
         assert!(source.contains("LocalSubnetV2"));
         assert!(source.contains("\"profile=any\""));

@@ -408,7 +408,8 @@ pub(super) unsafe fn vv_popup_sync_hook_state(visible: bool, target: HWND) {
     }
 }
 
-pub(super) unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState) {
+pub(super) unsafe fn vv_popup_hide(hwnd: HWND, state: &mut AppState) {
+    timer::stop(hwnd, ID_TIMER_VV_WATCH);
     state.vv_popup_visible = false;
     state.vv_popup_pending_target = null_mut();
     state.vv_popup_pending_retries = 0;
@@ -463,6 +464,7 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
     state.vv_popup_target = target;
     state.vv_popup_pending_retries = 0;
     state.vv_popup_visible = true;
+    timer::start(hwnd, ID_TIMER_VV_WATCH, 500);
     state.vv_popup_replaces_ime = false;
     state.vv_popup_trigger_text_visible = false;
     vv_popup_sync_hook_state(true, target);

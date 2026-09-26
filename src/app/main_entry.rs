@@ -61,6 +61,9 @@ pub(crate) fn run() -> AppResult<()> {
             if code == 0 {
                 break;
             }
+            if super::secret_vault_ui::route_main_view_message(&msg) {
+                continue;
+            }
             if msg.message == WM_KEYDOWN && hotkey::is_escape_vk(msg.wParam as u32) {
                 let root = platform_window::root_ancestor(msg.hwnd);
                 if root != msg.hwnd && window_host_hwnds().contains(&root) {
@@ -146,6 +149,13 @@ pub(super) unsafe extern "system" fn wnd_proc(
         WM_MOUSEACTIVATE => {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
+                let mut cursor = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
+                platform_window::screen_to_client(hwnd, &mut cursor);
+                if hit_test_row(&*ptr, cursor.x, cursor.y) >= 0
+                    && capture_explorer_rename_target(hwnd, &mut *ptr)
+                {
+                    return MA_NOACTIVATE as LRESULT;
+                }
                 let mut keep_noactivate = false;
                 let state = &*ptr;
                 if state.main_window_noactivate {
@@ -303,8 +313,9 @@ pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) ->
     repaint_main_window(hwnd, true);
     if role == WindowRole::Main {
         timer::start(hwnd, ID_TIMER_STARTUP_RECOVERY, 500);
-        timer::start(hwnd, ID_TIMER_VV_WATCH, 500);
-        timer::start(hwnd, ID_TIMER_CLOUD_SYNC, 5000);
+        if let Some(state) = get_state_mut(hwnd) {
+            schedule_cloud_sync(state, false);
+        }
     }
     Ok(())
 }

@@ -85,6 +85,22 @@ pub(super) unsafe fn dispatch_settings_ui_event(
             if st_ptr.is_null() {
                 return Some(0);
             }
+            // Update dialogs pump messages; route them before borrowing SettingsWndState.
+            if super::settings_platform_actions_about::handle_about_update_control(hwnd, control_id as isize) {
+                return Some(0);
+            }
+            #[cfg(feature="lan-sync")]
+            if super::main_qq_cloud::is_settings_command(control_id as usize) {
+                let parent=(*st_ptr).parent_hwnd;
+                super::main_qq_cloud::handle_settings_command(hwnd,parent,control_id as usize);
+                let current=platform_window::user_data(hwnd) as *mut SettingsWndState;
+                if !current.is_null() { settings_sync_cloud_page_state(&mut *current); }
+                return Some(0);
+            }
+            if control_id as usize == super::main_secret_vault::OPEN_VAULT {
+                super::secret_vault_ui::open((*st_ptr).parent_hwnd, None);
+                return Some(0);
+            }
             if let Some(command) = settings_command_for_control(control_id as isize) {
                 let st = &mut *st_ptr;
                 queue_settings_command(st, command);

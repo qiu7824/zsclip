@@ -523,6 +523,13 @@ pub(super) fn schedule_cloud_sync(state: &mut AppState, immediate: bool) {
     } else {
         None
     };
+    if state.role == WindowRole::Main && !state.hwnd.is_null() {
+        if state.cloud_sync_next_due.is_some() {
+            timer::start(state.hwnd, ID_TIMER_CLOUD_SYNC, 5000);
+        } else {
+            timer::stop(state.hwnd, ID_TIMER_CLOUD_SYNC);
+        }
+    }
 }
 
 pub(super) fn spawn_cloud_sync_job(

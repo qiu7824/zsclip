@@ -17,6 +17,41 @@ pub(crate) const LAN_FILE_AUTO_MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 pub(crate) const LAN_MAGIC: &str = "ZSCLIP_LAN_V1";
 pub(crate) const LAN_PROTOCOL: u32 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum LanSyncMode { Manual = 0, PhoneToPc = 1, PcToPhone = 2, Bidirectional = 3 }
+impl LanSyncMode {
+    pub(crate) fn from_key(value: &str) -> Self {
+        match value { "phone_to_pc" => Self::PhoneToPc, "pc_to_phone" => Self::PcToPhone, "bidirectional" => Self::Bidirectional, _ => Self::Manual }
+    }
+    pub(crate) fn from_byte(value: u8) -> Self {
+        match value {1 => Self::PhoneToPc, 2 => Self::PcToPhone, 3 => Self::Bidirectional, _ => Self::Manual}
+    }
+    pub(crate) fn key(self) -> &'static str { match self {Self::Manual=>"manual",Self::PhoneToPc=>"phone_to_pc",Self::PcToPhone=>"pc_to_phone",Self::Bidirectional=>"bidirectional"} }
+    pub(crate) fn receive_automatic(self) -> bool { matches!(self,Self::PhoneToPc|Self::Bidirectional) }
+    pub(crate) fn send_automatic(self) -> bool { matches!(self,Self::PcToPhone|Self::Bidirectional) }
+    pub(crate) fn policy(self, device_id: &str) -> serde_json::Value {
+        serde_json::json!({"protocol":"ZSCLIP_SYNC_POLICY_V1","version":1,"sync_mode":self.key(),"auto_push":self.receive_automatic(),"auto_pull":self.send_automatic(),"server_device_id":device_id})
+    }
+}
+
+pub(crate) fn lan_message_identity(envelope: &LanClipEnvelope) -> String {
+    serde_json::to_string(&(envelope.origin_device_id.as_str(), envelope.message_id.as_str())).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod sync_policy_tests {
+    use super::*;
+    #[test] fn modes_describe_both_directions_without_enabling_unknown_values() {
+        for (key,receive,send) in [("manual",false,false),("phone_to_pc",true,false),("pc_to_phone",false,true),("bidirectional",true,true)] {
+            let mode=LanSyncMode::from_key(key);let policy=mode.policy("pc");
+            assert_eq!(mode.key(),key);assert_eq!(mode.receive_automatic(),receive);assert_eq!(mode.send_automatic(),send);
+            assert_eq!(policy["auto_push"],receive);assert_eq!(policy["auto_pull"],send);
+        }
+        assert_eq!(LanSyncMode::from_key("unknown"),LanSyncMode::Manual);
+    }
+}
 // A 10 MiB PNG expands to about 13.34 MiB in Base64; keep room for its JSON envelope.
 pub(crate) const HTTP_MAX_BODY: usize = 16 * 1024 * 1024;
 pub(crate) const DISCOVERY_INTERVAL_MS: u64 = 5000;
@@ -93,6 +128,7 @@ pub(crate) struct LanClipEnvelope {
 pub(crate) struct LanIncomingClip {
     pub(crate) envelope: LanClipEnvelope,
     pub(crate) source_device_name: String,
+    pub(crate) manual: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1196,6 +1232,54 @@ impl DiscoveryPacket {
     }
 }
 
+/// A client probes from its own ephemeral UDP socket. Replying to the source
+/// endpoint avoids requiring a broadcast listener on the phone.
+pub(crate) fn is_lan_discovery_probe(body: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct Probe {
+        magic: String,
+        protocol: u32,
+        action: String,
+    }
+    serde_json::from_slice::<Probe>(body)
+        .map(|probe| probe.magic == LAN_MAGIC && probe.protocol == LAN_PROTOCOL && probe.action == "discover")
+        .unwrap_or(false)
+}
+
+pub(crate) fn lan_ipv4_broadcast(ip: std::net::Ipv4Addr, prefix: u8) -> Option<std::net::Ipv4Addr> {
+    if !(1..=30).contains(&prefix) || ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_link_local() {
+        return None;
+    }
+    let mask = u32::MAX << (32 - prefix);
+    Some(std::net::Ipv4Addr::from(u32::from(ip) | !mask))
+}
+
+#[cfg(test)]
+mod discovery_probe_tests {
+    use super::*;
+
+    #[test]
+    fn mobile_probe_requires_current_protocol_and_explicit_action() {
+        assert!(is_lan_discovery_probe(br#"{"magic":"ZSCLIP_LAN_V1","protocol":1,"action":"discover"}"#));
+        for invalid in [
+            br#"{"magic":"other","protocol":1,"action":"discover"}"#.as_slice(),
+            br#"{"magic":"ZSCLIP_LAN_V1","protocol":2,"action":"discover"}"#.as_slice(),
+            br#"{"magic":"ZSCLIP_LAN_V1","protocol":1,"action":"pair"}"#.as_slice(),
+            br#"{"magic":"ZSCLIP_LAN_V1","protocol":1}"#.as_slice(),
+            b"stop".as_slice(),
+        ] { assert!(!is_lan_discovery_probe(invalid)); }
+    }
+
+    #[test]
+    fn subnet_broadcast_respects_adapter_prefix_and_excludes_point_to_point() {
+        assert_eq!(lan_ipv4_broadcast("192.168.3.8".parse().unwrap(), 24).unwrap().to_string(), "192.168.3.255");
+        assert_eq!(lan_ipv4_broadcast("10.12.3.4".parse().unwrap(), 16).unwrap().to_string(), "10.12.255.255");
+        assert!(lan_ipv4_broadcast("10.0.0.1".parse().unwrap(), 32).is_none());
+        assert!(lan_ipv4_broadcast("127.0.0.1".parse().unwrap(), 8).is_none());
+        assert!(lan_ipv4_broadcast("169.254.15.240".parse().unwrap(), 16).is_none());
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct PairRequestBody {
     pub(crate) device_id: String,
@@ -1823,6 +1907,7 @@ pub(crate) fn execute_lan_background_clip_sync_once(
         incoming_clips.push(LanIncomingClip {
             envelope,
             source_device_name: device.name.clone(),
+            manual: false,
         });
         pulled_count += 1;
     }
@@ -1925,6 +2010,10 @@ pub(crate) fn push_lan_file_payload_to_device(
     path: &Path,
     timeout: Duration,
 ) -> io::Result<()> {
+    push_lan_file_payload_to_device_mode(sender_id,device,path,timeout,false)
+}
+
+pub(crate) fn push_lan_file_payload_to_device_mode(sender_id:&str,device:&LanDevice,path:&Path,timeout:Duration,manual:bool) -> io::Result<()> {
     let metadata = fs::metadata(path)?;
     let total_size = metadata.len();
     if total_size == 0 || total_size > LAN_FILE_MAX_BYTES {
@@ -1951,7 +2040,7 @@ pub(crate) fn push_lan_file_payload_to_device(
     http_request(
         "POST",
         &addr,
-        "/v1/file/start",
+        if manual {"/v1/file/start?mode=manual"} else {"/v1/file/start"},
         &auth_headers,
         Some(&start_body),
         timeout,
@@ -1977,7 +2066,7 @@ pub(crate) fn push_lan_file_payload_to_device(
         http_request(
             "POST",
             &addr,
-            "/v1/file/chunk",
+            if manual {"/v1/file/chunk?mode=manual"} else {"/v1/file/chunk"},
             &auth_headers,
             Some(&body),
             timeout,
@@ -1990,7 +2079,7 @@ pub(crate) fn push_lan_file_payload_to_device(
     http_request(
         "POST",
         &addr,
-        "/v1/file/finish",
+        if manual {"/v1/file/finish?mode=manual"} else {"/v1/file/finish"},
         &auth_headers,
         Some(&finish_body),
         timeout,

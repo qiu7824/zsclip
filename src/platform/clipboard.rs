@@ -32,6 +32,7 @@ pub(crate) const CF_DIBV5: u32 = 17;
 const FORMAT_CLIPBOARD_VIEWER_IGNORE: &str = "Clipboard Viewer Ignore";
 const FORMAT_EXCLUDE_FROM_MONITOR_PROCESSING: &str = "ExcludeClipboardContentFromMonitorProcessing";
 const FORMAT_CAN_INCLUDE_IN_HISTORY: &str = "CanIncludeInClipboardHistory";
+const FORMAT_CAN_UPLOAD_TO_CLOUD: &str = "CanUploadToCloudClipboard";
 const FORMAT_PNG: &str = "PNG";
 const FORMAT_IMAGE_PNG: &str = "image/png";
 const FORMAT_HTML_FORMAT: &str = "HTML Format";
@@ -505,6 +506,58 @@ pub(crate) fn set_text_ignored_by_monitors(text: &str) -> bool {
         memory::global_free(mem);
     }
     ok
+}
+
+/// Publishes sensitive text and its exclusion markers while the clipboard is locked.
+/// Failure to publish any marker prevents publishing the secret itself.
+pub(crate) fn set_protected_text(owner: HWND, text: &str) -> bool {
+    use zeroize::{Zeroize, Zeroizing};
+    if owner.is_null() || text.contains('\0') {
+        return false;
+    }
+    let wide = Zeroizing::new(text.encode_utf16().chain([0]).collect::<Vec<u16>>());
+    let mem = memory::global_alloc(GMEM_MOVEABLE | GMEM_ZEROINIT, wide.len() * size_of::<u16>());
+    if mem.is_null() {
+        return false;
+    }
+    let locked = memory::global_lock(mem);
+    if locked.is_null() {
+        memory::global_free(mem);
+        return false;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(wide.as_ptr(), locked as *mut u16, wide.len());
+    }
+    memory::global_unlock(mem);
+    drop(wide);
+    let clear_and_free = || {
+        let locked = memory::global_lock(mem);
+        if !locked.is_null() {
+            unsafe {
+                std::slice::from_raw_parts_mut(locked as *mut u8, memory::global_size(mem)).zeroize();
+            }
+            memory::global_unlock(mem);
+        }
+        memory::global_free(mem);
+    };
+    if !open(owner) {
+        clear_and_free();
+        return false;
+    }
+    let protected = empty()
+        && set_registered_u32_format(FORMAT_CLIPBOARD_VIEWER_IGNORE, 1)
+        && set_registered_u32_format(FORMAT_EXCLUDE_FROM_MONITOR_PROCESSING, 1)
+        && set_registered_u32_format(FORMAT_CAN_INCLUDE_IN_HISTORY, 0)
+        && set_registered_u32_format(FORMAT_CAN_UPLOAD_TO_CLOUD, 0);
+    let success = protected && set_data(CF_UNICODETEXT, mem);
+    if !success {
+        let _ = empty();
+    }
+    close();
+    if !success {
+        clear_and_free();
+    }
+    success
 }
 
 fn set_registered_u32_format(name: &str, value: u32) -> bool {

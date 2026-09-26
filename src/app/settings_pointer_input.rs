@@ -8,9 +8,30 @@ pub(super) unsafe fn cancel_settings_scroll_drag(hwnd: HWND, st: &mut SettingsWn
     }
 }
 
-pub(super) fn cancel_settings_scroll_frame(_hwnd: HWND, st: &mut SettingsWndState) {
+pub(super) fn cancel_settings_scroll_frame(hwnd: HWND, st: &mut SettingsWndState) {
+    timer::stop(hwnd, ID_TIMER_SETTINGS_SCROLL_FRAME);
     st.scroll_frame_posted = false;
     st.pending_scroll_delta = 0;
+    st.scroll_wheel_remainder = 0;
+}
+
+fn scroll_frame_step(remaining: i32) -> i32 {
+    if remaining == 0 {
+        0
+    } else {
+        let step = remaining / 3;
+        if step == 0 {
+            remaining.signum()
+        } else {
+            step
+        }
+    }
+}
+
+fn wheel_pixels(delta: i32, remainder: &mut i32, pixels_per_notch: i32) -> i32 {
+    let accumulated = i64::from(*remainder) + i64::from(delta) * i64::from(pixels_per_notch);
+    *remainder = (accumulated % 120) as i32;
+    (-(accumulated / 120)).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 pub(super) unsafe fn handle_settings_scroll_frame(hwnd: HWND) -> LRESULT {
@@ -19,10 +40,22 @@ pub(super) unsafe fn handle_settings_scroll_frame(hwnd: HWND) -> LRESULT {
         return 0;
     }
     let st = &mut *st_ptr;
-    st.scroll_frame_posted = false;
     let delta = std::mem::take(&mut st.pending_scroll_delta);
     if delta != 0 {
-        settings_scroll(hwnd, st, delta);
+        let before = st.content_scroll_y;
+        settings_scroll(hwnd, st, scroll_frame_step(delta));
+        let actual = st.content_scroll_y - before;
+        if actual != 0 {
+            st.pending_scroll_delta = delta.saturating_sub(actual);
+        }
+    }
+    if st.pending_scroll_delta == 0 {
+        timer::stop(hwnd, ID_TIMER_SETTINGS_SCROLL_FRAME);
+        st.scroll_frame_posted = false;
+    } else if SetTimer(hwnd, ID_TIMER_SETTINGS_SCROLL_FRAME, 16, None) == 0 {
+        let rest = std::mem::take(&mut st.pending_scroll_delta);
+        settings_scroll(hwnd, st, rest);
+        st.scroll_frame_posted = false;
     }
     0
 }
@@ -153,6 +186,7 @@ pub(super) unsafe fn handle_settings_lbutton_down(
             drag_start_y,
             drag_start_scroll,
         } => {
+            cancel_settings_scroll_frame(hwnd, st);
             st.scroll_dragging = true;
             st.scroll_drag_start_y = drag_start_y;
             st.scroll_drag_start_scroll = drag_start_scroll;
@@ -162,6 +196,7 @@ pub(super) unsafe fn handle_settings_lbutton_down(
             return 0;
         }
         SettingsPointerDownTarget::ScrollbarTrack { scroll_y } => {
+            cancel_settings_scroll_frame(hwnd, st);
             settings_scroll_to(hwnd, st, scroll_y);
             return 0;
         }
@@ -197,14 +232,51 @@ pub(super) unsafe fn handle_settings_mouse_wheel(hwnd: HWND, delta: i32) -> LRES
         return 0;
     }
     let st = &mut *st_ptr;
-    let scroll_delta = settings_scroll_delta_for_wheel(delta);
+    let scroll_delta = wheel_pixels(delta, &mut st.scroll_wheel_remainder, settings_scale(60));
     if scroll_delta == 0 {
         return 0;
     }
     st.pending_scroll_delta = st.pending_scroll_delta.saturating_add(scroll_delta);
     if !st.scroll_frame_posted {
         st.scroll_frame_posted = true;
-        platform_window::post_message(hwnd as isize, WM_SETTINGS_SCROLL_FRAME, 0, 0);
+        if SetTimer(hwnd, ID_TIMER_SETTINGS_SCROLL_FRAME, 16, None) == 0 {
+            // A resource-starved timer must not swallow input.
+            platform_window::post_message(hwnd as isize, WM_SETTINGS_SCROLL_FRAME, 0, 0);
+        }
     }
     0
+}
+
+#[cfg(test)]
+mod scroll_motion_tests {
+    use super::*;
+    #[test]
+    fn high_resolution_wheel_preserves_total_motion_and_zero_is_idle() {
+        let mut remainder = 0;
+        let sum: i32 = (0..120).map(|_| wheel_pixels(1, &mut remainder, 60)).sum();
+        assert_eq!(sum, -60);
+        assert_eq!(remainder, 0);
+        assert_eq!(wheel_pixels(0, &mut remainder, 60), 0);
+        assert_eq!(wheel_pixels(-240, &mut remainder, 60), 120);
+        let scaled: i32 = (0..120).map(|_| wheel_pixels(1, &mut remainder, 75)).sum();
+        assert_eq!(scaled, -75);
+    }
+    #[test]
+    fn scroll_frames_ease_towards_target_without_overshoot_or_stalling() {
+        for total in [-600, -60, -1, 0, 1, 60, 600] {
+            let mut remaining = total;
+            let mut sum = 0;
+            let mut count = 0;
+            while remaining != 0 {
+                let step = scroll_frame_step(remaining);
+                assert_eq!(step.signum(), remaining.signum());
+                assert!(step.abs() <= remaining.abs());
+                sum += step;
+                remaining -= step;
+                count += 1;
+                assert!(count < 24);
+            }
+            assert_eq!(sum, total);
+        }
+    }
 }

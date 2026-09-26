@@ -120,7 +120,10 @@ mod automatic_skip_tests {
 }
 
 pub(super) unsafe fn paste_window_is_zsclip(hwnd: HWND) -> bool {
-    if hwnd.is_null() || is_app_window(hwnd) {
+    if hwnd.is_null()
+        || is_app_window(hwnd)
+        || WindowsWindowIdentityHost::new().is_current_process_window(hwnd)
+    {
         return !hwnd.is_null();
     }
     let class_name = paste_window_class_name(hwnd);

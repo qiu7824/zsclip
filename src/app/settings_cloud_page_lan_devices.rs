@@ -59,7 +59,7 @@ pub(super) unsafe fn settings_lan_refresh_lists(st: &mut SettingsWndState) -> bo
             st.lb_lan_devices,
             LB_ADDSTRING,
             0,
-            to_wide("暂无附近设备或待允许请求，可刷新或输入手动 IP").as_ptr() as LPARAM,
+            to_wide("请在手机发现电脑并连接；收到请求后在电脑允许即可。").as_ptr() as LPARAM,
         );
     } else {
         for pair in &st.lan_pending_cache {

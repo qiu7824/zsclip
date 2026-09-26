@@ -1,0 +1,13 @@
+{
+  "name": "纯白",
+  "defaultSkinId": 1,
+  "background": "#ffffff",
+  "keyFace": "#ffffff",
+  "keyBorder": "#e3e3e3",
+  "keyPressed": "#ededed",
+  "keyPressedBorder": "#d1d1d1",
+  "text": "#000000",
+  "superscript": "#858585",
+  "icon": "#000000",
+  "keyShadow": false
+}

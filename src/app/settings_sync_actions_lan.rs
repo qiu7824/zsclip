@@ -11,6 +11,7 @@ pub(super) unsafe fn execute_settings_lan_sync_action(
             let pst = get_state_ptr(st.parent_hwnd);
             if !pst.is_null() {
                 crate::lan_sync::trigger_discovery(&(*pst).settings);
+                crate::lan_sync::request_firewall_repair(st.parent_hwnd);
             }
             settings_sync_page_state(st, SettingsPage::Cloud.index());
             true
@@ -78,12 +79,12 @@ unsafe fn copy_settings_lan_pairing_url(
     st: &mut SettingsWndState,
     action: SettingsAction,
 ) {
-    if multi_sync_mode_from_settings(&st.draft) != "lan" {
+    if !matches!(multi_sync_mode_from_settings(&st.draft), "lan" | "qinput") {
         show_native_dialog_message(
             hwnd,
             tr("多端同步", "Multi-device Sync"),
             tr(
-                "请先在同步方案中选择局域网，再复制扫码绑定链接。",
+                "请先选择局域网或 Q 输入法，再复制配对链接。",
                 "Choose LAN as the sync method before copying a pairing link.",
             ),
             NativeDialogLevel::Info,
@@ -120,12 +121,12 @@ unsafe fn copy_settings_lan_pairing_url(
 }
 
 unsafe fn open_settings_lan_setup_page(hwnd: HWND, st: &SettingsWndState) {
-    if multi_sync_mode_from_settings(&st.draft) != "lan" {
+    if !matches!(multi_sync_mode_from_settings(&st.draft), "lan" | "qinput") {
         show_native_dialog_message(
             hwnd,
             tr("多端同步", "Multi-device Sync"),
             tr(
-                "请先在同步方案中选择局域网，再打开扫码绑定页。",
+                "请先选择局域网或 Q 输入法，再打开配对页。",
                 "Choose LAN as the sync method before opening the pairing QR page.",
             ),
             NativeDialogLevel::Info,

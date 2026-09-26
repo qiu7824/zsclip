@@ -135,6 +135,20 @@ where
     snapshot()
 }
 
+/// UI saves must not wait behind network I/O that is holding a data read gate.
+pub(crate) fn try_with_exclusive_app_data_snapshot<T, F>(snapshot: F) -> Result<T, String>
+where F: FnOnce() -> Result<T, String> {
+    if APP_DATA_READ_DEPTH.with(Cell::get) != 0 {
+        return Err("数据同步正在进行，请稍后重试。".into());
+    }
+    let _access_guard = match app_data_access_gate().try_write() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return Err("数据同步正在进行，请稍后重试。".into()),
+    };
+    snapshot()
+}
+
 struct AppDataReplacementEpochGuard;
 
 impl AppDataReplacementEpochGuard {
@@ -468,6 +482,8 @@ fn migrate_phrase_group_assignments(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn configure_db_connection(conn: &Connection) -> rusqlite::Result<()> {
+    register_protected_text_filter(conn)?;
+    conn.pragma_update(None, "secure_delete", "ON")?;
     conn.busy_timeout(Duration::from_millis(5_000))?;
     let _ = conn.pragma_update(None, "journal_mode", "WAL");
     let _ = conn.pragma_update(None, "synchronous", "NORMAL");
@@ -478,6 +494,249 @@ fn configure_db_connection(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// A single boundary shared by capture, database queries and synchronization.
+pub(crate) fn text_is_protected(text: &str) -> bool {
+    #[cfg(test)]
+    if TEST_PROTECTION_UNAVAILABLE.with(std::cell::Cell::get) {
+        return !text.is_empty();
+    }
+    #[cfg(test)]
+    if let Some(values) = test_protected_values() {
+        return values.iter().any(|value| normalize_protected_test_text(value) == normalize_protected_test_text(text));
+    }
+    #[cfg(windows)]
+    { crate::secret_vault::is_protected(text) }
+    #[cfg(not(windows))]
+    { let _ = text; false }
+}
+
+/// A verified match is required for notices claiming a value is in the vault.
+/// An unreadable registry still blocks capture through `text_is_protected`.
+pub(crate) fn text_is_registered(text: &str) -> bool {
+    !text.is_empty()
+        && protected_exclusion_matcher().is_ok_and(|matches| matches(text))
+}
+
+pub(crate) fn register_protected_text_filter(conn: &Connection) -> rusqlite::Result<()> {
+    // This function must not be deterministic: the protected registry can change
+    // while a prepared query remains cached or while the vault is locked.
+    conn.create_scalar_function("zsclip_is_protected", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+        |context| Ok(context.get::<Option<String>>(0)?.is_some_and(|text| text_is_protected(&text))))?;
+    conn.create_scalar_function("zsclip_is_protected_html", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+        |context| Ok(context.get::<Option<String>>(0)?.is_some_and(|html| !html.is_empty() && text_is_protected(&protected_html_text(&html)))))
+}
+
+fn protected_html_text(html: &str) -> String {
+    #[cfg(windows)]
+    {
+        crate::platform::clipboard::cf_html_extract_fragment(html)
+            .map(|fragment| crate::app::data::html_to_text(&fragment)).unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    { html.to_string() }
+}
+
+pub(crate) fn purge_protected_items(conn: &Connection) -> rusqlite::Result<usize> {
+    // Deletion uses a verified immutable snapshot, never the fail-closed SQL
+    // filter: damaged registry storage must not erase ordinary text records.
+    let matches = protected_exclusion_matcher()?;
+    conn.pragma_update(None, "secure_delete", "ON")?;
+    let has_text = table_has_column(conn, "items", "text_data")?;
+    let has_preview = table_has_column(conn, "items", "preview")?;
+    let html_expression = if table_has_column(conn, "items", "rich_text_html")? { "COALESCE(rich_text_html,'')" } else { "''" };
+    let expression = match (has_text, has_preview) {
+        (true, true) => "COALESCE(NULLIF(text_data, ''), preview, '')",
+        (true, false) => "COALESCE(text_data, '')",
+        (false, true) => "COALESCE(preview, '')",
+        (false, false) => return Ok(0),
+    };
+    let tx = conn.unchecked_transaction()?;
+    let (ids, clear_html) = {
+        let mut query = tx.prepare(&format!("SELECT id, {expression}, {html_expression} FROM items WHERE kind IN ('text','phrase')"))?;
+        let rows = query.query_map([], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?)))?;
+        let mut ids = Vec::new();
+        let mut clear_html = Vec::new();
+        for row in rows {
+            let (id, text, html) = row?;
+            if matches(&text) { ids.push(id); }
+            else if !html.is_empty() {
+                let visible = protected_html_text(&html);
+                if matches(&visible) {
+                    clear_html.push(id);
+                }
+            }
+        }
+        (ids, clear_html)
+    };
+    let mut count = 0;
+    for id in ids { count += tx.execute("DELETE FROM items WHERE id=? AND kind IN ('text','phrase')", [id])?; }
+    if has_text {
+        for id in clear_html {
+            tx.execute("UPDATE items SET rich_text_html=NULL, preview=substr(COALESCE(text_data,preview,''),1,120) WHERE id=?", [id])?;
+        }
+    }
+    tx.commit()?;
+    Ok(count)
+}
+
+pub(crate) fn protected_sync_revision() -> Result<String, String> {
+    #[cfg(test)]
+    if let Some(values) = test_protected_values() {
+        return Ok(format!("test:{:x}", md5::compute(serde_json::to_vec(&values).unwrap())));
+    }
+    #[cfg(windows)]
+    { crate::secret_vault::exclusion_revision() }
+    #[cfg(not(windows))]
+    { Ok(String::new()) }
+}
+
+pub(crate) fn ensure_protected_sync_revision(expected: &str) -> Result<(), String> {
+    if protected_sync_revision()? != expected {
+        return Err("密码库已更新，待发送的旧同步内容已取消，请重新同步。".into());
+    }
+    Ok(())
+}
+
+fn protected_exclusion_matcher() -> rusqlite::Result<Box<dyn Fn(&str) -> bool>> {
+    #[cfg(test)]
+    if TEST_PROTECTION_UNAVAILABLE.with(std::cell::Cell::get) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    #[cfg(test)]
+    if let Some(values) = test_protected_values() {
+        return Ok(Box::new(move |text| values.iter().any(|value| normalize_protected_test_text(value) == normalize_protected_test_text(text))));
+    }
+    #[cfg(windows)]
+    {
+        let snapshot = crate::secret_vault::exclusion_snapshot().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        Ok(Box::new(move |text| snapshot.matches(text)))
+    }
+    #[cfg(not(windows))]
+    { Ok(Box::new(|_| false)) }
+}
+
+/// Sanitize the private staging database, including free pages, before archiving.
+pub(crate) fn sanitize_protected_snapshot(path: &std::path::Path) -> Result<(), String> {
+    let conn = Connection::open(path).map_err(|error| error.to_string())?;
+    purge_protected_items(&conn).map_err(|error| error.to_string())?;
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; VACUUM;")
+        .map_err(|error| format!("无法清理受保护内容的快照暂存数据库：{error}"))
+}
+
+#[cfg(test)]
+thread_local! { static TEST_PROTECTED_TEXTS: std::cell::RefCell<Option<Arc<Mutex<Vec<String>>>>> = const { std::cell::RefCell::new(None) }; }
+#[cfg(test)]
+thread_local! { static TEST_PROTECTION_UNAVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+#[cfg(test)]
+pub(crate) fn with_test_protection_unavailable<T>(test: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) { TEST_PROTECTION_UNAVAILABLE.with(|state| state.set(self.0)); }
+    }
+    let _reset = Reset(TEST_PROTECTION_UNAVAILABLE.with(|state| state.replace(true)));
+    test()
+}
+#[cfg(test)]
+fn test_protected_values() -> Option<Vec<String>> {
+    TEST_PROTECTED_TEXTS.with(|values| values.borrow().as_ref().map(|values| values.lock().unwrap().clone()))
+}
+#[cfg(test)]
+fn normalize_protected_test_text(value: &str) -> String { value.replace("\r\n", "\n").replace('\r', "\n").trim().to_string() }
+#[cfg(test)]
+pub(crate) fn with_test_protected_texts<T>(values: &[&str], test: impl FnOnce() -> T) -> T {
+    with_test_protection_registry(Arc::new(Mutex::new(values.iter().map(|value| (*value).to_string()).collect())), test)
+}
+#[cfg(test)]
+pub(crate) fn with_test_protection_registry<T>(values: Arc<Mutex<Vec<String>>>, test: impl FnOnce() -> T) -> T {
+    struct Reset(Option<Arc<Mutex<Vec<String>>>>);
+    impl Drop for Reset { fn drop(&mut self) { TEST_PROTECTED_TEXTS.with(|values| *values.borrow_mut() = self.0.take()); } }
+    let previous = TEST_PROTECTED_TEXTS.with(|slot| slot.replace(Some(values)));
+    let _guard = Reset(previous);
+    test()
+}
+
+#[cfg(test)]
+mod protected_storage_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_protection_blocks_capture_without_claiming_registration_or_purging() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_db_connection(&conn).unwrap();
+        migrate_db(&conn).unwrap();
+        conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','ordinary','ordinary')", []).unwrap();
+        with_test_protection_unavailable(|| {
+            assert!(text_is_protected("ordinary"));
+            assert!(!text_is_registered("ordinary"));
+            assert!(purge_protected_items(&conn).is_err());
+            assert_eq!(conn.query_row("SELECT count(*) FROM items", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        });
+        with_test_protected_texts(&["registered"], || {
+            assert!(text_is_registered(" registered\r\n"));
+            assert!(!text_is_registered("ordinary"));
+            assert!(!text_is_registered(""));
+        });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn protected_html_residue_is_removed_without_deleting_ordinary_text_or_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_db_connection(&conn).unwrap(); migrate_db(&conn).unwrap();
+        let stale_html = "Version:0.9\r\n<html><!--StartFragment--><b>s&#x79;nthetic-html-secret</b><!--EndFragment--></html>";
+        let ordinary_html = "<table><tr><td>ordinary</td><td>table</td></tr></table>";
+        conn.execute("INSERT INTO items(category,kind,preview,text_data,rich_text_html) VALUES(0,'text','edited ordinary','edited ordinary',?)", [stale_html]).unwrap();
+        conn.execute("INSERT INTO items(category,kind,preview,text_data,rich_text_html) VALUES(0,'text','ordinary table','ordinary\t table\r\n',?)", [ordinary_html]).unwrap();
+        with_test_protected_texts(&["synthetic-html-secret"], || {
+            assert_eq!(conn.query_row("SELECT zsclip_is_protected_html(?1)", [stale_html], |row| row.get::<_,bool>(0)).unwrap(), true);
+            assert_eq!(purge_protected_items(&conn).unwrap(), 0);
+            assert_eq!(conn.query_row("SELECT count(*) FROM items", [], |row| row.get::<_,i64>(0)).unwrap(), 2);
+            let html: Option<String> = conn.query_row("SELECT rich_text_html FROM items WHERE id=1", [], |row| row.get(0)).unwrap();
+            assert!(html.is_none());
+            assert_eq!(conn.query_row("SELECT rich_text_html FROM items WHERE id=2", [], |row| row.get::<_,String>(0)).unwrap(), ordinary_html);
+        });
+    }
+
+    #[test]
+    fn protected_sql_filter_is_dynamic_and_purge_removes_history_and_phrases() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_db_connection(&conn).unwrap();
+        migrate_db(&conn).unwrap();
+        for (category, value) in [(0, "synthetic-secret"), (1, " synthetic-secret\r\n"), (0, "ordinary")] {
+            conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(?,'text',?,?)", rusqlite::params![category,value,value]).unwrap();
+        }
+        conn.execute("INSERT INTO items(category,kind,preview) VALUES(0,'image','synthetic-secret')", []).unwrap();
+        let mut query = conn.prepare("SELECT count(*) FROM items WHERE kind NOT IN ('text','phrase') OR NOT zsclip_is_protected(COALESCE(text_data,preview))").unwrap();
+        with_test_protected_texts(&[], || assert_eq!(query.query_row([], |row| row.get::<_,i64>(0)).unwrap(), 4));
+        with_test_protected_texts(&["synthetic-secret"], || {
+            assert_eq!(query.query_row([], |row| row.get::<_,i64>(0)).unwrap(), 2);
+            drop(query);
+            assert_eq!(purge_protected_items(&conn).unwrap(), 2);
+            assert_eq!(conn.query_row("SELECT text_data FROM items", [], |row| row.get::<_,String>(0)).unwrap(), "ordinary");
+            assert_eq!(conn.query_row("SELECT count(*) FROM items WHERE kind='image'", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+            assert_eq!(conn.query_row("PRAGMA secure_delete", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        });
+    }
+
+    #[test]
+    fn protected_snapshot_sanitizes_live_and_freed_database_pages() {
+        let path = std::env::temp_dir().join(format!("zsclip-protected-snapshot-{}-{}.db", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        let conn = Connection::open(&path).unwrap();
+        migrate_db(&conn).unwrap();
+        conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text',?1,?1)", ["synthetic-secret-not-in-archive"]).unwrap();
+        conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','ordinary','ordinary')", []).unwrap();
+        drop(conn);
+        with_test_protected_texts(&["synthetic-secret-not-in-archive"], || sanitize_protected_snapshot(&path).unwrap());
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(!bytes.windows(b"synthetic-secret-not-in-archive".len()).any(|window| window == b"synthetic-secret-not-in-archive"));
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(conn.query_row("SELECT count(*) FROM items", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+        drop(conn);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 fn configure_runtime_wal_connection(conn: &Connection) -> rusqlite::Result<()> {
     conn.pragma_update(None, "wal_autocheckpoint", 0i32)?;
     conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
@@ -485,6 +744,7 @@ fn configure_runtime_wal_connection(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
+    register_protected_text_filter(conn)?;
     conn.execute_batch(
         "
         CREATE TABLE IF NOT EXISTS items(
@@ -512,6 +772,12 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS lan_receipts(
+            origin_device_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            received_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(origin_device_id, message_id)
+        );
         CREATE INDEX IF NOT EXISTS idx_items_category_pinned_id ON items(category, pinned, id DESC);
         CREATE INDEX IF NOT EXISTS idx_items_group_id ON items(group_id, id DESC);
         CREATE INDEX IF NOT EXISTS idx_items_category_signature ON items(category, signature, id DESC);
@@ -520,6 +786,14 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
         ",
     )?;
     migrate_items_schema(conn)?;
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO lan_receipts(origin_device_id,message_id,received_at_ms)
+         SELECT lan_origin_device_id,lan_origin_message_id,COALESCE(CAST(strftime('%s',created_at) AS INTEGER)*1000,0)
+         FROM items WHERE COALESCE(lan_origin_device_id,'')<>'' AND COALESCE(lan_origin_message_id,'')<>''
+         AND (kind NOT IN ('text','phrase') OR (NOT zsclip_is_protected(COALESCE(NULLIF(text_data,''),preview,'')) AND NOT zsclip_is_protected_html(rich_text_html)))
+         ORDER BY id DESC LIMIT 4096;
+         DELETE FROM lan_receipts WHERE rowid IN (SELECT rowid FROM lan_receipts ORDER BY received_at_ms DESC,rowid DESC LIMIT -1 OFFSET 4096);"
+    )?;
     migrate_clip_groups_schema(conn)?;
     migrate_phrase_group_assignments(conn)?;
     Ok(())
@@ -661,6 +935,7 @@ pub(crate) fn prepare_restored_database(
     }
 
     migrate_db(&conn).map_err(|err| format!("恢复数据库迁移失败：{err}"))?;
+    purge_protected_items(&conn).map_err(|err| format!("清理恢复数据库受保护内容失败：{err}"))?;
 
     let mut available_images = Vec::new();
     collect_restored_image_files(staged_images_dir, staged_images_dir, &mut available_images)
@@ -883,7 +1158,7 @@ where
 pub(crate) fn item_text(item_id: i64) -> rusqlite::Result<Option<String>> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT COALESCE(text_data,'') FROM items WHERE id=?",
+            "SELECT COALESCE(text_data,'') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
             [item_id],
             |row| row.get(0),
         )
@@ -1049,10 +1324,13 @@ struct NativeClipboardInsert<'a> {
 fn insert_native_clipboard_item(
     item: NativeClipboardInsert<'_>,
 ) -> rusqlite::Result<NativeClipboardInsertOutcome> {
+    if matches!(item.kind, "text" | "phrase") && item.text_data.is_some_and(text_is_protected) {
+        return Ok(NativeClipboardInsertOutcome { item_id: None, inserted: false, reason: "protected" });
+    }
     with_db_mut(|conn| {
         let duplicate = conn
             .query_row(
-                "SELECT id FROM items WHERE category=? AND signature=? ORDER BY id DESC LIMIT 1",
+                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND signature=? ORDER BY id DESC LIMIT 1",
                 rusqlite::params![item.category, item.signature],
                 |row| row.get::<_, i64>(0),
             )
@@ -1065,9 +1343,10 @@ fn insert_native_clipboard_item(
             });
         }
 
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_width, image_height, pinned, group_id)
-             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0
+             WHERE ?2 NOT IN ('text','phrase') OR NOT zsclip_is_protected(COALESCE(NULLIF(?5,''),?3,''))",
             rusqlite::params![
                 item.category,
                 item.kind,
@@ -1081,6 +1360,7 @@ fn insert_native_clipboard_item(
                 item.image_height,
             ],
         )?;
+        if inserted == 0 { return Ok(NativeClipboardInsertOutcome { item_id: None, inserted: false, reason: "protected" }); }
         Ok(NativeClipboardInsertOutcome {
             item_id: Some(conn.last_insert_rowid()),
             inserted: true,
@@ -1133,10 +1413,11 @@ fn native_clip_signature(
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn update_item_text(item_id: i64, new_text: &str) -> rusqlite::Result<bool> {
+    if text_is_protected(new_text) { return Ok(false); }
     let preview: String = new_text.chars().take(120).collect();
     with_db_mut(|conn| {
         let affected = conn.execute(
-            "UPDATE items SET text_data=?, preview=? WHERE id=?",
+            "UPDATE items SET text_data=?1, preview=?2, rich_text_html=NULL, signature='', lan_origin_message_id='', lan_origin_device_id='', lan_origin_seq=0, lan_origin_hash='' WHERE id=?3 AND NOT zsclip_is_protected(?1)",
             rusqlite::params![new_text, preview, item_id],
         )?;
         Ok(affected > 0)
@@ -1216,7 +1497,7 @@ pub(crate) fn native_clip_item(
         conn.query_row(
             "SELECT id, kind, COALESCE(preview, ''), text_data, rich_text_html, COALESCE(source_app, ''), \
              file_paths, image_data, COALESCE(image_path, ''), image_width, image_height, \
-             pinned, group_id, COALESCE(created_at, '') FROM items WHERE id=?",
+             pinned, group_id, COALESCE(created_at, '') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
             [item_id],
             |row| {
                 let kind_raw: String = row.get(1)?;
@@ -1279,7 +1560,7 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
 ) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
     with_db(|conn| {
         let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned \
-             FROM items WHERE category=?"
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?"
             .to_string();
         let mut values = vec![rusqlite::types::Value::from(category)];
         if group_id > 0 {
@@ -1339,10 +1620,10 @@ pub(crate) fn native_clip_list_items_for_query(
         let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at";
         let mut sql = if near_query.is_some() {
             format!(
-                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE category=?"
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?"
             )
         } else {
-            format!("SELECT {select_columns} FROM items WHERE category=?")
+            format!("SELECT {select_columns} FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?")
         };
         let mut values = vec![rusqlite::types::Value::from(category)];
 
@@ -1786,10 +2067,86 @@ where
 }
 
 #[cfg(test)]
+static DB_TEST_SCOPE_GATE: OnceLock<RwLock<()>> = OnceLock::new();
+#[cfg(test)]
+thread_local! { static DB_TEST_SCOPE_DEPTH: Cell<usize> = const { Cell::new(0) }; }
+
+#[cfg(test)]
+fn db_test_scope_gate() -> &'static RwLock<()> {
+    DB_TEST_SCOPE_GATE.get_or_init(|| RwLock::new(()))
+}
+
+pub(crate) fn lan_receipt_exists(conn: &Connection, origin: &str, message: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM lan_receipts WHERE origin_device_id=?1 AND message_id=?2)
+         OR EXISTS(SELECT 1 FROM items WHERE lan_origin_device_id=?1 AND lan_origin_message_id=?2)",
+        rusqlite::params![origin, message], |row| row.get(0),
+    )
+}
+
+pub(crate) fn has_lan_receipt(origin: &str, message: &str) -> rusqlite::Result<bool> {
+    with_db(|conn| lan_receipt_exists(conn, origin, message))
+}
+
+/// Call inside the transaction that saved the received item, never when it is queued.
+pub(crate) fn record_lan_receipt(conn: &Connection, origin: &str, message: &str) -> rusqlite::Result<()> {
+    let received_at = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis().min(i64::MAX as u128) as i64;
+    conn.execute("INSERT OR IGNORE INTO lan_receipts(origin_device_id,message_id,received_at_ms) VALUES(?1,?2,?3)",
+        rusqlite::params![origin, message, received_at])?;
+    conn.execute("DELETE FROM lan_receipts WHERE rowid IN (SELECT rowid FROM lan_receipts ORDER BY received_at_ms DESC,rowid DESC LIMIT -1 OFFSET 4096)", [])?;
+    Ok(())
+}
+
+/// Independent fixture databases may run concurrently, but tests that exercise
+/// the process-wide restore epoch must own an exclusive test scope.
+#[cfg(test)]
+struct SharedDbTestScope {
+    _read: Option<std::sync::RwLockReadGuard<'static, ()>>,
+}
+#[cfg(test)]
+impl SharedDbTestScope {
+    fn enter() -> Self {
+        let nested = DB_TEST_SCOPE_DEPTH.with(|depth| depth.get() != 0);
+        let read = (!nested).then(|| db_test_scope_gate().read().unwrap_or_else(|error| error.into_inner()));
+        DB_TEST_SCOPE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        Self { _read: read }
+    }
+
+    // Only used by explicitly spawned workers of the restore-boundary tests;
+    // their parent keeps the exclusive scope until after joining the worker.
+    fn inherited_restore_worker() -> Self {
+        assert!(db_test_scope_gate().try_read().is_err(), "restore worker requires its parent's exclusive test scope");
+        DB_TEST_SCOPE_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        Self { _read: None }
+    }
+}
+#[cfg(test)]
+impl Drop for SharedDbTestScope {
+    fn drop(&mut self) { DB_TEST_SCOPE_DEPTH.with(|depth| depth.set(depth.get() - 1)); }
+}
+
+#[cfg(test)]
+pub(crate) struct ExclusiveDbTestScope {
+    _write: std::sync::RwLockWriteGuard<'static, ()>,
+}
+#[cfg(test)]
+pub(crate) fn exclusive_db_test_scope() -> ExclusiveDbTestScope {
+    assert_eq!(DB_TEST_SCOPE_DEPTH.with(Cell::get), 0, "exclusive test scope must be outermost");
+    let write = db_test_scope_gate().write().unwrap_or_else(|error| error.into_inner());
+    DB_TEST_SCOPE_DEPTH.with(|depth| depth.set(1));
+    ExclusiveDbTestScope { _write: write }
+}
+#[cfg(test)]
+impl Drop for ExclusiveDbTestScope {
+    fn drop(&mut self) { DB_TEST_SCOPE_DEPTH.with(|depth| depth.set(depth.get() - 1)); }
+}
+
+#[cfg(test)]
 pub(crate) fn with_test_db<T, F>(f: F) -> rusqlite::Result<T>
 where
     F: FnOnce() -> rusqlite::Result<T>,
 {
+    let _test_scope = SharedDbTestScope::enter();
     let previous = {
         let _access_guard = db_access_gate()
             .read()
@@ -1831,6 +2188,7 @@ pub(crate) fn with_test_db_path<T, F>(path: &std::path::Path, f: F) -> rusqlite:
 where
     F: FnOnce() -> rusqlite::Result<T>,
 {
+    let _test_scope = SharedDbTestScope::enter();
     let previous = {
         let _access_guard = db_access_gate()
             .read()
@@ -1942,6 +2300,7 @@ mod tests {
 
     #[test]
     fn generation_checks_do_not_wait_for_an_active_app_data_replacement() {
+        let _test_scope = exclusive_db_test_scope();
         let stable_generation = current_app_data_generation();
         assert_eq!(stable_generation & 1, 0);
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -1977,6 +2336,7 @@ mod tests {
 
     #[test]
     fn exclusive_replacement_waits_for_work_and_reopens_other_thread_tls_connection() {
+        let _test_scope = exclusive_db_test_scope();
         let db_file = db_runtime_test_path("exclusive-replacement");
         let replacement_db_file = db_runtime_test_path("exclusive-replacement-source");
         let replacement_conn = Connection::open(&replacement_db_file).unwrap();
@@ -1999,6 +2359,7 @@ mod tests {
         let (replacement_done_tx, replacement_done_rx) = mpsc::channel();
         let (observed_preview_tx, observed_preview_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
+            let _worker_scope = SharedDbTestScope::inherited_restore_worker();
             with_test_db_path(&worker_db_file, || {
                 with_db(|conn| {
                     conn.execute(
@@ -2069,6 +2430,7 @@ mod tests {
 
     #[test]
     fn write_started_during_replacement_is_aborted_without_touching_new_database() {
+        let _test_scope = exclusive_db_test_scope();
         let db_file = db_runtime_test_path("replacement-epoch");
         let replacement_db_file = db_runtime_test_path("replacement-epoch-source");
         let replacement_conn = Connection::open(&replacement_db_file).unwrap();
@@ -2088,6 +2450,7 @@ mod tests {
         let (start_stale_write_tx, start_stale_write_rx) = mpsc::channel();
         let (stale_write_result_tx, stale_write_result_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
+            let _worker_scope = SharedDbTestScope::inherited_restore_worker();
             with_test_db_path(&worker_db_file, || {
                 worker_ready_tx.send(()).unwrap();
                 start_stale_write_rx.recv().unwrap();

@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.0.3"
+        default: "1.0.7"
   push:
     branches:
       - main
@@ -55,12 +55,12 @@ jobs:
             release_version="$app_version"
           fi
 
-          if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error title=Invalid APP_VERSION::$app_version is not a four-part numeric version"
+          if [[ ! "$app_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error title=Invalid APP_VERSION::$app_version is not a three- or four-part numeric version"
             exit 1
           fi
-          if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error title=Invalid release version::$release_version is not a four-part numeric version"
+          if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error title=Invalid release version::$release_version is not a three- or four-part numeric version"
             exit 1
           fi
           if [ "$release_version" != "$app_version" ]; then
@@ -69,6 +69,7 @@ jobs:
           fi
 
           IFS='.' read -r version_major version_minor version_patch version_revision <<< "$release_version"
+          version_revision=${version_revision:-0}
           version_major=$((10#$version_major))
           version_minor=$((10#$version_minor))
           version_patch=$((10#$version_patch))
@@ -109,6 +110,13 @@ jobs:
         run: |
           cargo test --locked --bin zsclip app::settings_layout_tests -- --test-threads=1
           exit $LASTEXITCODE
+      - name: Test Windows update regressions
+        shell: pwsh
+        run: |
+          foreach ($module in @('update_feed::tests', 'lanzou_update::tests', 'shell::update_runtime::tests')) {
+            cargo test --locked --bin zsclip $module -- --test-threads=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Build Windows release
         shell: pwsh
         run: |
@@ -173,6 +181,7 @@ jobs:
           AppSupportURL={#MyAppURL}
           AppUpdatesURL={#MyAppURL}
           DefaultDirName={code:GetDefaultInstallDir}
+          CreateAppDir=yes
           DefaultGroupName={#MyAppName}
           DisableProgramGroupPage=yes
           PrivilegesRequired=admin
@@ -187,9 +196,8 @@ jobs:
           ArchitecturesAllowed=x64
           ArchitecturesInstallIn64BitMode=x64
           CloseApplications=yes
-          CloseApplicationsFilter={#MyAppExeName}
+          CloseApplicationsFilter={#MyAppExeName},zsclip.exe
           RestartApplications=no
-          AppMutex=Global\ZSClipSingleInstance
           VersionInfoVersion={#MyAppVersion}
           VersionInfoCompany={#MyAppPublisher}
           VersionInfoProductName={#MyAppName}
@@ -277,15 +285,191 @@ jobs:
           Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "筑森剪贴"; Flags: deletevalue; Check: ShouldDisableAutostart
 
           [Run]
-          Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+          Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser; Check: IsAutomaticUpdate
+          Filename: "{app}\{#MyAppExeName}"; Description: "立即运行 {#MyAppName}"; Flags: nowait postinstall skipifsilent runasoriginaluser; Check: IsInteractiveInstall
 
           [UninstallDelete]
           Type: filesandordirs; Name: "{app}\logs"
           Type: filesandordirs; Name: "{app}\temp"
 
           [Code]
+          type
+            TShutdownTarget = record
+              Window: HWND;
+              Process: THandle;
+              ProcessId: DWORD;
+            end;
+            TShutdownTargets = array of TShutdownTarget;
+
+          function FindMainWindow(Parent, After: HWND; ClassName: String; WindowName: THandle): HWND;
+            external 'FindWindowExW@user32.dll stdcall';
+          function WindowProcessId(Window: HWND; var ProcessId: DWORD): DWORD;
+            external 'GetWindowThreadProcessId@user32.dll stdcall';
+          function OpenShutdownProcess(Access: DWORD; Inherit: Integer; ProcessId: DWORD): THandle;
+            external 'OpenProcess@kernel32.dll stdcall';
+          function ProcessImageName(Process: THandle; Flags: DWORD; Name: String; var Size: DWORD): Integer;
+            external 'QueryFullProcessImageNameW@kernel32.dll stdcall';
+          function WaitForShutdown(Process: THandle; Milliseconds: DWORD): DWORD;
+            external 'WaitForSingleObject@kernel32.dll stdcall';
+          function CloseShutdownHandle(Handle: THandle): Integer;
+            external 'CloseHandle@kernel32.dll stdcall';
+          function PostShutdownMessage(Window: HWND; Message: UINT; WParam, LParam: THandle): Integer;
+            external 'PostMessageW@user32.dll stdcall';
+          function OpenReplacementFile(Name: String; Access, Sharing: DWORD; Security: THandle;
+            Creation, Attributes: DWORD; Template: THandle): THandle;
+            external 'CreateFileW@kernel32.dll stdcall';
+
           var
             AutoStartTaskInitialized: Boolean;
+
+          function IsAutomaticUpdate(): Boolean;
+          begin
+            Result := ExpandConstant('{param:ZSCLIPUPDATE|0}') = '1';
+          end;
+
+          function IsInteractiveInstall(): Boolean;
+          begin
+            Result := not IsAutomaticUpdate();
+          end;
+
+          function NormalizedExecutablePath(Path: String): String;
+          begin
+            if Copy(Path, 1, 8) = '\\?\UNC\' then
+              Path := '\\' + Copy(Path, 9, Length(Path))
+            else if Copy(Path, 1, 4) = '\\?\' then
+              Path := Copy(Path, 5, Length(Path));
+            Result := ExpandFileName(Path);
+            while (Length(Result) > 3) and (Copy(Result, Length(Result), 1) = '\') do
+              Delete(Result, Length(Result), 1);
+          end;
+
+          function IsTargetExecutable(Path: String): Boolean;
+          begin
+            Path := NormalizedExecutablePath(Path);
+            Result := (CompareText(Path, NormalizedExecutablePath(ExpandConstant('{app}\{#MyAppExeName}'))) = 0)
+              or (CompareText(Path, NormalizedExecutablePath(ExpandConstant('{app}\zsclip.exe'))) = 0);
+          end;
+
+          procedure FindTargetProcesses(var Targets: TShutdownTargets);
+          var
+            Window: HWND;
+            Process: THandle;
+            ProcessId, Size: DWORD;
+            Image: String;
+            Count: Integer;
+          begin
+            SetArrayLength(Targets, 0);
+            Window := FindMainWindow(0, 0, 'ZsClipMain', 0);
+            while Window <> 0 do
+            begin
+              ProcessId := 0;
+              WindowProcessId(Window, ProcessId);
+              Process := OpenShutdownProcess($00101000, 0, ProcessId);
+              if Process <> 0 then
+              begin
+                Size := 32768;
+                Image := StringOfChar(#0, Size);
+                if ProcessImageName(Process, 0, Image, Size) <> 0 then
+                begin
+                  SetLength(Image, Size);
+                  if IsTargetExecutable(Image) then
+                  begin
+                    Count := GetArrayLength(Targets);
+                    SetArrayLength(Targets, Count + 1);
+                    Targets[Count].Window := Window;
+                    Targets[Count].Process := Process;
+                    Targets[Count].ProcessId := ProcessId;
+                    Process := 0;
+                  end;
+                end;
+                if Process <> 0 then
+                  CloseShutdownHandle(Process);
+              end;
+              Window := FindMainWindow(0, Window, 'ZsClipMain', 0);
+            end;
+          end;
+
+          function TargetFileIsWritable(FileName: String): Boolean;
+          var
+            FileHandle: THandle;
+          begin
+            Result := True;
+            if not FileExists(FileName) then
+              Exit;
+            { OPEN_EXISTING checks sharing without truncating or changing the executable. }
+            FileHandle := OpenReplacementFile(FileName, $40000000, 0, 0, 3, $80, 0);
+            Result := FileHandle <> THandle(-1);
+            if Result then
+              CloseShutdownHandle(FileHandle);
+          end;
+
+          function PrepareToInstall(var NeedsRestart: Boolean): String;
+          var
+            Targets: TShutdownTargets;
+            I, Attempt: Integer;
+            ProcessId, WaitResult: DWORD;
+            AllExited, FilesWritable: Boolean;
+          begin
+            Result := '';
+            NeedsRestart := False;
+            if (CompareText(NormalizedExecutablePath(ExpandConstant('{app}')),
+                NormalizedExecutablePath(ExpandConstant('{win}'))) = 0)
+              or (CompareText(NormalizedExecutablePath(ExpandConstant('{app}')),
+                NormalizedExecutablePath(ExpandConstant('{sys}'))) = 0) then
+            begin
+              Result := '请选择独立的安装目录，不能直接安装到 Windows 系统目录。';
+              Exit;
+            end;
+            FindTargetProcesses(Targets);
+            try
+              for I := 0 to GetArrayLength(Targets) - 1 do
+              begin
+                if WaitForShutdown(Targets[I].Process, 0) <> 0 then
+                begin
+                  ProcessId := 0;
+                  WindowProcessId(Targets[I].Window, ProcessId);
+                  { Tray Exit saves settings and exits; WM_CLOSE may only hide to the tray. }
+                  if ProcessId = Targets[I].ProcessId then
+                  begin
+                    if PostShutdownMessage(Targets[I].Window, $0111, 40002, 0) = 0 then
+                      Log('Tray Exit could not be posted; waiting for the verified process to exit.');
+                  end
+                  else
+                    Log('Verified process window disappeared; waiting for process completion.');
+                end;
+              end;
+              AllExited := False;
+              FilesWritable := False;
+              for Attempt := 0 to 75 do
+              begin
+                AllExited := True;
+                for I := 0 to GetArrayLength(Targets) - 1 do
+                begin
+                  WaitResult := WaitForShutdown(Targets[I].Process, 0);
+                  if WaitResult <> 0 then
+                    AllExited := False;
+                end;
+                { Exit may start a windowless checkpoint helper using the same executable. }
+                if AllExited then
+                  FilesWritable := TargetFileIsWritable(ExpandConstant('{app}\{#MyAppExeName}'))
+                    and TargetFileIsWritable(ExpandConstant('{app}\zsclip.exe'));
+                if AllExited and FilesWritable then
+                  Break;
+                if Attempt < 75 then
+                  Sleep(200);
+              end;
+              if not AllExited then
+              begin
+                Result := '剪贴板尚未完全退出，安装已停止以保护现有文件。请从托盘菜单退出后重试。';
+                Exit;
+              end;
+              if not FilesWritable then
+                Result := '安装目录中的程序文件仍被占用或无法写入，安装已停止。请关闭该目录中的剪贴板后重试。';
+            finally
+              for I := 0 to GetArrayLength(Targets) - 1 do
+                CloseShutdownHandle(Targets[I].Process);
+            end;
+          end;
 
           function GetDefaultInstallDir(Param: string): string;
           begin
@@ -318,7 +502,7 @@ jobs:
 
           function ShouldDisableAutostart(): Boolean;
           begin
-            Result := not WizardIsTaskSelected('autostart');
+            Result := (not IsAutomaticUpdate()) and (not WizardIsTaskSelected('autostart'));
           end;
 
           function FindTaskByCaption(Caption: string): Integer;
@@ -388,7 +572,7 @@ jobs:
 
           说明:
           - 当前包是便携版，不写注册表，不包含安装向导。
-          - 此包不包含局域网同步功能，适合不需要扫码绑定/局域网发现的环境。
+          - 此包不包含局域网同步功能，适合不需要局域网发现的环境。
           - 开机自启、托盘、热键等功能在应用设置里启用。
           '@
           $noLanInstallText.Replace('__RELEASE_VERSION__', $env:RELEASE_VERSION) |
@@ -764,28 +948,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.ref_name }}
+          LANZOU_MIRRORS_JSON: ${{ vars.LANZOU_MIRRORS_JSON }}
         run: |
           set +e
           cat > release-notes.md <<'NOTES'
           # ZSClip __RELEASE_VERSION__
 
           ## 更新内容
-          - 修复设置页面切换时窗口失焦、缩放后右侧卡片和控件被裁切的问题。
-          - 修复保存设置后插件控件出现在“关于”等其他页面，以及窗口缩放后隐藏控件重新出现的问题。
-          - 修复纯文本粘贴快捷键开关显示为空白、启用后下拉框仍不可用及缺少箭头的问题。
-          - 恢复主窗口标签原有底色和选中状态样式。
-          - 压缩分组列表和“关于”页布局，分组操作按钮在默认窗口内完整显示。
-          - 保留切换页面、缩放窗口和切换插件开关前尚未保存的输入。
-          - 优化粘贴、标签状态恢复、列表时间浏览及窗口资源释放。
+          - Windows 更新支持同版本蓝奏镜像；镜像不可用或校验失败时回退官方 GitHub 安装包，保留已有自定义更新源。
+          - 更新安装包下载完成后校验 SHA-256、文件大小和 Windows PE 格式；安装器取消或失败后，仍在运行的程序恢复重试入口。
+          - 修复 Windows 与 Android 同步消息入库及受保护文本处理，改善跨端同步一致性。
+          - 统一“发送到电脑”字号，剪贴板与云剪贴板页面使用纯白底色，设置图标与相邻图标保持同等大小。
+          - Windows 同时提供普通版和无局域网同步版安装器及便携包，更新时保持对应版本类型。
 
           ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v__RELEASE_VERSION__-setup.exe` 安装；不需要局域网同步/扫码绑定功能可下载 `zsclip-v__RELEASE_VERSION__-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
+          - Windows: 普通用户下载 `zsclip-v__RELEASE_VERSION__-setup.exe` 安装；不需要局域网同步功能可下载 `zsclip-v__RELEASE_VERSION__-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
           - Android 测试包: 下载 `zsclip-android-test.apk`。
           - macOS 测试包: Apple Silicon 下载 `zsclip-macos-arm64.dmg`，Intel 下载 `zsclip-macos-x86_64.dmg`。
           - Linux 测试包: Debian/Ubuntu 可试用 `zsclip-linux-x86_64.deb`，其他发行版可下载 `zsclip-linux-x86_64.tar.gz`。
 
           ## 注意
-          - Windows 同时提供完整安装器、无局域网同步安装器、便携包和无局域网同步便携包。
+          - Windows 提供普通版和无局域网同步版的安装器及便携包；普通版支持 QQ 输入法局域网连接；QQ 客户端快捷登录受重签名校验限制，输入法原生短信登录入口保留。
           - macOS/Linux 当前仍是测试包，未完成正式验收前不要按 Windows 正式版标准承诺稳定性。
           NOTES
           sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" release-notes.md
@@ -805,10 +988,110 @@ jobs:
             zsclip-linux-x86_64.deb
             zsclip-linux-x86_64.tar.gz
           )
+          set -euo pipefail
+          python3 - "${required_assets[@]}" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+          from urllib.parse import quote, urlsplit
+
+          assets = Path(os.environ.get("UPDATE_ASSETS_DIR", "release-assets"))
+          version = os.environ["RELEASE_VERSION"]
+          repository = os.environ["GH_REPO"]
+          tag = quote(os.environ["TAG_NAME"], safe="")
+          names = sys.argv[1:]
+          hashes = {}
+          for name in names:
+              path = assets / name
+              if not path.is_file() or path.stat().st_size == 0:
+                  raise SystemExit(f"Missing or empty release package: {name}")
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              hashes[name] = digest.hexdigest()
+
+          def installer(name):
+              size = (assets / name).stat().st_size
+              if not 4096 <= size <= 512 * 1024 * 1024:
+                  raise SystemExit(f"Installer size is outside updater limits: {name}")
+              return {
+                  "url": f"https://github.com/{repository}/releases/download/{tag}/{quote(name, safe='')}",
+                  "file_name": name,
+                  "sha256": hashes[name],
+                  "size": size,
+              }
+
+          windows_names = [f"zsclip-v{version}-setup.exe", f"zsclip-v{version}-setup-no-lan.exe"]
+          manifest = {
+              "format": "zsclip-update-v1",
+              "version": version,
+              "page_url": f"https://github.com/{repository}/releases/tag/{tag}",
+              "notes": Path(os.environ.get("UPDATE_NOTES_FILE", "release-notes.md")).read_text(encoding="utf-8"),
+              "windows_x64": installer(windows_names[0]),
+              "windows_x64_no_lan": installer(windows_names[1]),
+          }
+          manifest_path = assets / "zsclip-update.json"
+          manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          if manifest_path.stat().st_size > 128 * 1024:
+              raise SystemExit("Update manifest exceeds updater size limit")
+
+          mirror_path = assets / "mirrors.json"
+          mirror_path.unlink(missing_ok=True)
+          configured = os.environ.get("LANZOU_MIRRORS_JSON", "").strip()
+          if configured:
+              mirrors = json.loads(configured)
+              if not isinstance(mirrors, dict):
+                  raise SystemExit("LANZOU_MIRRORS_JSON must be a JSON object")
+              if mirrors.get("version") != version:
+                  print("::warning::Skipping LANZOU_MIRRORS_JSON for a different release version")
+              else:
+                  files = mirrors.get("files")
+                  if not isinstance(files, list) or not files:
+                      raise SystemExit("LANZOU_MIRRORS_JSON requires at least one uploaded public installer")
+                  normalized = []
+                  seen = set()
+                  for entry in files:
+                      if not isinstance(entry, dict):
+                          raise SystemExit("Invalid mirror entry")
+                      name = entry.get("name")
+                      share_url = entry.get("share_url")
+                      code = entry.get("code", "")
+                      if not isinstance(name, str) or name not in windows_names or name in seen:
+                          raise SystemExit("Mirror name must uniquely match a Windows installer in this release")
+                      if not isinstance(share_url, str) or len(share_url) > 4096:
+                          raise SystemExit("Mirror requires an actual public share URL")
+                      share = urlsplit(share_url)
+                      if (share.scheme != "https" or share.netloc not in ("ilanzou.com", "www.ilanzou.com")
+                              or not re.fullmatch(r"/s/[A-Za-z0-9_-]{1,128}", share.path)
+                              or share.query or share.fragment or code != ""):
+                          raise SystemExit("Mirror must be a public HTTPS ilanzou share without an extraction code")
+                      seen.add(name)
+                      normalized.append({"name": name, "share_url": share_url, "code": ""})
+                  mirror_path.write_text(json.dumps({"version": version, "files": normalized}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                  if mirror_path.stat().st_size > 128 * 1024:
+                      raise SystemExit("Mirror manifest exceeds updater size limit")
+
+          metadata = [manifest_path] + ([mirror_path] if mirror_path.is_file() else [])
+          for path in metadata:
+              hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          (assets / "SHA256SUMS.txt").write_text(
+              "".join(f"{hashes[name]}  {name}\n" for name in sorted(hashes)), encoding="utf-8"
+          )
+          print(f"Prepared {len(hashes)} checksums and the Windows update manifest")
+          PY
+          required_assets+=(SHA256SUMS.txt zsclip-update.json)
+          if [ -f release-assets/mirrors.json ]; then
+            required_assets+=(mirrors.json)
+          fi
           release_asset_paths=()
           for asset in "${required_assets[@]}"; do
             release_asset_paths+=("release-assets/$asset")
           done
+          set +e
 
           ls -lah release-assets
           gh release delete "$TAG_NAME" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
@@ -829,7 +1112,10 @@ jobs:
             zsclip-windows-x86_64-setup.exe \
             "$setup_asset" \
             "$no_lan_setup_asset" \
-            "$resource_asset"
+            "$resource_asset" \
+            SHA256SUMS.txt \
+            zsclip-update.json \
+            mirrors.json
           do
             gh release delete-asset "$TAG_NAME" "$stale" --repo "$GH_REPO" -y >/dev/null 2>&1 || true
           done

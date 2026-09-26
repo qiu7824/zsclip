@@ -25,6 +25,10 @@ const DISABLED_HOTKEYS_VALUE: &str = "DisabledHotkeys";
 const CLIPBOARD_SETTINGS_KEY: &str = r"Software\Microsoft\Clipboard";
 const CLIPBOARD_HISTORY_VALUE: &str = "EnableClipboardHistory";
 
+#[path = "shell_update.rs"]
+mod update_runtime;
+pub(crate) use update_runtime::{set_update_source, start_update_download, update_source};
+
 #[derive(Default, Clone)]
 pub(crate) struct UpdateCheckState {
     pub(crate) started: bool,
@@ -33,6 +37,13 @@ pub(crate) struct UpdateCheckState {
     pub(crate) latest_tag: String,
     pub(crate) latest_url: String,
     pub(crate) error: String,
+    pub(crate) release_notes: String,
+    pub(crate) installer: Option<crate::update_feed::InstallerAsset>,
+    pub(crate) downloading: bool,
+    pub(crate) downloaded: u64,
+    pub(crate) total: u64,
+    pub(crate) download_status: String,
+    pub(crate) install_started: bool,
 }
 
 static UPDATE_CHECK_STATE: OnceLock<Mutex<UpdateCheckState>> = OnceLock::new();
@@ -1111,95 +1122,7 @@ pub(crate) fn start_update_check<F>(notify: F)
 where
     F: FnOnce() + Send + 'static,
 {
-    let should_start = {
-        let Ok(mut state) = update_check_state().lock() else {
-            return;
-        };
-        if state.checking || open_source_url().trim().is_empty() {
-            false
-        } else {
-            state.started = true;
-            state.checking = true;
-            state.error.clear();
-            true
-        }
-    };
-    if !should_start {
-        return;
-    }
-
-    std::thread::spawn(move || {
-        let api = if let Some(path) = releases_url().strip_prefix("https://github.com/") {
-            format!(
-                "https://api.github.com/repos/{}/releases/latest",
-                path.trim_end_matches("/releases")
-            )
-        } else {
-            String::new()
-        };
-
-        let result = if api.is_empty() {
-            Err("missing repository".to_string())
-        } else {
-            hidden_command("curl.exe")
-                .args([
-                    "-sL",
-                    "-H",
-                    "User-Agent: zsclip",
-                    "-H",
-                    "Accept: application/vnd.github+json",
-                    &api,
-                ])
-                .output()
-                .map_err(|e| e.to_string())
-                .and_then(|out| {
-                    if !out.status.success() {
-                        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
-                    } else {
-                        Ok(String::from_utf8_lossy(&out.stdout).to_string())
-                    }
-                })
-        };
-
-        let mut next = UpdateCheckState {
-            started: true,
-            checking: false,
-            available: false,
-            latest_tag: String::new(),
-            latest_url: latest_release_url(),
-            error: String::new(),
-        };
-
-        match result {
-            Ok(body) => {
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-                    next.latest_tag = json
-                        .get("tag_name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    next.latest_url = json
-                        .get("html_url")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(next.latest_url.as_str())
-                        .to_string();
-                    next.available = !next.latest_tag.trim().is_empty()
-                        && version_is_newer(&next.latest_tag, APP_VERSION);
-                } else {
-                    next.error = "invalid response".to_string();
-                }
-            }
-            Err(err) => {
-                next.error = err;
-            }
-        }
-
-        if let Ok(mut state) = update_check_state().lock() {
-            *state = next;
-        }
-
-        notify();
-    });
+    update_runtime::start_update_check(notify);
 }
 
 fn read_disabled_hotkeys_registry() -> Option<String> {

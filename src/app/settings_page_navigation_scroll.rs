@@ -40,9 +40,10 @@ pub(super) unsafe fn settings_scroll_to(hwnd: HWND, st: &mut SettingsWndState, n
     settings_scrollbar_show(hwnd, st);
 
     let viewport = settings_viewport_rect(&crc);
-    settings_repos_controls(hwnd, st, false);
+    settings_repos_controls(hwnd, st, true);
     invalidate_settings_scrollbar_and_mask(hwnd);
-    platform_gdi::redraw_window(hwnd, &viewport, null_mut(), RDW_INVALIDATE | RDW_UPDATENOW);
+    // Let Windows compose one paint after this frame's control moves complete.
+    platform_gdi::redraw_window(hwnd, &viewport, null_mut(), RDW_INVALIDATE);
 }
 
 pub(super) unsafe fn settings_scrollbar_show(hwnd: HWND, st: &mut SettingsWndState) {

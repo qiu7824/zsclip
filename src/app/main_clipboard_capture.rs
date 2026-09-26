@@ -10,6 +10,7 @@ const CLIPBOARD_READ_QUEUE_CAPACITY: usize = 16;
 #[derive(serde::Serialize, serde::Deserialize)]
 enum ClipboardCaptureWirePayload {
     None,
+    Protected,
     Files {
         paths: Vec<String>,
     },
@@ -32,6 +33,7 @@ struct ClipboardCaptureWireResult {
 
 enum ClipboardCaptureReadPayload {
     None,
+    Protected,
     Files {
         paths: Vec<String>,
     },
@@ -378,6 +380,18 @@ fn read_clipboard_capture_result(
     if snapshot.has_text {
         if let Some(text) = platform_clipboard::read_text_for_sequence(sequence) {
             let normalized = normalize_captured_text(&text);
+            if crate::db_runtime::text_is_protected(&text) || crate::db_runtime::text_is_protected(&normalized) {
+                return ClipboardCaptureReadResult {
+                    sequence, source_app,
+                    payload: if crate::db_runtime::text_is_registered(&text)
+                        || crate::db_runtime::text_is_registered(&normalized)
+                    {
+                        ClipboardCaptureReadPayload::Protected
+                    } else {
+                        ClipboardCaptureReadPayload::None
+                    },
+                };
+            }
             if !normalized.is_empty() {
                 let url_payloads = if source_app_is_browser(&source_app)
                     || source_app_is_browser(&foreground_app)
@@ -465,16 +479,20 @@ fn write_clipboard_helper_result(
 ) -> Result<(), String> {
     let payload = match result.payload {
         ClipboardCaptureReadPayload::None => ClipboardCaptureWirePayload::None,
+        ClipboardCaptureReadPayload::Protected => ClipboardCaptureWirePayload::Protected,
         ClipboardCaptureReadPayload::Files { paths } => {
             ClipboardCaptureWirePayload::Files { paths }
         }
         ClipboardCaptureReadPayload::Text {
             normalized,
             rich_text_html,
-        } => ClipboardCaptureWirePayload::Text {
-            normalized,
-            rich_text_html,
-        },
+        } => if crate::db_runtime::text_is_protected(&normalized) {
+            if crate::db_runtime::text_is_registered(&normalized) {
+                ClipboardCaptureWirePayload::Protected
+            } else {
+                ClipboardCaptureWirePayload::None
+            }
+        } else { ClipboardCaptureWirePayload::Text { normalized, rich_text_html } },
         ClipboardCaptureReadPayload::Image {
             bytes,
             width,
@@ -564,6 +582,7 @@ fn decode_clipboard_helper_result(
         serde_json::from_slice(&std::fs::read(result_path).ok()?).ok()?;
     let payload = match wire.payload {
         ClipboardCaptureWirePayload::None => ClipboardCaptureReadPayload::None,
+        ClipboardCaptureWirePayload::Protected => ClipboardCaptureReadPayload::Protected,
         ClipboardCaptureWirePayload::Files { paths } => {
             ClipboardCaptureReadPayload::Files { paths }
         }
@@ -697,6 +716,9 @@ fn process_captured_item_db_request_locked(
     max_items: usize,
     removed_ids: &mut Vec<i64>,
 ) -> CapturedItemDbAction {
+    if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+        return CapturedItemDbAction::Duplicate;
+    }
     if !signature.is_empty()
         && db_latest_item_signature(0)
             .as_deref()
@@ -745,7 +767,9 @@ fn process_captured_item_db_request_locked(
     item.id = db_insert_item(0, &item, Some(signature)).unwrap_or(0);
     if item.id <= 0 {
         remove_uninserted_image_file(&item);
-        return CapturedItemDbAction::RetryableFailure;
+        return if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+            CapturedItemDbAction::Duplicate
+        } else { CapturedItemDbAction::RetryableFailure };
     }
     if item.created_at.is_empty() {
         item.created_at = now_utc_sqlite();
@@ -874,6 +898,12 @@ pub(super) unsafe fn apply_captured_item_db_ready(hwnd: HWND, payload: CapturedI
             }
         }
         CapturedItemDbAction::Inserted { item } => {
+            if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+                let _ = with_db(crate::db_runtime::purge_protected_items);
+                reload_state_from_db_persisting(state);
+                refresh_lan_latest_from_db(&state.settings);
+                return;
+            }
             state.cache_full_item(&item);
             let summary = clip_item_to_summary(&item);
             let visible_query = state.load_state_for_tab(0).query.clone();
@@ -1192,6 +1222,10 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
         ClipboardCaptureReadPayload::None => {
             remember_clipboard_sequence(state, sequence);
         }
+        ClipboardCaptureReadPayload::Protected => {
+            remember_clipboard_sequence(state, sequence);
+            super::protected_clipboard::notify_protected_capture(hwnd);
+        }
         ClipboardCaptureReadPayload::Files { paths } => {
             let preview = build_files_preview(&paths);
             let signature = file_paths_signature(&paths);
@@ -1226,6 +1260,13 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
             normalized,
             rich_text_html,
         } => {
+            if crate::db_runtime::text_is_protected(&normalized) {
+                remember_clipboard_sequence(state, sequence);
+                if crate::db_runtime::text_is_registered(&normalized) {
+                    super::protected_clipboard::notify_protected_capture(hwnd);
+                }
+                return;
+            }
             let preview = rich_text_html
                 .as_deref()
                 .map(|html| build_rich_text_preview(html, &normalized))
@@ -1319,6 +1360,51 @@ pub(super) unsafe fn capture_clipboard_guarded(hwnd: HWND) {
 #[cfg(test)]
 mod clipboard_helper_tests {
     use super::*;
+
+    #[test]
+    fn protected_capture_wire_never_serializes_secret_or_rich_text() {
+        crate::db_runtime::with_test_protected_texts(&["synthetic-wire-secret"], || {
+            let (result_path, rgba_path) = clipboard_helper_temp_paths();
+            write_clipboard_helper_result(ClipboardCaptureReadResult {
+                sequence: 7, source_app: "test".into(),
+                payload: ClipboardCaptureReadPayload::Text { normalized: "synthetic-wire-secret".into(),
+                    rich_text_html: Some("<b>synthetic-wire-secret</b>".into()) },
+            }, &result_path, &rgba_path).unwrap();
+            let wire = std::fs::read_to_string(&result_path).unwrap();
+            assert!(!wire.contains("synthetic-wire-secret"));
+            assert!(matches!(serde_json::from_str::<ClipboardCaptureWireResult>(&wire).unwrap().payload, ClipboardCaptureWirePayload::Protected));
+            remove_helper_test_files(&result_path, &rgba_path);
+        });
+    }
+
+    #[test]
+    fn unavailable_protection_wire_discards_content_without_registered_notice() {
+        crate::db_runtime::with_test_protection_unavailable(|| {
+            let (result_path, rgba_path) = clipboard_helper_temp_paths();
+            write_clipboard_helper_result(ClipboardCaptureReadResult {
+                sequence: 8, source_app: "test".into(),
+                payload: ClipboardCaptureReadPayload::Text { normalized: "synthetic-unregistered-content".into(),
+                    rich_text_html: Some("<b>synthetic-unregistered-content</b>".into()) },
+            }, &result_path, &rgba_path).unwrap();
+            let wire = std::fs::read_to_string(&result_path).unwrap();
+            assert!(!wire.contains("synthetic-unregistered-content"));
+            assert!(matches!(serde_json::from_str::<ClipboardCaptureWireResult>(&wire).unwrap().payload, ClipboardCaptureWirePayload::None));
+            assert!(matches!(decode_clipboard_helper_result(&result_path, &rgba_path).unwrap().payload, ClipboardCaptureReadPayload::None));
+            remove_helper_test_files(&result_path, &rgba_path);
+        });
+    }
+
+    #[test]
+    fn protected_capture_db_work_is_discarded_without_retry() {
+        crate::db_runtime::with_test_protected_texts(&["synthetic-capture-secret"], || {
+            let item = ClipItem { id: 0, kind: ClipKind::Text, preview: "synthetic-capture-secret".into(),
+                text: Some("synthetic-capture-secret".into()), rich_text_html: None, source_app: "test".into(),
+                file_paths: None, image_bytes: None, image_path: None, image_width: 0, image_height: 0,
+                pinned: false, group_id: 0, created_at: String::new() };
+            let action = process_captured_item_db_request_locked(item, "synthetic-signature", false, 100, &mut Vec::new());
+            assert!(matches!(action, CapturedItemDbAction::Duplicate));
+        });
+    }
 
     fn remove_helper_test_files(result_path: &Path, rgba_path: &Path) {
         let _ = std::fs::remove_file(result_path);

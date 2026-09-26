@@ -24,7 +24,7 @@ pub(super) unsafe fn open_settings_dropdown_for_control(
         | IDC_SET_IMAGE_ROW_HEIGHT
         | IDC_SET_TEXT_ROW_HEIGHT
         | IDC_SET_FILE_ROW_HEIGHT => open_settings_general_dropdown(hwnd, st, control_id),
-        IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {
+        IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE | crate::win_system_params::IDC_SET_LAN_SYNC_MODE => {
             open_settings_cloud_dropdown(hwnd, st, control_id)
         }
         IDC_SET_HOTKEY_MOD

@@ -21,7 +21,7 @@ Scoop is the best first target because ZSClip already supports a portable layout
 
 Recommended package:
 
-- Use `zsclip-windows-x86_64-portable.zip` for the full build.
+- Use `zsclip-windows-x86_64-portable.zip` for the full build, including ordinary LAN connections to QQ input method. QQ cloud uploads require an existing valid authorization; QQ rejects new logins from the re-signed input method.
 - Use `zsclip-windows-x86_64-no-lan-portable.zip` for a no-LAN build if a separate manifest is needed.
 - Add `persist: "data"` so `settings.json`, `clipboard.db`, images, LAN device books and other runtime files survive upgrades.
 

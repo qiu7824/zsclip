@@ -76,6 +76,7 @@ struct SnapshotArchive {
     settings_copy: PathBuf,
     content_hash: String,
     state_stamp: u64,
+    protection_revision: String,
 }
 
 const BACKUP_FILE_NAME: &str = "latest.zip";
@@ -258,7 +259,10 @@ fn sync_snapshot(
 
     let stamp = local_stamp.max(unix_now());
     ensure_remote_layout(config, remote)?;
-    upload_file(config, &snapshot.path, &remote.backup_url)?;
+    crate::db_runtime::with_shared_app_data(|| {
+        crate::db_runtime::ensure_protected_sync_revision(&snapshot.protection_revision)?;
+        upload_file(config, &snapshot.path, &remote.backup_url)
+    })?;
     upload_file(config, &snapshot.settings_copy, &remote.settings_url)?;
     let manifest = CloudSyncManifest {
         version: APP_VERSION.to_string(),
@@ -442,15 +446,14 @@ fn upload_syncclipboard_manifest(
     config: &CloudSyncConfig,
     remote: &RemoteLayout,
 ) -> Result<(), String> {
+    let protection_revision = crate::db_runtime::protected_sync_revision()?;
     let manifest = crate::multi_sync::latest_manifest("webdav").map_err(|err| err.to_string())?;
     let data_name = manifest
         .clip
         .as_ref()
         .and_then(|clip| clip.data_name.as_deref())
         .map(|value| value.to_string());
-    let manifest_path = write_temp_json_file("SyncClipboard", &manifest)?;
-    upload_file(config, &manifest_path, &remote.sync_clipboard_url)?;
-    let _ = fs::remove_file(&manifest_path);
+    upload_prepared_syncclipboard_manifest(config, remote, &manifest, &protection_revision)?;
 
     let Some(data_name) = data_name else {
         return Ok(());
@@ -467,6 +470,26 @@ fn upload_syncclipboard_manifest(
     let upload_result = upload_file(config, &data_path, &remote_data_url);
     let _ = fs::remove_file(&data_path);
     upload_result
+}
+
+fn upload_prepared_syncclipboard_manifest(
+    config: &CloudSyncConfig, remote: &RemoteLayout,
+    manifest: &crate::multi_sync::MultiSyncManifest, revision: &str,
+) -> Result<(), String> {
+    let validate = || {
+        crate::db_runtime::ensure_protected_sync_revision(revision)?;
+        if manifest.clip.as_ref().and_then(|clip| clip.content.as_deref()).is_some_and(crate::db_runtime::text_is_protected) {
+            return Err("受保护内容不会上传到云剪贴板。".to_string());
+        }
+        Ok(())
+    };
+    validate()?;
+    let manifest_path = write_temp_json_file("SyncClipboard", manifest)?;
+    let _guard = TempPathGuard::file(manifest_path.clone());
+    crate::db_runtime::with_shared_app_data(|| {
+        validate()?;
+        upload_file(config, &manifest_path, &remote.sync_clipboard_url)
+    })
 }
 
 fn import_remote_syncclipboard_clip(
@@ -547,6 +570,7 @@ fn validate_settings_json(path: &Path) -> Result<(), String> {
 }
 
 fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, String> {
+    let protection_revision = crate::db_runtime::protected_sync_revision()?;
     let staging_root = temp_dir_path("snapshot-staging");
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);
@@ -566,6 +590,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         .map_err(|err| err.to_string())?;
     validate_settings_json(&payload_dir.join("settings.json"))?;
     fs::copy(&paths.db_file, payload_dir.join("clipboard.db")).map_err(|err| err.to_string())?;
+    crate::db_runtime::sanitize_protected_snapshot(&payload_dir.join("clipboard.db"))?;
     let images_dir = paths.data_dir.join("images");
     if images_dir.exists() {
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
@@ -586,6 +611,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         .map_err(|err| format!("无法保留云备份设置副本：{err}"))?;
     sync_file(&settings_copy).map_err(|err| format!("无法同步云备份设置副本：{err}"))?;
     compress_archive(&payload_dir, &archive_path)?;
+    crate::db_runtime::ensure_protected_sync_revision(&protection_revision)?;
     archive_guard.dismiss();
     settings_copy_guard.dismiss();
     drop(staging_guard);
@@ -594,6 +620,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         settings_copy,
         content_hash,
         state_stamp,
+        protection_revision,
     })
 }
 
@@ -609,6 +636,7 @@ fn create_local_backup_archive(paths: &CloudSyncPaths) -> Result<PathBuf, String
     if paths.db_file.is_file() {
         fs::copy(&paths.db_file, payload_dir.join("clipboard.db"))
             .map_err(|err| err.to_string())?;
+        crate::db_runtime::sanitize_protected_snapshot(&payload_dir.join("clipboard.db"))?;
     }
     let images_dir = paths.data_dir.join("images");
     if images_dir.is_dir() {
@@ -1876,11 +1904,87 @@ impl Drop for TempPathGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_pending_zip_is_cancelled_when_registration_changes_during_remote_get() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("protected-pending-zip-test");
+        fs::create_dir_all(&root).unwrap();
+        let paths = restore_test_paths(&root);
+        fs::write(&paths.settings_file, "{}").unwrap();
+        let registry = Arc::new(Mutex::new(Vec::<String>::new()));
+        crate::db_runtime::with_test_protection_registry(registry.clone(), || {
+            crate::db_runtime::with_test_db_path(&paths.db_file, || {
+                crate::db_runtime::with_db(|conn| conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','synthetic-queued-secret','synthetic-queued-secret')", []))?;
+                let server = FakeWebDavServer::start_with_protection_hook(None, 0, false, None, true, Some(registry));
+                let config = CloudSyncConfig { webdav_url: format!("http://127.0.0.1:{}/root", server.port), webdav_user: String::new(), webdav_pass: String::new(), remote_dir: "ZSClip".into() };
+                let remote = RemoteLayout::from_config(&config).unwrap();
+                let result = sync_snapshot(&config, &remote, &paths);
+                assert!(result.is_err());
+                let requests = server.requests();
+                assert!(requests.iter().any(|request| request.method == "GET" && request.path.ends_with("/manifest.json")));
+                assert!(!requests.iter().any(|request| request.method == "PUT"));
+                server.stop();
+                Ok(())
+            }).unwrap();
+        });
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn protected_prepared_manifest_is_cancelled_before_sending_to_webdav() {
+        let _guard = cloud_sync_e2e_guard();
+        let server = FakeWebDavServer::start_without_remote_syncclipboard();
+        let config = CloudSyncConfig { webdav_url: format!("http://127.0.0.1:{}/root", server.port), webdav_user: String::new(), webdav_pass: String::new(), remote_dir: "ZSClip".into() };
+        let remote = RemoteLayout::from_config(&config).unwrap();
+        let manifest: crate::multi_sync::MultiSyncManifest = serde_json::from_value(serde_json::json!({
+            "protocol":crate::multi_sync::MULTI_SYNC_PROTOCOL,"version":1,"transport":"webdav",
+            "clip":{"id":"prepared-1","type":"text","hash":"test","preview":"synthetic-queued-secret","content":"synthetic-queued-secret","hasData":false,"size":23,"source_app":"test","created_at":"0"}
+        })).unwrap();
+        let revision = crate::db_runtime::with_test_protected_texts(&[], || crate::db_runtime::protected_sync_revision().unwrap());
+        crate::db_runtime::with_test_protected_texts(&["synthetic-queued-secret"], || {
+            assert!(upload_prepared_syncclipboard_manifest(&config, &remote, &manifest, &revision).is_err());
+            let current = crate::db_runtime::protected_sync_revision().unwrap();
+            assert!(upload_prepared_syncclipboard_manifest(&config, &remote, &manifest, &current).is_err());
+        });
+        assert!(server.requests().is_empty());
+        server.stop();
+    }
+
+    #[test]
+    fn protected_cloud_archive_excludes_vault_and_registered_legacy_text() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("protected-archive-test");
+        fs::create_dir_all(&root).unwrap();
+        let paths = restore_test_paths(&root);
+        write_active_restore_fixture(&paths);
+        fs::create_dir_all(root.join("protected")).unwrap();
+        fs::write(root.join("protected/vault.json"), b"synthetic-vault-ciphertext").unwrap();
+        rusqlite::Connection::open(&paths.db_file).unwrap()
+            .execute("UPDATE items SET preview='synthetic-archive-secret'", []).unwrap();
+        crate::db_runtime::with_test_protected_texts(&["synthetic-archive-secret"], || {
+            let snapshot = create_snapshot_archive(&paths).unwrap();
+            let file = fs::File::open(&snapshot.path).unwrap();
+            let mut archive = ZipArchive::new(file).unwrap();
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).unwrap();
+                assert!(!entry.name().contains("protected"));
+                assert!(!entry.name().contains("vault"));
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                assert!(!bytes.windows(b"synthetic-archive-secret".len()).any(|window| window == b"synthetic-archive-secret"));
+            }
+            drop(archive);
+            fs::remove_file(snapshot.path).unwrap();
+            fs::remove_file(snapshot.settings_copy).unwrap();
+        });
+        fs::remove_dir_all(root).unwrap();
+    }
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard, OnceLock,
+        Arc, Mutex,
     };
     use std::thread;
     use std::time::Duration;
@@ -1892,12 +1996,8 @@ mod tests {
         body: Vec<u8>,
     }
 
-    fn cloud_sync_e2e_guard() -> MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("cloud sync e2e test lock poisoned")
+    fn cloud_sync_e2e_guard() -> crate::db_runtime::ExclusiveDbTestScope {
+        crate::db_runtime::exclusive_db_test_scope()
     }
 
     fn write_restore_test_database_with_image(
@@ -2750,6 +2850,17 @@ mod tests {
             remote_settings: Option<&'static str>,
             allow_writes: bool,
         ) -> Self {
+            Self::start_with_protection_hook(remote_syncclipboard, empty_syncclipboard_count, serve_remote_image, remote_settings, allow_writes, None)
+        }
+
+        fn start_with_protection_hook(
+            remote_syncclipboard: Option<&'static str>,
+            empty_syncclipboard_count: usize,
+            serve_remote_image: bool,
+            remote_settings: Option<&'static str>,
+            allow_writes: bool,
+            protection_registry: Option<Arc<Mutex<Vec<String>>>>,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2770,6 +2881,7 @@ mod tests {
                             serve_remote_image,
                             remote_settings,
                             allow_writes,
+                            protection_registry.as_ref(),
                         ),
                         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
@@ -2817,6 +2929,7 @@ mod tests {
         serve_remote_image: bool,
         remote_settings: Option<&'static str>,
         allow_writes: bool,
+        protection_registry: Option<&Arc<Mutex<Vec<String>>>>,
     ) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut request_line = String::new();
@@ -2891,6 +3004,9 @@ mod tests {
         {
             (200, remote_android_image_png())
         } else if method == "GET" && path.ends_with("/manifest.json") {
+            if let Some(registry) = protection_registry {
+                registry.lock().unwrap().push("synthetic-queued-secret".into());
+            }
             (404, Vec::new())
         } else if method == "GET" && path.ends_with("/settings.json") {
             remote_settings

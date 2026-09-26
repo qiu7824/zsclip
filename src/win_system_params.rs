@@ -48,6 +48,8 @@ pub const IDC_SET_LAN_QR_ANDROID: isize = 5089;
 pub const IDC_SET_LAN_ACCEPT_PAIR: isize = 5090;
 pub const IDC_SET_LAN_REJECT_PAIR: isize = 5091;
 pub const IDC_SET_LAN_RECEIVE_MODE: isize = 5092;
+pub const IDC_SET_LAN_SYNC_MODE: isize = 53101;
+pub const IDC_SET_QQ_CLOUD_MENU: isize = 53102;
 pub const IDC_SET_LAN_QR_IOS: isize = 5093;
 pub const IDC_SET_LAN_COPY_PAIR: isize = 5094;
 pub const IDC_SET_LAN_COPY_SETUP: isize = 5095;
@@ -112,3 +114,5 @@ pub const IDC_SET_SEARCH_ENGINE: isize = 7201;
 pub const IDC_SET_SEARCH_ENGINE_RESET: isize = 7203;
 
 pub const IDC_SET_SHOW_PIN_BUTTON: isize = 6207;
+pub const IDC_SET_UPDATE_NOTES: isize = 5174;
+pub const IDC_SET_UPDATE_SOURCE: isize = 5175;

@@ -7,6 +7,14 @@ pub(super) unsafe fn handle_settings_cloud_selection(
     index: usize,
 ) {
     match control_id {
+        crate::win_system_params::IDC_SET_LAN_SYNC_MODE => {
+            if let Some(label)=crate::settings_model::LAN_SYNC_MODE_OPTIONS.get(index) {
+                settings_set_text(st.cb_lan_sync_mode,label);
+                st.draft.lan_sync_mode=crate::settings_model::lan_sync_mode_from_label(label).into();
+                settings_collect_to_app(st);
+                settings_sync_cloud_page_state(st);
+            }
+        }
         IDC_SET_CLOUD_INTERVAL => {
             let items = ["15分钟", "30分钟", "1小时", "6小时", "12小时", "24小时"];
             if let Some(label) = items.get(index) {
@@ -18,6 +26,10 @@ pub(super) unsafe fn handle_settings_cloud_selection(
             if let Some(label) = MULTI_SYNC_MODE_OPTIONS.get(index) {
                 settings_set_text(st.cb_multi_sync_mode, label);
                 settings_collect_to_app(st);
+                #[cfg(feature = "lan-sync")]
+                if st.draft.lan_sync_enabled {
+                    crate::lan_sync::request_firewall_repair(st.parent_hwnd);
+                }
                 settings_rebuild_cloud_page(hwnd, st);
             }
         }

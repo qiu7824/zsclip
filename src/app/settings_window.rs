@@ -12,7 +12,9 @@ pub(super) unsafe extern "system" fn settings_wnd_proc(
             close_settings_dropdown_popup(&mut *ptr);
         }
     }
-    if msg == WM_SETTINGS_SCROLL_FRAME {
+    if msg == WM_SETTINGS_SCROLL_FRAME
+        || (msg == WM_TIMER && wparam == ID_TIMER_SETTINGS_SCROLL_FRAME)
+    {
         return handle_settings_scroll_frame(hwnd);
     }
     if let Some(event) = settings_window_host_event_from_message(msg, wparam, lparam) {

@@ -21,6 +21,7 @@ pub(in crate::app) const ID_TIMER_HIDDEN_RECLAIM: usize = 12;
 pub(in crate::app) const ID_TIMER_CLIPBOARD_RETRY: usize = 13;
 pub(in crate::app) const ID_TIMER_DPI_FIT: usize = 14;
 pub(in crate::app) const ID_TIMER_SETTINGS_DPI_FIT: usize = 15;
+pub(in crate::app) const ID_TIMER_SETTINGS_SCROLL_FRAME: usize = 16;
 pub(in crate::app) const SETTINGS_TIMER_IDS: SettingsTimerIds = SettingsTimerIds {
     hide_scrollbar: ID_TIMER_SETTINGS_SCROLLBAR,
     clear_save_hint: ID_TIMER_SETTINGS_SAVE_HINT,

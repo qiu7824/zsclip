@@ -20,7 +20,7 @@ pub(super) unsafe fn handle_settings_control_selection(
         | IDC_SET_FILE_ROW_HEIGHT => {
             handle_settings_general_selection(st, control_id, index);
         }
-        IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE => {
+        IDC_SET_CLOUD_INTERVAL | IDC_SET_MULTI_SYNC_MODE | IDC_SET_LAN_RECEIVE_MODE | crate::win_system_params::IDC_SET_LAN_SYNC_MODE => {
             handle_settings_cloud_selection(hwnd, st, control_id, index);
         }
         IDC_SET_HOTKEY_MOD

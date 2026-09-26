@@ -1,0 +1,131 @@
+{
+  "package": "com.tencent.qqpinyin",
+  "base_version": "8.7.15",
+  "base_sha256": "8a89043aff22a11ee46a2d794e0e50cf6f1d80a29b4e8504fda728e02fb5bd2b",
+  "version_name": "8.7.15-zsclip.7",
+  "activity": "com.zsclip.qqime.BridgeActivity",
+  "method_replacements": [
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarViewNew.smali",
+      "method": "private y()V",
+      "old": "ic_settings_logo.png",
+      "new": "more_setting_board_icon.png"
+    }
+  ],
+  "hooks": [
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/settings/c.smali",
+      "method": "private constructor <init>()V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/KeyboardDefaults;->apply(Ljava/lang/Object;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/QQPYInputMethodService.smali",
+      "method": "public onCreate()V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/BridgeEntry;->startIme(Landroid/inputmethodservice/InputMethodService;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/QQPYInputMethodService.smali",
+      "method": "public onDestroy()V",
+      "position": "entry",
+      "instruction": "invoke-static {}, Lcom/zsclip/qqime/BridgeEntry;->stopIme()V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/QQPYInputMethodService.smali",
+      "method": "public onWindowShown()V",
+      "position": "entry",
+      "instruction": "invoke-static {}, Lcom/zsclip/qqime/BridgeEntry;->refreshIme()V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/FullScreenClipActivity.smali",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/BridgeEntry;->attachClipboard(Landroid/app/Activity;)V"
+    },
+    {
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardItemActions;->attach(Ljava/lang/Object;)V",
+      "position": "entry",
+      "method": "public onLongClick(Landroid/view/View;)Z",
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/l.smali"
+    },
+    {
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardItemActions;->attach(Ljava/lang/Object;)V",
+      "position": "entry",
+      "method": "public onLongClick(Landroid/view/View;)Z",
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/j.smali"
+    },
+    {
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardItemActions;->attachDetail(Landroid/app/Dialog;)V",
+      "position": "before_return",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/m.smali"
+    },
+    {
+      "position": "before_return",
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarItemView.smali",
+      "method": "public a()V",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ToolbarIconStyle;->normalize(Landroid/view/View;)V"
+    },
+    {
+      "position": "before_return",
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarItemView.smali",
+      "method": "public c()V",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ToolbarIconStyle;->normalize(Landroid/view/View;)V"
+    },
+    {
+      "position": "before_return",
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarItemView.smali",
+      "method": "public d()V",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ToolbarIconStyle;->normalize(Landroid/view/View;)V"
+    },
+    {
+      "position": "before_return",
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarItemView.smali",
+      "method": "public f()V",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ToolbarIconStyle;->normalize(Landroid/view/View;)V"
+    },
+    {
+      "position": "before_return",
+      "file": "smali_classes2/com/tencent/qqpinyin/client/ToolbarItemView.smali",
+      "method": "public h()V",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ToolbarIconStyle;->normalize(Landroid/view/View;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/a.smali",
+      "method": "public constructor <init>(Lcom/tencent/qqpinyin/toolboard/s;Lcom/tencent/qqpinyin/skin/interfaces/v;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachPanel(Ljava/lang/Object;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/a.smali",
+      "method": "protected a(Landroid/graphics/drawable/Drawable;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachPanel(Ljava/lang/Object;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/FullScreenClipActivity.smali",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachActivity(Landroid/app/Activity;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/SelectLocalClipActivity.smali",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachActivity(Landroid/app/Activity;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/SelectCloudClipActivity.smali",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachActivity(Landroid/app/Activity;)V"
+    },
+    {
+      "file": "smali_classes2/com/tencent/qqpinyin/clipboard/f.smali",
+      "method": "protected onCreate(Landroid/os/Bundle;)V",
+      "position": "before_return",
+      "instruction": "invoke-static {p0}, Lcom/zsclip/qqime/ClipboardVisualStyle;->attachDialog(Landroid/app/Dialog;)V"
+    }
+  ]
+}

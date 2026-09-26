@@ -1263,7 +1263,7 @@ fn canceled_issue_23_memory_only_mode_is_not_present() {
 fn bdd_lan_latest_envelope_is_seeded_from_database_item_shape() {
     // Given the database latest row is a normal text clipboard item.
     // When LAN seeds /v1/latest from that row after service startup.
-    // Then the envelope uses DB identity and the stable CRC signature.
+    // Then identity binds the exact transmitted text, while the dedupe hash stays normalized.
     let mut settings = AppSettings::default();
     settings.lan_sync_enabled = true;
     settings.lan_device_id = "pc-1".to_string();
@@ -1272,7 +1272,7 @@ fn bdd_lan_latest_envelope_is_seeded_from_database_item_shape() {
 
     let envelope = lan_latest_envelope_from_item(&settings, &item, "").unwrap();
 
-    assert_eq!(envelope.message_id, "pc-1-db-9");
+    assert_eq!(envelope.message_id, "pc-1-db-9-99690284641aca5bf0258b09504a49235ef78da17220582bdab006fb6661abe8");
     assert_eq!(envelope.origin_device_id, "pc-1");
     assert_eq!(envelope.origin_seq, 9);
     assert_eq!(envelope.kind, "text");
@@ -1340,7 +1340,11 @@ fn bdd_lan_incoming_clip_preserves_origin_when_seeded_as_latest() {
     assert!(decoded.contains("latest_envelope: LanClipEnvelope"));
     assert!(lan.contains("let latest_envelope = envelope.clone();"));
     assert!(ready.contains("let latest_envelope = decoded.latest_envelope.clone();"));
-    assert!(ready.contains("db_save_lan_origin_metadata"));
+    assert!(ready.contains("LanOriginMetadata"));
+    assert!(ready.contains("state.add_lan_clip_item("));
+    assert!(ready.contains("&origin)"));
+    assert!(!ready.contains("db_latest_item_id"));
+    assert!(app_state_runtime_source().contains("db_insert_item_with_lan_origin"));
     assert!(ready.contains("lan_sync::set_latest_clip(Some(latest_envelope));"));
     assert!(!ready.contains("refresh_lan_latest_from_db(&state.settings);"));
 }
@@ -3263,7 +3267,7 @@ fn lan_sync_ready_cloud_settings_refresh_uses_hosts() {
 }
 
 #[test]
-fn windows_lan_qr_is_prepared_before_scrolling_into_view() {
+fn windows_lan_connection_page_pairs_directly_without_qr_caches() {
     let lan_page = include_str!("app/settings_cloud_page_lan.rs");
     let qr_owner_draw = include_str!("app/settings_owner_draw_qr.rs");
     let lan_sync_state = include_str!("app/settings_page_sync_cloud_lan.rs");
@@ -3281,8 +3285,13 @@ fn windows_lan_qr_is_prepared_before_scrolling_into_view() {
         .unwrap();
     let form_block = &form_actions[form_start..form_end];
 
-    assert!(lan_page.contains("prepare_settings_lan_qr_caches(st)"));
-    assert!(lan_sync_state.contains("prepare_settings_lan_qr_caches(st)"));
+    assert!(!lan_page.contains("prepare_settings_lan_qr_caches(st)"));
+    assert!(!lan_sync_state.contains("prepare_settings_lan_qr_caches(st)"));
+    assert!(lan_page.contains("IDC_SET_LAN_ACCEPT_PAIR"));
+    assert!(lan_page.contains("IDC_SET_LAN_REJECT_PAIR"));
+    assert!(lan_page.contains("st.lb_lan_addresses"));
+    assert!(lan_sync_state.contains("local_connection_summary"));
+    assert!(lan_sync_state.contains("firewall_status_summary"));
     assert!(qr_owner_draw.contains("fn prepare_settings_lan_qr_caches("));
     assert!(qr_owner_draw.contains("mobile_pair_url_cached"));
     assert!(qr_owner_draw.contains("mobile_setup_url_cached"));
@@ -3290,8 +3299,9 @@ fn windows_lan_qr_is_prepared_before_scrolling_into_view() {
     assert!(qr_owner_draw.contains("st.qr_lan_ios_cache"));
     assert!(qr_owner_draw.contains("fn draw_settings_lan_qr_blocks("));
     assert!(qr_owner_draw.contains("st.cur_page != SettingsPage::Cloud.index()"));
-    assert!(lan_page.contains("st.qr_lan_android_bounds"));
-    assert!(lan_page.contains("st.qr_lan_ios_bounds"));
+    assert!(!lan_page.contains("st.qr_lan_android_bounds"));
+    assert!(!lan_page.contains("st.qr_lan_ios_bounds"));
+    assert!(!lan_page.contains("form_qr_action("));
     assert!(!lan_page.contains("IDC_SET_LAN_QR_ANDROID,"));
     assert!(!lan_page.contains("IDC_SET_LAN_QR_IOS,"));
     assert!(!form_block.contains("button_sized("));
@@ -3597,7 +3607,7 @@ fn windows_settings_multi_sync_sections_live_outside_hosts_rs() {
         );
     }
 
-    assert!(multi_sync_sections.contains("settings_multi_sync_cards_for_mode"));
+    assert!(multi_sync_sections.contains("settings_multi_sync_cards_with_qq"));
     assert!(multi_sync_sections.contains("SettingsPage::Cloud.index()"));
     assert!(multi_sync_sections.contains("settings_create_cloud_page(hwnd, st)"));
     assert!(multi_sync_sections.contains("settings_sync_page_state(st, page)"));
@@ -3933,8 +3943,10 @@ fn windows_settings_cloud_page_lives_outside_hosts_rs() {
     assert!(cloud_webdav.contains("IDC_SET_CLOUD_RESTORE_BACKUP"));
     assert!(cloud_lan.contains("pub(super) unsafe fn settings_create_cloud_lan_page("));
     assert!(cloud_lan.contains("IDC_SET_LAN_DISCOVERED_LIST"));
-    assert!(cloud_lan.contains("st.qr_lan_android_bounds"));
-    assert!(cloud_lan.contains("st.qr_lan_ios_bounds"));
+    assert!(cloud_lan.contains("st.lb_lan_addresses"));
+    assert!(cloud_lan.contains("st.lb_lan_firewall"));
+    assert!(cloud_lan.contains("IDC_SET_LAN_ACCEPT_PAIR"));
+    assert!(!cloud_lan.contains("form_qr_action("));
 }
 
 #[test]
@@ -4222,10 +4234,9 @@ fn windows_settings_page_navigation_lives_outside_hosts_rs() {
     assert!(navigation_controls.contains("platform_window::defer_move_windows"));
     assert!(navigation_controls.contains("settings_viewport_child_control_bounds("));
     assert!(navigation_scroll.contains("settings_scroll_update_for_target"));
-    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
+    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
     assert!(!navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
-    assert!(navigation_scroll.contains("RDW_INVALIDATE | RDW_UPDATENOW"));
-    assert!(!navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
+    assert!(!navigation_scroll.contains("RDW_UPDATENOW"));
     assert!(navigation_switch.contains("settings_page_switch_plan"));
     assert!(navigation_switch.contains("settings_host_set_visible"));
     assert!(
@@ -4321,7 +4332,7 @@ fn windows_settings_scrollable_controls_use_viewport_child_parent() {
     }
 
     assert!(navigation_controls.contains("settings_viewport_child_control_bounds(original"));
-    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, false)"));
+    assert!(navigation_scroll.contains("settings_repos_controls(hwnd, st, true)"));
     assert!(!navigation_scroll.contains("platform_gdi::invalidate_rect(st.viewport_hwnd"));
     assert!(navigation_scroll.contains("platform_gdi::redraw_window(hwnd, &viewport"));
     assert!(paint.contains("let viewport_clip = settings_viewport_rect(&rc);"));
@@ -4344,8 +4355,7 @@ fn windows_settings_scroll_moves_do_not_reshow_visible_controls() {
     assert!(navigation_controls.contains("st.scroll_moves.clear()"));
     assert!(!navigation_controls.contains("let slots: Vec<_>"));
     assert!(navigation_controls.contains("let intersects_viewport = settings_child_visible("));
-    assert!(navigation_controls
-        .contains("slot.visible && (!st.viewport_hwnd.is_null() || intersects_viewport)"));
+    assert!(navigation_controls.contains("slot.visible && intersects_viewport"));
 }
 
 #[test]
@@ -5027,7 +5037,7 @@ fn windows_vv_popup_window_presentation_uses_transient_host() {
         .map(|offset| move_start + offset)
         .unwrap();
     let hide_start = vv_popup
-        .find("pub(super) unsafe fn vv_popup_hide(_hwnd: HWND, state: &mut AppState)")
+        .find("pub(super) unsafe fn vv_popup_hide(")
         .unwrap();
     let show_start = vv_popup
         .find("pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND)")
@@ -6593,7 +6603,8 @@ fn windows_settings_input_executes_shared_input_plans_outside_app_rs() {
     );
     assert!(settings_input.contains("settings_pointer_move_transition"));
     assert!(settings_input.contains("settings_pointer_down_target"));
-    assert!(settings_input.contains("settings_scroll_delta_for_wheel(delta)"));
+    assert!(settings_input.contains("wheel_pixels(delta, &mut st.scroll_wheel_remainder"));
+    assert!(settings_input.contains("ID_TIMER_SETTINGS_SCROLL_FRAME, 16"));
     assert!(settings_input.contains("settings_nav_hover_transition"));
     assert!(settings_input.contains("dispatch_settings_action(&mut executor"));
     assert!(settings_input.contains("settings_window_track_pointer_leave(hwnd)"));
@@ -6640,7 +6651,8 @@ fn windows_settings_input_domains_live_in_dedicated_modules() {
     assert!(pointer_input.contains("pub(super) unsafe fn handle_settings_lbutton_down"));
     assert!(pointer_input.contains("settings_pointer_move_transition"));
     assert!(pointer_input.contains("settings_pointer_down_target"));
-    assert!(pointer_input.contains("settings_scroll_delta_for_wheel(delta)"));
+    assert!(pointer_input.contains("wheel_pixels(delta, &mut st.scroll_wheel_remainder"));
+    assert!(pointer_input.contains("ID_TIMER_SETTINGS_SCROLL_FRAME, 16"));
     assert!(keyboard_input.contains("pub(super) unsafe fn handle_settings_key_down"));
     assert!(keyboard_input.contains("hotkey::key_label_from_vk(code)"));
     assert!(window_events.contains("pub(super) unsafe fn handle_settings_theme_changed"));

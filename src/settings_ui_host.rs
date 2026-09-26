@@ -628,6 +628,7 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_CLOUD_INTERVAL
         | IDC_SET_MULTI_SYNC_MODE
         | IDC_SET_LAN_RECEIVE_MODE
+        | crate::win_system_params::IDC_SET_LAN_SYNC_MODE
         | IDC_SET_HOTKEY_MOD
         | IDC_SET_HOTKEY_KEY
         | IDC_SET_PASTE_SOUND_KIND
@@ -667,6 +668,7 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_GROUP_TYPE_FILTER
         | IDC_SET_CLOUD_ENABLE
         | IDC_SET_LAN_ENABLE
+        | crate::win_system_params::IDC_SET_QQ_CLOUD_MENU
         | IDC_SET_HOTKEY_ENABLE
         | IDC_SET_PLAIN_HK_ENABLE
         | IDC_SET_MOUSE_SIDE_ENABLE
@@ -817,7 +819,7 @@ pub(crate) fn settings_page_to_sync_after_toggle(control_id: isize) -> Option<us
         Some(SettingsPage::General.index())
     } else if control_id == IDC_SET_MOUSE_SIDE_ENABLE || control_id == IDC_SET_PLAIN_HK_ENABLE {
         Some(SettingsPage::Hotkey.index())
-    } else if control_id == IDC_SET_CLOUD_ENABLE || control_id == IDC_SET_LAN_ENABLE {
+    } else if control_id == IDC_SET_CLOUD_ENABLE || control_id == IDC_SET_LAN_ENABLE || control_id==crate::win_system_params::IDC_SET_QQ_CLOUD_MENU {
         Some(SettingsPage::Cloud.index())
     } else if matches!(
         control_id,

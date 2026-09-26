@@ -4,6 +4,8 @@
 mod app;
 mod app_core;
 mod app_version;
+mod update_feed;
+mod lanzou_update;
 mod cloud_sync;
 mod db_runtime;
 #[cfg(target_os = "windows")]
@@ -30,6 +32,14 @@ mod macos_native_host;
 #[cfg(all(target_os = "windows", feature = "mail-merge"))]
 mod mail_merge_native;
 mod multi_sync;
+#[cfg(windows)]
+mod secret_vault;
+#[cfg(all(windows, feature = "lan-sync"))]
+mod qq_cloud;
+#[cfg(all(windows, feature = "lan-sync"))]
+mod lan_firewall;
+#[cfg(all(windows, feature = "lan-sync"))]
+mod qq_cloud_auth;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod native_clipboard_capture;
 #[cfg(target_os = "windows")]

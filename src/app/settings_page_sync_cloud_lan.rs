@@ -6,6 +6,7 @@ use crate::win_system_ui::{settings_host_set_enabled, settings_host_text};
 pub(super) unsafe fn settings_sync_cloud_lan_state(st: &mut SettingsWndState, lan_enabled: bool) {
     let s = &st.draft;
     settings_set_text(st.ed_lan_name, &s.lan_device_name);
+    settings_set_text(st.cb_lan_sync_mode,crate::settings_model::lan_sync_mode_display(&s.lan_sync_mode));
     settings_set_text(st.ed_lan_tcp_port, &s.lan_tcp_port.to_string());
     settings_set_text(st.ed_lan_manual_host, &s.lan_manual_host);
     settings_set_text(
@@ -13,14 +14,16 @@ pub(super) unsafe fn settings_sync_cloud_lan_state(st: &mut SettingsWndState, la
         lan_receive_mode_display(&s.lan_receive_mode),
     );
     settings_set_text(st.lb_lan_status, &crate::lan_sync::status_summary(s));
+    settings_set_text(st.lb_lan_addresses, &crate::lan_sync::local_connection_summary(s));
+    settings_set_text(st.lb_lan_firewall, &crate::lan_sync::firewall_status_summary());
     settings_set_text(st.lb_lan_trusted, &lan_trusted_value_text());
     settings_lan_refresh_lists(st);
-    prepare_settings_lan_qr_caches(st);
     for hwnd in [
         st.ed_lan_name,
         st.ed_lan_tcp_port,
         st.ed_lan_manual_host,
         st.cb_lan_receive_mode,
+        st.cb_lan_sync_mode,
         st.btn_lan_pair,
         st.btn_lan_refresh,
         st.lb_lan_devices,
@@ -38,44 +41,36 @@ pub(super) unsafe fn settings_sync_cloud_lan_state(st: &mut SettingsWndState, la
 }
 
 pub(super) unsafe fn settings_refresh_cloud_lan_runtime_state(st: &mut SettingsWndState) -> bool {
-    if multi_sync_mode_from_settings(&st.draft) != "lan" {
-        return false;
+    #[cfg(feature="lan-sync")]
+    let qq_changed=super::main_qq_cloud::sync_settings_section(st);
+    #[cfg(not(feature="lan-sync"))]
+    let qq_changed=false;
+    if !matches!(multi_sync_mode_from_settings(&st.draft), "lan" | "qinput") {
+        return qq_changed;
     }
 
     let status = crate::lan_sync::status_summary(&st.draft);
+    let addresses = crate::lan_sync::local_connection_summary(&st.draft);
+    let firewall = crate::lan_sync::firewall_status_summary();
     let trusted = lan_trusted_value_text();
     let status_changed = settings_host_text(st.lb_lan_status) != status;
+    let addresses_changed = settings_host_text(st.lb_lan_addresses) != addresses;
+    let firewall_changed = settings_host_text(st.lb_lan_firewall) != firewall;
     let trusted_changed = settings_host_text(st.lb_lan_trusted) != trusted;
     if status_changed {
         settings_set_text(st.lb_lan_status, &status);
     }
+    if addresses_changed { settings_set_text(st.lb_lan_addresses, &addresses); }
+    if firewall_changed { settings_set_text(st.lb_lan_firewall, &firewall); }
     if trusted_changed {
         settings_set_text(st.lb_lan_trusted, &trusted);
     }
     let list_changed = settings_lan_refresh_lists(st);
 
-    let old_android_payload = st
-        .qr_lan_android_cache
-        .as_ref()
-        .map(|cache| cache.payload.clone());
-    let old_ios_payload = st
-        .qr_lan_ios_cache
-        .as_ref()
-        .map(|cache| cache.payload.clone());
-    prepare_settings_lan_qr_caches(st);
-    let qr_changed = old_android_payload
-        != st
-            .qr_lan_android_cache
-            .as_ref()
-            .map(|cache| cache.payload.clone())
-        || old_ios_payload
-            != st
-                .qr_lan_ios_cache
-                .as_ref()
-                .map(|cache| cache.payload.clone());
-
     for (hwnd, changed) in [
         (st.lb_lan_status, status_changed),
+        (st.lb_lan_addresses, addresses_changed),
+        (st.lb_lan_firewall, firewall_changed),
         (st.lb_lan_trusted, trusted_changed),
         (st.lb_lan_devices, list_changed),
     ] {
@@ -83,7 +78,7 @@ pub(super) unsafe fn settings_refresh_cloud_lan_runtime_state(st: &mut SettingsW
             platform_gdi::invalidate_rect(hwnd, null(), 0);
         }
     }
-    status_changed || trusted_changed || list_changed || qr_changed
+    status_changed || addresses_changed || firewall_changed || trusted_changed || list_changed || qq_changed
 }
 
 fn lan_trusted_value_text() -> String {

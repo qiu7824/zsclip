@@ -101,6 +101,7 @@ pub(crate) fn import_remote_text_clip(
     else {
         return Ok(None);
     };
+    if crate::db_runtime::text_is_protected(content) { return Ok(None); }
     let signature = remote_clip_signature(&manifest.transport, clip);
     let preview = if clip.preview.trim().is_empty() {
         content.chars().take(80).collect::<String>()
@@ -115,7 +116,7 @@ pub(crate) fn import_remote_text_clip(
     let inserted = with_db(|conn| {
         let exists: Option<i64> = conn
             .query_row(
-                "SELECT id FROM items WHERE category=0 AND signature=? LIMIT 1",
+                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND signature=? LIMIT 1",
                 params![signature],
                 |row| row.get(0),
             )
@@ -123,12 +124,12 @@ pub(crate) fn import_remote_text_clip(
         if exists.is_some() {
             return Ok(false);
         }
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT INTO items(category, kind, preview, signature, text_data, source_app, pinned, group_id)
-             VALUES(0, 'text', ?, ?, ?, ?, 0, 0)",
+             SELECT 0, 'text', ?1, ?2, ?3, ?4, 0, 0 WHERE NOT zsclip_is_protected(?3)",
             params![preview, signature, content, source_app],
         )?;
-        Ok(true)
+        Ok(inserted > 0)
     })?;
     Ok(Some(RemoteTextImportOutcome {
         imported: inserted,
@@ -175,7 +176,7 @@ pub(crate) fn import_remote_image_clip(
     let inserted = with_db(|conn| {
         let exists: Option<i64> = conn
             .query_row(
-                "SELECT id FROM items WHERE category=0 AND signature=? LIMIT 1",
+                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND signature=? LIMIT 1",
                 params![signature],
                 |row| row.get(0),
             )
@@ -227,7 +228,7 @@ pub(crate) fn load_latest_item() -> rusqlite::Result<Option<MultiSyncItem>> {
              COALESCE(source_app, ''), COALESCE(image_path, ''), \
              COALESCE(length(image_data), 0), image_width, image_height, \
              COALESCE(created_at, '') \
-             FROM items WHERE category=0 AND kind IN ('text', 'phrase', 'image') \
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind IN ('text', 'phrase', 'image') \
              ORDER BY id DESC LIMIT 50",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -257,7 +258,7 @@ pub(crate) fn item_from_db_row(row: MultiSyncDbRow) -> Option<MultiSyncItem> {
     match row.kind.as_str() {
         "text" | "phrase" => {
             let text = row.text.trim().to_string();
-            if text.is_empty() {
+            if text.is_empty() || crate::db_runtime::text_is_protected(&text) {
                 return None;
             }
             let preview = if row.preview.trim().is_empty() {
@@ -323,7 +324,7 @@ pub(crate) fn load_image_png(id: i64) -> rusqlite::Result<Option<Vec<u8>>> {
     let row = with_db(|conn| {
         conn.query_row(
             "SELECT image_data, COALESCE(image_path, ''), image_width, image_height \
-             FROM items WHERE category=0 AND kind='image' AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=0 AND kind='image' AND id=?",
             params![id],
             |row| {
                 Ok((
@@ -436,6 +437,27 @@ fn decode_png_to_rgba(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_text_cannot_be_imported_or_exported_by_webdav_manifest() {
+        crate::db_runtime::with_test_protected_texts(&["synthetic-sync-secret"], || {
+            crate::db_runtime::with_test_db(|| {
+                let manifest: MultiSyncManifest = serde_json::from_value(serde_json::json!({
+                    "protocol": MULTI_SYNC_PROTOCOL, "version": MULTI_SYNC_VERSION, "transport":"webdav",
+                    "clip": {"id":"remote-1", "type":"text", "hash":"test", "preview":"synthetic-sync-secret",
+                        "content":"synthetic-sync-secret", "hasData":false,"size":21,"source_app":"test","created_at":"0"}
+                })).unwrap();
+                assert!(import_remote_text_clip(&manifest)?.is_none());
+                with_db(|conn| {
+                    conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','ordinary','ordinary')", [])?;
+                    conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','synthetic-sync-secret','synthetic-sync-secret')", [])?;
+                    Ok(())
+                })?;
+                assert_eq!(latest_manifest("webdav")?.clip.unwrap().content.as_deref(), Some("ordinary"));
+                Ok(())
+            }).unwrap();
+        });
+    }
 
     #[test]
     fn bdd_text_manifest_keeps_inline_content() {
@@ -626,7 +648,7 @@ mod tests {
 
             let row: (String, String, String, String) = crate::db_runtime::with_db(|conn| {
                 conn.query_row(
-                    "SELECT kind, preview, text_data, source_app FROM items WHERE signature=?",
+                    "SELECT kind, preview, text_data, source_app FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND signature=?",
                     [&first.signature],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
@@ -679,7 +701,7 @@ mod tests {
 
             let row: (String, String, i64, i64, String) = crate::db_runtime::with_db(|conn| {
                 conn.query_row(
-                    "SELECT kind, preview, image_width, image_height, source_app FROM items WHERE signature=?",
+                    "SELECT kind, preview, image_width, image_height, source_app FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND signature=?",
                     [&first.signature],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
                 )

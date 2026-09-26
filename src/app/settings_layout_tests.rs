@@ -106,14 +106,65 @@ fn background_plugin_sync_never_shows_controls_on_other_pages() {
             0
         );
         refresh_settings_window_metrics(surface.0, state);
+        let viewport = settings_viewport_rect(&platform_window::client_rect(surface.0).unwrap());
         for page in 0..SETTINGS_PAGE_LABELS.len() {
             for reg in state.ui.page_regs(page) {
                 assert_eq!(
                     platform_window::window_style(reg.hwnd) & WS_VISIBLE != 0,
-                    page == state.cur_page && reg.visible
+                    page == state.cur_page
+                        && reg.visible
+                        && (!reg.scrollable
+                            || settings_child_visible(
+                                reg.bounds.top - state.content_scroll_y,
+                                reg.bounds.height(),
+                                &viewport
+                            ))
                 );
             }
         }
+        assert!(!platform_window::is_visible(surface.0));
+    }
+}
+
+#[test]
+fn scrolling_reuses_controls_and_only_moves_items_intersecting_the_viewport() {
+    unsafe {
+        let surface = HiddenSettingsSurface::new();
+        let state = &mut *(platform_window::user_data(surface.0) as *mut SettingsWndState);
+        settings_show_page(surface.0, state, SettingsPage::General.index());
+        let page = state.cur_page;
+        let handles: Vec<_> = state.ui.page_regs(page).map(|reg| reg.hwnd).collect();
+        assert!(handles.len() > 10);
+        let client = platform_window::client_rect(surface.0).unwrap();
+        let viewport = settings_viewport_rect(&client);
+        for position in [0, 100, 200, 400] {
+            settings_scroll_to(surface.0, state, settings_scale(position));
+            assert_eq!(
+                handles,
+                state
+                    .ui
+                    .page_regs(page)
+                    .map(|reg| reg.hwnd)
+                    .collect::<Vec<_>>()
+            );
+            for reg in state.ui.page_regs(page).filter(|reg| reg.scrollable) {
+                let visible = reg.visible
+                    && settings_child_visible(
+                        reg.bounds.top - state.content_scroll_y,
+                        reg.bounds.height(),
+                        &viewport,
+                    );
+                assert_eq!(
+                    platform_window::window_style(reg.hwnd) & WS_VISIBLE != 0,
+                    visible
+                );
+            }
+        }
+        settings_repos_controls(surface.0, state, false);
+        assert!(
+            state.scroll_moves.len() < handles.len(),
+            "screen-external controls must not move every frame"
+        );
         assert!(!platform_window::is_visible(surface.0));
     }
 }

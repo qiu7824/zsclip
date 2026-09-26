@@ -14108,12 +14108,13 @@ mod tests {
             .content
             .sections
             .iter()
-            .any(|section| section.title == "扫码绑定"));
+            .any(|section| section.title == "已连接设备"));
         assert!(!webdav
             .content
             .sections
             .iter()
-            .any(|section| section.title == "扫码绑定"));
+            .any(|section| section.title == "已连接设备"));
+        assert!(lan.content.sections.iter().all(|section| !section.title.contains("扫码")));
     }
 
     #[test]

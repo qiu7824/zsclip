@@ -16,6 +16,7 @@ pub(super) unsafe fn execute_settings_platform_general_action(
                         &paste_sound_display(&st.draft.paste_success_sound_kind),
                     );
                     settings_sync_page_state(st, SettingsPage::General.index());
+                    repaint_settings_control(st.ed_skip_class_names);
                     repaint_settings_window(hwnd, true);
                 }
                 Ok(None) => {}
@@ -62,13 +63,21 @@ pub(super) unsafe fn execute_settings_platform_general_action(
                         NativeDialogLevel::Info,
                     );
                 } else {
+                    let process = identity_host.process_name(target);
+                    let rule = if process.is_empty() {
+                        class_name
+                    } else {
+                        format!("{process}|{class_name}")
+                    };
                     let merged = append_unique_skip_class_name(
                         &settings_host_text(st.ed_skip_class_names),
-                        &class_name,
+                        &rule,
                     );
+                    st.draft.paste_target_skip_enabled = true;
                     st.draft.paste_target_skip_class_names = merged.clone();
                     settings_set_text(st.ed_skip_class_names, &merged);
-                    repaint_settings_control(st.ed_skip_class_names);
+                    settings_sync_page_state(st, SettingsPage::General.index());
+                    repaint_settings_window(hwnd, true);
                 }
             }
             true

@@ -97,6 +97,9 @@ pub(super) unsafe fn show_row_menu(
         |label| translate(label).into_owned(),
     );
 
+    #[cfg(feature = "lan-sync")]
+    let entries = super::main_qq_cloud::extend_menu(entries, current_kind, selected_count, state.settings.qq_cloud_menu_enabled);
+    let entries = super::main_secret_vault::append_row_menu(entries, current_kind, selected_count);
     let rc = window_rect_or_empty(hwnd);
     let pt = POINT {
         x: rc.left + x,
@@ -150,6 +153,7 @@ pub(super) unsafe fn show_group_filter_menu(
         .into_iter()
         .map(localize_group_filter_entry)
         .collect::<Vec<_>>();
+    let entries = super::main_secret_vault::append_groups(entries);
     vv_set_popup_menu_active(true);
     let cmd = platform_menu::WindowsPopupMenuHost::new().present_popup_menu(
         hwnd,

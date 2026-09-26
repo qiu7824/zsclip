@@ -259,6 +259,27 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
     true
 }
 
+pub(super) unsafe fn capture_explorer_rename_target(hwnd: HWND, state: &mut AppState) -> bool {
+    let foreground = platform_window::foreground();
+    let target =
+        if is_viable_paste_window(foreground, hwnd, paste_target_skip_classes(&state.settings)) {
+            foreground
+        } else {
+            effective_paste_target(state, hwnd)
+        };
+    let edit =
+        WindowsPasteTargetHost::new().explorer_rename_edit(target, state.hotkey_passthrough_focus);
+    if edit.is_null() {
+        state.hotkey_passthrough_edit = null_mut();
+        return false;
+    }
+    state.hotkey_passthrough_active = true;
+    state.hotkey_passthrough_target = target;
+    state.hotkey_passthrough_focus = edit;
+    state.hotkey_passthrough_edit = edit;
+    true
+}
+
 pub(super) unsafe fn try_apply_to_explorer_rename(
     state: &mut AppState,
     item_ref: &ClipItem,
@@ -268,6 +289,14 @@ pub(super) unsafe fn try_apply_to_explorer_rename(
     }
     if !WindowsWindowIdentityHost::new().exists(state.hotkey_passthrough_edit) {
         clear_hotkey_passthrough_state(state);
+        return false;
+    }
+    if WindowsPasteTargetHost::new().explorer_rename_edit(
+        state.hotkey_passthrough_target,
+        state.hotkey_passthrough_edit,
+    ) != state.hotkey_passthrough_edit
+    {
+        state.hotkey_passthrough_edit = null_mut();
         return false;
     }
 
@@ -445,6 +474,7 @@ unsafe fn paste_selected_locked(hwnd: HWND, state: &mut AppState) {
     let Some(item_ref) = state.current_item().cloned() else {
         return;
     };
+    capture_explorer_rename_target(hwnd, state);
     let preparation = main_paste_preparation_plan(paste_preparation_input(state, &item_ref));
     for step in preparation.steps {
         match step {
@@ -716,12 +746,14 @@ pub(super) unsafe fn show_clipboard_write_failure_message(hwnd: HWND) {
 pub(super) unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWND {
     let skip_class_names = paste_target_skip_classes(&state.settings);
     if !state.paste_target_override.is_null()
+        && WindowsWindowIdentityHost::new().exists(state.paste_target_override)
         && !paste_window_is_zsclip(state.paste_target_override)
     {
         return state.paste_target_override;
     }
     if state.hotkey_passthrough_active
         && !state.hotkey_passthrough_target.is_null()
+        && WindowsWindowIdentityHost::new().exists(state.hotkey_passthrough_target)
         && !paste_window_is_zsclip(state.hotkey_passthrough_target)
         && !paste_window_class_is_skipped(state.hotkey_passthrough_target, skip_class_names)
     {
@@ -732,6 +764,75 @@ pub(super) unsafe fn effective_paste_target(state: &AppState, hwnd: HWND) -> HWN
         return foreground;
     }
     find_next_paste_target(hwnd, skip_class_names)
+}
+
+pub(super) unsafe fn capture_protected_paste_target(
+    hwnd: HWND,
+    state: &AppState,
+) -> Option<(HWND, HWND)> {
+    let target = effective_paste_target(state, hwnd);
+    if !is_viable_paste_window(target, hwnd, paste_target_skip_classes(&state.settings)) {
+        return None;
+    }
+    let host = WindowsPasteTargetHost::new();
+    let current_focus = host.focused_control(target);
+    let focus = if !current_focus.is_null() {
+        current_focus
+    } else if platform_window::exists(state.hotkey_passthrough_focus)
+        && platform_window::root_ancestor(state.hotkey_passthrough_focus) == target
+    {
+        state.hotkey_passthrough_focus
+    } else {
+        null_mut()
+    };
+    Some((target, focus))
+}
+
+pub(super) unsafe fn paste_protected_text(hwnd: HWND, state: &mut AppState, text: &str) -> bool {
+    let Some((target, focus)) = capture_protected_paste_target(hwnd, state) else {
+        return false;
+    };
+    paste_protected_text_to_target(hwnd, state, text, target, focus)
+}
+
+pub(super) unsafe fn paste_protected_text_to_target(
+    hwnd: HWND,
+    state: &mut AppState,
+    text: &str,
+    target: HWND,
+    focus: HWND,
+) -> bool {
+    // A saved external target is required after closing a password or vault dialog.
+    // Never fall back to another window while a secret is being pasted.
+    if text.is_empty()
+        || !is_viable_paste_window(target, hwnd, paste_target_skip_classes(&state.settings))
+        || platform_window::is_hung(target)
+        || platform_process::process_has_higher_elevation(platform_window::window_process_id(
+            target,
+        ))
+    {
+        return false;
+    }
+    cancel_queued_paste_attempt(hwnd, state);
+    if !platform_clipboard::set_protected_text(hwnd, text) {
+        return false;
+    }
+    state.note_programmatic_clipboard_signature(
+        text_content_signature(text),
+        CLIPBOARD_IGNORE_MS_PASTE,
+    );
+    set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
+    state.hotkey_passthrough_active = true;
+    state.hotkey_passthrough_target = target;
+    state.hotkey_passthrough_focus =
+        if platform_window::exists(focus) && platform_window::root_ancestor(focus) == target {
+            focus
+        } else {
+            null_mut()
+        };
+    state.hotkey_passthrough_edit = null_mut();
+    paste_after_clipboard_ready_to_target(hwnd, state, target, true, 0);
+    true
 }
 
 pub(super) unsafe fn paste_after_clipboard_ready(

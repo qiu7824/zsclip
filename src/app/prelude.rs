@@ -276,7 +276,7 @@ pub(in crate::app) use crate::settings_model::{
     settings_nav_hover_transition, settings_nav_render_plan,
     settings_page_content_total_h_for_dynamic_sections, settings_page_max_scroll,
     settings_pointer_down_target, settings_pointer_move_transition,
-    settings_scroll_delta_for_wheel, settings_scroll_layout_for_window,
+    settings_scroll_layout_for_window,
     settings_scrollbar_render_plan, settings_update_presentation,
     settings_window_dpi_transition_plan, settings_window_fit_plan, SettingsDpiMoveAction,
     SettingsFlowLayout, SettingsPointerDownTarget, SettingsQrCache, SettingsScrollLayout,

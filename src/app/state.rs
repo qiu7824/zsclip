@@ -13,6 +13,9 @@ pub(super) use crate::settings_model::{
     TEXT_TRANSLATE_TARGET_OPTIONS,
 };
 
+fn legacy_lan_sync_mode() -> String { "bidirectional".into() }
+fn legacy_qq_cloud_menu_enabled() -> bool { true }
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AppSettings {
@@ -78,6 +81,12 @@ pub(crate) struct AppSettings {
     pub(crate) cloud_remote_dir: String,
     pub(crate) cloud_last_sync_status: String,
     pub(crate) lan_sync_enabled: bool,
+    #[serde(default = "legacy_lan_sync_mode")]
+    pub(crate) lan_sync_mode: String,
+    #[serde(default = "legacy_qq_cloud_menu_enabled")]
+    pub(crate) qq_cloud_menu_enabled: bool,
+    #[serde(default, skip_serializing)]
+    pub(crate) q_input_sync_enabled: bool,
     pub(crate) lan_device_name: String,
     pub(crate) lan_device_id: String,
     pub(crate) lan_tcp_port: u16,
@@ -168,6 +177,9 @@ impl Default for AppSettings {
             cloud_remote_dir: "ZSClip".to_string(),
             cloud_last_sync_status: "未同步".to_string(),
             lan_sync_enabled: false,
+            lan_sync_mode: "manual".to_string(),
+            qq_cloud_menu_enabled: false,
+            q_input_sync_enabled: false,
             lan_device_name: String::new(),
             lan_device_id: String::new(),
             lan_tcp_port: 38473,

@@ -30,6 +30,79 @@ impl WindowsPasteTargetHost {
     pub(crate) const fn new() -> Self {
         Self
     }
+
+    fn focus_and_caret(&self, target: HWND) -> [HWND; 2] {
+        let thread_id = platform_window::window_thread_id(target);
+        let mut info: GUITHREADINFO = unsafe { zeroed() };
+        info.cbSize = size_of::<GUITHREADINFO>() as u32;
+        if thread_id == 0 || !platform_window::gui_thread_info(thread_id, &mut info) {
+            return [core::ptr::null_mut(); 2];
+        }
+        [info.hwndFocus, info.hwndCaret]
+    }
+
+    pub(crate) fn focused_control(&self, target: HWND) -> HWND {
+        self.focus_and_caret(target)
+            .into_iter()
+            .find(|&control| {
+                platform_window::exists(control)
+                    && platform_window::root_ancestor(control) == target
+            })
+            .unwrap_or(core::ptr::null_mut())
+    }
+
+    pub(crate) fn explorer_rename_edit(&self, target: HWND, saved_focus: HWND) -> HWND {
+        let identity = WindowsWindowIdentityHost::new();
+        if !identity.exists(target)
+            || !identity
+                .process_name(target)
+                .eq_ignore_ascii_case("explorer.exe")
+            || !matches!(
+                identity.class_name(target).as_str(),
+                "CabinetWClass" | "ExploreWClass" | "Progman" | "WorkerW"
+            )
+        {
+            return core::ptr::null_mut();
+        }
+        let [focus, caret] = self.focus_and_caret(target);
+        for control in [focus, caret, saved_focus] {
+            if !platform_window::exists(control)
+                || !platform_window::is_visible(control)
+                || platform_window::root_ancestor(control) != target
+                || !platform_window::class_name(control).eq_ignore_ascii_case("Edit")
+            {
+                continue;
+            }
+            let mut ancestors = Vec::new();
+            let mut parent = platform_window::parent(control);
+            for _ in 0..12 {
+                if parent.is_null() || parent == target {
+                    break;
+                }
+                ancestors.push(platform_window::class_name(parent));
+                parent = platform_window::parent(parent);
+            }
+            if explorer_rename_ancestor_classes(&ancestors) {
+                return control;
+            }
+        }
+        core::ptr::null_mut()
+    }
+}
+
+fn explorer_rename_ancestor_classes(classes: &[String]) -> bool {
+    let is_address_or_search = classes.iter().any(|class| {
+        let class = class.to_ascii_lowercase();
+        class.contains("combobox")
+            || class.contains("address")
+            || class.contains("breadcrumb")
+            || class.contains("search")
+    });
+    !is_address_or_search
+        && classes.iter().any(|class| {
+            class.eq_ignore_ascii_case("DirectUIHWND")
+                || class.eq_ignore_ascii_case("SysListView32")
+        })
 }
 
 fn is_word_process(process_name: &str) -> bool {
@@ -341,7 +414,36 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
 
 #[cfg(test)]
 mod tests {
-    use super::{class_accepts_direct_paste_message, is_telegram_process};
+    use super::{
+        class_accepts_direct_paste_message, explorer_rename_ancestor_classes, is_telegram_process,
+    };
+
+    #[test]
+    fn explorer_replacement_is_limited_to_file_list_rename_controls() {
+        let classes = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(explorer_rename_ancestor_classes(&classes(&[
+            "DirectUIHWND",
+            "SHELLDLL_DefView"
+        ])));
+        assert!(explorer_rename_ancestor_classes(&classes(&[
+            "SysListView32",
+            "SHELLDLL_DefView"
+        ])));
+        assert!(!explorer_rename_ancestor_classes(&classes(&[
+            "ComboBoxEx32",
+            "DirectUIHWND"
+        ])));
+        assert!(!explorer_rename_ancestor_classes(&classes(&[
+            "SearchBox",
+            "DirectUIHWND"
+        ])));
+        assert!(!explorer_rename_ancestor_classes(&classes(&["Notepad"])));
+    }
 
     #[test]
     fn telegram_desktop_process_names_are_recognized() {

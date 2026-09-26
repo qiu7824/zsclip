@@ -203,6 +203,7 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
                 reload_state_from_db_persisting(state);
                 state.refilter();
                 sync_peer_windows_from_db(hwnd);
+                refresh_lan_latest_from_db(&state.settings);
                 repaint_main_window(hwnd, true);
             }
         }

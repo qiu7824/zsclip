@@ -77,9 +77,5 @@ pub(super) unsafe fn notify_update_state_changed() {
             continue;
         }
         platform_window::post_hwnd_message(hwnd, WM_UPDATE_CHECK_READY, 0, 0);
-        let ptr = get_state_ptr(hwnd);
-        if !ptr.is_null() && platform_window::exists((*ptr).settings_hwnd) {
-            platform_gdi::invalidate_rect((*ptr).settings_hwnd, null(), 1);
-        }
     }
 }

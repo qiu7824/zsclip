@@ -1,6 +1,6 @@
 [package]
 name = "zsclip"
-version = "1.0.0"
+version = "1.0.7"
 edition = "2021"
 repository = "https://github.com/qiu7824/zsclip/"
 
@@ -12,10 +12,12 @@ lan-sync = []
 mail-merge = []
 ai-actions = []
 sticker = []
+# Legacy build alias; it selects the same ordinary LAN-enabled program.
+q-input = ["lan-sync"]
 
 [dependencies]
 arboard = "3.4"
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.31", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 zsui = { path = "../zsui" }
@@ -26,6 +28,11 @@ qrcodegen = "1.8"
 md5 = "0.7"
 crc32fast = "1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
+aes-gcm = "0.10.3"
+sha2 = "0.10"
+argon2 = "0.5.3"
+hmac = "0.12.1"
+zeroize = "1"
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = "5.4"
@@ -33,12 +40,16 @@ windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Gdi",
+  "Win32_Networking_WinSock",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
   "Win32_System_Com",
   "Win32_System_DataExchange",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader",
   "Win32_System_Ole",
   "Win32_System_Threading",
+  "Win32_System_Registry",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_HiDpi",
   "Win32_UI_Shell",

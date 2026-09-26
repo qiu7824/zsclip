@@ -4,6 +4,7 @@ pub(super) fn maybe_broadcast_lan_clip_item(state: &AppState, item: &ClipItem, s
     if state.role != WindowRole::Main || !state.settings.lan_sync_enabled {
         return;
     }
+    if !crate::lan_sync_core::LanSyncMode::from_key(&state.settings.lan_sync_mode).send_automatic() { return; }
     if matches!(item.kind, ClipKind::Files) {
         if let Some(paths) = &item.file_paths {
             lan_sync::push_small_files_to_trusted(&state.settings, paths.clone());
@@ -26,54 +27,76 @@ fn lan_envelope_from_item(
     item: &ClipItem,
     signature: &str,
 ) -> Option<LanClipEnvelope> {
-    let origin_seq = lan_sync::next_origin_seq();
-    let preview = item.preview.chars().take(160).collect::<String>();
-    match item.kind {
-        ClipKind::Text | ClipKind::Phrase => {
-            let text = item.text.clone()?;
-            if text.trim().is_empty() {
-                return None;
+    // Persisted row identity survives process restarts and is shared by push and pull.
+    if item.id <= 0 { return None; }
+    lan_latest_envelope_from_item(settings,item,signature)
+}
+
+#[cfg(test)]
+mod lan_origin_identity_tests {
+    use super::*;
+
+    #[test]
+    fn lan_discarded_file_cleanup_preserves_existing_database_references() {
+        crate::db_runtime::with_test_db(|| {
+            let folder = data_dir().join("lan_received");
+            fs::create_dir_all(&folder).unwrap();
+            let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            let retained = folder.join(format!("retained-{nonce}.txt"));
+            let discarded = folder.join(format!("discarded-{nonce}.txt"));
+            fs::write(&retained,b"synthetic retained file").unwrap();
+            fs::write(&discarded,b"synthetic discarded file").unwrap();
+            let id = crate::db_runtime::with_db(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','synthetic file','synthetic file')",[])?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let mut item = db_load_item_full(id).unwrap();
+            item.kind = ClipKind::Files; item.text = None; item.source_app = "LAN: synthetic".into();
+            item.file_paths = Some(vec![retained.to_string_lossy().to_string()]);
+            db_insert_item(0,&item,None)?;
+            item.file_paths.as_mut().unwrap().push(discarded.to_string_lossy().to_string());
+            remove_uninserted_image_file(&item);
+            assert!(retained.is_file());
+            assert!(!discarded.exists());
+            fs::remove_file(&retained).unwrap();
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn lan_local_push_and_pull_share_stable_content_bound_row_identity() {
+        crate::db_runtime::with_test_db(|| {
+            let id=crate::db_runtime::with_db(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','synthetic identity','synthetic identity')",[])?;
+                Ok(conn.last_insert_rowid())
+            })?;
+            let mut settings=AppSettings::default();settings.lan_device_id="identity-pc".into();
+            let item=db_load_item_full(id).unwrap();
+            let first=lan_envelope_from_item(&settings,&item,"").unwrap();
+            let pulled=lan_latest_envelope_from_item(&settings,&item,"").unwrap();
+            let reopened=lan_envelope_from_item(&settings.clone(),&db_load_item_full(id).unwrap(),"").unwrap();
+            assert_eq!(first.message_id,pulled.message_id);
+            assert_eq!(first.message_id,reopened.message_id);
+            assert_eq!(first.origin_seq,id as u64);
+            let original_text = item.text.as_deref().unwrap();
+            for edited_text in [format!(" {original_text} "), format!("{original_text}\n"), format!("{original_text}\u{200d}")] {
+                db_update_item_text(id, &edited_text)?;
+                let edited_item = db_load_item_full(id).unwrap();
+                let edited = lan_envelope_from_item(&settings, &edited_item, "").unwrap();
+                assert_eq!(edited.message_id, lan_latest_envelope_from_item(&settings, &edited_item, "").unwrap().message_id);
+                assert_ne!(first.message_id, edited.message_id, "wire payload edits need a new identity");
+                assert_eq!(edited.text.as_deref(), Some(edited_text.as_str()));
             }
-            Some(LanClipEnvelope {
-                message_id: format!("{}-{origin_seq}", settings.lan_device_id),
-                origin_device_id: settings.lan_device_id.clone(),
-                origin_seq,
-                kind: "text".to_string(),
-                hash: if signature.is_empty() {
-                    dedupe_signature_for_item(item, "")
-                } else {
-                    signature.to_string()
-                },
-                created_at_ms: now_epoch_ms(),
-                preview,
-                text: Some(text),
-                image_png_base64: None,
-                file_meta: Vec::new(),
-            })
-        }
-        ClipKind::Image => {
-            let png_bytes = lan_image_png_bytes(item)?;
-            if png_bytes.len() > lan_sync::LAN_IMAGE_MAX_BYTES {
-                return None;
-            }
-            Some(LanClipEnvelope {
-                message_id: format!("{}-{origin_seq}", settings.lan_device_id),
-                origin_device_id: settings.lan_device_id.clone(),
-                origin_seq,
-                kind: "image".to_string(),
-                hash: if signature.is_empty() {
-                    dedupe_signature_for_item(item, "")
-                } else {
-                    signature.to_string()
-                },
-                created_at_ms: now_epoch_ms(),
-                preview,
-                text: None,
-                image_png_base64: Some(general_purpose::STANDARD.encode(png_bytes)),
-                file_meta: Vec::new(),
-            })
-        }
-        ClipKind::Files => None,
+            let received=LanOriginMetadata {message_id:"remote-id".into(),origin_device_id:"remote-phone".into(),origin_seq:99,hash:"text:sha256:synthetic".into()};
+            db_save_lan_origin_metadata(id,&received)?;
+            db_update_item_text(id,"edited synthetic identity")?;
+            assert!(db_load_lan_origin_metadata(id).is_none());
+            let edited=lan_latest_envelope_from_item(&settings,&db_load_item_full(id).unwrap(),"").unwrap();
+            assert_ne!(first.message_id,edited.message_id);
+            assert_eq!(edited.origin_device_id,settings.lan_device_id);
+            assert!(!edited.message_id.contains("edited synthetic"));
+            Ok(())
+        }).unwrap();
     }
 }
 
@@ -93,7 +116,7 @@ pub(super) fn lan_latest_envelope_from_item(
         .map(|meta| meta.message_id.trim())
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("{}-db-{}", settings.lan_device_id, item.id.max(0)));
+        .unwrap_or_default();
     let origin_device_id = metadata
         .as_ref()
         .map(|meta| meta.origin_device_id.trim())
@@ -123,10 +146,10 @@ pub(super) fn lan_latest_envelope_from_item(
         image_png_base64: None,
         file_meta: Vec::new(),
     };
-    match item.kind {
+    let mut envelope = match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             let text = item.text.clone()?;
-            if text.trim().is_empty() {
+            if text.trim().is_empty() || crate::db_runtime::text_is_protected(&text) {
                 return None;
             }
             let mut envelope = base();
@@ -166,7 +189,13 @@ pub(super) fn lan_latest_envelope_from_item(
             }
             Some(envelope)
         }
+    }?;
+    if envelope.message_id.is_empty() {
+        use sha2::Digest;
+        let payload = serde_json::to_vec(&(&envelope.kind, &envelope.text, &envelope.image_png_base64, &envelope.file_meta)).ok()?;
+        envelope.message_id = format!("{}-db-{}-{:x}", settings.lan_device_id, item.id.max(0), sha2::Sha256::digest(payload));
     }
+    Some(envelope)
 }
 
 pub(super) fn refresh_lan_latest_from_db(settings: &AppSettings) {
@@ -243,41 +272,51 @@ fn now_epoch_ms() -> u64 {
 }
 
 pub(super) unsafe fn handle_lan_sync_ready(hwnd: HWND) {
-    let _ = lan_sync::drain_pair_prompts();
-    let incoming = lan_sync::drain_incoming_clips();
+    let requests = lan_sync::drain_pair_prompts();
     let ptr = get_state_ptr(hwnd);
     if ptr.is_null() {
         return;
     }
+    if let Some(request) = requests.first() {
+        let response = platform_dialog::WindowsDialogHost::new().confirm(
+            hwnd, "允许设备连接",
+            &format!("设备：{}\n地址：{}\n安全码：{}\n\n允许此设备通过局域网同步剪贴板？", request.device_name, request.addr, request.code),
+            NativeDialogLevel::Question, NativeDialogButtons::YesNo,
+        );
+        if response == NativeDialogResponse::Yes { lan_sync::accept_pair_request(&request.pair_id); }
+        else { lan_sync::reject_pair_request(&request.pair_id); }
+    }
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() { return; }
     let state = &mut *ptr;
+    let incoming = lan_sync::drain_incoming_clips();
+    let _reservations: Vec<_> = incoming.iter().map(|clip| lan_sync::incoming_clip_reservation(&clip.envelope)).collect();
     let mirror_clipboard = state.settings.lan_receive_mode == "clipboard";
     for incoming_clip in incoming {
+        if !incoming_clip.manual && !crate::lan_sync_core::LanSyncMode::from_key(&state.settings.lan_sync_mode).receive_automatic() { continue; }
         let expected_generation = state.app_data_generation;
         let processed =
             crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
-                let message_key = lan_message_key_from_envelope(&incoming_clip.envelope);
-                if !state.remember_lan_message_key(&message_key) {
+                if !matches!(crate::db_runtime::has_lan_receipt(&incoming_clip.envelope.origin_device_id, &incoming_clip.envelope.message_id), Ok(false)) {
+                    if incoming_clip.envelope.kind == "files" {
+                        if let Some(decoded) = lan_item_from_envelope(incoming_clip) { remove_uninserted_image_file(&decoded.item); }
+                    }
                     return;
                 }
                 if let Some(decoded) = lan_item_from_envelope(incoming_clip) {
                     let clipboard_item = decoded.item.clone();
                     let latest_envelope = decoded.latest_envelope.clone();
-                    let inserted = state.add_lan_clip_item(decoded.item, decoded.content_signature);
-                    if inserted {
-                        if let Some(item_id) = db_latest_item_id(0) {
-                            let _ = db_save_lan_origin_metadata(
-                                item_id,
-                                &LanOriginMetadata {
-                                    message_id: latest_envelope.message_id.clone(),
-                                    origin_device_id: latest_envelope.origin_device_id.clone(),
-                                    origin_seq: latest_envelope.origin_seq,
-                                    hash: latest_envelope.hash.clone(),
-                                },
-                            );
-                        }
+                    let origin=LanOriginMetadata {message_id:latest_envelope.message_id.clone(),origin_device_id:latest_envelope.origin_device_id.clone(),origin_seq:latest_envelope.origin_seq,hash:latest_envelope.hash.clone()};
+                    let signature=decoded.content_signature;
+                    let inserted=state.add_lan_clip_item(decoded.item,signature.clone(),&origin);
+                    if inserted.is_ok() {
                         lan_sync::set_latest_clip(Some(latest_envelope));
                         if mirror_clipboard {
-                            let _ = apply_lan_item_to_clipboard(state, &clipboard_item);
+                            let item = if inserted==Ok(false) {
+                                db_find_duplicate_item_ids(0,&clipboard_item,&signature).first().copied()
+                                    .and_then(db_load_item_full)
+                            } else { Some(clipboard_item.clone()) };
+                            if let Some(item)=item { let _ = apply_lan_item_to_clipboard(state, &item); }
                         }
                     } else {
                         remove_uninserted_image_file(&clipboard_item);
@@ -342,10 +381,7 @@ unsafe fn apply_lan_item_to_clipboard(state: &mut AppState, item: &ClipItem) -> 
 }
 
 fn lan_message_key_from_envelope(envelope: &LanClipEnvelope) -> String {
-    format!(
-        "lan:{}:{}:{}",
-        envelope.origin_device_id, envelope.origin_seq, envelope.hash
-    )
+    crate::lan_sync_core::lan_message_identity(envelope)
 }
 
 fn lan_text_content_signature(text: &str) -> String {
@@ -421,7 +457,19 @@ pub(super) fn remove_uninserted_image_file(item: &ClipItem) {
             for raw in paths {
                 let path = PathBuf::from(raw);
                 let path_canon = path.canonicalize().unwrap_or(path);
-                if path_canon.starts_with(&root_canon) {
+                let referenced = with_db(|conn| {
+                    let mut statement = conn.prepare("SELECT COALESCE(file_paths,'') FROM items WHERE kind='files'")?;
+                    let rows = statement.query_map([], |row| row.get::<_,String>(0))?;
+                    for value in rows {
+                        for stored in value?.lines() {
+                            let stored = PathBuf::from(stored);
+                            let stored = stored.canonicalize().unwrap_or(stored);
+                            if stored == path_canon || (cfg!(windows) && stored.to_string_lossy().eq_ignore_ascii_case(&path_canon.to_string_lossy())) { return Ok(true); }
+                        }
+                    }
+                    Ok(false)
+                });
+                if path_canon.starts_with(&root_canon) && matches!(referenced, Ok(false)) {
                     let _ = fs::remove_file(path_canon);
                 }
             }
@@ -438,6 +486,7 @@ fn lan_item_from_envelope(incoming: lan_sync::LanIncomingClip) -> Option<LanDeco
     match envelope.kind.as_str() {
         "text" => {
             let text = envelope.text?;
+            if crate::db_runtime::text_is_protected(&text) { return None; }
             let content_signature = lan_text_content_signature(&text);
             let preview = if envelope.preview.trim().is_empty() {
                 build_preview(&text)

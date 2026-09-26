@@ -39,9 +39,11 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
     }
 
     #[cfg(feature = "lan-sync")]
-    if mode == "lan" {
+    if matches!(mode, "lan" | "qinput") {
         settings_create_cloud_lan_page(st, &b, line_h, lan_btn_w, small_btn_w);
     }
 
+    #[cfg(feature="lan-sync")]
+    super::main_qq_cloud::create_settings_section(st,&b);
     st.ui.mark_built(page);
 }

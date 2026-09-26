@@ -11,7 +11,8 @@ pub(super) enum HiddenWorkingSetTrimResult {
     TransientWindowVisible,
 }
 
-unsafe fn reclaim_window_state_memory(_hwnd: HWND, state: &mut AppState) {
+unsafe fn reclaim_window_state_memory(hwnd: HWND, state: &mut AppState) {
+    super::secret_vault_ui::close_main_view(hwnd);
     hide_hover_preview();
     release_hover_preview_memory();
     state.clear_payload_cache();
@@ -58,7 +59,9 @@ pub(super) unsafe fn trim_hidden_process_working_set() -> HiddenWorkingSetTrimRe
             return HiddenWorkingSetTrimResult::TransientWindowVisible;
         }
     }
-    if window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd()) {
+    if window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
+        || platform_window::current_process_has_visible_window()
+    {
         return HiddenWorkingSetTrimResult::TransientWindowVisible;
     }
     if platform_process::trim_current_working_set() {
@@ -126,6 +129,7 @@ pub(super) unsafe fn handle_main_window_size(hwnd: HWND, _size: UiSize, minimize
     }
     WindowsMainWindowHost::new(Some(wnd_proc)).apply_main_window_appearance(hwnd);
     layout_children(hwnd);
+    super::secret_vault_ui::resize_main_view(hwnd);
     repaint_main_window(hwnd, true);
 }
 
@@ -133,6 +137,7 @@ pub(super) unsafe fn handle_main_app_activation_changed(hwnd: HWND, active: bool
     if active {
         return;
     }
+    super::secret_vault_ui::close_main_view(hwnd);
     clear_main_hover_state(hwnd);
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {

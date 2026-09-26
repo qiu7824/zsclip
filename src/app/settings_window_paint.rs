@@ -34,23 +34,29 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         (*st_ptr).content_scroll_y
     };
     let chrome_plan = settings_chrome_render_plan(rc.into());
-    draw_settings_chrome(
-        memdc as _,
-        &chrome_plan,
-        SETTINGS_PAGE_LABELS[cur_page],
-        theme,
-    );
+    let viewport_clip = settings_viewport_rect(&rc);
+    let chrome_dirty =
+        paint_rc.left < viewport_clip.left || paint_rc.top < settings_content_y_scaled();
+    if chrome_dirty {
+        draw_settings_chrome(
+            memdc as _,
+            &chrome_plan,
+            SETTINGS_PAGE_LABELS[cur_page],
+            theme,
+        );
+    }
     let hover_page = if !st_ptr.is_null() && (*st_ptr).nav_hot >= 0 {
         Some((*st_ptr).nav_hot as usize)
     } else {
         None
     };
-    let nav_plan = settings_nav_render_plan(cur_page, hover_page, update_check_available());
-    for item in &nav_plan.items {
-        draw_settings_nav_item(memdc as _, item, theme);
+    if chrome_dirty {
+        let nav_plan = settings_nav_render_plan(cur_page, hover_page, update_check_available());
+        for item in &nav_plan.items {
+            draw_settings_nav_item(memdc as _, item, theme);
+        }
     }
 
-    let viewport_clip = settings_viewport_rect(&rc);
     let content_clip: RECT = chrome_plan.content_clip_rect.into();
     platform_gdi::save_dc(memdc);
     platform_gdi::intersect_clip_rect(
@@ -67,7 +73,7 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         content_clip.right,
         content_clip.bottom,
     );
-    let content_plan = if st_ptr.is_null() {
+    let mut content_plan = if st_ptr.is_null() {
         settings_content_render_plan(cur_page, scroll_y, &[], &[])
     } else {
         settings_content_render_plan(
@@ -77,6 +83,12 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
             &(*st_ptr).multi_sync_sections,
         )
     };
+    content_plan.sections.retain(|section| {
+        let top = section.rect.top - content_plan.scroll_y;
+        let bottom = section.rect.bottom - content_plan.scroll_y;
+        bottom > viewport_clip.top.max(paint_rc.top)
+            && top < viewport_clip.bottom.min(paint_rc.bottom)
+    });
     draw_settings_content(memdc as _, &content_plan, theme);
     if !st_ptr.is_null() {
         draw_settings_lan_qr_blocks(&mut *st_ptr, memdc as _, scroll_y, viewport_clip);

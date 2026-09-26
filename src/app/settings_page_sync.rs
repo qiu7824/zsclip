@@ -12,15 +12,45 @@ pub(super) fn settings_apply_multi_sync_mode(settings: &mut AppSettings, mode: &
     let (cloud, lan) = crate::settings_model::multi_sync_flags_for_mode(mode);
     settings.cloud_sync_enabled = cloud;
     settings.lan_sync_enabled = lan;
+    settings.q_input_sync_enabled = false;
 }
 
 pub(super) fn settings_normalize_multi_sync_mode(settings: &mut AppSettings) {
+    if cfg!(feature = "lan-sync") && settings.q_input_sync_enabled { settings.lan_sync_enabled = true; }
     let (cloud, lan) = crate::settings_model::normalize_multi_sync_flags(
         settings.cloud_sync_enabled,
         settings.lan_sync_enabled,
     );
     settings.cloud_sync_enabled = cloud;
     settings.lan_sync_enabled = lan;
+    settings.q_input_sync_enabled = false;
+}
+
+#[cfg(all(test, feature = "lan-sync"))]
+mod lan_mode_migration_tests {
+    use super::*;
+    #[test]
+    fn new_profiles_are_manual_but_existing_profiles_keep_bidirectional() {
+        assert_eq!(AppSettings::default().lan_sync_mode,"manual");
+        assert!(!AppSettings::default().qq_cloud_menu_enabled);
+        let old:AppSettings=serde_json::from_str(r#"{"lan_sync_enabled":true}"#).unwrap();
+        assert_eq!(old.lan_sync_mode,"bidirectional");
+        assert!(old.qq_cloud_menu_enabled);
+        let selected:AppSettings=serde_json::from_str(r#"{"lan_sync_enabled":true,"lan_sync_mode":"phone_to_pc","qq_cloud_menu_enabled":false}"#).unwrap();
+        let reopened:AppSettings=serde_json::from_slice(&serde_json::to_vec(&selected).unwrap()).unwrap();
+        assert_eq!(reopened.lan_sync_mode,"phone_to_pc");assert!(!reopened.qq_cloud_menu_enabled);
+    }
+    #[test]
+    fn legacy_q_input_settings_migrate_to_ordinary_lan() {
+        let mut settings: AppSettings = serde_json::from_str(r#"{"q_input_sync_enabled":true,"lan_sync_enabled":true}"#).unwrap();
+        settings_normalize_multi_sync_mode(&mut settings);
+        assert_eq!(multi_sync_mode_from_settings(&settings), "lan");
+        assert!(!settings.q_input_sync_enabled);
+        assert!(!serde_json::to_value(&settings).unwrap().as_object().unwrap().contains_key("q_input_sync_enabled"));
+        settings_apply_multi_sync_mode(&mut settings, "off");
+        settings_normalize_multi_sync_mode(&mut settings);
+        assert!(!settings.lan_sync_enabled);
+    }
 }
 
 pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {

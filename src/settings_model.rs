@@ -375,11 +375,8 @@ pub fn settings_dpi_move_action(
 }
 
 pub fn settings_scroll_delta_for_wheel(delta: i32) -> i32 {
-    if delta > 0 {
-        -60
-    } else {
-        60
-    }
+    // Preserve high-resolution wheel magnitude; zero input must not move the page.
+    -(delta / 2)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -640,7 +637,7 @@ const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
     },
     SettingsFormCardSpec {
         rows: 5,
-        extra_px: 16,
+        extra_px: 60,
     },
 ];
 
@@ -653,9 +650,9 @@ const MULTI_SYNC_TITLES: [&str; 6] = [
     "\u{591a}\u{7aef}\u{540c}\u{6b65}\u{6982}\u{89c8}",
     "WebDAV \u{4f20}\u{8f93}",
     "WebDAV \u{64cd}\u{4f5c}",
-    "\u{5c40}\u{57df}\u{7f51}\u{4f20}\u{8f93}\u{ff08}\u{626b}\u{7801}\u{7ed1}\u{5b9a}\u{ff09}",
+    "局域网连接",
     "\u{8bbe}\u{5907}\u{53d1}\u{73b0} / \u{914d}\u{5bf9}",
-    "\u{626b}\u{7801}\u{7ed1}\u{5b9a}",
+    "已连接设备",
 ];
 
 const MULTI_SYNC_OVERVIEW_SPEC: SettingsFormCardSpec = SettingsFormCardSpec {
@@ -673,35 +670,66 @@ const MULTI_SYNC_WEBDAV_SPECS: [SettingsFormCardSpec; 2] = [
     },
 ];
 const MULTI_SYNC_LAN_SPECS: [SettingsFormCardSpec; 3] = [
-    SettingsFormCardSpec {
-        rows: 6,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 7,
-        extra_px: 110,
-    },
-    SettingsFormCardSpec {
-        rows: 10,
-        extra_px: 0,
-    },
+    SettingsFormCardSpec { rows: 6, extra_px: 0 },
+    SettingsFormCardSpec { rows: 7, extra_px: 0 },
+    SettingsFormCardSpec { rows: 5, extra_px: 0 },
 ];
 
 const ABOUT_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec {
-        rows: 2,
-        extra_px: 24,
+        rows: 3,
+        extra_px: 0,
     },
     SettingsFormCardSpec {
         rows: 2,
         extra_px: 0,
     },
     SettingsFormCardSpec {
-        rows: 2,
-        extra_px: 16,
+        rows: 3,
+        extra_px: 0,
     },
 ];
 const ABOUT_TITLES: [&str; 3] = ["软件信息", "更新", "数据"];
+
+const ABOUT_HEADER_H: i32 = 40;
+const ABOUT_BOTTOM_PAD: i32 = 12;
+const ABOUT_BODY_HEIGHTS: [i32; 3] = [100, 62, 108];
+
+pub fn settings_about_cards() -> Vec<SettingsSection> {
+    let mut top = settings_content_y_scaled() + settings_scale(16);
+    ABOUT_TITLES
+        .iter()
+        .zip(ABOUT_BODY_HEIGHTS)
+        .map(|(&title, body_h)| {
+            let height = settings_scale(ABOUT_HEADER_H + body_h + ABOUT_BOTTOM_PAD);
+            let section = SettingsSection {
+                title,
+                rect: UiRect::new(
+                    settings_content_x_scaled(),
+                    top,
+                    settings_content_x_scaled() + settings_content_w_scaled(),
+                    top + height,
+                ),
+            };
+            top += height + settings_scale(SETTINGS_FORM_SECTION_GAP);
+            section
+        })
+        .collect()
+}
+
+pub fn settings_about_section_layout(index: usize, label_w: i32) -> SettingsFormSectionLayout {
+    let section = settings_section(SettingsPage::About.index(), index);
+    let pad = settings_scale(18);
+    SettingsFormSectionLayout {
+        body: UiRect::new(
+            section.rect.left + pad,
+            section.rect.top + settings_scale(ABOUT_HEADER_H),
+            section.rect.right - pad,
+            section.rect.bottom - settings_scale(ABOUT_BOTTOM_PAD),
+        ),
+        label_w: settings_scale(label_w),
+    }
+}
 
 pub fn settings_title_rect() -> UiRect {
     UiRect::new(
@@ -1590,12 +1618,18 @@ pub fn multi_sync_mode_display(mode: &str) -> &'static str {
     match mode {
         "webdav" => "WebDAV",
         #[cfg(feature = "lan-sync")]
+        "qinput" => "局域网",
+        #[cfg(feature = "lan-sync")]
         "lan" => "局域网",
         _ => "关闭",
     }
 }
 
 pub fn multi_sync_mode_from_label(label: &str) -> &'static str {
+    #[cfg(feature = "lan-sync")]
+    if label == "Q 输入法" || label == "Q输入法" || label.eq_ignore_ascii_case("qinput") {
+        return "lan";
+    }
     if label.eq_ignore_ascii_case("webdav") {
         return "webdav";
     }
@@ -1609,6 +1643,8 @@ pub fn multi_sync_mode_from_label(label: &str) -> &'static str {
 pub fn multi_sync_flags_for_mode(mode: &str) -> (bool, bool) {
     match mode {
         "webdav" => (true, false),
+        #[cfg(feature = "lan-sync")]
+        "qinput" => (false, true),
         #[cfg(feature = "lan-sync")]
         "lan" => (false, true),
         _ => (false, false),
@@ -1641,6 +1677,14 @@ pub fn lan_receive_mode_display(mode: &str) -> &'static str {
         "clipboard" => "直接覆盖剪贴板",
         _ => "只进入记录",
     }
+}
+
+pub const LAN_SYNC_MODE_OPTIONS: [&str;4] = ["仅手动","手机 → 电脑","电脑 → 手机","双向"];
+pub fn lan_sync_mode_display(mode: &str) -> &'static str {
+    match mode {"phone_to_pc"=>LAN_SYNC_MODE_OPTIONS[1],"pc_to_phone"=>LAN_SYNC_MODE_OPTIONS[2],"bidirectional"=>LAN_SYNC_MODE_OPTIONS[3],_=>LAN_SYNC_MODE_OPTIONS[0]}
+}
+pub fn lan_sync_mode_from_label(label: &str) -> &'static str {
+    match label {"手机 → 电脑"|"phone_to_pc"=>"phone_to_pc","电脑 → 手机"|"pc_to_phone"=>"pc_to_phone","双向"|"bidirectional"=>"bidirectional",_=>"manual"}
 }
 
 pub fn lan_receive_mode_from_label(label: &str) -> &'static str {
@@ -2665,13 +2709,26 @@ pub fn settings_multi_sync_cards_for_mode(mode: &str) -> Vec<SettingsSection> {
             titles.extend_from_slice(&MULTI_SYNC_TITLES[1..=2]);
             specs.extend_from_slice(&MULTI_SYNC_WEBDAV_SPECS);
         }
-        "lan" => {
+        "lan" | "qinput" => {
             titles.extend_from_slice(&MULTI_SYNC_TITLES[3..=5]);
             specs.extend_from_slice(&MULTI_SYNC_LAN_SPECS);
         }
         _ => {}
     }
     settings_make_form_cards_dyn(16, &titles, &specs)
+}
+
+pub fn settings_multi_sync_cards_with_qq(mode: &str, show_qq: bool) -> Vec<SettingsSection> {
+    let mut cards=settings_multi_sync_cards_for_mode(mode);
+    if show_qq {
+        let mut extra=settings_make_form_cards_dyn(16,&["QQ 云剪贴板"],&[SettingsFormCardSpec {rows:6,extra_px:0}]);
+        if let (Some(last),Some(card))=(cards.last(),extra.first_mut()) {
+            let shift=last.rect.bottom+settings_scale(16)-card.rect.top;
+            card.rect.top+=shift;card.rect.bottom+=shift;
+        }
+        cards.extend(extra);
+    }
+    cards
 }
 
 pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
@@ -2687,9 +2744,7 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
             settings_make_form_cards_dyn(16, &GROUP_TITLES, &GROUP_FORM_SECTIONS)
         }
         SettingsPage::Cloud => settings_multi_sync_cards_for_mode("off"),
-        SettingsPage::About => {
-            settings_make_form_cards_dyn(16, &ABOUT_TITLES, &ABOUT_FORM_SECTIONS)
-        }
+        SettingsPage::About => settings_about_cards(),
     }
 }
 
@@ -2744,6 +2799,9 @@ fn settings_native_section_specs_for_page(
 
 #[allow(dead_code)]
 fn settings_native_cards_for_page(page: SettingsPage) -> Vec<SettingsSection> {
+    if page == SettingsPage::About {
+        return settings_about_cards();
+    }
     let specs = settings_native_section_specs_for_page(page);
     let titles = specs.iter().map(|(title, _)| *title).collect::<Vec<_>>();
     let form_specs = specs.iter().map(|(_, spec)| *spec).collect::<Vec<_>>();
@@ -2927,6 +2985,8 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "lan_device_name" => native_setting_binding("lan_device_name"),
         "lan_tcp_port" => native_setting_binding("lan_tcp_port"),
         "lan_receive_mode" => native_setting_binding("lan_receive_mode"),
+        "lan_sync_mode" => native_setting_binding("lan_sync_mode"),
+        "qq_cloud_menu" => native_setting_binding("qq_cloud_menu_enabled"),
         "lan_manual_host" => native_setting_binding("lan_manual_host"),
         "lan_discovered_list" => native_runtime_list_binding("lan_discovered_devices"),
         "lan_trusted_summary" => native_derived_binding("lan_trusted_devices_summary"),
@@ -3061,6 +3121,8 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "cloud_apply_config" => native_action_route("settings_sync", "apply_webdav_config"),
         "cloud_restore_backup" => native_action_route("settings_sync", "restore_webdav_backup"),
         "lan_receive_mode" => native_dropdown_route(5092),
+        "lan_sync_mode" => native_dropdown_route(53101),
+        "qq_cloud_menu" => native_toggle_route(53102),
         "lan_pair" => native_action_route("settings_sync", "pair_lan_device"),
         "lan_refresh" => native_action_route("settings_sync", "refresh_lan_devices"),
         "lan_accept_pair" => native_action_route("settings_sync", "accept_lan_pairing"),
@@ -3374,9 +3436,9 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("lan_status", "局域网状态", Label),
             ("lan_device_name", "设备名称", TextInput),
             ("lan_tcp_port", "TCP 端口", TextInput),
-            ("lan_receive_mode", "同步方式", Dropdown),
+            ("lan_receive_mode", "接收方式", Dropdown),
+            ("lan_sync_mode", "自动同步方向", Dropdown),
             ("lan_receive_note", "接收方式说明", Label),
-            ("lan_qr_note", "扫码绑定说明", Label),
         ],
     );
     push_native_controls(
@@ -3401,12 +3463,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         5,
         &[
             ("lan_trusted_summary", "信任设备", Label),
-            ("lan_bind_note", "绑定说明", Label),
-            ("lan_android_qr", "Android 配对", Label),
-            ("lan_copy_pair", "复制配对链接", Button),
-            ("lan_ios_qr", "iOS/浏览器入口", Label),
-            ("lan_copy_setup", "复制入口地址", Button),
-            ("lan_docs", "打开扫码绑定页", Button),
+            ("lan_bind_note", "连接后自动同步", Label),
         ],
     );
 
@@ -3586,13 +3643,15 @@ fn settings_native_json_updates_for_applied_field(
         | "text_translate_app_id"
         | "text_translate_secret" => None,
         "multi_sync_mode" => {
-            let (cloud_enabled, lan_enabled) =
-                multi_sync_flags_for_mode(multi_sync_mode_from_label(value));
+            let mode = multi_sync_mode_from_label(value);
+            let (cloud_enabled, lan_enabled) = multi_sync_flags_for_mode(mode);
             Some(vec![
                 update("cloud_sync_enabled", serde_json::Value::Bool(cloud_enabled)),
                 update("lan_sync_enabled", serde_json::Value::Bool(lan_enabled)),
+                update("q_input_sync_enabled", serde_json::Value::Bool(false)),
             ])
         }
+        "lan_sync_mode" => Some(vec![update("lan_sync_mode",serde_json::Value::String(lan_sync_mode_from_label(value).to_string()))]),
         "show_mouse_dx_dy" => {
             let mut parts = value
                 .split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace())
@@ -3648,7 +3707,8 @@ fn settings_native_json_updates_for_applied_field(
         | "wps_taskpane_enabled"
         | "grouping_enabled"
         | "cloud_sync_enabled"
-        | "lan_sync_enabled" => settings_native_json_bool_value(value)
+        | "lan_sync_enabled"
+        | "qq_cloud_menu_enabled" => settings_native_json_bool_value(value)
             .map(|json_value| vec![update(field.field_name, json_value)]),
         "max_items" => value.parse::<usize>().ok().map(|number| {
             vec![update(
@@ -3755,6 +3815,9 @@ fn settings_native_json_field_value(
 ) -> Option<String> {
     let object = settings_json.as_object()?;
     match field_name {
+        "lan_sync_mode" => Some(lan_sync_mode_display(
+            object.get("lan_sync_mode").and_then(serde_json::Value::as_str).unwrap_or("bidirectional"),
+        ).to_string()),
         "multi_sync_mode" => {
             let cloud_sync_enabled = object
                 .get("cloud_sync_enabled")
@@ -3764,6 +3827,11 @@ fn settings_native_json_field_value(
                 .get("lan_sync_enabled")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or_default();
+            if cfg!(feature = "lan-sync")
+                && object.get("q_input_sync_enabled").and_then(serde_json::Value::as_bool) == Some(true)
+            {
+                return Some(multi_sync_mode_display("lan").to_string());
+            }
             Some(
                 multi_sync_mode_display(multi_sync_mode_from_flags(
                     cloud_sync_enabled,
@@ -3950,11 +4018,7 @@ pub fn settings_native_dropdown_options(
         "multi_sync_mode" => native_dropdown_options_from_pairs(
             control,
             settings_json,
-            [
-                ("off", multi_sync_mode_display("off").to_string()),
-                ("webdav", multi_sync_mode_display("webdav").to_string()),
-                ("lan", multi_sync_mode_display("lan").to_string()),
-            ],
+            MULTI_SYNC_MODE_OPTIONS.map(|label| (multi_sync_mode_from_label(label), label.to_string())),
         ),
         "cloud_sync_interval" => native_dropdown_options_from_pairs(
             control,
@@ -3968,6 +4032,7 @@ pub fn settings_native_dropdown_options(
                 ("24小时", "24小时".to_string()),
             ],
         ),
+        "lan_sync_mode" => native_dropdown_options_from_pairs(control,settings_json,LAN_SYNC_MODE_OPTIONS.map(|label|(lan_sync_mode_from_label(label),label.to_string()))),
         "lan_receive_mode" => native_dropdown_options_from_pairs(
             control,
             settings_json,
@@ -4497,7 +4562,8 @@ mod tests {
         assert_eq!(lan.len(), 4);
         assert!(webdav[1].title.contains("WebDAV"));
         assert!(lan[1].title.contains("局域网"));
-        assert!(lan[3].title.contains("扫码绑定"));
+        assert!(lan[3].title.contains("已连接设备"));
+        assert!(lan.iter().all(|card| !card.title.contains("扫码")));
         assert!(webdav.iter().all(|card| !card.title.contains("局域网")));
         assert!(lan.iter().all(|card| !card.title.contains("WebDAV")));
         assert!(section_h(lan.last().unwrap()) > section_h(webdav.last().unwrap()));
@@ -4785,7 +4851,7 @@ mod tests {
     fn settings_wheel_delta_preserves_legacy_scroll_direction() {
         assert_eq!(settings_scroll_delta_for_wheel(120), -60);
         assert_eq!(settings_scroll_delta_for_wheel(-120), 60);
-        assert_eq!(settings_scroll_delta_for_wheel(0), 60);
+        assert_eq!(settings_scroll_delta_for_wheel(0), 0);
     }
 
     #[test]
@@ -5895,15 +5961,16 @@ mod tests {
                 action_name: Some("sync_webdav_now"),
             })
         );
-        let lan_docs = control_summaries
+        let lan_accept = control_summaries
             .iter()
-            .find(|control| control.key == "lan_docs")
+            .find(|control| control.key == "lan_accept_pair")
             .unwrap();
-        assert_eq!(lan_docs.route.unwrap().route_name, "settings_sync");
+        assert_eq!(lan_accept.route.unwrap().route_name, "settings_sync");
         assert_eq!(
-            lan_docs.route.unwrap().action_name,
-            Some("open_lan_setup_page")
+            lan_accept.route.unwrap().action_name,
+            Some("accept_lan_pairing")
         );
+        assert!(!control_summaries.iter().any(|control| matches!(control.key, "lan_docs" | "lan_android_qr" | "lan_ios_qr" | "lan_copy_pair" | "lan_copy_setup")));
         let open_source = control_summaries
             .iter()
             .find(|control| control.key == "open_source")

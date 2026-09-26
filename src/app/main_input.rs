@@ -419,6 +419,10 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
         };
         let pt = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
         let cmd = show_group_filter_menu(hwnd, pt.x, pt.y, target_tab, state);
+        if super::main_secret_vault::dispatch(hwnd, cmd, None) {
+            repaint_main_window(hwnd, false);
+            return;
+        }
         match main_group_filter_selection_for_id(cmd) {
             Some(MainGroupFilterSelection::All) => {
                 let plan = state.list.group_filter_plan(target_tab, 0);
@@ -518,6 +522,15 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
         current_can_translate,
     );
     if cmd != 0 {
+        if super::main_secret_vault::dispatch(hwnd, cmd, current_item.as_ref()) {
+            repaint_main_window(hwnd, false);
+            return;
+        }
+        #[cfg(feature = "lan-sync")]
+        if super::main_qq_cloud::handle_command(hwnd, state, cmd, current_item.as_ref(), menu_selection_count) {
+            repaint_main_window(hwnd, false);
+            return;
+        }
         if let Some(command) = main_menu_command_for_id(cmd) {
             state.ui_commands.push(command);
             drain_main_ui_commands(hwnd);

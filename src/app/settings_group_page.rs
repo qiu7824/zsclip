@@ -102,8 +102,8 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     b.label(
         st,
         tr(
-            "提示：右键主窗口顶部“复制记录”或“常用短语”tab，可快速切换分组。",
-            "Tip: Right-click the Clipboard Records or Phrases tab in the main window to switch groups quickly.",
+            "右键顶部标签切换分组；密码与密钥独立保存，离开后锁定。",
+            "Right-click a tab to switch groups. Passwords and keys are stored separately and lock when you leave.",
         ),
         sec1.left(),
         sec1.row_y(1),
@@ -161,5 +161,17 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         }
     }
 
+    let protected_y = btn_y + settings_scale(44);
+    let handle = b.button(
+        st,
+        "密码与密钥",
+        super::main_secret_vault::OPEN_VAULT as isize,
+        x0,
+        protected_y,
+        settings_scale(168),
+    );
+    if !handle.is_null() {
+        st.ownerdraw_ctrls.push(handle);
+    }
     st.ui.mark_built(page);
 }

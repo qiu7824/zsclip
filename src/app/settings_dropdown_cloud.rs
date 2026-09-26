@@ -6,6 +6,13 @@ pub(super) unsafe fn open_settings_cloud_dropdown(
     control_id: isize,
 ) -> bool {
     match control_id {
+        crate::win_system_params::IDC_SET_LAN_SYNC_MODE => {
+            let rc=settings_control_screen_rect_or_empty(st.cb_lan_sync_mode);
+            let labels=crate::settings_model::LAN_SYNC_MODE_OPTIONS;
+            let current=labels.iter().position(|label|*label==settings_host_text(st.cb_lan_sync_mode)).unwrap_or(0);
+            st.dropdown_popup=present_settings_dropdown_popup(hwnd,control_id,&rc,&labels,current,230);
+            true
+        }
         IDC_SET_CLOUD_INTERVAL => {
             let rc = settings_control_screen_rect_or_empty(st.cb_cloud_interval);
             let items = ["15分钟", "30分钟", "1小时", "6小时", "12小时", "24小时"];

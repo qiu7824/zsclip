@@ -3,7 +3,8 @@ use std::{mem::zeroed, ptr::null};
 use windows_sys::Win32::{
     Foundation::HWND,
     UI::Shell::{
-        Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+        Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_REALTIME, NIF_TIP,
+        NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     },
     UI::WindowsAndMessaging::{
         MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
@@ -46,6 +47,24 @@ pub(crate) unsafe fn remove(hwnd: HWND, uid: u32) {
     data.hWnd = hwnd;
     data.uID = uid;
     let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+}
+
+pub(crate) fn notify(hwnd: HWND, uid: u32, title: &str, message: &str) -> bool {
+    unsafe {
+        let mut data: NOTIFYICONDATAW = zeroed();
+        data.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        data.hWnd = hwnd;
+        data.uID = uid;
+        data.uFlags = NIF_INFO | NIF_REALTIME;
+        data.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
+        for (slot, ch) in data.szInfoTitle.iter_mut().take(63).zip(title.encode_utf16()) {
+            *slot = ch;
+        }
+        for (slot, ch) in data.szInfo.iter_mut().take(255).zip(message.encode_utf16()) {
+            *slot = ch;
+        }
+        Shell_NotifyIconW(NIM_MODIFY, &data) != 0
+    }
 }
 
 pub(crate) struct WindowsStatusItemHost {

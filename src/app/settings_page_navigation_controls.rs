@@ -24,8 +24,9 @@ pub(super) unsafe fn settings_repos_controls(
         let original = slot.bounds;
         let new_y = original.top - st.content_scroll_y;
         let intersects_viewport = settings_child_visible(new_y, original.height(), &viewport);
-        let visible = slot.visible && (!st.viewport_hwnd.is_null() || intersects_viewport);
-        let was_visible = platform_window::is_visible(hchild);
+        let visible = slot.visible && intersects_viewport;
+        // Visibility of the hidden viewport parent must not conceal child style changes.
+        let was_visible = platform_window::window_style(hchild) & WS_VISIBLE != 0;
         if !visible && !was_visible {
             continue;
         }

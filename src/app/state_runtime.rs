@@ -248,6 +248,10 @@ impl AppState {
             return None;
         }
         if let Some(item) = self.payload_cache.get(id) {
+            if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+                self.payload_cache.remove(id);
+                return None;
+            }
             return Some(item);
         }
         let item = db_load_item_full(id)?;
@@ -256,6 +260,7 @@ impl AppState {
     }
 
     pub(super) fn resolve_item_for_use(&mut self, item: &ClipItem) -> Option<ClipItem> {
+        if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) { return None; }
         if item.id <= 0 {
             return Some(item.clone());
         }
@@ -289,7 +294,7 @@ impl AppState {
     }
 
     pub(super) fn add_clip_item(&mut self, item: ClipItem, signature: String) -> bool {
-        self.add_clip_item_inner(item, signature, true, false) == ClipItemAddOutcome::Applied
+        self.add_clip_item_inner(item, signature, true, false, None) == ClipItemAddOutcome::Applied
     }
 
     pub(super) fn add_clip_item_for_capture(
@@ -297,15 +302,17 @@ impl AppState {
         item: ClipItem,
         signature: String,
     ) -> Result<bool, ()> {
-        match self.add_clip_item_inner(item, signature, true, false) {
+        match self.add_clip_item_inner(item, signature, true, false, None) {
             ClipItemAddOutcome::Applied => Ok(true),
             ClipItemAddOutcome::Duplicate => Ok(false),
             ClipItemAddOutcome::RetryableFailure => Err(()),
         }
     }
 
-    pub(super) fn add_lan_clip_item(&mut self, item: ClipItem, signature: String) -> bool {
-        self.add_clip_item_inner(item, signature, false, true) == ClipItemAddOutcome::Applied
+    pub(super) fn add_lan_clip_item(&mut self, item: ClipItem, signature: String, origin:&LanOriginMetadata) -> Result<bool,()> {
+        match self.add_clip_item_inner(item,signature,false,true,Some(origin)) {
+            ClipItemAddOutcome::Applied=>Ok(true),ClipItemAddOutcome::Duplicate=>Ok(false),ClipItemAddOutcome::RetryableFailure=>Err(())
+        }
     }
 
     fn add_clip_item_inner(
@@ -314,11 +321,12 @@ impl AppState {
         signature: String,
         broadcast_lan: bool,
         force_dedupe: bool,
+        origin: Option<&LanOriginMetadata>,
     ) -> ClipItemAddOutcome {
         let cleanup_item = item.clone();
         let expected_generation = self.app_data_generation;
         crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
-            self.add_clip_item_inner_locked(item, signature, broadcast_lan, force_dedupe)
+            self.add_clip_item_inner_locked(item, signature, broadcast_lan, force_dedupe, origin)
         })
         .unwrap_or_else(|| {
             remove_uninserted_image_file(&cleanup_item);
@@ -332,9 +340,20 @@ impl AppState {
         signature: String,
         broadcast_lan: bool,
         force_dedupe: bool,
+        origin: Option<&LanOriginMetadata>,
     ) -> ClipItemAddOutcome {
+        if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+            return ClipItemAddOutcome::Duplicate;
+        }
         let signature = dedupe_signature_for_item(&item, &signature);
         let full_dedupe = force_dedupe || self.settings.dedupe_filter_enabled;
+        if let Some(origin)=origin.filter(|_|force_dedupe) {
+            if let Some(existing_id)=db_find_duplicate_item_ids(0,&item,&signature).first().copied() {
+                let saved=db_save_lan_origin_metadata(existing_id,origin).is_ok();
+                remove_uninserted_image_file(&item);
+                return if saved {ClipItemAddOutcome::Duplicate} else {ClipItemAddOutcome::RetryableFailure};
+            }
+        }
 
         if !signature.is_empty()
             && db_latest_item_signature(0)
@@ -403,18 +422,20 @@ impl AppState {
                     unsafe {
                         sync_peer_windows_from_db(self.hwnd);
                     }
-                    refresh_lan_latest_from_db(&self.settings);
+                    if broadcast_lan { refresh_lan_latest_from_db(&self.settings); }
                     return ClipItemAddOutcome::Applied;
                 }
                 remove_uninserted_image_file(&item);
                 return ClipItemAddOutcome::RetryableFailure;
             }
         }
-        let insert_result = db_insert_item(0, &item, Some(signature.as_str()));
+        let insert_result = db_insert_item_with_lan_origin(0, &item, Some(signature.as_str()),origin);
         item.id = insert_result.unwrap_or(0);
         if item.id <= 0 {
             remove_uninserted_image_file(&item);
-            return ClipItemAddOutcome::RetryableFailure;
+            return if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+                ClipItemAddOutcome::Duplicate
+            } else { ClipItemAddOutcome::RetryableFailure };
         }
         // DB assigns created_at with CURRENT_TIMESTAMP; fill memory so date headers render correctly.
         if item.created_at.is_empty() {
@@ -450,7 +471,7 @@ impl AppState {
         if broadcast_lan {
             maybe_broadcast_lan_clip_item(self, &item, &signature);
         }
-        refresh_lan_latest_from_db(&self.settings);
+        if broadcast_lan { refresh_lan_latest_from_db(&self.settings); }
         ClipItemAddOutcome::Applied
     }
 

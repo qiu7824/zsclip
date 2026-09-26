@@ -25,7 +25,15 @@ unsafe fn settings_reset_cloud_page_handles(st: &mut SettingsWndState) {
     st.ed_lan_name = null_mut();
     st.ed_lan_tcp_port = null_mut();
     st.lb_lan_status = null_mut();
+    st.lb_lan_addresses = null_mut();
+    st.lb_lan_firewall = null_mut();
     st.cb_lan_receive_mode = null_mut();
+    st.cb_lan_sync_mode = null_mut();
+    st.lb_qq_cloud_status = null_mut();
+    st.chk_qq_cloud_menu = null_mut();
+    st.btn_qq_cloud_connect = null_mut();
+    st.btn_qq_cloud_status = null_mut();
+    st.btn_qq_cloud_disconnect = null_mut();
     st.ed_lan_manual_host = null_mut();
     st.btn_lan_pair = null_mut();
     st.btn_lan_refresh = null_mut();
@@ -44,7 +52,7 @@ unsafe fn settings_reset_cloud_page_handles(st: &mut SettingsWndState) {
 
 pub(super) unsafe fn settings_refresh_multi_sync_cards(st: &mut SettingsWndState) {
     let mode = multi_sync_mode_from_settings(&st.draft);
-    st.multi_sync_sections = crate::settings_model::settings_multi_sync_cards_for_mode(mode);
+    st.multi_sync_sections = crate::settings_model::settings_multi_sync_cards_with_qq(mode,cfg!(feature="lan-sync"));
 }
 
 pub(super) unsafe fn settings_rebuild_cloud_page(hwnd: HWND, st: &mut SettingsWndState) {
