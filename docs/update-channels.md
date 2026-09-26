@@ -43,6 +43,8 @@ gh variable set LANZOU_MIRRORS_JSON --repo qiu7824/zsclip --body $mirrors
 
 发布工作流只附带版本完全匹配、包含合法公开分享地址的非空镜像清单；未配置或配置属于其他版本时不发布 `mirrors.json`。当前版本配置格式错误、文件名重复或地址不合法时，工作流停止发布。变量内容只包含公开分享信息，不填写账号 Cookie、appToken 或其他登录凭据。
 
+重复发布同一标签时，工作流替换本次构建的同名资产并更新说明，保留已有 Release 和额外附加资产。已发布的同版本 `mirrors.json` 在未生成替代清单时也会保留。
+
 先上传与本次 GitHub 发布字节完全一致的安装包，再配置镜像。首次发布时若尚无可用镜像，可先发布 GitHub 资产，随后将下载并校验过的安装包上传至蓝奏，生成同版本 `mirrors.json` 并作为资产附加到已有发布。仓库变量供后续标签发布使用；仅修改变量不会更新已有 Release。已有版本可将上例 `$mirrors` 保存为 UTF-8 `mirrors.json`，再执行 `gh release upload 1.0.7 mirrors.json --repo qiu7824/zsclip --clobber`。不要为添加镜像重新构建或替换已经发布的安装包。
 
 ## 自定义更新源与兼容清单
