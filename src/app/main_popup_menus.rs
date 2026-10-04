@@ -99,7 +99,13 @@ pub(super) unsafe fn show_row_menu(
 
     #[cfg(feature = "lan-sync")]
     let entries = super::main_qq_cloud::extend_menu(entries, current_kind, selected_count, state.settings.qq_cloud_menu_enabled);
-    let entries = super::main_secret_vault::append_row_menu(entries, current_kind, selected_count);
+    let mut entries = super::main_secret_vault::append_row_menu(entries, current_kind, selected_count);
+    if state.settings.phrase_titles_enabled && current_kind == ClipKind::Phrase && selected_count <= 1 {
+        entries.insert(0, NativePopupMenuEntry::Command {
+            id: super::main_row_commands::RENAME_PHRASE_COMMAND,
+            label: tr("重命名短语", "Rename Phrase").into(), enabled: true, checked: false,
+        });
+    }
     let rc = window_rect_or_empty(hwnd);
     let pt = POINT {
         x: rc.left + x,

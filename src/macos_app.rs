@@ -6022,7 +6022,7 @@ impl Default for MacosSettingsSnapshot {
 
 pub(crate) struct MacosSettingsWindowModel {
     current_page: SettingsPage,
-    scroll_y: [i32; 6],
+    scroll_y: [i32; crate::settings_model::SETTINGS_PAGE_COUNT],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -6039,7 +6039,7 @@ impl Default for MacosSettingsWindowModel {
     fn default() -> Self {
         Self {
             current_page: SettingsPage::General,
-            scroll_y: [0; 6],
+            scroll_y: [0; crate::settings_model::SETTINGS_PAGE_COUNT],
         }
     }
 }
@@ -10861,8 +10861,9 @@ mod tests {
     fn macos_native_host_applies_first_pass_ui_polish() {
         let host_source = include_str!("macos_native_host.rs").replace("\r\n", "\n");
 
-        assert!(host_source
-            .contains("search_field.setPlaceholderString(Some(ns_string!(\"Search clipboard\")))"));
+        assert!(host_source.contains("search_field.setPlaceholderString(Some(&NSString::from_str(appkit_tr("));
+        assert!(host_source.contains("\"搜索剪贴板\""));
+        assert!(host_source.contains("\"Search clipboard\""));
         assert!(host_source.contains("window.makeFirstResponder(Some(search_field))"));
         assert!(host_source.contains("search_field.setStringValue(ns_string!(\"\"))"));
         assert!(host_source.contains("self.update_clip_list_visibility(\"\")"));
@@ -10957,7 +10958,7 @@ mod tests {
         assert!(host_source.contains("NSEventMask::OtherMouseDown"));
         assert!(host_source.contains("dismiss_native_vv_popup(\"global_mouse_down\")"));
         assert!(host_source.contains("native_host_group_filter_label_for_groups"));
-        assert!(host_source.contains("macos_native_host_projected_clip_items_for_group"));
+        assert!(host_source.contains("macos_native_host_projected_clip_items_for_category_group("));
         assert!(host_source.contains("dispatch_appkit_vv_paste_for_group"));
         assert!(host_source.contains("clip_scroll_view: OnceCell<Retained<NSScrollView>>"));
         assert!(host_source.contains("clip_table_view: OnceCell<Retained<NSTableView>>"));
@@ -11008,7 +11009,7 @@ mod tests {
         );
         assert!(host_source.contains("fn present_native_edit_unsaved_changes_alert(&self)"));
         assert!(host_source.contains("Save edited clipboard text?"));
-        assert!(host_source.contains("alert.addButtonWithTitle(ns_string!(\"Discard\"))"));
+        assert!(host_source.contains("alert.addButtonWithTitle(&NSString::from_str(appkit_tr(\"不保存\", \"Discard\")))"));
         assert!(host_source.contains("fn appkit_settings_scroll_tab_item("));
         assert!(host_source.contains("NSTabView::initWithFrame"));
         assert!(host_source.contains("settings_tab_view.setTabViewType"));
@@ -11028,7 +11029,7 @@ mod tests {
         assert!(host_source.contains("NSPopUpButton::initWithFrame_pullsDown"));
         assert!(host_source.contains("if spec.options.is_empty()"));
         assert!(host_source.contains("for option in spec.options"));
-        assert!(host_source.contains("let title = NSString::from_str(option.label)"));
+        assert!(host_source.contains("let title = NSString::from_str(&appkit_localized_label(option.label))"));
         assert!(host_source.contains("popup.addItemWithTitle(&title)"));
         assert!(host_source.contains("appkit_set_accessibility_label::<NSPopUpButton>"));
         assert!(host_source.contains("settings_tab_view.addTabViewItem(&tab_item)"));
@@ -11053,7 +11054,7 @@ mod tests {
         assert!(host_source.contains("fn appkit_clip_table_label"));
         assert!(host_source.contains("&presentation.accessibility_label"));
         assert!(host_source.contains("appkit_set_accessibility_label::<NSTextField>"));
-        assert!(host_source.contains("presentation.kind_prefix"));
+        assert!(host_source.contains("&presentation.preview"));
         assert!(host_source.contains("presentation.kind_icon"));
         assert!(host_source.contains("presentation.pin_badge"));
         assert!(host_source.contains("NSLineBreakMode::ByTruncatingTail"));
@@ -11501,6 +11502,7 @@ mod tests {
             .any(|command| command.role == MainVvPopupTextRole::RowPreview));
 
         let item = ClipItem {
+            phrase_title: String::new(),
             id: 5,
             kind: ClipKind::Text,
             preview: "first".to_string(),
@@ -11808,6 +11810,7 @@ mod tests {
         };
 
         let text_item = ClipItem {
+            phrase_title: String::new(),
             id: 7,
             kind: ClipKind::Text,
             preview: "hello".to_string(),
@@ -11824,6 +11827,7 @@ mod tests {
             created_at: String::new(),
         };
         let image_item = ClipItem {
+            phrase_title: String::new(),
             id: 8,
             kind: ClipKind::Image,
             preview: "image".to_string(),
@@ -12117,6 +12121,7 @@ mod tests {
         assert!(!application.window_session().settings_visible());
 
         let text_item = ClipItem {
+            phrase_title: String::new(),
             id: 7,
             kind: ClipKind::Text,
             preview: "hello macOS".to_string(),
@@ -12142,6 +12147,7 @@ mod tests {
         assert_eq!(application.clip_payloads().preview_generation(), 1);
 
         let file_item = ClipItem {
+            phrase_title: String::new(),
             id: 8,
             kind: ClipKind::Files,
             preview: "report.pdf".to_string(),
@@ -12166,6 +12172,7 @@ mod tests {
         assert_eq!(application.clip_payloads().preview_generation(), 2);
 
         let image_item = ClipItem {
+            phrase_title: String::new(),
             id: 9,
             kind: ClipKind::Image,
             preview: "image payload".to_string(),
@@ -14014,11 +14021,27 @@ mod tests {
             crate::settings_model::SettingsContentSource::PluginDynamic
         );
         assert_eq!(presentation.content.scroll_y, -48);
-        assert_eq!(presentation.navigation.items.len(), 6);
-        assert_eq!(presentation.navigation_paint.len(), 6);
+        assert_eq!(presentation.navigation.items.len(), crate::settings_model::SETTINGS_PAGE_COUNT);
+        assert_eq!(presentation.navigation_paint.len(), crate::settings_model::SETTINGS_PAGE_COUNT);
         assert!(!presentation.chrome_paint.text_commands.is_empty());
         assert!(!presentation.content.sections.is_empty());
         assert!(!presentation.content_paint.paint_commands.is_empty());
+    }
+
+    #[test]
+    fn macos_settings_scroll_state_covers_every_declared_page() {
+        let mut model = MacosSettingsWindowModel::default();
+        for index in 0..crate::settings_model::SETTINGS_PAGE_COUNT {
+            model.select_page(SettingsPage::from_index(index));
+            model.set_scroll_y(-((index as i32 + 1) * 10));
+        }
+        for index in 0..crate::settings_model::SETTINGS_PAGE_COUNT {
+            let page = SettingsPage::from_index(index);
+            model.select_page(page);
+            let presentation = model.presentation(1100, 740, &MacosSettingsSnapshot::default(), false);
+            assert_eq!(presentation.content.page, page);
+            assert_eq!(presentation.content.scroll_y, -((index as i32 + 1) * 10));
+        }
     }
 
     #[test]

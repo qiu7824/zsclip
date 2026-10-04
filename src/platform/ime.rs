@@ -22,6 +22,8 @@ unsafe extern "system" {
     fn ImmGetOpenStatus(context: isize) -> i32;
     fn ImmGetConversionStatus(context: isize, conversion: *mut u32, sentence: *mut u32) -> i32;
     fn ImmIsIME(layout: isize) -> i32;
+    fn ImmGetCompositionStringW(context: isize, index: u32, buffer: *mut core::ffi::c_void, bytes: u32) -> i32;
+    fn ImmNotifyIME(context: isize, action: u32, index: u32, value: u32) -> i32;
 }
 
 const IMC_GETCANDIDATEPOS: WPARAM = 0x0007;
@@ -61,6 +63,20 @@ pub(crate) struct WindowsImeHost;
 impl WindowsImeHost {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    /// Cancel only the exact composition owned by VV, never a generic editor Escape.
+    pub(crate) fn cancel_exact_vv_composition(self, focus: HWND) -> bool {
+        let context = unsafe { ImmGetContext(focus) };
+        if context == 0 { return false; }
+        let length = unsafe { ImmGetCompositionStringW(context, 8, core::ptr::null_mut(), 0) };
+        if length != 4 { unsafe { ImmReleaseContext(focus, context); } return false; }
+        let mut text = [0u16; 2];
+        let bytes = unsafe { ImmGetCompositionStringW(context, 8, text.as_mut_ptr().cast(), 4) };
+        let exact = bytes == 4 && text == [b'v' as u16, b'v' as u16];
+        let cancelled = exact && unsafe { ImmNotifyIME(context, 0x15, 0x4, 0) } != 0;
+        unsafe { ImmReleaseContext(focus, context); }
+        cancelled
     }
 
     pub(crate) fn input_mode(self, focus: HWND) -> WindowsImeInputMode {

@@ -52,6 +52,10 @@ pub(crate) fn run() -> AppResult<()> {
             return Err(io::Error::last_os_error());
         }
 
+        if std::env::args().any(|argument| argument == "--settings") {
+            open_settings_window(main_window_hwnd());
+        }
+
         let mut msg: MSG = zeroed();
         loop {
             let code = platform_window::get_message(&mut msg);
@@ -64,6 +68,7 @@ pub(crate) fn run() -> AppResult<()> {
             if super::secret_vault_ui::route_main_view_message(&msg) {
                 continue;
             }
+            if super::main_search::route_search_input_message(&msg) { continue; }
             if msg.message == WM_KEYDOWN && hotkey::is_escape_vk(msg.wParam as u32) {
                 let root = platform_window::root_ancestor(msg.hwnd);
                 if root != msg.hwnd && window_host_hwnds().contains(&root) {
@@ -91,6 +96,11 @@ pub(super) unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == super::main_hover_preview::WM_SEARCH_HOVER_READY {
+        super::main_hover_preview::apply_hover_preview_result(hwnd, lparam);
+        return 0;
+    }
+    if vv_handle_session_message(hwnd, msg, wparam, lparam) { return 0; }
     if msg == WM_MAIN_COMMANDS_READY {
         drain_main_ui_commands(hwnd);
         return 0;
@@ -445,15 +455,12 @@ pub(super) unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: u
 unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize) {
     let popup_visible = state.vv_popup_visible;
     let target = state.vv_popup_target;
-    let backspaces = if popup_visible {
-        vv_backspace_count_for_target_window(
-            target,
-            state.vv_popup_replaces_ime,
-            state.vv_popup_trigger_text_visible,
-        )
-    } else {
-        0
+    let focus = state.vv_popup_focus;
+    let session_id = state.vv_popup_session_id;
+    let Some(backspaces) = vv_prepare_selection(state) else {
+        vv_popup_hide(hwnd, state); return;
     };
+    cancel_queued_paste_attempt(hwnd,state);
     let items = if popup_visible {
         state
             .vv_popup_items
@@ -474,6 +481,7 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
         MainVvSelectPlan::Paste { item, backspaces } => {
             vv_popup_hide(hwnd, state);
             state.pending_image_paste_generation = None;
+            state.vv_paste_guard = Some((session_id,target as isize,focus as isize));
             (item, backspaces)
         }
     };
@@ -493,6 +501,7 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
     ) {
         return;
     }
+    if !vv_paste_target_is_current(state) { state.vv_paste_guard=None; return; }
     if !apply_item_to_clipboard(state, &item) {
         show_clipboard_write_failure_message(hwnd);
         return;

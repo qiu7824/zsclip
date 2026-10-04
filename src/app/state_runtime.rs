@@ -1,5 +1,20 @@
 use super::prelude::*;
 
+pub(super) fn protected_item_for_use(mut item: ClipItem) -> Option<ClipItem> {
+    if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) {
+        if crate::db_runtime::text_is_protected(&item.phrase_title)
+            || item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+            return None;
+        }
+        let had_html = item.rich_text_html.is_some();
+        item.rich_text_html = item.rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html);
+        if had_html && item.rich_text_html.is_none() {
+            if let Some(text) = &item.text { item.preview = build_preview(text); }
+        }
+    }
+    Some(item)
+}
+
 pub(super) fn reload_state_from_db_persisting(state: &mut AppState) {
     if reload_state_from_db(state) {
         save_state_settings(state);
@@ -248,26 +263,27 @@ impl AppState {
             return None;
         }
         if let Some(item) = self.payload_cache.get(id) {
-            if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
+            let Some(item) = protected_item_for_use(item) else {
                 self.payload_cache.remove(id);
                 return None;
-            }
+            };
+            self.payload_cache.put(&item);
             return Some(item);
         }
-        let item = db_load_item_full(id)?;
+        let item = protected_item_for_use(db_load_item_full(id)?)?;
         self.payload_cache.put(&item);
         Some(item)
     }
 
     pub(super) fn resolve_item_for_use(&mut self, item: &ClipItem) -> Option<ClipItem> {
-        if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) { return None; }
+        let item = protected_item_for_use(item.clone())?;
         if item.id <= 0 {
-            return Some(item.clone());
+            return Some(item);
         }
-        if item_payload_missing(item) {
+        if item_payload_missing(&item) {
             self.load_item_full_cached(item.id)
         } else {
-            Some(item.clone())
+            Some(item)
         }
     }
 
@@ -494,6 +510,7 @@ impl AppState {
     pub(super) fn layout(&self) -> MainUiLayout {
         let mut layout =
             main_layout_for_dpi(self.ui_dpi).with_app_icon_visible(self.settings.app_icon_visible);
+        layout = layout.with_content_font_size(self.settings.content_font_size);
         layout = layout.with_pin_button(window_pin_visible(self));
         let search_right = layout.title_button_rect("search").left - 4;
         layout.search_w = (search_right - layout.search_left).max(30);
@@ -506,6 +523,8 @@ impl AppState {
                 ClipKind::Files => self.settings.file_row_height.clamp(32, 160),
                 _ => self.settings.text_row_height.clamp(32, 160),
             };
+            let min_height = if self.settings.content_font_size == 0 { 0 } else { self.settings.content_font_size() * 2 + 12 };
+            let height = height.max(min_height) + if self.settings.card_view_enabled { 6 } else { 0 };
             (height * scale + 22) / 44
         }));
         layout
@@ -542,6 +561,7 @@ mod sorted_insert_tests {
     fn item(id: i64, pinned: bool) -> ClipItem {
         ClipItem {
             id,
+            phrase_title: String::new(),
             kind: ClipKind::Text,
             preview: id.to_string(),
             text: None,

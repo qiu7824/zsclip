@@ -26,4 +26,5 @@ pub(super) unsafe fn handle_settings_group_selection(
         }
         _ => {}
     }
+    settings_collect_group_to_draft(st);
 }

@@ -302,6 +302,7 @@ fn validate_schema_column_definition(
         }
         ("items", "text_data", "text_data TEXT") => Ok("text_data TEXT"),
         ("items", "rich_text_html", "rich_text_html TEXT") => Ok("rich_text_html TEXT"),
+        ("items", "phrase_title", "phrase_title TEXT NOT NULL DEFAULT ''") => Ok("phrase_title TEXT NOT NULL DEFAULT ''"),
         ("items", "source_app", "source_app TEXT NOT NULL DEFAULT ''") => {
             Ok("source_app TEXT NOT NULL DEFAULT ''")
         }
@@ -385,6 +386,7 @@ fn migrate_items_schema(conn: &Connection) -> rusqlite::Result<()> {
     )?;
     ensure_table_column(conn, "items", "text_data", "text_data TEXT")?;
     ensure_table_column(conn, "items", "rich_text_html", "rich_text_html TEXT")?;
+    ensure_table_column(conn, "items", "phrase_title", "phrase_title TEXT NOT NULL DEFAULT ''")?;
     ensure_table_column(
         conn,
         "items",
@@ -496,6 +498,11 @@ fn configure_db_connection(conn: &Connection) -> rusqlite::Result<()> {
 
 /// A single boundary shared by capture, database queries and synchronization.
 pub(crate) fn text_is_protected(text: &str) -> bool {
+    if let Some(result) = QUERY_PROTECTION.with(|slot| {
+        slot.borrow().as_ref().map(|matches| matches(text))
+    }) {
+        return result;
+    }
     #[cfg(test)]
     if TEST_PROTECTION_UNAVAILABLE.with(std::cell::Cell::get) {
         return !text.is_empty();
@@ -508,6 +515,53 @@ pub(crate) fn text_is_protected(text: &str) -> bool {
     { crate::secret_vault::is_protected(text) }
     #[cfg(not(windows))]
     { let _ = text; false }
+}
+
+thread_local! {
+    static QUERY_PROTECTION: std::cell::RefCell<Option<Box<dyn Fn(&str) -> bool>>> =
+        const { std::cell::RefCell::new(None) };
+    static HTML_PROTECTION_CACHE: std::cell::RefCell<(String, std::collections::HashMap<[u8; 32], bool>)> =
+        std::cell::RefCell::new((String::new(), std::collections::HashMap::new()));
+}
+
+pub(crate) fn search_protection_revision() -> rusqlite::Result<String> {
+    #[cfg(test)]
+    if TEST_PROTECTION_UNAVAILABLE.with(std::cell::Cell::get) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    #[cfg(test)]
+    if let Some(values) = test_protected_values() {
+        return Ok(format!("test:{:x}", md5::compute(serde_json::to_vec(&values).unwrap())));
+    }
+    #[cfg(windows)]
+    { crate::secret_vault::query_protection_revision().map_err(|_| rusqlite::Error::InvalidQuery) }
+    #[cfg(not(windows))]
+    { Ok(String::new()) }
+}
+
+/// A query must observe one verified exclusion set, without per-row disk I/O.
+/// Recheck before publication; a changed/unreadable vault never publishes results.
+pub(crate) fn with_search_protection<T>(query: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    struct Reset(Option<Box<dyn Fn(&str) -> bool>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            QUERY_PROTECTION.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let revision = search_protection_revision()?;
+    HTML_PROTECTION_CACHE.with(|slot| {
+        let mut cache = slot.borrow_mut();
+        if cache.0 != revision { cache.0 = revision.clone(); cache.1.clear(); }
+    });
+    let matcher = protected_exclusion_matcher()?;
+    let _reset = Reset(QUERY_PROTECTION.with(|slot| slot.replace(Some(matcher))));
+    let result = query()?;
+    if search_protection_revision()? != revision {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None,
+        ));
+    }
+    Ok(result)
 }
 
 /// A verified match is required for notices claiming a value is in the vault.
@@ -523,14 +577,55 @@ pub(crate) fn register_protected_text_filter(conn: &Connection) -> rusqlite::Res
     conn.create_scalar_function("zsclip_is_protected", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8,
         |context| Ok(context.get::<Option<String>>(0)?.is_some_and(|text| text_is_protected(&text))))?;
     conn.create_scalar_function("zsclip_is_protected_html", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-        |context| Ok(context.get::<Option<String>>(0)?.is_some_and(|html| !html.is_empty() && text_is_protected(&protected_html_text(&html)))))
+        |context| Ok(context.get::<Option<String>>(0)?.is_some_and(|html| !html.is_empty() && rich_html_is_protected(&html))))
+}
+
+fn html_matches_protected(html: &str, matches: &dyn Fn(&str) -> bool) -> bool {
+    if matches(&protected_html_text(html)) { return true; }
+    for candidate in crate::app_core::clipboard_html::privacy_candidates(html) {
+        if matches(&candidate) { return true; }
+        for part in candidate.split([';', ':', '{', '}', '(', ')', ',', '=', '\'', '"']) {
+            let part = part.trim();
+            if !part.is_empty() && matches(part) { return true; }
+            let words = part.split_whitespace().take(65).collect::<Vec<_>>();
+            for start in 0..words.len() {
+                for end in start + 1..=(start + 16).min(words.len()) {
+                    if matches(&words[start..end].join(" ")) { return true; }
+                }
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn rich_html_is_protected(raw: &str) -> bool {
+    if QUERY_PROTECTION.with(|slot| slot.borrow().is_none()) {
+        return with_search_protection(|| Ok(rich_html_is_protected(raw))).unwrap_or(true);
+    }
+    use sha2::Digest;
+    let key: [u8; 32] = sha2::Sha256::digest(raw.as_bytes()).into();
+    if let Some(value) = HTML_PROTECTION_CACHE.with(|slot| slot.borrow().1.get(&key).copied()) { return value; }
+    let protected = crate::app_core::clipboard_html::normalize(raw)
+        .is_none_or(|html| html_matches_protected(&html, &text_is_protected));
+    HTML_PROTECTION_CACHE.with(|slot| {
+        let mut cache = slot.borrow_mut();
+        if cache.1.len() >= 512 { cache.1.clear(); }
+        cache.1.insert(key, protected);
+    });
+    protected
+}
+
+pub(crate) fn sanitize_rich_text_html(raw: &str) -> Option<String> {
+    let normalized = crate::app_core::clipboard_html::normalize(raw)?;
+    (!rich_html_is_protected(&normalized)).then_some(normalized)
 }
 
 fn protected_html_text(html: &str) -> String {
     #[cfg(windows)]
     {
         crate::platform::clipboard::cf_html_extract_fragment(html)
-            .map(|fragment| crate::app::data::html_to_text(&fragment)).unwrap_or_default()
+            .map(|fragment| crate::app::data::html_to_text(&fragment))
+            .unwrap_or_else(|| crate::app::data::html_to_text(html))
     }
     #[cfg(not(windows))]
     { html.to_string() }
@@ -544,6 +639,7 @@ pub(crate) fn purge_protected_items(conn: &Connection) -> rusqlite::Result<usize
     let has_text = table_has_column(conn, "items", "text_data")?;
     let has_preview = table_has_column(conn, "items", "preview")?;
     let html_expression = if table_has_column(conn, "items", "rich_text_html")? { "COALESCE(rich_text_html,'')" } else { "''" };
+    let title_expression = if table_has_column(conn, "items", "phrase_title")? { "COALESCE(phrase_title,'')" } else { "''" };
     let expression = match (has_text, has_preview) {
         (true, true) => "COALESCE(NULLIF(text_data, ''), preview, '')",
         (true, false) => "COALESCE(text_data, '')",
@@ -552,18 +648,17 @@ pub(crate) fn purge_protected_items(conn: &Connection) -> rusqlite::Result<usize
     };
     let tx = conn.unchecked_transaction()?;
     let (ids, clear_html) = {
-        let mut query = tx.prepare(&format!("SELECT id, {expression}, {html_expression} FROM items WHERE kind IN ('text','phrase')"))?;
-        let rows = query.query_map([], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?)))?;
+        let mut query = tx.prepare(&format!("SELECT id, {expression}, {html_expression}, {title_expression} FROM items WHERE kind IN ('text','phrase')"))?;
+        let rows = query.query_map([], |row| Ok((row.get::<_,i64>(0)?, row.get::<_,String>(1)?, row.get::<_,String>(2)?, row.get::<_,String>(3)?)))?;
         let mut ids = Vec::new();
         let mut clear_html = Vec::new();
         for row in rows {
-            let (id, text, html) = row?;
-            if matches(&text) { ids.push(id); }
+            let (id, text, html, title) = row?;
+            if matches(&text) || matches(&title) { ids.push(id); }
             else if !html.is_empty() {
-                let visible = protected_html_text(&html);
-                if matches(&visible) {
-                    clear_html.push(id);
-                }
+                let safe = crate::app_core::clipboard_html::normalize(&html)
+                    .filter(|html| !html_matches_protected(html, matches.as_ref()));
+                if safe.as_deref() != Some(html.as_str()) { clear_html.push((id, safe)); }
             }
         }
         (ids, clear_html)
@@ -571,8 +666,8 @@ pub(crate) fn purge_protected_items(conn: &Connection) -> rusqlite::Result<usize
     let mut count = 0;
     for id in ids { count += tx.execute("DELETE FROM items WHERE id=? AND kind IN ('text','phrase')", [id])?; }
     if has_text {
-        for id in clear_html {
-            tx.execute("UPDATE items SET rich_text_html=NULL, preview=substr(COALESCE(text_data,preview,''),1,120) WHERE id=?", [id])?;
+        for (id, html) in clear_html {
+            tx.execute("UPDATE items SET rich_text_html=?1, preview=substr(COALESCE(text_data,preview,''),1,120) WHERE id=?2", rusqlite::params![html,id])?;
         }
     }
     tx.commit()?;
@@ -694,8 +789,33 @@ mod protected_storage_tests {
             assert_eq!(conn.query_row("SELECT count(*) FROM items", [], |row| row.get::<_,i64>(0)).unwrap(), 2);
             let html: Option<String> = conn.query_row("SELECT rich_text_html FROM items WHERE id=1", [], |row| row.get(0)).unwrap();
             assert!(html.is_none());
-            assert_eq!(conn.query_row("SELECT rich_text_html FROM items WHERE id=2", [], |row| row.get::<_,String>(0)).unwrap(), ordinary_html);
+            assert_eq!(conn.query_row("SELECT rich_text_html FROM items WHERE id=2", [], |row| row.get::<_,String>(0)).unwrap(), crate::app_core::clipboard_html::normalize(ordinary_html).unwrap());
         });
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn hidden_document_context_is_removed_from_reads_and_export_snapshot() {
+        with_test_protected_texts(&["outside-secret"], || with_test_db(|| {
+            let raw = "<html><head><style>.xl{color:#ff0000;font-weight:bold}</style><!--outside-secret--></head><body>ordinary outside-secret context<!--StartFragment--><b title='outside-secret'>ordinary</b><!--EndFragment--><p>outside-secret</p></body></html>";
+            with_db(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,rich_text_html) VALUES(0,'text','ordinary','ordinary',?)", [raw])?;
+                Ok(())
+            })?;
+            let item = native_clip_item(1)?.unwrap();
+            assert_eq!(item.text.as_deref(), Some("ordinary"));
+            let html = item.rich_text_html.unwrap();
+            assert!(!html.contains("outside-secret"));
+            assert!(html.contains("color:#ff0000"));
+            with_db(|conn| {
+                purge_protected_items(conn)?;
+                let stored: String = conn.query_row("SELECT rich_text_html FROM items WHERE id=1", [], |row| row.get(0))?;
+                assert_eq!(stored, html);
+                Ok(())
+            })?;
+            assert!(sanitize_rich_text_html("<b>ordinary outside-secret ordinary</b>").is_none());
+            Ok(())
+        })).unwrap();
     }
 
     #[test]
@@ -786,6 +906,9 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
         ",
     )?;
     migrate_items_schema(conn)?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_items_category_list_order ON items(category, pinned DESC, id DESC);
+                        CREATE INDEX IF NOT EXISTS idx_items_category_group_order ON items(category, group_id, pinned DESC, id DESC);
+                        CREATE INDEX IF NOT EXISTS idx_items_category_created ON items(category, created_at);")?;
     conn.execute_batch(
         "INSERT OR IGNORE INTO lan_receipts(origin_device_id,message_id,received_at_ms)
          SELECT lan_origin_device_id,lan_origin_message_id,COALESCE(CAST(strftime('%s',created_at) AS INTEGER)*1000,0)
@@ -1158,7 +1281,7 @@ where
 pub(crate) fn item_text(item_id: i64) -> rusqlite::Result<Option<String>> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT COALESCE(text_data,'') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+            "SELECT COALESCE(text_data,'') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             [item_id],
             |row| row.get(0),
         )
@@ -1291,18 +1414,16 @@ pub(crate) fn insert_native_phrase_from_item(
         });
     }
     let preview = native_clip_preview(&normalized);
-    let signature = native_clip_signature("phrase", &normalized, &[], &[], 0, 0);
-    insert_native_clipboard_item(NativeClipboardInsert {
-        category: 1,
-        kind: "phrase",
-        preview: &preview,
-        signature: &signature,
-        text_data: Some(&normalized),
-        source_app,
-        file_paths: None,
-        image_data: None,
-        image_width: 0,
-        image_height: 0,
+    let title = crate::app_core::normalize_phrase_title(&item.phrase_title)
+        .map_err(|message| rusqlite::Error::InvalidParameterName(message.into()))?;
+    if text_is_protected(&normalized) || text_is_protected(&title) {
+        return Ok(NativeClipboardInsertOutcome { item_id: None, inserted: false, reason: "protected" });
+    }
+    let rich_text_html = item.rich_text_html.as_deref().and_then(sanitize_rich_text_html);
+    with_db(|conn| {
+        conn.execute("INSERT INTO items(category,kind,preview,text_data,rich_text_html,source_app,phrase_title,group_id) VALUES(1,'phrase',?1,?2,?3,?4,?5,?6)",
+            rusqlite::params![preview, item.text.as_deref().unwrap_or(&normalized), rich_text_html, source_app, title, item.group_id])?;
+        Ok(NativeClipboardInsertOutcome { item_id: Some(conn.last_insert_rowid()), inserted: true, reason: "inserted" })
     })
 }
 
@@ -1330,7 +1451,7 @@ fn insert_native_clipboard_item(
     with_db_mut(|conn| {
         let duplicate = conn
             .query_row(
-                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND signature=? ORDER BY id DESC LIMIT 1",
+                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND signature=? ORDER BY id DESC LIMIT 1",
                 rusqlite::params![item.category, item.signature],
                 |row| row.get::<_, i64>(0),
             )
@@ -1497,7 +1618,7 @@ pub(crate) fn native_clip_item(
         conn.query_row(
             "SELECT id, kind, COALESCE(preview, ''), text_data, rich_text_html, COALESCE(source_app, ''), \
              file_paths, image_data, COALESCE(image_path, ''), image_width, image_height, \
-             pinned, group_id, COALESCE(created_at, '') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+             pinned, group_id, COALESCE(created_at, ''), phrase_title FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             [item_id],
             |row| {
                 let kind_raw: String = row.get(1)?;
@@ -1511,11 +1632,12 @@ pub(crate) fn native_clip_item(
                 };
                 let image_path: String = row.get(8)?;
                 Ok(crate::app_core::ClipItem {
+                    phrase_title: row.get(14)?,
                     id: row.get(0)?,
                     kind,
                     preview: row.get(2)?,
                     text,
-                    rich_text_html: row.get(4)?,
+                    rich_text_html: row.get::<_, Option<String>>(4)?.as_deref().and_then(sanitize_rich_text_html),
                     source_app: row.get(5)?,
                     file_paths,
                     image_bytes: row.get(7)?,
@@ -1559,8 +1681,8 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
     limit: usize,
 ) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
     with_db(|conn| {
-        let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned \
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?"
+        let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned, phrase_title \
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"
             .to_string();
         let mut values = vec![rusqlite::types::Value::from(category)];
         if group_id > 0 {
@@ -1591,7 +1713,8 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
             let preview: String = row.get(2)?;
             let source_app: String = row.get(3)?;
             let pinned = row.get::<_, i64>(4)? == 1;
-            let title = native_clip_list_title(&kind, &source_app);
+            let phrase_title: String = row.get(5)?;
+            let title = if kind == "phrase" && !phrase_title.is_empty() { phrase_title } else { native_clip_list_title(&kind, &source_app) };
             Ok(
                 crate::app_core::NativeHostClipListItemProjection::with_metadata(
                     id,
@@ -1616,14 +1739,14 @@ pub(crate) fn native_clip_list_items_for_query(
     let date_context = current_native_search_date_context();
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(search_text.trim(), date_context);
-    with_db(|conn| {
-        let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at";
+    with_db(|conn| with_search_protection(|| {
+        let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at, phrase_title";
         let mut sql = if near_query.is_some() {
             format!(
-                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?"
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"
             )
         } else {
-            format!("SELECT {select_columns} FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?")
+            format!("SELECT {select_columns} FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?")
         };
         let mut values = vec![rusqlite::types::Value::from(category)];
 
@@ -1640,16 +1763,18 @@ pub(crate) fn native_clip_list_items_for_query(
         );
 
         if let Some(near_value) = near_query {
-            let like = format!("%{}%", near_value.to_lowercase());
+            let like = search_like_pattern(&near_value.to_lowercase());
             sql.push_str(
-                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? \
-                 OR LOWER(source_app) LIKE ? \
-                 OR LOWER(searchable_data) LIKE ? \
-                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?), \
+                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? ESCAPE '\\' \
+                 OR LOWER(source_app) LIKE ? ESCAPE '\\' \
+                 OR LOWER(searchable_data) LIKE ? ESCAPE '\\' \
+                 OR LOWER(phrase_title) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ? ESCAPE '\\'), \
                  near_rows AS (SELECT DISTINCT base.rn FROM base JOIN hits ON base.rn BETWEEN hits.rn - 3 AND hits.rn + 3) \
-                 SELECT id, kind, preview, source_app, pinned, searchable_data, created_at \
+                 SELECT id, kind, preview, source_app, pinned, searchable_data, created_at, phrase_title \
                  FROM base WHERE rn IN (SELECT rn FROM near_rows)",
             );
+            values.push(rusqlite::types::Value::from(like.clone()));
             values.push(rusqlite::types::Value::from(like.clone()));
             values.push(rusqlite::types::Value::from(like.clone()));
             values.push(rusqlite::types::Value::from(like.clone()));
@@ -1666,7 +1791,8 @@ pub(crate) fn native_clip_list_items_for_query(
             let preview: String = row.get(2)?;
             let source_app: String = row.get(3)?;
             let pinned = row.get::<_, i64>(4)? == 1;
-            let title = native_clip_list_title(&kind, &source_app);
+            let phrase_title: String = row.get(7)?;
+            let title = if kind == "phrase" && !phrase_title.is_empty() { phrase_title } else { native_clip_list_title(&kind, &source_app) };
             Ok(
                 crate::app_core::NativeHostClipListItemProjection::with_metadata(
                     id,
@@ -1678,7 +1804,37 @@ pub(crate) fn native_clip_list_items_for_query(
             )
         })?;
         rows.collect()
-    })
+    }))
+}
+
+#[cfg(test)]
+mod phrase_schema_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_phrase_title_migration_preserves_body_format_and_is_idempotent() {
+        with_test_protected_texts(&[], || {
+            let conn = Connection::open_in_memory().unwrap();
+            configure_db_connection(&conn).unwrap();
+            migrate_db(&conn).unwrap();
+            conn.execute_batch("ALTER TABLE items DROP COLUMN phrase_title;
+                INSERT INTO items(category,kind,preview,text_data,rich_text_html) VALUES(1,'phrase','old','exact legacy body','<b>exact legacy body</b>');").unwrap();
+            migrate_items_schema(&conn).unwrap();
+            migrate_items_schema(&conn).unwrap();
+            let row: (String,String,String) = conn.query_row(
+                "SELECT phrase_title,text_data,rich_text_html FROM items", [],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap();
+            assert_eq!(row, (String::new(), "exact legacy body".into(), "<b>exact legacy body</b>".into()));
+        });
+    }
+}
+
+pub(crate) fn search_like_pattern(value: &str) -> String {
+    format!("%{}%", value.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))
+}
+
+pub(crate) fn search_term_can_match_display_date(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'-' | b':' | b' '))
 }
 
 fn current_native_search_date_context() -> SearchDateContext {
@@ -1721,38 +1877,41 @@ fn append_native_clip_query_filters(
         }
     }
     for term in search_terms {
-        let like = format!("%{}%", term.to_lowercase());
+        let like = search_like_pattern(&term.to_lowercase());
         sql.push_str(
-            " AND (LOWER(COALESCE(preview, '')) LIKE ? \
-             OR LOWER(COALESCE(source_app, '')) LIKE ? \
-             OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
-             OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
+            " AND (LOWER(COALESCE(preview, '')) LIKE ? ESCAPE '\\' \
+             OR LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\' \
+             OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? ESCAPE '\\' \
+             OR LOWER(phrase_title) LIKE ? ESCAPE '\\'",
         );
         values.push(rusqlite::types::Value::from(like.clone()));
         values.push(rusqlite::types::Value::from(like.clone()));
         values.push(rusqlite::types::Value::from(like.clone()));
-        values.push(rusqlite::types::Value::from(like));
+        values.push(rusqlite::types::Value::from(like.clone()));
+        if search_term_can_match_display_date(&term) {
+            sql.push_str(" OR strftime('%m-%d %H:%M', datetime(created_at, 'localtime')) LIKE ? ESCAPE '\\'");
+            values.push(rusqlite::types::Value::from(like));
+        }
+        sql.push(')');
     }
     if let Some(app_value) = app_filter {
-        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
-        values.push(rusqlite::types::Value::from(format!(
-            "%{}%",
-            app_value.to_lowercase()
-        )));
+        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\'");
+        values.push(rusqlite::types::Value::from(search_like_pattern(&app_value.to_lowercase())));
     }
     match time_filter {
         Some(SearchTimeFilter::ExactDay(day)) => {
-            sql.push_str(" AND date(created_at, 'localtime') = ?");
+            sql.push_str(" AND created_at >= datetime(?, 'utc') AND created_at < datetime(?, 'utc')");
             values.push(rusqlite::types::Value::from(days_to_sqlite_date(day)));
+            values.push(rusqlite::types::Value::from(days_to_sqlite_date(day + 1)));
         }
         Some(SearchTimeFilter::RecentDays(days)) => {
             let end_day = date_context.current_day;
             let start_day = end_day - (days.max(1) - 1);
             sql.push_str(
-                " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
+                " AND created_at >= datetime(?, 'utc') AND created_at < datetime(?, 'utc')",
             );
             values.push(rusqlite::types::Value::from(days_to_sqlite_date(start_day)));
-            values.push(rusqlite::types::Value::from(days_to_sqlite_date(end_day)));
+            values.push(rusqlite::types::Value::from(days_to_sqlite_date(end_day + 1)));
         }
         None => {}
     }

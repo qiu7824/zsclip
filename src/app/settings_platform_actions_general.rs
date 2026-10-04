@@ -15,7 +15,7 @@ pub(super) unsafe fn execute_settings_platform_general_action(
                         st.cb_paste_sound,
                         &paste_sound_display(&st.draft.paste_success_sound_kind),
                     );
-                    settings_sync_page_state(st, SettingsPage::General.index());
+                    settings_sync_page_state(st, SettingsPage::Clipboard.index());
                     repaint_settings_control(st.ed_skip_class_names);
                     repaint_settings_window(hwnd, true);
                 }
@@ -76,7 +76,7 @@ pub(super) unsafe fn execute_settings_platform_general_action(
                     st.draft.paste_target_skip_enabled = true;
                     st.draft.paste_target_skip_class_names = merged.clone();
                     settings_set_text(st.ed_skip_class_names, &merged);
-                    settings_sync_page_state(st, SettingsPage::General.index());
+                    settings_sync_page_state(st, SettingsPage::Clipboard.index());
                     repaint_settings_window(hwnd, true);
                 }
             }

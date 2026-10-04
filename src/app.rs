@@ -1,4 +1,5 @@
 mod constants;
+mod image_save;
 pub(crate) mod data;
 mod main_clipboard_capture;
 mod main_cloud_sync;
@@ -148,6 +149,7 @@ mod state_runtime;
 mod transient_window_host;
 mod vv_hook;
 mod vv_popup;
+mod vv_preview;
 mod windows_messages;
 
 pub(crate) use self::constants::TRAY_UID;

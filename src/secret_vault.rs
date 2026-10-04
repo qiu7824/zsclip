@@ -82,13 +82,13 @@ pub(crate) struct VaultSession {
     entries: Vec<Entry>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum FileStamp {
     Missing,
     Present(Option<SystemTime>, u64),
     Unavailable,
 }
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct StoreStamp {
     document: FileStamp,
     presence: FileStamp,
@@ -109,7 +109,7 @@ pub(crate) struct ExclusionSnapshot {
 
 impl ExclusionSnapshot {
     pub(crate) fn matches(&self, text: &str) -> bool {
-        !text.is_empty()
+        !text.is_empty() && !self.tags.is_empty()
             && self
                 .key
                 .as_ref()
@@ -401,6 +401,21 @@ pub(crate) fn exclusion_revision() -> Result<String, String> {
 }
 pub(crate) fn exclusion_snapshot() -> Result<ExclusionSnapshot, String> {
     exclusion_snapshot_at(&path())
+}
+
+/// Cheap query-boundary stamp; row filtering uses one immutable snapshot.
+pub(crate) fn query_protection_revision() -> Result<String, String> {
+    let file = path();
+    let stamp = StoreStamp {
+        document: file_stamp(&file),
+        presence: file_stamp(&file.with_extension("presence")),
+    };
+    if matches!(stamp.document, FileStamp::Unavailable)
+        || matches!(stamp.presence, FileStamp::Unavailable)
+    {
+        return Err(INVALID.to_string());
+    }
+    Ok(format!("{stamp:?}"))
 }
 fn exclusion_snapshot_at(file: &Path) -> Result<ExclusionSnapshot, String> {
     match read_document(file)? {

@@ -495,6 +495,7 @@ fn lan_item_from_envelope(incoming: lan_sync::LanIncomingClip) -> Option<LanDeco
             };
             Some(LanDecodedClip {
                 item: ClipItem {
+                    phrase_title: String::new(),
                     id: 0,
                     kind: ClipKind::Text,
                     preview,
@@ -533,6 +534,7 @@ fn lan_item_from_envelope(incoming: lan_sync::LanIncomingClip) -> Option<LanDeco
             };
             Some(LanDecodedClip {
                 item: ClipItem {
+                    phrase_title: String::new(),
                     id: 0,
                     kind: ClipKind::Image,
                     preview,
@@ -583,6 +585,7 @@ fn lan_item_from_envelope(incoming: lan_sync::LanIncomingClip) -> Option<LanDeco
             };
             Some(LanDecodedClip {
                 item: ClipItem {
+                    phrase_title: String::new(),
                     id: 0,
                     kind: ClipKind::Files,
                     preview,

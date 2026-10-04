@@ -120,10 +120,12 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 if state.vv_popup_visible
                     && !vv_popup_menu_active()
                     && (!identity_host.is_foreground(state.vv_popup_target)
-                        || !identity_host.exists(state.vv_popup_target))
+                        || !identity_host.exists(state.vv_popup_target)
+                        || !vv_session_target_current(state, false))
                 {
                     vv_popup_hide(hwnd, state);
                 }
+                if state.vv_popup_visible { super::vv_preview::validate_vv_preview(state); }
             }
         }
         MainTimerTask::VvShow => {
@@ -133,12 +135,14 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 let state = &mut *ptr;
                 let target = state.vv_popup_pending_target;
                 let identity_host = WindowsWindowIdentityHost::new();
-                if identity_host.exists(target) && identity_host.is_foreground(target) {
-                    state.vv_popup_pending_target = null_mut();
+                if identity_host.exists(target) && identity_host.is_foreground(target)
+                    && vv_session_target_current(state, true) {
                     if !vv_popup_show(hwnd, state, target) && state.vv_popup_pending_retries > 0 {
                         state.vv_popup_pending_target = target;
                         state.vv_popup_pending_retries -= 1;
                         timer::start(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS);
+                    } else {
+                        state.vv_popup_pending_target = null_mut();
                     }
                 } else {
                     state.vv_popup_pending_target = null_mut();
@@ -156,6 +160,11 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let state = &mut *ptr;
+                if !vv_paste_target_is_current(state) {
+                    cancel_queued_paste_attempt(hwnd, state);
+                    state.vv_paste_guard = None;
+                    return;
+                }
                 let target = state.paste_target_override;
                 paste_target = target;
                 if platform_input::paste_command_modifiers_down()
@@ -170,8 +179,10 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     return;
                 }
                 if !target.is_null() {
-                    WindowsPasteTargetHost::new().force_paste_target_foreground(target);
-                    restore_hotkey_focus_target(state, target);
+                    if state.vv_paste_guard.is_none() {
+                        WindowsPasteTargetHost::new().force_paste_target_foreground(target);
+                        restore_hotkey_focus_target(state, target);
+                    }
                     should_send_paste = can_send_ctrl_v_to_target(state, target);
                     if !should_send_paste {
                         let identity_host = WindowsWindowIdentityHost::new();
@@ -210,6 +221,11 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 clear_hotkey_passthrough_state(state);
             }
             if should_send_paste {
+                if !ptr.is_null() && !vv_paste_target_is_current(&*ptr) {
+                    cancel_queued_paste_attempt(hwnd, &mut *ptr);
+                    (*ptr).vv_paste_guard = None;
+                    return;
+                }
                 let input_sent = if paste_backspaces == 0 {
                     WindowsPasteTargetHost::new().send_paste_shortcut(paste_target)
                 } else {
@@ -229,8 +245,10 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                         clear_pending_paste_completion(&mut *ptr);
                         show_paste_failure_message(hwnd, &*ptr, paste_target);
                     }
+                    vv_finish_paste(&mut *ptr);
                 }
             } else if !ptr.is_null() {
+                vv_finish_paste(&mut *ptr);
                 show_paste_failure_message(hwnd, &*ptr, paste_target);
             }
         }
@@ -401,14 +419,8 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
                 return;
             }
             let state = &mut *ptr;
-            let mut target = target.0 as HWND;
+            let target = target.0 as HWND;
             let identity_host = WindowsWindowIdentityHost::new();
-            if !identity_host.exists(target) {
-                let foreground = identity_host.foreground_handle();
-                if identity_host.exists(foreground) {
-                    target = foreground;
-                }
-            }
             if identity_host.exists(target) {
                 state.vv_popup_pending_target = target;
                 state.vv_popup_pending_retries = VV_SHOW_RETRY_MAX;
@@ -485,6 +497,11 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 return;
             }
             let state = &mut *ptr;
+            if payload.context == ImagePasteRequestContext::VvPopup && !vv_paste_target_is_current(state) {
+                cancel_queued_paste_attempt(hwnd,state);
+                state.vv_paste_guard = None;
+                return;
+            }
             if !consume_image_paste_generation(
                 &mut state.pending_image_paste_generation,
                 payload.generation,
@@ -662,6 +679,7 @@ pub(super) unsafe fn handle_text_processing_result(
         }
         state.add_clip_item(
             ClipItem {
+                phrase_title: String::new(),
                 id: 0,
                 kind: ClipKind::Text,
                 preview,

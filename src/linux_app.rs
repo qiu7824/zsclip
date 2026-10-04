@@ -4973,7 +4973,8 @@ mod tests {
         assert!(source.contains("binding.dropdown.selected() as usize"));
         assert!(source.contains("SettingsNativeSubmittedControlValue"));
         assert!(source.contains("settings_native_collect_submission(\n"));
-        assert!(source.contains("refresh_group_popup_menus_for_category(0"));
+        assert!(source.contains("refresh_group_popup_menus(menus)"));
+        assert!(source.contains("refresh_group_popup_menus_for_category(category.get(), menus.as_ref())"));
     }
 
     #[test]
@@ -5541,8 +5542,12 @@ mod tests {
         assert_eq!(assign_group.result_name, "zsclip.row.assign_group");
         let source = include_str!("linux_native_host.rs").replace("\r\n", "\n");
         assert!(source.contains("menu_id == menu_ids::ROW_GROUP_REMOVE"));
-        assert!(source.contains("dispatch_linux_native_remove_group(selected_item_id)"));
-        assert!(source.contains("reload_clip_items_for_group(&current_group_filter"));
+        assert!(source.contains("let item_id = selected_item_id.get();"));
+        assert!(source.contains("dispatch_linux_native_remove_group(item_id)"));
+        assert!(source.contains("reload_clip_items_for_group_search_with_selection("));
+        assert!(source.contains("&current_source_category,"));
+        assert!(source.contains("&current_group_filter,"));
+        assert!(source.contains("&current_kind_filter,"));
 
         let filter_all = crate::linux_native_host::dispatch_gtk_menu_command_id(
             crate::app_core::menu_ids::GROUP_FILTER_ALL,

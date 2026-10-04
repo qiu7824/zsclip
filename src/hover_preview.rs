@@ -41,6 +41,7 @@ struct HoverPreviewImageResult {
 
 struct HoverPreviewData {
     item_id: i64,
+    font_size: i32,
     header: String,
     body: String,
     image: Option<(Vec<u8>, usize, usize)>,
@@ -168,7 +169,14 @@ unsafe extern "system" fn preview_wnd_proc(
                         right: rc.right - 14,
                         bottom: rc.bottom - 14,
                     };
-                    draw_text_block(hdc as _, &data.body, &body_rc, th.text, 12, false);
+                    draw_text_block(
+                        hdc as _,
+                        &data.body,
+                        &body_rc,
+                        th.text,
+                        data.font_size,
+                        false,
+                    );
                 } else {
                     let body_rc = RECT {
                         left: 14,
@@ -181,7 +189,7 @@ unsafe extern "system" fn preview_wnd_proc(
                         tr("正在加载预览…", "Loading preview..."),
                         &body_rc,
                         th.text_muted,
-                        12,
+                        data.font_size,
                         false,
                     );
                 }
@@ -251,6 +259,7 @@ unsafe fn create_preview_window() -> HWND {
         platform_window::module_handle(),
         Box::into_raw(Box::new(HoverPreviewData {
             item_id: -1,
+            font_size: 12,
             header: String::new(),
             body: String::new(),
             image: None,
@@ -439,7 +448,12 @@ fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) -> bool {
     })
 }
 
-pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y: i32) {
+pub(crate) unsafe fn show_hover_preview(
+    item: &ClipItem,
+    cursor_x: i32,
+    cursor_y: i32,
+    font_size: i32,
+) {
     let hwnd = preview_hwnd();
     if !platform_window::exists(hwnd) {
         return;
@@ -500,21 +514,36 @@ pub(crate) unsafe fn show_hover_preview(item: &ClipItem, cursor_x: i32, cursor_y
         None
     };
 
+    let font_size = font_size.clamp(12, 20);
     let (w, h) = if image_shape.is_some() {
         (PREVIEW_W_IMAGE, PREVIEW_H_IMAGE)
     } else {
-        (PREVIEW_W_TEXT, PREVIEW_H_TEXT)
+        (
+            PREVIEW_W_TEXT * font_size / 12,
+            PREVIEW_H_TEXT * font_size / 12,
+        )
     };
     let wa = platform_monitor::nearest_work_rect_for_point(POINT {
         x: cursor_x,
         y: cursor_y,
     });
+    let dpi = crate::platform::dpi::layout_dpi_for_point(POINT {
+        x: cursor_x,
+        y: cursor_y,
+    })
+    .max(96) as i32;
+    let w = ((w * dpi + 48) / 96).min((wa.right - wa.left - 16).max(1));
+    let h = ((h * dpi + 48) / 96).min((wa.bottom - wa.top - 16).max(1));
     let (x, y) = preview_origin_near_cursor(cursor_x, cursor_y, w, h, wa);
 
     let data = &mut *ptr;
     let same_image_shape = image_shape == Some((data.image_width, data.image_height));
-    let same_content =
-        data.item_id == item.id && data.header == header && data.body == body && same_image_shape;
+    let same_content = data.item_id == item.id
+        && data.header == header
+        && data.body == body
+        && same_image_shape
+        && data.font_size == font_size;
+    data.font_size = font_size;
     let same_geometry =
         data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
     let visible = platform_window::is_visible(hwnd);

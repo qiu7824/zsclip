@@ -103,7 +103,8 @@ unsafe fn refresh_outside_hide_timers() {
     let needs_hook = hosts
         .into_iter()
         .any(|hwnd| window_needs_outside_hide_timer(hwnd))
-        || mouse_side_button_bindings_enabled(hosts[0]);
+        || mouse_side_button_bindings_enabled(hosts[0])
+        || vv_hook_state().lock().is_ok_and(|hook| hook.enabled);
     if needs_hook {
         ensure_outside_click_mouse_hook();
     } else {
@@ -212,10 +213,9 @@ unsafe extern "system" fn quick_escape_keyboard_hook_proc(
     if !platform_hotkey::is_escape_vk(event.vk_code) {
         return platform_hook::call_next(code, wparam, lparam);
     }
-    let ptr = get_state_ptr(main);
-    if !ptr.is_null() && (*ptr).vv_popup_visible {
-        platform_window::post_hwnd_message(main, WM_VV_HIDE, 0, 0);
-        return 1;
+    // VV owns its whole physical Esc sequence, including release and repeats.
+    if vv_hook_state().try_lock().is_ok_and(|hook| hook.session.active()) {
+        return platform_hook::call_next(code, wparam, lparam);
     }
     if platform_window::is_visible(quick) {
         platform_window::post_hwnd_message(quick, WM_KEYDOWN, platform_hotkey::escape_wparam(), 0);
@@ -262,6 +262,7 @@ unsafe extern "system" fn outside_click_mouse_hook_proc(
     if !event.button_down {
         return platform_hook::call_next(code, wparam, lparam);
     }
+    if !event.is_injected_or_lower_integrity() { vv_cancel_for_pointer(event.point); }
     if should_ignore_outside_click_for_point_in_hosts(event.point, hosts) {
         return platform_hook::call_next(code, wparam, lparam);
     }
@@ -341,7 +342,7 @@ unsafe fn handle_mouse_side_button_binding(
             if target.is_null() {
                 return false;
             }
-            platform_window::post_hwnd_message(main, WM_VV_SHOW, target as usize, 0);
+            vv_request_show(main, target, false);
             true
         }
     }

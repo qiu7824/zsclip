@@ -340,6 +340,7 @@ pub(in crate::app) use crate::win_system_params::{
 };
 pub(in crate::app) use crate::win_system_params::{
     IDC_SET_FILE_ROW_HEIGHT, IDC_SET_IMAGE_ROW_HEIGHT, IDC_SET_SHOW_PIN_BUTTON,
+    IDC_SET_CONTENT_FONT_SIZE, IDC_SET_CARD_VIEW, IDC_SET_CARD_BORDER, IDC_SET_CARD_SHADOW,
     IDC_SET_TEXT_ROW_HEIGHT,
 };
 pub(in crate::app) use crate::win_system_ui::{

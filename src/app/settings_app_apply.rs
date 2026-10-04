@@ -42,6 +42,8 @@ pub(super) unsafe fn settings_apply_from_app(st: &mut SettingsWndState) {
         settings_set_text(st.ed_skip_class_names, &s.paste_target_skip_class_names);
     }
     settings_sync_page_state(st, SettingsPage::General.index());
+    settings_sync_page_state(st, SettingsPage::Appearance.index());
+    settings_sync_page_state(st, SettingsPage::Clipboard.index());
     if st.ui.is_built(SettingsPage::Hotkey.index()) {
         settings_sync_page_state(st, SettingsPage::Hotkey.index());
     }

@@ -13,6 +13,7 @@ pub(super) unsafe fn handle_settings_control_selection(
     st.dropdown_popup = null_mut();
     match control_id {
         IDC_SET_MAX
+        | IDC_SET_CONTENT_FONT_SIZE
         | IDC_SET_POSMODE
         | IDC_SET_PASTE_SOUND_KIND
         | IDC_SET_IMAGE_ROW_HEIGHT

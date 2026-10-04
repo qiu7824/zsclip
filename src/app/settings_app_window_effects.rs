@@ -35,6 +35,7 @@ pub(super) unsafe fn settings_refresh_windows_after_commit(
         note_window_moved_for_edge_hide(st.parent_hwnd, app);
     }
     refresh_low_level_input_hooks();
+    refresh_search_font(app);
     app.refilter();
     if baseline.persistent_search_box != app.settings.persistent_search_box {
         prepare_search_ui_for_show(st.parent_hwnd, app);

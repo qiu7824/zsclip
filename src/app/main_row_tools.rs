@@ -223,7 +223,7 @@ pub(super) fn materialize_item_as_file(item: &ClipItem) -> Option<PathBuf> {
     };
     match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
-            let name = sanitize_export_name(&item.preview, "text");
+            let name = sanitize_export_name(item.display_title(), "text");
             let path = base.join(format!("{}_{}_{}.txt", name, ts, suffix));
             let text = item.text.as_deref().unwrap_or(&item.preview);
             fs::write(&path, text).ok()?;

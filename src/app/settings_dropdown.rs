@@ -19,6 +19,7 @@ pub(super) unsafe fn open_settings_dropdown_for_control(
     close_settings_dropdown_popup(st);
     match control_id {
         IDC_SET_MAX
+        | IDC_SET_CONTENT_FONT_SIZE
         | IDC_SET_POSMODE
         | IDC_SET_PASTE_SOUND_KIND
         | IDC_SET_IMAGE_ROW_HEIGHT

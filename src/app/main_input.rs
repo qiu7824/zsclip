@@ -522,6 +522,11 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
         current_can_translate,
     );
     if cmd != 0 {
+        if cmd == super::main_row_commands::RENAME_PHRASE_COMMAND {
+            if let Some(item) = current_item.as_ref() { super::main_row_commands::rename_phrase(hwnd, state, item); }
+            repaint_main_window(hwnd, false);
+            return;
+        }
         if super::main_secret_vault::dispatch(hwnd, cmd, current_item.as_ref()) {
             repaint_main_window(hwnd, false);
             return;
@@ -669,6 +674,7 @@ pub(super) unsafe fn handle_nchittest(hwnd: HWND, lparam: LPARAM) -> LRESULT {
 }
 
 pub(super) fn hit_test_row(state: &AppState, x: i32, y: i32) -> i32 {
+    if state.search_results_pending() { return -1; }
     state
         .layout()
         .hit_test_row(x, y, state.visible_count(), state.scroll_y)

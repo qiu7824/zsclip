@@ -29,6 +29,7 @@ const IDC_EDIT_TEXTAREA: usize = 9010;
 const IDC_EDIT_LINENO: usize = 9011;
 const IDC_EDIT_SAVE: usize = 9012;
 const IDC_EDIT_CANCEL: usize = 9013;
+const IDC_PHRASE_TITLE: usize = 9014;
 const EDIT_DLG_CLASS: &str = "ZsClipEditDlg";
 const EN_CHANGE_CODE: u16 = 0x0300;
 const EM_SETSEL: u32 = 0x00B1;
@@ -41,6 +42,7 @@ struct EditDialogData {
     dirty: bool,
     loading_text: bool,
     original_text: String,
+    original_phrase_title: Option<String>,
     pending_save: Option<String>,
     close_after_save: bool,
     last_w: i32,
@@ -98,7 +100,8 @@ unsafe fn current_text(hwnd: HWND) -> String {
 
 unsafe fn mark_dirty(hwnd: HWND, data: &mut EditDialogData) {
     if !data.loading_text {
-        data.dirty = current_text(hwnd) != data.original_text;
+        data.dirty = current_text(hwnd) != data.original_text || data.original_phrase_title.as_ref()
+            .is_some_and(|title| platform_window::text(platform_window::child(hwnd, IDC_PHRASE_TITLE as i32)) != *title);
     }
 }
 
@@ -154,6 +157,9 @@ unsafe fn dispatch_ui_event(hwnd: HWND, event: UiEvent) -> Option<LRESULT> {
             }
             let data = &mut *data_ptr;
             let control_id = control_id as usize;
+            if control_id == IDC_PHRASE_TITLE && notification == EN_CHANGE_CODE {
+                mark_dirty(hwnd, data);
+            }
             if control_id == IDC_EDIT_TEXTAREA && notification == EN_VSCROLL {
                 let edit = platform_window::child(hwnd, IDC_EDIT_TEXTAREA as i32);
                 let line_number = platform_window::child(hwnd, IDC_EDIT_LINENO as i32);
@@ -176,7 +182,17 @@ unsafe fn dispatch_ui_event(hwnd: HWND, event: UiEvent) -> Option<LRESULT> {
             let width = size.width;
             let height = size.height;
             let gutter_width = 44;
-            let edit_height = height - 56;
+            let data = platform_window::user_data(hwnd) as *mut EditDialogData;
+            let top = if !data.is_null() && (*data).original_phrase_title.is_some() {
+                platform_dpi::scale_for_window(hwnd, 56)
+            } else { 0 };
+            let edit_height = height - 56 - top;
+            let title_edit = platform_window::child(hwnd, IDC_PHRASE_TITLE as i32);
+            if !title_edit.is_null() {
+                let left = platform_dpi::scale_for_window(hwnd, 120);
+                platform_window::set_pos(title_edit, null_mut(), left, platform_dpi::scale_for_window(hwnd, 10),
+                    width - left - 14, platform_dpi::scale_for_window(hwnd, 30), SWP_NOZORDER);
+            }
             let line_number = platform_window::child(hwnd, IDC_EDIT_LINENO as i32);
             let edit = platform_window::child(hwnd, IDC_EDIT_TEXTAREA as i32);
             let cancel = platform_window::child(hwnd, IDC_EDIT_CANCEL as i32);
@@ -186,10 +202,10 @@ unsafe fn dispatch_ui_event(hwnd: HWND, event: UiEvent) -> Option<LRESULT> {
                     line_number,
                     null_mut(),
                     0,
-                    0,
+                    top,
                     gutter_width,
                     edit_height,
-                    SWP_NOMOVE | SWP_NOZORDER,
+                    SWP_NOZORDER,
                 );
             }
             if !edit.is_null() {
@@ -197,7 +213,7 @@ unsafe fn dispatch_ui_event(hwnd: HWND, event: UiEvent) -> Option<LRESULT> {
                     edit,
                     null_mut(),
                     gutter_width,
-                    0,
+                    top,
                     width - gutter_width,
                     edit_height,
                     SWP_NOZORDER,
@@ -330,14 +346,28 @@ unsafe extern "system" fn edit_dialog_proc(
             let width = rect.right;
             let height = rect.bottom;
             let gutter_width = 44;
-            let edit_height = height - 56;
+            let top = if data.original_phrase_title.is_some() { platform_dpi::scale_for_window(hwnd, 56) } else { 0 };
+            let edit_height = height - 56 - top;
+            if let Some(title) = &data.original_phrase_title {
+                let left = platform_dpi::scale_for_window(hwnd, 120);
+                let label = platform_window::create_window_ex(0, to_wide("STATIC").as_ptr(),
+                    to_wide(tr("标题（可空）", "Title (optional)")).as_ptr(), WS_CHILD | WS_VISIBLE,
+                    12, platform_dpi::scale_for_window(hwnd, 15), left - 12, platform_dpi::scale_for_window(hwnd, 28),
+                    hwnd, null_mut(), module, null());
+                platform_window::send_message(label, WM_SETFONT, data.ui_font as usize, 1);
+                let input = platform_window::create_window_ex(WS_EX_CLIENTEDGE, to_wide("EDIT").as_ptr(),
+                    to_wide(title).as_ptr(), WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+                    left, platform_dpi::scale_for_window(hwnd, 10), width-left-14, platform_dpi::scale_for_window(hwnd, 30),
+                    hwnd, IDC_PHRASE_TITLE as _, module, null());
+                platform_window::send_message(input, WM_SETFONT, data.ui_font as usize, 1);
+            }
             let line_number = platform_window::create_window_ex(
                 0,
                 to_wide("EDIT").as_ptr(),
                 to_wide("").as_ptr(),
                 WS_CHILD | WS_VISIBLE | ES_MULTILINE as u32 | ES_READONLY as u32 | ES_RIGHT as u32,
                 0,
-                0,
+                top,
                 gutter_width,
                 edit_height,
                 hwnd,
@@ -360,7 +390,7 @@ unsafe extern "system" fn edit_dialog_proc(
                     | ES_WANTRETURN as u32
                     | ES_NOHIDESEL as u32,
                 gutter_width,
-                0,
+                top,
                 width - gutter_width,
                 edit_height,
                 hwnd,
@@ -566,16 +596,20 @@ unsafe extern "system" fn edit_dialog_proc(
 unsafe fn process_pending_save(
     hwnd: HWND,
     data: &mut EditDialogData,
-    save_handler: &mut dyn NativeEditTextSaveHandler,
+    save_handler: &mut dyn FnMut(&str, &str) -> Result<(), String>,
 ) {
     let Some(text) = data.pending_save.take() else {
         return;
     };
-    match save_handler.save_text(&text) {
+    let title = if data.original_phrase_title.is_some() {
+        platform_window::text(platform_window::child(hwnd, IDC_PHRASE_TITLE as i32))
+    } else { String::new() };
+    match save_handler(&title, &text) {
         Ok(()) => {
             data.saved = true;
             data.dirty = false;
             data.original_text = text;
+            if data.original_phrase_title.is_some() { data.original_phrase_title = Some(title); }
             if data.close_after_save {
                 platform_window::close(hwnd);
             }
@@ -599,7 +633,8 @@ unsafe fn process_pending_save(
 unsafe fn open_dialog(
     parent: HWND,
     request: NativeEditTextDialogRequest<'_>,
-    save_handler: &mut dyn NativeEditTextSaveHandler,
+    phrase_title: Option<&str>,
+    save_handler: &mut dyn FnMut(&str, &str) -> Result<(), String>,
 ) -> NativeEditTextDialogResult {
     let module = platform_window::module_handle();
     let class_name = to_wide(EDIT_DLG_CLASS);
@@ -643,6 +678,7 @@ unsafe fn open_dialog(
             .replace("\r\n", "\n")
             .replace('\r', "\n"),
         pending_save: None,
+        original_phrase_title: phrase_title.map(str::to_string),
         close_after_save: false,
         last_w: width,
         last_h: height,
@@ -725,6 +761,13 @@ impl WindowsEditTextDialogHost {
     pub(crate) const fn new() -> Self {
         Self
     }
+
+    pub(crate) fn open_phrase_editor(
+        &self, owner: HWND, request: NativeEditTextDialogRequest<'_>, title: &str,
+        save: &mut dyn FnMut(&str, &str) -> Result<(), String>,
+    ) -> NativeEditTextDialogResult {
+        unsafe { open_dialog(owner, request, Some(title), save) }
+    }
 }
 
 impl NativeEditTextDialogHost for WindowsEditTextDialogHost {
@@ -736,7 +779,8 @@ impl NativeEditTextDialogHost for WindowsEditTextDialogHost {
         request: NativeEditTextDialogRequest<'_>,
         save_handler: &mut dyn NativeEditTextSaveHandler,
     ) -> NativeEditTextDialogResult {
-        unsafe { open_dialog(owner, request, save_handler) }
+        let mut save = |_: &str, text: &str| save_handler.save_text(&text);
+        unsafe { open_dialog(owner, request, None, &mut save) }
     }
 }
 

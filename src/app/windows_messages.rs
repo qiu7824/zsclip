@@ -9,6 +9,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::WM_APP;
 pub(super) const WM_VV_SHOW: u32 = WM_APP + 20;
 pub(super) const WM_VV_HIDE: u32 = WM_APP + 21;
 pub(super) const WM_VV_SELECT: u32 = WM_APP + 22;
+pub(super) const WM_VV_PREVIEW_NAV: u32 = WM_APP + 23;
+pub(super) const WM_VV_PREVIEW_SCROLL: u32 = WM_APP + 24;
 pub(super) const WM_ITEMS_PAGE_READY: u32 = WM_APP + 30;
 pub(super) const WM_UPDATE_CHECK_READY: u32 = WM_APP + 31;
 pub(super) const WM_CLOUD_SYNC_READY: u32 = WM_APP + 33;

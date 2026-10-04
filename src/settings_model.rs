@@ -11,7 +11,7 @@ use crate::zsui::ZsIcon;
 pub const SCROLL_BAR_W: i32 = 3;
 pub const SCROLL_BAR_W_ACTIVE: i32 = 5;
 pub const SCROLL_BAR_MARGIN: i32 = 3;
-pub const SETTINGS_PAGE_COUNT: usize = 6;
+pub const SETTINGS_PAGE_COUNT: usize = 8;
 
 pub const SETTINGS_FORM_HEADER_H: i32 = 52;
 pub const SETTINGS_FORM_ROW_H: i32 = 32;
@@ -59,11 +59,13 @@ pub struct SettingsSection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsPage {
     General = 0,
-    Hotkey = 1,
-    Plugin = 2,
-    Group = 3,
-    Cloud = 4,
-    About = 5,
+    Appearance = 1,
+    Clipboard = 2,
+    Hotkey = 3,
+    Group = 4,
+    Plugin = 5,
+    Cloud = 6,
+    About = 7,
 }
 
 impl SettingsPage {
@@ -73,11 +75,13 @@ impl SettingsPage {
 
     pub fn from_index(index: usize) -> Self {
         match index {
-            1 => SettingsPage::Hotkey,
-            2 => SettingsPage::Plugin,
-            3 => SettingsPage::Group,
-            4 => SettingsPage::Cloud,
-            5 => SettingsPage::About,
+            1 => SettingsPage::Appearance,
+            2 => SettingsPage::Clipboard,
+            3 => SettingsPage::Hotkey,
+            4 => SettingsPage::Group,
+            5 => SettingsPage::Plugin,
+            6 => SettingsPage::Cloud,
+            7 => SettingsPage::About,
             _ => SettingsPage::General,
         }
     }
@@ -485,7 +489,7 @@ pub struct SettingsFormCardSpec {
     pub extra_px: i32,
 }
 
-const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
+const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
     SettingsFormCardSpec {
         rows: 6,
         extra_px: 0,
@@ -502,45 +506,35 @@ const HOTKEY_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
         rows: 2,
         extra_px: 12,
     },
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
 ];
 
-const HOTKEY_TITLES: [&str; 4] = [
+const HOTKEY_TITLES: [&str; 5] = [
     "\u{4e3b}\u{5feb}\u{6377}\u{952e}",
     "\u{9f20}\u{6807}\u{4fa7}\u{952e}",
     "\u{7cfb}\u{7edf}\u{526a}\u{8d34}\u{677f}\u{5386}\u{53f2}\u{ff08}Win+V\u{ff09}",
     "\u{529f}\u{80fd}\u{8bf4}\u{660e}",
+    "VV 快速粘贴",
 ];
 
-const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 5] = [
-    SettingsFormCardSpec {
-        rows: 14,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 5,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 10,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 4,
-        extra_px: 0,
-    },
-    SettingsFormCardSpec {
-        rows: 1,
-        extra_px: 0,
-    },
+const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
+    SettingsFormCardSpec { rows: 5, extra_px: 0 },
+    SettingsFormCardSpec { rows: 1, extra_px: 0 },
 ];
-
-const GENERAL_TITLES: [&str; 5] = [
-    "\u{542f}\u{52a8}\u{4e0e}\u{663e}\u{793a}",
-    "\u{6570}\u{636e}",
-    "\u{5feb}\u{6377}\u{64cd}\u{4f5c}",
-    "\u{663e}\u{793a}\u{4f4d}\u{7f6e}",
-    "\u{7ef4}\u{62a4}",
+const GENERAL_TITLES: [&str; 2] = ["启动与托盘", "维护"];
+const APPEARANCE_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
+    SettingsFormCardSpec { rows: 5, extra_px: 116 },
+    SettingsFormCardSpec { rows: 7, extra_px: 0 },
+    SettingsFormCardSpec { rows: 4, extra_px: 0 },
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
 ];
+const APPEARANCE_TITLES: [&str; 4] = ["字号与卡片", "列表与预览", "窗口行为", "弹出位置"];
+const CLIPBOARD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
+    SettingsFormCardSpec { rows: 4, extra_px: 0 },
+    SettingsFormCardSpec { rows: 4, extra_px: 0 },
+    SettingsFormCardSpec { rows: 5, extra_px: 16 },
+];
+const CLIPBOARD_TITLES: [&str; 3] = ["记录与格式", "粘贴行为", "提示音"];
 
 const PLUGIN_TITLES: [&str; 7] = [
     "\u{641c}\u{7d22}\u{63d2}\u{4ef6}",
@@ -630,20 +624,22 @@ fn plugin_form_sections(
     ]
 }
 
-const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
+const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec {
-        rows: 4,
+        rows: 2,
         extra_px: 0,
     },
     SettingsFormCardSpec {
         rows: 5,
         extra_px: 60,
     },
+    SettingsFormCardSpec { rows: 2, extra_px: 0 },
 ];
 
-const GROUP_TITLES: [&str; 2] = [
+const GROUP_TITLES: [&str; 3] = [
     "\u{5206}\u{7ec4}\u{529f}\u{80fd}",
     "\u{5206}\u{7ec4}\u{7ba1}\u{7406}",
+    "常用短语",
 ];
 
 const MULTI_SYNC_TITLES: [&str; 6] = [
@@ -842,6 +838,8 @@ pub fn settings_pointer_move_transition(
 pub const fn settings_nav_icon_for_page(page: SettingsPage) -> ZsIcon {
     match page {
         SettingsPage::General => ZsIcon::Settings,
+        SettingsPage::Appearance => ZsIcon::Inspector,
+        SettingsPage::Clipboard => ZsIcon::Copy,
         SettingsPage::Hotkey => ZsIcon::Code,
         SettingsPage::Plugin => ZsIcon::Tool,
         SettingsPage::Group => ZsIcon::Group,
@@ -2741,6 +2739,8 @@ pub fn settings_cards_for_page_vec(page: usize) -> Vec<SettingsSection> {
         SettingsPage::General => {
             settings_make_form_cards_dyn(16, &GENERAL_TITLES, &GENERAL_FORM_SECTIONS)
         }
+        SettingsPage::Appearance => settings_make_form_cards_dyn(16, &APPEARANCE_TITLES, &APPEARANCE_FORM_SECTIONS),
+        SettingsPage::Clipboard => settings_make_form_cards_dyn(16, &CLIPBOARD_TITLES, &CLIPBOARD_FORM_SECTIONS),
         SettingsPage::Hotkey => settings_make_form_cards(16, HOTKEY_TITLES, HOTKEY_FORM_SECTIONS),
         SettingsPage::Plugin => {
             settings_make_plugin_cards(16, &PLUGIN_TITLES, &PLUGIN_FORM_SECTIONS)
@@ -2763,6 +2763,8 @@ fn settings_native_section_specs_for_page(
             .copied()
             .zip(GENERAL_FORM_SECTIONS)
             .collect(),
+        SettingsPage::Appearance => APPEARANCE_TITLES.iter().copied().zip(APPEARANCE_FORM_SECTIONS).collect(),
+        SettingsPage::Clipboard => CLIPBOARD_TITLES.iter().copied().zip(CLIPBOARD_FORM_SECTIONS).collect(),
         SettingsPage::Hotkey => HOTKEY_TITLES
             .iter()
             .copied()
@@ -2924,6 +2926,14 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "tray_icon" => native_setting_binding("tray_icon_enabled"),
         "app_icon" => native_setting_binding("app_icon_visible"),
         "dark_mode" => native_setting_binding("dark_mode_enabled"),
+        "content_font_size" => native_setting_binding("content_font_size"),
+        "show_pin" => native_setting_binding("show_pin_button"),
+        "image_row_height" => native_setting_binding("image_row_height"),
+        "text_row_height" => native_setting_binding("text_row_height"),
+        "file_row_height" => native_setting_binding("file_row_height"),
+        "card_view" => native_setting_binding("card_view_enabled"),
+        "card_border" => native_setting_binding("card_border_enabled"),
+        "card_shadow" => native_setting_binding("card_shadow_enabled"),
         "capture_enable" => native_setting_binding("clipboard_capture_enabled"),
         "close_to_tray" => native_setting_binding("close_without_exit"),
         "auto_hide_on_blur" => native_setting_binding("auto_hide_on_blur"),
@@ -2973,6 +2983,7 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "plugin_qr_quick" => native_setting_binding("quick_qr_enabled"),
         "group_enable" => native_setting_binding("grouping_enabled"),
         "group_type_filter" => native_setting_binding("group_type_filter_enabled"),
+        "phrase_titles" => native_setting_binding("phrase_titles_enabled"),
         "vv_source" => native_setting_binding("vv_source_tab"),
         "vv_group" => native_setting_binding("vv_group_id"),
         "group_list" => native_runtime_list_binding("clip_groups"),
@@ -3049,6 +3060,15 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "tray_icon" => native_toggle_route(5060),
         "app_icon" => native_toggle_route(5099),
         "dark_mode" => native_toggle_route(5097),
+        "content_font_size" => native_dropdown_route(6210),
+        "show_pin" => native_toggle_route(6207),
+        "image_row_height" => native_dropdown_route(6204),
+        "text_row_height" => native_dropdown_route(6205),
+        "file_row_height" => native_dropdown_route(6206),
+        "card_view" => native_toggle_route(6211),
+        "card_border" => native_toggle_route(6212),
+        "card_shadow" => native_toggle_route(6213),
+        "phrase_titles" => native_toggle_route(6215),
         "capture_enable" => native_toggle_route(5101),
         "close_to_tray" => native_toggle_route(5011),
         "auto_hide_on_blur" => native_toggle_route(5061),
@@ -3170,75 +3190,70 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
     let sections = settings_native_section_summaries();
     let mut controls = Vec::new();
 
-    push_native_controls(
-        &mut controls,
-        &sections,
-        SettingsPage::General,
-        0,
-        &[
-            ("auto_start", "开机自启", Toggle),
-            ("silent_start", "静默启动", Toggle),
-            ("tray_icon", "右下角图标", Toggle),
-            ("app_icon", "软件图标显示", Toggle),
-            ("capture_enable", "剪贴板捕获", Toggle),
-            ("close_to_tray", "关闭不退出", Toggle),
-            ("auto_hide_on_blur", "点击外部隐藏", Toggle),
-            ("edge_auto_hide", "贴边自动隐藏", Toggle),
-            ("hover_preview", "悬停预览", Toggle),
-            ("vv_mode", "VV 模式", Toggle),
-            ("image_preview", "图片缩略图", Toggle),
-            ("quick_delete", "快速删除按钮", Toggle),
-            ("dark_mode", "深色模式", Toggle),
-            ("context_menu_copy", "右键菜单复制", Toggle),
-        ],
-    );
-    push_native_controls(
-        &mut controls,
-        &sections,
-        SettingsPage::General,
-        1,
-        &[
-            ("max_items", "最大保存条数", Dropdown),
-            ("rich_text", "富文本支持", Toggle),
-        ],
-    );
-    push_native_controls(
-        &mut controls,
-        &sections,
-        SettingsPage::General,
-        2,
-        &[
-            ("click_hide", "单击后隐藏主窗口", Toggle),
-            ("paste_move_top", "粘贴后上移到首行", Toggle),
-            ("dedupe_filter", "重复内容过滤", Toggle),
-            ("persistent_search", "常驻搜索框", Toggle),
-            ("copy_sound", "复制成功声音", Toggle),
-            ("paste_sound", "粘贴成功声音", Toggle),
-            ("paste_sound_kind", "提示音", Dropdown),
-            ("paste_sound_file", "声音文件", Button),
-            ("skip_window", "焦点窗口跳过", Toggle),
-            ("skip_window_classes", "跳过窗口类名", TextInput),
-            ("capture_skip_window", "捕获当前窗口", Button),
-        ],
-    );
-    push_native_controls(
-        &mut controls,
-        &sections,
-        SettingsPage::General,
-        3,
-        &[
-            ("position_mode", "弹出位置", Dropdown),
-            ("mouse_offset", "鼠标偏移 dx/dy", TextInput),
-            ("fixed_position", "固定位置 x/y", TextInput),
-        ],
-    );
-    push_native_controls(
-        &mut controls,
-        &sections,
-        SettingsPage::General,
-        4,
-        &[("open_config", "打开设置文件", Button)],
-    );
+    push_native_controls(&mut controls, &sections, SettingsPage::General, 0, &[
+        ("auto_start", "开机自启", Toggle),
+        ("silent_start", "静默启动", Toggle),
+        ("tray_icon", "托盘图标", Toggle),
+        ("app_icon", "软件图标", Toggle),
+        ("close_to_tray", "关闭不退出", Toggle)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::General, 1, &[
+        ("open_config", "打开设置文件", Button)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Appearance, 0, &[
+        ("dark_mode", "深色模式", Toggle),
+        ("content_font_size", "内容字号", Dropdown),
+        ("card_view", "卡片模式", Toggle),
+        ("card_border", "卡片边框", Toggle),
+        ("card_shadow", "卡片轻阴影", Toggle)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Appearance, 1, &[
+        ("image_preview", "图片缩略图", Toggle),
+        ("hover_preview", "悬停预览", Toggle),
+        ("quick_delete", "快速删除按钮", Toggle),
+        ("show_pin", "显示图钉按钮", Toggle),
+        ("image_row_height", "图片行高", Dropdown),
+        ("text_row_height", "文本行高", Dropdown),
+        ("file_row_height", "文件行高", Dropdown)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Appearance, 2, &[
+        ("auto_hide_on_blur", "点击外部隐藏", Toggle),
+        ("edge_auto_hide", "贴边自动隐藏", Toggle),
+        ("click_hide", "粘贴后隐藏主窗口", Toggle),
+        ("persistent_search", "常驻搜索框", Toggle)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Appearance, 3, &[
+        ("position_mode", "弹出位置", Dropdown),
+        ("mouse_offset", "鼠标偏移 dx/dy", TextInput),
+        ("fixed_position", "固定位置 x/y", TextInput)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Clipboard, 0, &[
+        ("capture_enable", "记录剪贴板内容", Toggle),
+        ("max_items", "最大保存条数", Dropdown),
+        ("rich_text", "保留文本与表格格式", Toggle),
+        ("dedupe_filter", "重复内容过滤", Toggle)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Clipboard, 1, &[
+        ("paste_move_top", "粘贴后上移到首行", Toggle),
+        ("context_menu_copy", "右键菜单复制", Toggle),
+        ("skip_window", "跳过指定粘贴窗口", Toggle),
+        ("skip_window_classes", "跳过窗口类名", TextInput),
+        ("capture_skip_window", "捕获当前窗口", Button)
+    ]);
+
+    push_native_controls(&mut controls, &sections, SettingsPage::Clipboard, 2, &[
+        ("copy_sound", "复制成功声音", Toggle),
+        ("paste_sound", "粘贴成功声音", Toggle),
+        ("paste_sound_kind", "提示音", Dropdown),
+        ("paste_sound_file", "声音文件", Button)
+    ]);
 
     push_native_controls(
         &mut controls,
@@ -3257,6 +3272,11 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("plain_hotkey_preview", "纯文本快捷键预览", Label),
         ],
     );
+    push_native_controls(&mut controls, &sections, SettingsPage::Hotkey, 4, &[
+        ("vv_mode", "VV 模式", Toggle),
+        ("vv_source", "VV 来源", Dropdown),
+        ("vv_group", "VV 默认分组", Dropdown),
+    ]);
     push_native_controls(
         &mut controls,
         &sections,
@@ -3373,8 +3393,7 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         &[
             ("group_enable", "启用分组", Toggle),
             ("group_type_filter", "文件类型选项", Toggle),
-            ("vv_source", "VV 来源", Dropdown),
-            ("vv_group", "VV 分组", Dropdown),
+
         ],
     );
     push_native_controls(
@@ -3394,6 +3413,10 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
             ("group_down", "下移", Button),
         ],
     );
+    push_native_controls(&mut controls, &sections, SettingsPage::Group, 2, &[
+        ("phrase_titles", "启用独立标题", Toggle),
+        ("phrase_titles_note", "关闭后显示正文摘要，已保存的标题保留。", Label),
+    ]);
 
     push_native_controls(
         &mut controls,
@@ -3703,6 +3726,12 @@ fn settings_native_json_updates_for_applied_field(
         | "copy_success_sound_enabled"
         | "paste_success_sound_enabled"
         | "dark_mode_enabled"
+        | "rich_text_clipboard_enabled"
+        | "show_pin_button"
+        | "phrase_titles_enabled"
+        | "card_view_enabled"
+        | "card_border_enabled"
+        | "card_shadow_enabled"
         | "paste_target_skip_enabled"
         | "hotkey_enabled"
         | "mouse_side_button_enabled"
@@ -3715,6 +3744,11 @@ fn settings_native_json_updates_for_applied_field(
         | "lan_sync_enabled"
         | "qq_cloud_menu_enabled" => settings_native_json_bool_value(value)
             .map(|json_value| vec![update(field.field_name, json_value)]),
+        "content_font_size" => value.parse::<i32>().ok().filter(|value| [0, 12, 14, 16, 18, 20].contains(value)).map(|value| vec![update(field.field_name, serde_json::Value::Number(value.into()))]),
+        "image_row_height" | "text_row_height" | "file_row_height" => value.parse::<i32>().ok().map(|value| {
+            let value = if field.field_name == "image_row_height" { value.clamp(80, 320) } else { value.clamp(32, 160) };
+            vec![update(field.field_name, serde_json::Value::Number(value.into()))]
+        }),
         "max_items" => value.parse::<usize>().ok().map(|number| {
             vec![update(
                 field.field_name,
@@ -3940,6 +3974,12 @@ pub fn settings_native_dropdown_options(
         return None;
     }
     match control.key {
+        "content_font_size" => native_dropdown_options_from_pairs(control, settings_json,
+            [("0", "默认".into()), ("12", "12 px".into()), ("14", "14 px".into()), ("16", "16 px".into()), ("18", "18 px".into()), ("20", "20 px".into())]),
+        "image_row_height" => native_dropdown_options_from_pairs(control, settings_json,
+            [("80", "80 px".into()), ("132", "132 px".into()), ("160", "160 px".into()), ("200", "200 px".into()), ("240", "240 px".into()), ("320", "320 px".into())]),
+        "text_row_height" | "file_row_height" => native_dropdown_options_from_pairs(control, settings_json,
+            [("32", "32 px".into()), ("44", "44 px".into()), ("56", "56 px".into()), ("80", "80 px".into()), ("120", "120 px".into()), ("160", "160 px".into())]),
         "max_items" => native_dropdown_options_from_pairs(
             control,
             settings_json,
@@ -4613,7 +4653,7 @@ mod tests {
 
     #[test]
     fn settings_nav_render_plan_describes_nav_without_host_renderer() {
-        let plan = settings_nav_render_plan(SettingsPage::Cloud.index(), Some(2), true);
+        let plan = settings_nav_render_plan(SettingsPage::Cloud.index(), Some(SettingsPage::Plugin.index()), true);
 
         assert_eq!(plan.items.len(), SETTINGS_PAGE_COUNT);
         assert_eq!(
@@ -5772,11 +5812,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 (SettingsPage::General, SETTINGS_PAGE_LABELS[0]),
-                (SettingsPage::Hotkey, SETTINGS_PAGE_LABELS[1]),
-                (SettingsPage::Plugin, SETTINGS_PAGE_LABELS[2]),
-                (SettingsPage::Group, SETTINGS_PAGE_LABELS[3]),
-                (SettingsPage::Cloud, SETTINGS_PAGE_LABELS[4]),
-                (SettingsPage::About, SETTINGS_PAGE_LABELS[5]),
+                (SettingsPage::Appearance, SETTINGS_PAGE_LABELS[1]),
+                (SettingsPage::Clipboard, SETTINGS_PAGE_LABELS[2]),
+                (SettingsPage::Hotkey, SETTINGS_PAGE_LABELS[3]),
+                (SettingsPage::Group, SETTINGS_PAGE_LABELS[4]),
+                (SettingsPage::Plugin, SETTINGS_PAGE_LABELS[5]),
+                (SettingsPage::Cloud, SETTINGS_PAGE_LABELS[6]),
+                (SettingsPage::About, SETTINGS_PAGE_LABELS[7]),
             ]
         );
         assert!(summaries
@@ -5838,7 +5880,7 @@ mod tests {
                 && control.kind == SettingsNativeControlKind::List
         }));
         assert!(control_summaries.iter().any(|control| {
-            control.page == SettingsPage::General
+            control.page == SettingsPage::Clipboard
                 && control.key == "skip_window_classes"
                 && control.kind == SettingsNativeControlKind::TextInput
         }));

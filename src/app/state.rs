@@ -51,6 +51,11 @@ pub(crate) struct AppSettings {
     pub(crate) image_row_height: i32,
     pub(crate) text_row_height: i32,
     pub(crate) file_row_height: i32,
+    pub(crate) content_font_size: i32,
+    pub(crate) card_view_enabled: bool,
+    pub(crate) card_border_enabled: bool,
+    pub(crate) card_shadow_enabled: bool,
+    #[serde(default)]
     pub(crate) rich_text_clipboard_enabled: bool,
     pub(crate) quick_delete_button: bool,
     pub(crate) context_menu_copy_enabled: bool,
@@ -73,6 +78,7 @@ pub(crate) struct AppSettings {
     pub(crate) wps_taskpane_enabled: bool,
     pub(crate) grouping_enabled: bool,
     pub(crate) group_type_filter_enabled: bool,
+    pub(crate) phrase_titles_enabled: bool,
     pub(crate) cloud_sync_enabled: bool,
     pub(crate) cloud_sync_interval: String,
     pub(crate) cloud_webdav_url: String,
@@ -112,6 +118,40 @@ pub(crate) struct AppSettings {
     pub(crate) edit_dialog_h: i32,
 }
 
+impl AppSettings {
+    pub(crate) fn content_font_size(&self) -> i32 {
+        if self.content_font_size == 0 { 12 } else { self.content_font_size.clamp(12, 20) }
+    }
+}
+
+#[cfg(test)]
+mod appearance_settings_tests {
+    use super::AppSettings;
+
+    #[test]
+    fn existing_profiles_keep_defaults_and_new_profiles_capture_formatting() {
+        let new = AppSettings::default();
+        assert!(new.rich_text_clipboard_enabled);
+        let old: AppSettings = serde_json::from_str("{}").unwrap();
+        assert!(!old.rich_text_clipboard_enabled);
+        assert_eq!(old.content_font_size, 0);
+        assert_eq!(old.content_font_size(), 12);
+        assert!(!old.card_view_enabled);
+        assert!(old.phrase_titles_enabled);
+        let titles_off: AppSettings = serde_json::from_str(r#"{"phrase_titles_enabled":false}"#).unwrap();
+        assert!(!titles_off.phrase_titles_enabled);
+        let titles_reopened: AppSettings = serde_json::from_slice(&serde_json::to_vec(&titles_off).unwrap()).unwrap();
+        assert!(!titles_reopened.phrase_titles_enabled);
+        let chosen: AppSettings = serde_json::from_str(r#"{"content_font_size":20,"card_view_enabled":true,"card_border_enabled":false,"card_shadow_enabled":true,"rich_text_clipboard_enabled":false}"#).unwrap();
+        let restored: AppSettings = serde_json::from_slice(&serde_json::to_vec(&chosen).unwrap()).unwrap();
+        assert_eq!(restored.content_font_size(), 20);
+        assert!(restored.card_view_enabled);
+        assert!(!restored.card_border_enabled);
+        assert!(restored.card_shadow_enabled);
+        assert!(!restored.rich_text_clipboard_enabled);
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -147,7 +187,11 @@ impl Default for AppSettings {
             image_row_height: 132,
             text_row_height: 44,
             file_row_height: 44,
-            rich_text_clipboard_enabled: false,
+            content_font_size: 0,
+            card_view_enabled: false,
+            card_border_enabled: true,
+            card_shadow_enabled: true,
+            rich_text_clipboard_enabled: true,
             quick_delete_button: true,
             context_menu_copy_enabled: false,
             move_pasted_item_to_top: false,
@@ -169,6 +213,7 @@ impl Default for AppSettings {
             wps_taskpane_enabled: false,
             grouping_enabled: true,
             group_type_filter_enabled: false,
+            phrase_titles_enabled: true,
             cloud_sync_enabled: false,
             cloud_sync_interval: "1小时".to_string(),
             cloud_webdav_url: String::new(),
@@ -377,6 +422,7 @@ pub(crate) struct AppState {
     pub(crate) scroll_fade_timer: bool,
     pub(crate) scroll_date_hint_until: Option<Instant>,
     pub(crate) search_debounce_timer: bool,
+    pub(super) search_composing: bool,
     pub(crate) hidden_reclaim_timer: bool,
     pub(crate) scroll_dragging: bool,
     pub(crate) scroll_drag_start_y: i32,
@@ -393,6 +439,12 @@ pub(crate) struct AppState {
     pub(crate) pending_paste_completion: Option<MainPasteCompletionPlan>,
     pub(crate) pending_paste_hide_main: bool,
     pub(crate) vv_popup_visible: bool,
+    pub(crate) vv_popup_session_id: u64,
+    pub(crate) vv_popup_protection_revision: Option<String>,
+    pub(crate) vv_popup_focus: HWND,
+    pub(crate) vv_popup_preview_index: Option<usize>,
+    pub(crate) vv_popup_hover_index: Option<usize>,
+    pub(crate) vv_paste_guard: Option<(u64, isize, isize)>,
     pub(crate) vv_popup_pending_target: HWND,
     pub(crate) vv_popup_pending_retries: u8,
     pub(crate) vv_popup_target: HWND,
@@ -446,6 +498,8 @@ impl DerefMut for AppState {
 }
 
 pub(super) struct VvHookState {
+    pub(super) session: crate::app_core::vv_session::VvInputSession,
+    pub(super) last_v_focus: isize,
     pub(super) main_hwnd: isize,
     pub(super) enabled: bool,
     pub(super) trigger_vk: u32,
@@ -461,6 +515,8 @@ pub(super) struct VvHookState {
 impl Default for VvHookState {
     fn default() -> Self {
         Self {
+            session: crate::app_core::vv_session::VvInputSession::default(),
+            last_v_focus: 0,
             main_hwnd: 0,
             enabled: false,
             trigger_vk: b'V' as u32,
@@ -485,6 +541,7 @@ mod payload_cache_tests {
     fn item(id: i64) -> ClipItem {
         ClipItem {
             id,
+            phrase_title: String::new(),
             kind: ClipKind::Text,
             preview: "sample".into(),
             text: None,
@@ -570,6 +627,7 @@ impl ItemPayloadCache {
         }
         let cached = ClipItem {
             id,
+            phrase_title: item.phrase_title.clone(),
             kind: item.kind,
             preview: item.preview.clone(),
             text: item.text.clone(),
@@ -698,6 +756,7 @@ pub(super) struct PageLoadResult {
     pub(super) next_cursor: Option<ItemsCursor>,
     pub(super) has_more: bool,
     pub(super) error: Option<String>,
+    pub(super) protection_revision: String,
 }
 
 pub(super) struct CloudSyncResult {
@@ -911,6 +970,7 @@ impl AppState {
             scroll_fade_timer: false,
             scroll_date_hint_until: None,
             search_debounce_timer: false,
+            search_composing: false,
             hidden_reclaim_timer: false,
             scroll_dragging: false,
             scroll_drag_start_y: 0,
@@ -927,6 +987,12 @@ impl AppState {
             pending_paste_completion: None,
             pending_paste_hide_main: false,
             vv_popup_visible: false,
+            vv_popup_session_id: 0,
+            vv_popup_protection_revision: None,
+            vv_popup_focus: null_mut(),
+            vv_popup_preview_index: None,
+            vv_popup_hover_index: None,
+            vv_paste_guard: None,
             vv_popup_pending_target: null_mut(),
             vv_popup_pending_retries: 0,
             vv_popup_target: null_mut(),
@@ -1022,6 +1088,9 @@ impl AppState {
     }
 
     pub(super) fn visible_src_idx(&self, visible_idx: usize) -> Option<usize> {
+        if self.search_results_pending() {
+            return None;
+        }
         if visible_idx < self.visible_len {
             Some(visible_idx)
         } else {
@@ -1039,6 +1108,12 @@ impl AppState {
         self.list.apply_visible_len(visible_len);
         self.clamp_scroll();
         self.maybe_request_more_for_active_tab();
+    }
+
+    pub(super) fn search_results_pending(&self) -> bool {
+        let load = self.active_load_state();
+        self.search_composing || self.search_debounce_timer || (load.loading && load.next_cursor.is_none())
+            || load.error.is_some()
     }
 
     pub(super) fn desired_query_for_tab(&self, tab: usize) -> ItemsQuery {
@@ -1075,7 +1150,7 @@ impl AppState {
     pub(super) fn ensure_tab_query_loaded(&mut self, tab: usize) {
         let desired = self.desired_query_for_tab(tab);
         let load = self.load_state_for_tab(tab);
-        if load.query.as_ref() == Some(&desired) {
+        if load.query.as_ref() == Some(&desired) && load.error.is_none() {
             return;
         }
         self.request_tab_page(tab, desired, None, true);
@@ -1097,13 +1172,8 @@ impl AppState {
             load.begin_request(query.clone(), reset)
         };
 
-        if reset {
-            self.items_for_tab_mut(tab).clear();
-            if tab == self.tab_index {
-                self.list.apply_visible_len(0);
-                self.clamp_scroll();
-            }
-        }
+        // Keep the last painted page while searching; interactions are gated by
+        // search_results_pending until the new page is atomically applied.
 
         spawn_items_page_load(
             self.hwnd,
@@ -1117,6 +1187,9 @@ impl AppState {
     }
 
     pub(super) fn maybe_request_more_for_active_tab(&mut self) {
+        if self.search_debounce_timer {
+            return;
+        }
         let tab = self.tab_index;
         let (query, cursor, loading, has_more) = {
             let load = self.load_state_for_tab(tab);
@@ -1195,6 +1268,9 @@ impl AppState {
     }
 
     pub(super) fn selected_source_indices(&self) -> Vec<usize> {
+        if self.search_results_pending() {
+            return Vec::new();
+        }
         self.list.selected_source_indices()
     }
 }

@@ -2728,6 +2728,7 @@ mod tests {
     #[test]
     fn native_clip_item_envelope_supports_text_and_image_but_keeps_files_out_of_inline_payload() {
         let text = crate::app_core::ClipItem {
+            phrase_title: String::new(),
             id: 7,
             kind: crate::app_core::ClipKind::Text,
             preview: "hello".to_string(),

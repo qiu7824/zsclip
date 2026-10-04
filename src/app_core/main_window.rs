@@ -898,6 +898,7 @@ pub(crate) struct ClipItem {
     pub(crate) id: i64,
     pub(crate) kind: ClipKind,
     pub(crate) preview: String,
+    pub(crate) phrase_title: String,
     pub(crate) text: Option<String>,
     pub(crate) rich_text_html: Option<String>,
     pub(crate) source_app: String,
@@ -909,6 +910,31 @@ pub(crate) struct ClipItem {
     pub(crate) pinned: bool,
     pub(crate) group_id: i64,
     pub(crate) created_at: String,
+}
+
+impl ClipItem {
+    pub(crate) fn display_title(&self) -> &str {
+        self.display_title_with_preference(true)
+    }
+
+    pub(crate) fn display_title_with_preference(&self, enabled: bool) -> &str {
+        if enabled && self.kind == ClipKind::Phrase && !self.phrase_title.trim().is_empty() {
+            &self.phrase_title
+        } else {
+            &self.preview
+        }
+    }
+}
+
+pub(crate) fn normalize_phrase_title(title: &str) -> Result<String, &'static str> {
+    let title = title.trim();
+    if title.chars().count() > 60 {
+        return Err("短语标题最多 60 个字符");
+    }
+    if title.chars().any(char::is_control) {
+        return Err("短语标题不能包含换行或控制字符");
+    }
+    Ok(title.to_string())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1075,6 +1101,19 @@ fn collect_prefixed_value(tokens: &[String], start: usize, initial: &str) -> (St
     (parts.join(" ").trim().to_string(), index)
 }
 
+fn prefixed_filter_value(tokens: &[String], start: usize, initial: &str) -> (String, usize) {
+    // Quoted spaces have already been kept inside one token by the tokenizer.
+    // An application/date filter must not consume following ordinary keywords.
+    if !initial.trim().is_empty() {
+        return (initial.trim().to_string(), start + 1);
+    }
+    match tokens.get(start + 1).map(|token| token.trim()) {
+        Some(value) if !value.is_empty() && !is_prefixed_search_token(value) =>
+            (value.to_string(), start + 2),
+        _ => (String::new(), start + 1),
+    }
+}
+
 pub(crate) fn parse_search_query(
     query: &str,
 ) -> (
@@ -1114,7 +1153,7 @@ pub(crate) fn parse_search_query_with_context(
                 || prefixed_search_value(token, "date:", &["时间:", "时间：", "日期:", "日期："]),
             )
         {
-            let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
+            let (value, next_index) = prefixed_filter_value(&tokens, index, initial);
             if let Some(filter) = parse_time_filter(&value, date_context) {
                 time_filter = Some(filter);
                 index = next_index;
@@ -1123,7 +1162,7 @@ pub(crate) fn parse_search_query_with_context(
         }
 
         if let Some(initial) = prefixed_search_value(token, "app:", &["应用:", "应用："]) {
-            let (value, next_index) = collect_prefixed_value(&tokens, index, initial);
+            let (value, next_index) = prefixed_filter_value(&tokens, index, initial);
             if !value.trim().is_empty() {
                 app_filter = Some(value.trim().to_lowercase());
                 index = next_index;
@@ -2004,6 +2043,8 @@ pub(crate) struct MainVvPopupLayout {
     pub(crate) width: i32,
     pub(crate) header_h: i32,
     pub(crate) row_h: i32,
+    pub(crate) content_size: i32,
+    dpi: u32,
 }
 
 impl Default for MainVvPopupLayout {
@@ -2012,13 +2053,21 @@ impl Default for MainVvPopupLayout {
             width: 360,
             header_h: 58,
             row_h: 30,
+            content_size: 12,
+            dpi: 96,
         }
     }
 }
 
 impl MainVvPopupLayout {
     fn scale_value(self, value: i32) -> i32 {
-        ((value * self.row_h.max(1)) + 15) / 30
+        ((value * self.dpi.max(96) as i32) + 48) / 96
+    }
+
+    pub(crate) fn with_content_font_size(mut self, size: i32) -> Self {
+        self.content_size = size.clamp(12,20);
+        self.row_h = 30.max(self.content_size * 2 + 6);
+        self
     }
 
     pub(crate) fn scaled(self, dpi: u32) -> Self {
@@ -2030,6 +2079,8 @@ impl MainVvPopupLayout {
             width: scale(self.width, dpi),
             header_h: scale(self.header_h, dpi),
             row_h: scale(self.row_h, dpi),
+            content_size: scale(self.content_size, dpi),
+            dpi,
         }
     }
 
@@ -2206,7 +2257,7 @@ impl MainVvPopupLayout {
                         row_rect.bottom,
                     ),
                     color: MainThemeRole::Text,
-                    size: s(12),
+                    size: self.content_size,
                     bold: false,
                     horizontal_align: HorizontalAlign::Start,
                     font: MainFontRole::UiText,
@@ -2337,6 +2388,12 @@ impl TabLoadState {
 
     pub(crate) fn accepts_result(&self, request_seq: u64, query: &ItemsQuery) -> bool {
         self.request_seq == request_seq && self.query.as_ref() == Some(query)
+    }
+
+    pub(crate) fn invalidate_rejected_result(&mut self,request_seq:u64,query:&ItemsQuery)->bool {
+        if !self.accepts_result(request_seq,query) {return false;}
+        self.invalidate();
+        true
     }
 
     pub(crate) fn finish_request(
@@ -2860,6 +2917,7 @@ pub(crate) struct MainUiLayout {
     pub(crate) list_pad: i32,
     pub(crate) row_h: i32,
     pub(crate) row_offsets: Option<std::sync::Arc<[i32]>>,
+    pub(crate) content_font_size: i32,
     pub(crate) pin_button_visible: bool,
     pub(crate) btn_w: i32,
     pub(crate) btn_gap: i32,
@@ -2885,6 +2943,7 @@ impl MainUiLayout {
             list_pad: 4,
             row_h: 44,
             row_offsets: None,
+            content_font_size: 0,
             pin_button_visible: false,
             btn_w: 32,
             btn_gap: 2,
@@ -2917,6 +2976,7 @@ impl MainUiLayout {
                 .row_offsets
                 .map(|v| v.iter().map(|x| scale(*x, dpi)).collect()),
             pin_button_visible: self.pin_button_visible,
+            content_font_size: self.content_font_size,
             btn_w: scale(self.btn_w, dpi),
             btn_gap: scale(self.btn_gap, dpi),
             search_left: scale(self.search_left, dpi),
@@ -2985,7 +3045,16 @@ impl MainUiLayout {
     }
 
     pub(crate) fn row_text_size(&self) -> i32 {
-        ((self.row_h * 12) / 44).clamp(12, 16)
+        if self.content_font_size > 0 {
+            self.content_font_size.clamp(12, 20)
+        } else {
+            ((self.row_h * 12) / 44).clamp(12, 16)
+        }
+    }
+
+    pub(crate) fn with_content_font_size(mut self, size: i32) -> Self {
+        self.content_font_size = if size == 0 { 0 } else { size.clamp(12, 20) };
+        self
     }
 
     pub(crate) fn row_muted_text_size(&self) -> i32 {
@@ -4126,6 +4195,7 @@ mod tests {
             list_pad: 10,
             row_h: 20,
             row_offsets: None,
+            content_font_size: 0,
             pin_button_visible: false,
             btn_w: 32,
             btn_gap: 4,
@@ -4152,6 +4222,18 @@ mod tests {
             assert!(layout.row_offset(index) <= offset);
             assert!(layout.row_offset(index + 1) > offset);
         }
+    }
+
+    #[test]
+    fn explicit_content_font_is_logical_and_default_keeps_existing_dpi_size() {
+        for dpi in [96, 120, 144, 192] {
+            let original = MainUiLayout::zsclip().scaled(dpi);
+            assert_eq!(original.clone().with_content_font_size(0).row_text_size(), original.row_text_size());
+            let custom = original.with_content_font_size(20);
+            assert_eq!(custom.row_text_size(), 20);
+            assert_eq!(custom.row_muted_text_size(), 19);
+        }
+        assert_eq!(MainUiLayout::zsclip().with_content_font_size(999).row_text_size(), 20);
     }
 
     #[test]
@@ -5070,6 +5152,7 @@ mod tests {
 
     fn test_clip_item(kind: ClipKind, preview: &str) -> ClipItem {
         ClipItem {
+            phrase_title: String::new(),
             id: 1,
             kind,
             preview: preview.to_string(),
@@ -5546,6 +5629,20 @@ mod tests {
         let widened = layout.with_width(900);
         assert_eq!(widened.group_rect(), UiRect::new(600, 20, 872, 68));
         assert_eq!(widened.row_rect(0), UiRect::new(24, 136, 876, 192));
+    }
+
+    #[test]
+    fn vv_content_font_grows_rows_without_rescaling_the_header_twice() {
+        for dpi in [96,120,144,192] {
+            let normal=MainVvPopupLayout::default().scaled(dpi);
+            let large=MainVvPopupLayout::default().with_content_font_size(20).scaled(dpi);
+            assert_eq!(normal.header_h,large.header_h);
+            assert_eq!(normal.width,large.width);
+            assert!(large.row_h>=large.content_size*2);
+            let rect=large.row_rect(8);
+            assert!(rect.bottom<large.height(9));
+            assert_eq!(large.hit_test(rect.left+1,rect.top+1,9),MainVvPopupHit::Row(8));
+        }
     }
 
     #[test]
@@ -6112,6 +6209,24 @@ mod tests {
     }
 
     #[test]
+    fn protection_rejection_invalidates_the_background_tab_without_disturbing_the_active_tab() {
+        let query=ItemsQuery {category:0,group_id:0,search_text:"old".into(),kind_filter:ClipKindFilter::All,near_query:None};
+        let mut tabs=[TabLoadState::default(),TabLoadState::default()];
+        let old=tabs[0].begin_request(query.clone(),true);
+        let active=tabs[1].begin_request(query.clone(),true);
+        tabs[1].finish_request(None,None,false);
+        assert!(tabs[0].invalidate_rejected_result(old,&query));
+        assert!(!tabs[0].loading);
+        assert!(tabs[0].query.is_none());
+        assert_eq!(tabs[1].request_seq,active);
+        assert!(tabs[1].accepts_result(active,&query));
+        let new=tabs[0].begin_request(query.clone(),true);
+        assert!(!tabs[0].invalidate_rejected_result(old,&query));
+        assert!(tabs[0].loading);
+        assert!(tabs[0].accepts_result(new,&query));
+    }
+
+    #[test]
     fn clip_item_models_history_data_without_platform_handles() {
         let group = ClipGroup {
             id: 3,
@@ -6119,6 +6234,7 @@ mod tests {
             name: "Work".to_string(),
         };
         let image = ClipItem {
+            phrase_title: String::new(),
             id: 9,
             kind: ClipKind::Image,
             preview: "图片 120 x 80".to_string(),
@@ -6180,6 +6296,21 @@ mod tests {
         );
         assert_eq!(app.as_deref(), Some("wechat"));
         assert!(today.is_some());
+    }
+
+    #[test]
+    fn application_and_date_filters_do_not_absorb_following_search_terms() {
+        let context = SearchDateContext::from_date(2026, 10, 5);
+        for query in ["应用:syntheticeditor 中文", "app:syntheticeditor 中文", "应用: syntheticeditor 中文"] {
+            let (terms, _, app, _) = parse_search_query_with_context(query, context);
+            assert_eq!(terms, ["中文"]);
+            assert_eq!(app.as_deref(), Some("syntheticeditor"));
+        }
+        let (terms, time, app, _) = parse_search_query_with_context(
+            "日期:2026-10-05 app:\"Visual Studio Code\" 合同", context);
+        assert_eq!(terms, ["合同"]);
+        assert_eq!(time, Some(SearchTimeFilter::ExactDay(context.current_day)));
+        assert_eq!(app.as_deref(), Some("visual studio code"));
     }
 
     #[test]

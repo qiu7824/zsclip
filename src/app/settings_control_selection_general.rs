@@ -6,6 +6,14 @@ pub(super) unsafe fn handle_settings_general_selection(
     index: usize,
 ) {
     match control_id {
+        IDC_SET_CONTENT_FONT_SIZE => {
+            if let Some(value) = [0, 12, 14, 16, 18, 20].get(index).copied() {
+                st.draft.content_font_size = value;
+                settings_set_text(st.cb_content_font_size, &content_font_size_label(value));
+                repaint_settings_control(st.cb_content_font_size);
+                repaint_settings_window(platform_window::root_ancestor(st.cb_content_font_size), true);
+            }
+        }
         IDC_SET_IMAGE_ROW_HEIGHT | IDC_SET_TEXT_ROW_HEIGHT | IDC_SET_FILE_ROW_HEIGHT => {
             let slot = (control_id - IDC_SET_IMAGE_ROW_HEIGHT) as usize;
             let current = [
@@ -46,7 +54,7 @@ pub(super) unsafe fn handle_settings_general_selection(
                 st.draft.paste_success_sound_kind = (*key).to_string();
                 settings_set_text(st.cb_paste_sound, &paste_sound_display(key));
                 repaint_settings_control(st.cb_paste_sound);
-                settings_sync_page_state(st, SettingsPage::General.index());
+                settings_sync_page_state(st, SettingsPage::Clipboard.index());
             }
         }
         _ => {}

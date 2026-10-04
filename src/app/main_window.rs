@@ -203,6 +203,7 @@ pub(super) unsafe fn handle_main_close_requested(hwnd: HWND) {
 }
 
 pub(super) unsafe fn handle_main_lifecycle_event(hwnd: HWND, event: LifecycleEvent) {
+    if matches!(event,LifecycleEvent::Suspend) {clear_main_hover_state(hwnd);}
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
         let state = &mut *ptr;
@@ -227,6 +228,7 @@ pub(super) unsafe fn handle_main_lifecycle_event(hwnd: HWND, event: LifecycleEve
 }
 
 unsafe fn handle_main_destroy(hwnd: HWND, state: &mut AppState) {
+    cancel_hover_request(hwnd);
     cancel_main_scroll_drag(hwnd, state);
     clear_page_load_results_for_hwnd(hwnd);
     clear_cloud_sync_results_for_hwnd(hwnd);

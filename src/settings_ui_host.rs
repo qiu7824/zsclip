@@ -622,6 +622,7 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         IDC_SET_CLOSE => Some(SettingsControlRole::Close),
         IDC_SET_BTN_OPENCFG => Some(SettingsControlRole::OpenConfig),
         IDC_SET_MAX
+        | crate::win_system_params::IDC_SET_CONTENT_FONT_SIZE
         | IDC_SET_IMAGE_ROW_HEIGHT
         | IDC_SET_TEXT_ROW_HEIGHT
         | IDC_SET_FILE_ROW_HEIGHT
@@ -644,6 +645,11 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_VV_SOURCE
         | IDC_SET_VV_GROUP => Some(SettingsControlRole::Dropdown),
         IDC_SET_AUTOSTART
+        | crate::win_system_params::IDC_SET_PHRASE_TITLES
+        | crate::win_system_params::IDC_SET_CAPTURE_ENABLE
+        | crate::win_system_params::IDC_SET_CARD_VIEW
+        | crate::win_system_params::IDC_SET_CARD_BORDER
+        | crate::win_system_params::IDC_SET_CARD_SHADOW
         | IDC_SET_SILENTSTART
         | IDC_SET_TRAYICON
         | IDC_SET_SHOW_PIN_BUTTON
@@ -812,12 +818,14 @@ pub(crate) fn settings_window_host_event_from_message(
 }
 
 pub(crate) fn settings_page_to_sync_after_toggle(control_id: isize) -> Option<usize> {
-    if control_id == IDC_SET_COPY_SOUND_ENABLE
+    if control_id == crate::win_system_params::IDC_SET_CARD_VIEW {
+        Some(SettingsPage::Appearance.index())
+    } else if control_id == IDC_SET_COPY_SOUND_ENABLE
         || control_id == IDC_SET_PASTE_SOUND_ENABLE
         || control_id == IDC_SET_SKIP_WINDOW_ENABLE
         || control_id == IDC_SET_DEDUPE_FILTER
     {
-        Some(SettingsPage::General.index())
+        Some(SettingsPage::Clipboard.index())
     } else if control_id == IDC_SET_MOUSE_SIDE_ENABLE || control_id == IDC_SET_PLAIN_HK_ENABLE {
         Some(SettingsPage::Hotkey.index())
     } else if control_id == IDC_SET_CLOUD_ENABLE || control_id == IDC_SET_LAN_ENABLE || control_id==crate::win_system_params::IDC_SET_QQ_CLOUD_MENU {
@@ -2370,11 +2378,11 @@ mod tests {
         );
         assert_eq!(
             settings_page_to_sync_after_toggle(IDC_SET_COPY_SOUND_ENABLE),
-            Some(SettingsPage::General.index())
+            Some(SettingsPage::Clipboard.index())
         );
         assert_eq!(
             settings_page_to_sync_after_toggle(IDC_SET_PASTE_SOUND_ENABLE),
-            Some(SettingsPage::General.index())
+            Some(SettingsPage::Clipboard.index())
         );
         assert_eq!(
             settings_page_to_sync_after_toggle(IDC_SET_LAN_ENABLE),

@@ -1,6 +1,6 @@
 use super::prelude::*;
 
-const SEARCH_DEBOUNCE_MS: u32 = 280;
+const SEARCH_DEBOUNCE_MS: u32 = 150;
 
 pub(crate) unsafe fn layout_children(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
@@ -19,7 +19,8 @@ pub(super) unsafe fn refresh_search_font(state: &mut AppState) {
     let request = NativeMainSearchStyleRequest {
         handle: state.search_hwnd,
         font_family: ui_text_font_family().to_string(),
-        font_px: platform_dpi::scale_for_window(state.hwnd, 14),
+        font_px: platform_dpi::scale_for_window(state.hwnd,
+            if state.settings.content_font_size == 0 { 14 } else { state.settings.content_font_size() }),
         previous_resource: (!old_font.is_null()).then_some(old_font),
     };
     match WindowsMainSearchControlHost::new().apply_search_style(request) {
@@ -40,6 +41,7 @@ pub(crate) unsafe fn reset_search_ui_state(state: &mut AppState) {
         stop_search_debounce_timer(state.hwnd, state);
     }
     state.list.apply_search_reset_plan(plan);
+    state.search_composing = false;
     WindowsMainSearchControlHost::new().set_search_text(state.search_hwnd, "");
     state.refilter();
     if !state.hwnd.is_null() {
@@ -89,6 +91,7 @@ pub(super) unsafe fn apply_search_visibility_plan(
     }
     state.search_on = plan.search_on;
     if plan.clear_search_text {
+        state.search_composing = false;
         state.search_text.clear();
         WindowsMainSearchControlHost::new().set_search_text(state.search_hwnd, "");
     }
@@ -132,16 +135,49 @@ pub(super) unsafe fn handle_search_control_command(
         EN_CHANGE_CODE => {
             let search_text = WindowsMainSearchControlHost::new().search_text(state.search_hwnd);
             state.search_text = search_text;
-            start_flagged_timer(
+            // Invalidate immediately, not after debounce: an older result must
+            // never become selectable while the edit already shows a new query.
+            let tab = state.tab_index;
+            state.invalidate_tab_query(tab, false);
+            mark_latest_page_request(hwnd as isize, tab, state.active_load_state().request_seq);
+            state.clear_selection();
+            hide_hover_preview();
+            if !state.search_composing { start_flagged_timer(
                 hwnd,
                 ID_TIMER_SEARCH_DEBOUNCE,
                 SEARCH_DEBOUNCE_MS,
                 &mut state.search_debounce_timer,
-            );
+            ); }
+            repaint_main_window(hwnd, false);
             true
         }
         _ => false,
     }
+}
+
+pub(super) unsafe fn route_search_input_message(message: &MSG) -> bool {
+    let root = platform_window::root_ancestor(message.hwnd);
+    if !window_host_hwnds().contains(&root) { return false; }
+    let state = get_state_ptr(root);
+    if state.is_null() || (*state).search_hwnd != message.hwnd { return false; }
+    let state = &mut *state;
+    match message.message {
+        WM_IME_STARTCOMPOSITION => {
+            state.search_composing = true;
+            stop_search_debounce_timer(root, state);
+        }
+        WM_IME_ENDCOMPOSITION => {
+            state.search_composing = false;
+            start_flagged_timer(root, ID_TIMER_SEARCH_DEBOUNCE, SEARCH_DEBOUNCE_MS, &mut state.search_debounce_timer);
+        }
+        WM_KEYDOWN if message.wParam == 0x0D && !state.search_composing => {
+            stop_search_debounce_timer(root, state);
+            apply_search_filter(root, state);
+            return true;
+        }
+        _ => {}
+    }
+    false
 }
 
 pub(super) unsafe fn refresh_search_theme_resources(state: &mut AppState) {

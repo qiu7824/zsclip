@@ -6,6 +6,15 @@ pub(super) unsafe fn open_settings_general_dropdown(
     control_id: isize,
 ) -> bool {
     match control_id {
+        IDC_SET_CONTENT_FONT_SIZE => {
+            let values = [0, 12, 14, 16, 18, 20];
+            let labels = values.iter().map(|v| content_font_size_label(*v)).collect::<Vec<_>>();
+            let refs = labels.iter().map(String::as_str).collect::<Vec<_>>();
+            let selected = values.iter().position(|value| *value == st.draft.content_font_size).unwrap_or(0);
+            let rc = settings_control_screen_rect_or_empty(st.cb_content_font_size);
+            st.dropdown_popup = present_settings_dropdown_popup(hwnd, control_id, &rc, &refs, selected, 180);
+            true
+        }
         IDC_SET_IMAGE_ROW_HEIGHT | IDC_SET_TEXT_ROW_HEIGHT | IDC_SET_FILE_ROW_HEIGHT => {
             let slot = (control_id - IDC_SET_IMAGE_ROW_HEIGHT) as usize;
             let values = row_height_choices(

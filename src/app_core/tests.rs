@@ -603,17 +603,18 @@ fn user_feature_platform_statuses_cover_named_clipboard_features() {
     assert_eq!(edit.ui_ingress_names, vec!["menu", "dialog"]);
     assert_eq!(
         edit.support_status_name,
-        ZsuiNativeFeatureSupportStatus::TargetSmokeVerified.status_name()
+        ZsuiNativeFeatureSupportStatus::CodeLevelReadyPendingTargetSmoke.status_name()
     );
     assert!(edit.code_level_ready);
     assert_eq!(
         edit.host_maturity_name,
-        ZsuiUserFeatureHostMaturity::TargetSmokeVerified.maturity_name()
+        ZsuiUserFeatureHostMaturity::HostUsablePendingTargetSmoke.maturity_name()
     );
-    assert_eq!(edit.host_maturity_percent, 100);
+    assert_eq!(edit.host_maturity_percent, 80);
     assert!(edit.host_usable);
-    assert!(!edit.target_smoke_required);
-    assert!(edit.system_complete);
+    assert!(edit.target_smoke_required);
+    assert!(!edit.target_smoke_verified);
+    assert!(!edit.system_complete);
 
     let linux_webdav = statuses
         .iter()
@@ -741,8 +742,9 @@ fn user_feature_status_queries_answer_feature_progress_directly() {
     );
     assert_eq!(mac_edit.ui_ingress_names, vec!["menu", "dialog"]);
     assert!(mac_edit.code_level_ready);
-    assert!(!mac_edit.target_smoke_required);
-    assert!(mac_edit.system_complete);
+    assert!(mac_edit.target_smoke_required);
+    assert!(!mac_edit.target_smoke_verified);
+    assert!(!mac_edit.system_complete);
 
     let linux_grouping = zsui_user_feature_status_for(NativeUiPlatform::Linux, "grouping")
         .expect("Linux grouping status");
@@ -821,12 +823,12 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(macos.code_level_ready_count, 17);
     assert_eq!(macos.host_usable_count, 17);
     assert_eq!(macos.planned_not_implemented_count, 0);
-    assert_eq!(macos.target_smoke_required_count, 10);
-    assert_eq!(macos.system_complete_count, 7);
+    assert_eq!(macos.target_smoke_required_count, 17);
+    assert_eq!(macos.system_complete_count, 0);
     assert_eq!(macos.code_level_ready_percent, 100);
     assert_eq!(macos.host_usable_percent, 100);
-    assert_eq!(macos.system_complete_percent, 41);
-    assert_eq!(macos.next_user_feature_name, Some("grouping"));
+    assert_eq!(macos.system_complete_percent, 0);
+    assert_eq!(macos.next_user_feature_name, Some("right_click_edit"));
     assert!(macos.next_missing_requirement.is_some());
 
     let linux = summaries
@@ -837,12 +839,12 @@ fn user_feature_completion_summaries_report_platform_progress() {
     assert_eq!(linux.code_level_ready_count, 17);
     assert_eq!(linux.host_usable_count, 17);
     assert_eq!(linux.planned_not_implemented_count, 0);
-    assert_eq!(linux.target_smoke_required_count, 10);
-    assert_eq!(linux.system_complete_count, 7);
+    assert_eq!(linux.target_smoke_required_count, 17);
+    assert_eq!(linux.system_complete_count, 0);
     assert_eq!(linux.code_level_ready_percent, 100);
     assert_eq!(linux.host_usable_percent, 100);
-    assert_eq!(linux.system_complete_percent, 41);
-    assert_eq!(linux.next_user_feature_name, Some("grouping"));
+    assert_eq!(linux.system_complete_percent, 0);
+    assert_eq!(linux.next_user_feature_name, Some("right_click_edit"));
     assert!(linux.next_missing_requirement.is_some());
 
     let manifest = zsui_framework_manifest();
@@ -868,7 +870,7 @@ fn user_feature_completion_summary_query_answers_platform_progress_directly() {
     assert_eq!(linux.code_level_ready_count, 17);
     assert_eq!(linux.host_usable_count, 17);
     assert_eq!(linux.planned_not_implemented_count, 0);
-    assert_eq!(linux.next_user_feature_name, Some("grouping"));
+    assert_eq!(linux.next_user_feature_name, Some("right_click_edit"));
     assert!(linux.next_missing_requirement.is_some());
 }
 
@@ -952,8 +954,8 @@ fn user_feature_cross_platform_summaries_answer_feature_progress_directly() {
 
     let vv =
         zsui_user_feature_cross_platform_summary_for("vv_mode").expect("VV cross-platform summary");
-    assert_eq!(vv.target_smoke_required_platform_names, vec!["windows"]);
-    assert_eq!(vv.system_complete_platform_names, vec!["macos", "linux"]);
+    assert_eq!(vv.target_smoke_required_platform_names, vec!["windows", "macos", "linux"]);
+    assert!(vv.system_complete_platform_names.is_empty());
 
     assert!(zsui_user_feature_cross_platform_summary_for("unknown_feature").is_none());
 
@@ -971,30 +973,30 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     assert_eq!(progress.code_level_ready_slots, 51);
     assert_eq!(progress.host_usable_slots, 51);
     assert_eq!(progress.planned_not_implemented_slots, 0);
-    assert_eq!(progress.target_smoke_required_slots, 37);
-    assert_eq!(progress.system_complete_slots, 14);
+    assert_eq!(progress.target_smoke_required_slots, 51);
+    assert_eq!(progress.system_complete_slots, 0);
     assert_eq!(progress.non_windows_host_slots, 34);
     assert_eq!(progress.non_windows_host_code_level_ready_slots, 34);
     assert_eq!(progress.non_windows_host_usable_slots, 34);
     assert_eq!(progress.non_windows_host_code_gap_slots, 0);
-    assert_eq!(progress.non_windows_host_system_complete_slots, 14);
+    assert_eq!(progress.non_windows_host_system_complete_slots, 0);
     assert_eq!(progress.code_level_ready_percent, 100);
     assert_eq!(progress.host_usable_percent, 100);
     assert_eq!(progress.non_windows_host_usable_percent, 100);
-    assert_eq!(progress.system_complete_percent, 27);
+    assert_eq!(progress.system_complete_percent, 0);
     assert_eq!(progress.next_platform_name, Some("macos"));
-    assert_eq!(progress.next_user_feature_name, Some("grouping"));
-    assert_eq!(progress.next_display_name, Some("分组功能"));
+    assert_eq!(progress.next_user_feature_name, Some("right_click_edit"));
+    assert_eq!(progress.next_display_name, Some("右键编辑"));
     assert_eq!(
         progress.next_ui_ingress_names,
-        vec!["menu", "settings_page"]
+        vec!["menu", "dialog"]
     );
     assert_eq!(
         progress.next_native_component_family_names,
         vec![
             "row_action_button",
-            "main_tool_button",
-            "settings_group_button"
+            "edit_text_button",
+            "dialog_button"
         ]
     );
     assert!(progress
@@ -1002,7 +1004,7 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
         .contains(&"NativeButtonSpec<NativeHostRowAction>"));
     assert!(progress
         .next_typed_component_spec_names
-        .contains(&"NativeButtonSpec<NativeHostSettingsGroupAction>"));
+        .contains(&"NativeButtonSpec<NativeHostEditTextAction>"));
     assert!(progress
         .next_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_host_actions.rs"));
@@ -1015,18 +1017,18 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
     );
     assert!(progress.next_missing_requirement.is_some());
     assert_eq!(progress.next_host_platform_name, Some("macos"));
-    assert_eq!(progress.next_host_user_feature_name, Some("grouping"));
-    assert_eq!(progress.next_host_display_name, Some("分组功能"));
+    assert_eq!(progress.next_host_user_feature_name, Some("right_click_edit"));
+    assert_eq!(progress.next_host_display_name, Some("右键编辑"));
     assert_eq!(
         progress.next_host_ui_ingress_names,
-        vec!["menu", "settings_page"]
+        vec!["menu", "dialog"]
     );
     assert_eq!(
         progress.next_host_native_component_family_names,
         vec![
             "row_action_button",
-            "main_tool_button",
-            "settings_group_button"
+            "edit_text_button",
+            "dialog_button"
         ]
     );
     assert!(progress
@@ -1034,7 +1036,7 @@ fn user_feature_release_progress_answers_overall_project_progress_directly() {
         .contains(&"NativeButtonSpec<NativeHostRowAction>"));
     assert!(progress
         .next_host_typed_component_spec_names
-        .contains(&"NativeButtonSpec<NativeHostSettingsGroupAction>"));
+        .contains(&"NativeButtonSpec<NativeHostEditTextAction>"));
     assert!(progress
         .next_host_preferred_app_core_edit_modules
         .contains(&"src/app_core/native_host_actions.rs"));
@@ -1139,7 +1141,7 @@ fn user_feature_progress_report_combines_cross_platform_summary_and_platform_row
 #[test]
 fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
     let work_items = zsui_user_feature_work_items();
-    assert_eq!(work_items.len(), 37);
+    assert_eq!(work_items.len(), 51);
     assert!(work_items.iter().all(|item| {
         !item.ui_ingress_names.is_empty()
             && !item.native_component_family_names.is_empty()
@@ -1253,7 +1255,7 @@ fn user_feature_work_items_point_ai_to_app_core_and_platform_hosts() {
 #[test]
 fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_queue() {
     let work_items = zsui_native_target_smoke_work_items();
-    assert_eq!(work_items.len(), 37);
+    assert_eq!(work_items.len(), 51);
     assert!(work_items.iter().all(|item| {
         item.code_level_ready
             && item.target_smoke_required
@@ -1275,11 +1277,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Macos).len(),
-        10
+        17
     );
     assert_eq!(
         zsui_native_target_smoke_work_items_for_platform(NativeUiPlatform::Linux).len(),
-        10
+        17
     );
     assert!(
         zsui_native_target_smoke_work_item_for(NativeUiPlatform::Linux, "window_system").is_some()
@@ -1350,7 +1352,7 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
     assert_eq!(
         zsui_next_native_target_smoke_work_item_for_platform(NativeUiPlatform::Linux)
             .map(|item| item.user_feature_name),
-        Some("grouping")
+        Some("right_click_edit")
     );
 
     let macos_batch = zsui_native_target_smoke_batch_for_platform(NativeUiPlatform::Macos);
@@ -1365,11 +1367,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .map(|item| item.user_feature_name)
             .collect::<Vec<_>>(),
         vec![
-            "grouping",
-            "search",
-            "settings_pages",
-            "window_system",
-            "sync_webdav"
+            "right_click_edit",
+            "right_click_copy",
+            "right_click_paste",
+            "right_click_delete",
+            "right_click_pin"
         ]
     );
 
@@ -1385,11 +1387,11 @@ fn native_target_smoke_work_items_turn_platform_progress_into_a_verification_que
             .map(|item| item.user_feature_name)
             .collect::<Vec<_>>(),
         vec![
-            "grouping",
-            "search",
-            "settings_pages",
-            "window_system",
-            "sync_webdav"
+            "right_click_edit",
+            "right_click_copy",
+            "right_click_paste",
+            "right_click_delete",
+            "right_click_pin"
         ]
     );
     assert_eq!(
@@ -1429,9 +1431,9 @@ fn cargo_features_expose_optional_native_app_modules() {
     let prelude_rs = std::fs::read_to_string("src/app/prelude.rs").expect("prelude.rs source");
     let native_component_protocol_rs =
         std::fs::read_to_string("src/app_core/native_component_protocol.rs")
-            .expect("native component protocol source");
+            .expect("native component protocol source").replace("\r\n", "\n");
     let native_host_actions_rs = std::fs::read_to_string("src/app_core/native_host_actions.rs")
-        .expect("native host actions source");
+        .expect("native host actions source").replace("\r\n", "\n");
     assert!(main_rs.contains("#[cfg(all(target_os = \"windows\", feature = \"mail-merge\"))]"));
     assert!(main_rs.contains("#[cfg(all(target_os = \"windows\", feature = \"sticker\"))]"));
     assert!(prelude_rs.contains("#[cfg(feature = \"mail-merge\")]"));
@@ -1443,8 +1445,10 @@ fn cargo_features_expose_optional_native_app_modules() {
     assert!(native_component_protocol_rs.contains(
         "#[cfg(not(feature = \"vv-paste\"))]\nconst fn native_host_dynamic_action_family_names"
     ));
-    assert!(native_host_actions_rs
-        .contains("#[cfg(feature = \"vv-paste\")]\npub(crate) struct NativeHostVvSelectAction"));
+    let vv_declaration=native_host_actions_rs.find("pub(crate) struct NativeHostVvSelectAction")
+        .expect("VV selection action declaration");
+    let vv_attributes=native_host_actions_rs[..vv_declaration].rsplit("\n\n").next().unwrap();
+    assert!(vv_attributes.lines().any(|line| line.trim()=="#[cfg(feature = \"vv-paste\")]") );
     assert!(native_host_actions_rs.contains("#[cfg(feature = \"lan-sync\")]\n    ToggleLanSync"));
     assert!(
         native_host_actions_rs.contains("#[cfg(feature = \"cloud-sync\")]\n    ToggleCloudSync")
@@ -1452,6 +1456,25 @@ fn cargo_features_expose_optional_native_app_modules() {
     assert!(native_host_actions_rs.contains(
         "#[cfg(any(feature = \"cloud-sync\", feature = \"lan-sync\"))]\n    OpenSyncModeDropdown"
     ));
+}
+
+fn native_host_consumes_protocol_builder(source:&str,builder:&str)->bool {
+    if source.contains(builder) {return true;}
+    // Native window chrome replaces the original demonstration button strip;
+    // require its shared action boundary instead of the retired widget factory.
+    match builder {
+        "native_host_main_action_button_specs" => source.contains("NativeHostUiAction")
+            && (source.contains("perform_native_host_action") || source.contains("dispatch_gtk_host_action"))
+            && source.contains("native_host_search_input_specs")
+            && source.contains("present_settings_window"),
+        "native_host_settings_control_button_specs" => source.contains("native_host_settings_toggle_specs()")
+            && source.contains("native_host_settings_dropdown_specs()")
+            && source.contains("settings_control_action"),
+        "native_host_row_action_button_specs" => source.contains("native_host_full_row_popup_menu_entries_for_groups(")
+            && source.contains("dispatch_gtk_menu_command_id")
+            && source.contains("menu_id == menu_ids::ROW_GROUP_REMOVE"),
+        _=>false,
+    }
 }
 
 #[test]
@@ -1530,7 +1553,7 @@ fn native_ui_protocol_host_statuses_track_three_platform_source_coverage() {
             .chain(status.dynamic_protocol_builder_names.iter())
         {
             assert!(
-                source.contains(builder_name),
+                native_host_consumes_protocol_builder(&source, builder_name),
                 "{} must consume {} for {}",
                 status.host_module_path,
                 builder_name,
@@ -1560,7 +1583,9 @@ fn native_ui_protocol_host_statuses_track_three_platform_source_coverage() {
     assert!(!windows_popup_source.contains("native_host_row_action_component_specs"));
     assert!(!windows_popup_source.contains("NativeComponentAction::Row(action)"));
     assert!(windows_popup_source.contains("native_host_full_row_popup_menu_entries_for_groups"));
-    assert!(windows_popup_source.contains("native_host_group_filter_popup_menu_entries_for_groups"));
+    assert!(windows_popup_source.contains("main_group_filter_menu_plan("));
+    assert!(windows_popup_source.contains("main_group_filter_popup_entries(&plan,"));
+    assert!(windows_popup_source.contains("clip_kind_filter_options_for_tab(tab_index)"));
     assert!(windows_popup_source.contains("localize_group_filter_entry"));
     let windows_search_source = std::fs::read_to_string(root.join("src/app/main_search_host.rs"))
         .expect("windows search host source must be readable");
@@ -1613,8 +1638,9 @@ fn native_ui_protocol_host_statuses_track_three_platform_source_coverage() {
         .expect("windows main renderer source must be readable");
     assert!(windows_dynamic_source.contains("native_host_clip_row_specs"));
     assert!(windows_dynamic_source.contains("Vec<crate::app_core::NativeClipRowSpec>"));
-    assert!(windows_dynamic_source.contains("spec.action.has_item()"));
-    assert!(windows_dynamic_source.contains("debug_assert_eq!(dynamic_row_item_id"));
+    assert!(windows_dynamic_source.contains("NativeHostClipListItemProjection::with_metadata("));
+    assert!(windows_dynamic_source.contains("native_host_clip_row_presentation_for_clip_item("));
+    assert!(windows_dynamic_source.contains("let item = state.active_items()[i as usize].clone()"));
     #[cfg(feature = "vv-paste")]
     {
         let windows_vv_source = std::fs::read_to_string(root.join("src/app/vv_popup.rs"))
@@ -2429,6 +2455,8 @@ fn native_host_row_action_components_describe_reusable_native_buttons() {
             104,
             32,
         ),
+        ("row.open_folder", "Open Folder", "button", "plain", "row_open_folder", 104, 32),
+        ("row.copy_path", "Copy Path", "button", "plain", "row_copy_path", 104, 32),
     ];
 
     #[cfg(feature = "ai-actions")]
@@ -2480,6 +2508,8 @@ fn native_host_row_action_components_describe_reusable_native_buttons() {
             104,
             32,
         ),
+        ("row.open_folder", "Open Folder", "button", "plain", "row_open_folder", 104, 32),
+        ("row.copy_path", "Copy Path", "button", "plain", "row_copy_path", 104, 32),
         (
             "row.text_translate",
             "Translate",
@@ -4215,6 +4245,7 @@ fn native_host_vv_trigger_state_rejects_wrong_targets_and_unready_inputs() {
 #[test]
 fn native_host_vv_paste_plan_prepares_clipboard_payloads() {
     let text = ClipItem {
+        phrase_title: String::new(),
         id: 41,
         kind: ClipKind::Text,
         preview: "hello".to_string(),
@@ -4396,6 +4427,7 @@ fn native_host_clip_row_presentation_is_platform_neutral() {
     assert_eq!(text.pin_badge, None);
 
     let folder = ClipItem {
+        phrase_title: String::new(),
         id: 9,
         kind: ClipKind::Files,
         preview: "C:\\Users\\Public".to_string(),
@@ -5691,7 +5723,12 @@ fn native_autostart_host_uses_trait_contract_without_parallel_required_operation
     assert!(disabled.applied);
     assert!(!disabled.status.enabled);
     let source = include_str!("host_protocol.rs");
-    assert!(source.contains("pub(crate) trait NativeAutostartHost"));
+    assert!(source.contains("pub(crate) use zsui::{"));
+    assert!(source.contains("NativeAutostartHost, NativeAutostartStatus"));
+    // The recording host above must implement the exact re-exported trait.
+    let framework_host: &dyn ::zsui::NativeAutostartHost = &host;
+    assert!(!framework_host.autostart_status().enabled);
+    assert!(!source.contains("trait NativeAutostartHost"));
     assert!(!source.contains("REQUIRED_NATIVE_AUTOSTART_HOST_OPERATIONS"));
     assert!(!source.contains("NativeAutostartHostOperation"));
 }
@@ -10239,6 +10276,7 @@ fn main_row_ai_capability_plan_describes_selected_context_for_ai() {
     fn item(id: i64, kind: ClipKind) -> ClipItem {
         ClipItem {
             id,
+            phrase_title: String::new(),
             kind,
             preview: format!("preview {id}"),
             text: matches!(kind, ClipKind::Text | ClipKind::Phrase).then(|| format!("text {id}")),
@@ -10336,6 +10374,7 @@ fn main_row_ai_capability_plan_describes_selected_context_for_ai() {
 #[test]
 fn main_row_ai_invocation_uses_capability_plan_targets() {
     let item = ClipItem {
+        phrase_title: String::new(),
         id: 42,
         kind: ClipKind::Text,
         preview: "selected".to_string(),

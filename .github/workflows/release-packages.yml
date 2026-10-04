@@ -9,10 +9,8 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.8"
+        default: "1.0.9"
   push:
-    branches:
-      - main
     tags:
       - "0.*"
       - "1.*"
@@ -105,18 +103,11 @@ jobs:
           git -C ../zsui fetch --depth 1 origin $revision
           git -C ../zsui checkout --detach FETCH_HEAD
       - uses: dtolnay/rust-toolchain@stable
-      - name: Test Windows settings regressions
+      - name: Test Windows regressions
         shell: pwsh
         run: |
-          cargo test --locked --bin zsclip app::settings_layout_tests -- --test-threads=1
+          cargo test --release --locked --bin zsclip -- --test-threads=1
           exit $LASTEXITCODE
-      - name: Test Windows update regressions
-        shell: pwsh
-        run: |
-          foreach ($module in @('update_feed::tests', 'lanzou_update::tests', 'shell::update_runtime::tests')) {
-            cargo test --locked --bin zsclip $module -- --test-threads=1
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
       - name: Build Windows release
         shell: pwsh
         run: |
@@ -938,6 +929,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
       - name: Download release packages
         uses: actions/download-artifact@v7
         with:
@@ -951,32 +943,7 @@ jobs:
           LANZOU_MIRRORS_JSON: ${{ vars.LANZOU_MIRRORS_JSON }}
         run: |
           set +e
-          cat > release-notes.md <<'NOTES'
-          # ZSClip __RELEASE_VERSION__
-
-          ## 更新内容
-          - 修复蓝奏公开下载参数顺序导致的“参数缺失”，恢复版本清单与安装包的直接下载。
-          - 局域网同步提供手机 → 电脑、电脑 → 手机、双向和仅手动四种模式，自动收发同时遵循两端设置，升级保留已有配对和同步配置。
-          - QQ 云剪贴板支持导入手机有效授权、查看和撤销电脑授权，并可单独开启或关闭右键菜单中的手动上传入口；云上传与局域网同步方向独立。
-          - 修复同步消息重复入库、重启后重复接收和编辑后发送旧内容的问题，并完善受保护内容的同步过滤。
-          - WebDAV 密码、云端 OCR Token 和翻译密钥采用隐藏输入显示。
-          - 密码与密钥合并管理，支持备注、可选管理密码与离开分组自动锁定；受保护内容不会进入普通记录或同步。
-          - 统一“发送到电脑”字号，剪贴板与云剪贴板页面使用纯白底色，设置图标与相邻图标保持同等大小。
-          - 改进粘贴目标识别和短暂失焦重试，跳过非输入窗口，避免误排除正常编辑器；优化设置页滚轮与拖动滚动，保留各页面滚动位置。
-          - Windows 更新支持同版本蓝奏镜像；镜像不可用或校验失败时回退官方 GitHub 安装包，保留已有自定义更新源。
-          - 更新安装包通过 SHA-256、文件大小和 Windows PE 格式校验后才启动；安装器等待目标目录旧程序退出后替换文件，安装取消或失败时恢复仍在运行程序的重试入口。
-
-          ## 下载与安装
-          - Windows: 普通用户下载 `zsclip-v__RELEASE_VERSION__-setup.exe` 安装；不需要局域网同步功能可下载 `zsclip-v__RELEASE_VERSION__-setup-no-lan.exe`；需要便携版则下载 `zsclip-windows-x86_64-portable.zip`；需要无局域网同步便携版则下载 `zsclip-windows-x86_64-no-lan-portable.zip`。
-          - Android 测试包: 下载 `zsclip-android-test.apk`。
-          - macOS 测试包: Apple Silicon 下载 `zsclip-macos-arm64.dmg`，Intel 下载 `zsclip-macos-x86_64.dmg`。
-          - Linux 测试包: Debian/Ubuntu 可试用 `zsclip-linux-x86_64.deb`，其他发行版可下载 `zsclip-linux-x86_64.tar.gz`。
-
-          ## 注意
-          - Windows 提供普通版和无局域网同步版的安装器及便携包；普通版支持 QQ 输入法局域网连接；QQ 客户端快捷登录受重签名校验限制，输入法原生短信登录入口保留。
-          - macOS/Linux 当前仍是测试包，未完成正式验收前不要按 Windows 正式版标准承诺稳定性。
-          NOTES
-          sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" release-notes.md
+          cp "docs/releases/${RELEASE_VERSION}.md" release-notes.md || exit 1
 
           setup_asset="zsclip-v${RELEASE_VERSION}-setup.exe"
           no_lan_setup_asset="zsclip-v${RELEASE_VERSION}-setup-no-lan.exe"

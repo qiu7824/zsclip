@@ -3,7 +3,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{
         CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HOOKPROC, KBDLLHOOKSTRUCT,
         MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-        WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_XBUTTONDOWN, WM_XBUTTONUP,
+        WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_KEYUP, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
     },
 };
 
@@ -19,6 +19,7 @@ const XBUTTON2: u32 = 0x0002;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct KeyboardHookEvent {
     pub(crate) vk_code: u32,
+    pub(crate) down: bool,
     flags: u32,
 }
 
@@ -60,14 +61,36 @@ pub(crate) unsafe fn keyboard_event(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> Option<KeyboardHookEvent> {
-    if code < 0 || (wparam as u32 != WM_KEYDOWN && wparam as u32 != WM_SYSKEYDOWN) {
+    keyboard_transition(code, wparam, lparam).filter(|event| event.down)
+}
+
+pub(crate) unsafe fn keyboard_transition(code: i32, wparam: WPARAM, lparam: LPARAM) -> Option<KeyboardHookEvent> {
+    if code < 0 || !matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP) {
         return None;
     }
     let data = &*(lparam as *const KBDLLHOOKSTRUCT);
     Some(KeyboardHookEvent {
         vk_code: data.vkCode,
+        down: matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN),
         flags: data.flags,
     })
+}
+
+#[cfg(test)]
+mod keyboard_transition_tests {
+    use super::*;
+    #[test]
+    fn vv_receives_releases_while_existing_down_only_hooks_keep_their_contract() {
+        let key = KBDLLHOOKSTRUCT { vkCode: 0x1b, scanCode: 0, flags: 0, time: 0, dwExtraInfo: 0 };
+        let raw = &key as *const _ as LPARAM;
+        unsafe {
+            assert!(keyboard_transition(0,WM_KEYDOWN as WPARAM,raw).unwrap().down);
+            assert!(!keyboard_transition(0,WM_KEYUP as WPARAM,raw).unwrap().down);
+            assert!(!keyboard_transition(0,WM_SYSKEYUP as WPARAM,raw).unwrap().down);
+            assert!(keyboard_event(0,WM_KEYUP as WPARAM,raw).is_none());
+            assert!(keyboard_transition(-1,WM_KEYDOWN as WPARAM,raw).is_none());
+        }
+    }
 }
 
 pub(crate) unsafe fn mouse_button_event(

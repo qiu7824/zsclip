@@ -3,7 +3,7 @@ use std::mem::{size_of, zeroed};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM},
     UI::{
-        Controls::EM_SETSEL,
+        Controls::{EM_REPLACESEL, EM_SETSEL},
         WindowsAndMessaging::{
             DLGC_HASSETSEL, DLGC_WANTARROWS, DLGC_WANTCHARS, DLGC_WANTTAB, GUITHREADINFO,
             WM_GETDLGCODE, WM_PASTE, WM_SETTEXT,
@@ -29,6 +29,21 @@ pub(crate) struct WindowsPasteTargetHost;
 impl WindowsPasteTargetHost {
     pub(crate) const fn new() -> Self {
         Self
+    }
+
+    pub(crate) fn replace_paste_target_selection(&self, target: HWND, text: &str) -> bool {
+        if !platform_window::exists(target)
+            || !platform_window::class_name(target).eq_ignore_ascii_case("Edit")
+            || text.contains('\0')
+        {
+            return false;
+        }
+        let wide = to_wide(text);
+        // Explorer selects the basename while leaving the extension untouched.
+        // Replacing that selection also preserves explicit partial selections
+        // and gives the native edit control its normal undo behavior.
+        platform_window::send_message_bounded(target, EM_REPLACESEL, 1, wide.as_ptr() as LPARAM)
+            .is_some()
     }
 
     fn focus_and_caret(&self, target: HWND) -> [HWND; 2] {
@@ -417,6 +432,57 @@ mod tests {
     use super::{
         class_accepts_direct_paste_message, explorer_rename_ancestor_classes, is_telegram_process,
     };
+
+    #[test]
+    fn direct_edit_paste_replaces_only_native_selection_and_supports_undo() {
+        use super::*;
+        use windows_sys::Win32::UI::Controls::EM_UNDO;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WS_POPUP,
+        };
+        let class = to_wide("EDIT");
+        let initial = to_wide("报告😀.txt");
+        let edit = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                initial.as_ptr(),
+                WS_POPUP,
+                0,
+                0,
+                100,
+                24,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null(),
+            )
+        };
+        assert!(!edit.is_null());
+        struct WindowGuard(HWND);
+        impl Drop for WindowGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    DestroyWindow(self.0);
+                }
+            }
+        }
+        let _guard = WindowGuard(edit);
+        let host = WindowsPasteTargetHost::new();
+        // A partial UTF-16 selection must preserve both unselected ends.
+        platform_window::send_message(edit, EM_SETSEL, 0, 2);
+        assert!(host.replace_paste_target_selection(edit, "合同"));
+        assert_eq!(platform_window::text(edit), "合同😀.txt");
+        platform_window::send_message(edit, EM_UNDO, 0, 0);
+        assert_eq!(platform_window::text(edit), "报告😀.txt");
+        // Empty selection inserts at the caret rather than replacing the field.
+        platform_window::send_message(edit, EM_SETSEL, 2, 2);
+        assert!(host.replace_paste_target_selection(edit, "甲"));
+        assert_eq!(platform_window::text(edit), "报告甲😀.txt");
+        platform_window::send_message(edit, EM_SETSEL, 0, -1);
+        assert!(host.replace_paste_target_selection(edit, "新名称"));
+        assert_eq!(platform_window::text(edit), "新名称");
+    }
 
     #[test]
     fn explorer_replacement_is_limited_to_file_list_rename_controls() {

@@ -47,6 +47,7 @@ fn is_general_surface_control(id: isize) -> bool {
             | IDC_SET_POSMODE
             | IDC_SET_PASTE_SOUND_KIND
             | IDC_SET_PASTE_SOUND_PICK
+            | crate::win_system_params::IDC_SET_SOUND_TEST
             | IDC_SET_SKIP_WINDOW_CAPTURE
     )
 }

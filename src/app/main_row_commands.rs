@@ -149,14 +149,24 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
             );
         }
         MainRowDialogActionPlan::EditItem { item_id, title } => {
+            let phrase_title = current.as_ref().filter(|item| state.settings.phrase_titles_enabled && item.kind == ClipKind::Phrase)
+                .map(|item| item.phrase_title.clone());
             let expected_generation = state.app_data_generation;
             let Some(initial_text) =
                 crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
-                    db_item_text(item_id).unwrap_or_default()
+                    db_item_text(item_id)
                 })
             else {
                 apply_loaded_settings(hwnd, state);
                 return;
+            };
+            let initial_text = match initial_text {
+                Ok(text) => text,
+                Err(_) => {
+                    platform_dialog::WindowsDialogHost::new().show_message(hwnd,
+                        tr("编辑记录", "Edit Record"), tr("记录无法读取，请重新打开后重试。", "The record could not be read. Reopen it and try again."), NativeDialogLevel::Error);
+                    return;
+                }
             };
             let initial_size =
                 if state.settings.edit_dialog_w > 0 && state.settings.edit_dialog_h > 0 {
@@ -181,15 +191,20 @@ unsafe fn execute_row_dialog_action(hwnd: HWND, state: &mut AppState, action: Ma
                     .to_string())
                 })
             };
-            let result = WindowsEditTextDialogHost::new().open_edit_text(
+            let request = NativeEditTextDialogRequest {
+                title: &title, initial_text: &initial_text, initial_size,
+            };
+            let result = if let Some(phrase_title) = phrase_title {
+                let mut save_phrase = |title: &str, body: &str| {
+                    crate::db_runtime::with_shared_app_data_generation(expected_generation, || db_save_phrase(item_id, title, body))
+                        .unwrap_or_else(|| Err("数据已更新，请重新打开编辑框".into()))
+                };
+                WindowsEditTextDialogHost::new().open_phrase_editor(hwnd, request, &phrase_title, &mut save_phrase)
+            } else { WindowsEditTextDialogHost::new().open_edit_text(
                 hwnd,
-                NativeEditTextDialogRequest {
-                    title: &title,
-                    initial_text: &initial_text,
-                    initial_size,
-                },
+                request,
                 &mut save_handler,
-            );
+            ) };
             if let Some(size) = result.final_size {
                 state.settings.edit_dialog_w = size.width;
                 state.settings.edit_dialog_h = size.height;
@@ -237,11 +252,7 @@ unsafe fn execute_row_current_item_action(
             );
         }
         MainRowCurrentItemActionPlan::SaveImage { item } => {
-            if let Some(path) = save_image_item(&item) {
-                if let Some(parent) = path.parent().and_then(|p| p.to_str()) {
-                    open_path_with_shell(parent);
-                }
-            }
+            super::image_save::save_image_as(hwnd, &item);
         }
         MainRowCurrentItemActionPlan::ImageOcr { item } => {
             spawn_image_ocr_job(
@@ -261,12 +272,69 @@ unsafe fn execute_row_data_action(hwnd: HWND, state: &mut AppState, action: Main
     } else {
         Vec::new()
     };
+    if action == MainRowMenuAction::ToPhrase && selected.len() <= 1 {
+        if let Some(item) = selected.first().or(current.as_ref()) {
+            let expected_generation = state.app_data_generation;
+            let initial = item.text.as_deref().unwrap_or(&item.preview);
+            let mut saved_id = None;
+            let mut save = |title: &str, body: &str| {
+                let mut edited = item.clone();
+                edited.phrase_title = crate::app_core::normalize_phrase_title(title)?.to_string();
+                if body != initial { edited.rich_text_html = None; }
+                edited.text = Some(body.to_string());
+                edited.preview = body.chars().take(120).collect();
+                let result = crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+                    if let Some(id) = saved_id { db_save_phrase(id, title, body) }
+                    else {
+                        let id = db_add_phrase_from_item(&edited).map_err(|_| "保存短语失败".to_string())?;
+                        if id == 0 { return Err("受保护内容不能保存到常用短语".into()); }
+                        saved_id = Some(id);
+                        Ok(())
+                    }
+                });
+                result.unwrap_or_else(|| Err("数据已更新，请重新打开编辑框".into()))
+            };
+            let request = NativeEditTextDialogRequest {
+                title: tr("保存常用短语", "Save Phrase"), initial_text: initial, initial_size: None,
+            };
+            let result = if state.settings.phrase_titles_enabled {
+                WindowsEditTextDialogHost::new().open_phrase_editor(hwnd, request, &item.phrase_title, &mut save)
+            } else {
+                let mut save_body = |body: &str| save(&item.phrase_title, body);
+                WindowsEditTextDialogHost::new().open_edit_text(hwnd, request, &mut save_body)
+            };
+            if result.saved {
+                reload_state_from_db_persisting(state);
+                state.refilter();
+                sync_peer_windows_from_db(hwnd);
+                repaint_main_window(hwnd, true);
+            }
+        }
+        return;
+    }
     let Some(plan) =
         main_row_data_action_plan(action, current.as_ref(), &selected, state.tab_index)
     else {
         return;
     };
     execute_row_data_plan(hwnd, state, plan);
+}
+
+pub(super) const RENAME_PHRASE_COMMAND: usize = 41021;
+
+pub(super) unsafe fn rename_phrase(hwnd: HWND, state: &mut AppState, item: &ClipItem) {
+    if !state.settings.phrase_titles_enabled || item.kind != ClipKind::Phrase { return; }
+    let generation = state.app_data_generation;
+    let Some(title) = WindowsTextInputDialogHost::new().prompt_text(hwnd,
+        crate::app_core::NativeTextInputDialogRequest { title: tr("重命名短语", "Rename Phrase"),
+            label: tr("标题（可空，最多 60 个字符）：", "Title (optional, up to 60 characters):"), initial: &item.phrase_title }) else { return; };
+    let result = crate::db_runtime::with_shared_app_data_generation(generation, || {
+        db_save_phrase(item.id, &title, item.text.as_deref().unwrap_or(&item.preview))
+    }).unwrap_or_else(|| Err("数据已更新，请重新打开编辑框".into()));
+    match result {
+        Ok(()) => { reload_state_from_db_persisting(state); state.refilter(); sync_peer_windows_from_db(hwnd); }
+        Err(message) => { platform_dialog::WindowsDialogHost::new().show_message(hwnd, tr("重命名短语", "Rename Phrase"), &message, NativeDialogLevel::Error); }
+    }
 }
 
 unsafe fn execute_row_data_plan(hwnd: HWND, state: &mut AppState, plan: MainRowDataActionPlan) {

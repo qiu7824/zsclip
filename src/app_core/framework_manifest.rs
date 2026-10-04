@@ -1148,17 +1148,14 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
         .flat_map(|platform| {
             rows.iter()
                 .map(move |(feature_name, support_status, missing)| {
-                    let mut support_status =
+                    let support_status =
                         zsui_native_feature_support_status_for_platform(
                             platform,
                             feature_name,
                             *support_status,
                         );
-                    if support_status == ZsuiNativeFeatureSupportStatus::CodeLevelReadyPendingTargetSmoke
-                        && zsui_native_feature_target_smoke_verified_by_ci(platform, feature_name)
-                    {
-                        support_status = ZsuiNativeFeatureSupportStatus::TargetSmokeVerified;
-                    }
+                    // Feature names and CI workflow availability are not runtime evidence.
+                    // Keep release/target verification pending until matching artifacts are supplied.
                     let mut missing_system_requirements = if support_status.system_complete() {
                         Vec::new()
                     } else {
@@ -1213,33 +1210,6 @@ pub(crate) fn zsui_native_feature_parity_statuses() -> Vec<ZsuiNativeFeaturePari
                 })
         })
         .collect()
-}
-
-fn zsui_native_feature_target_smoke_verified_by_ci(
-    platform: NativeUiPlatform,
-    feature_name: &str,
-) -> bool {
-    if !matches!(platform, NativeUiPlatform::Macos | NativeUiPlatform::Linux) {
-        return false;
-    }
-    matches!(
-        feature_name,
-        "dialog_input_confirm_edit"
-            | "right_click_copy"
-            | "right_click_edit_save"
-            | "right_click_paste"
-            | "right_click_delete"
-            | "right_click_pin"
-            | "right_click_group_assign_remove"
-            | "vv_popup_select"
-            | "vv_paste"
-            | "clipboard_text_payload"
-            | "clipboard_image_payload"
-            | "clipboard_file_path_payload"
-            | "shell_open"
-            | "file_picker"
-            | "window_paste_target_identity"
-    )
 }
 
 fn zsui_native_feature_support_status_for_platform(

@@ -11,6 +11,8 @@ pub(super) unsafe fn settings_ensure_page(hwnd: HWND, st: &mut SettingsWndState,
             st.ui.mark_built(page);
         }
         SettingsPage::Hotkey => settings_create_hotkey_page(hwnd, st),
+        SettingsPage::Appearance => settings_create_appearance_page(hwnd, st),
+        SettingsPage::Clipboard => settings_create_clipboard_page(hwnd, st),
         SettingsPage::Plugin => settings_create_plugin_page(hwnd, st),
         SettingsPage::Group => settings_create_group_page(hwnd, st),
         SettingsPage::Cloud => settings_create_cloud_page(hwnd, st),

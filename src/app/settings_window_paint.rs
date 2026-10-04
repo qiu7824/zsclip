@@ -264,6 +264,9 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
             && top < viewport_clip.bottom.min(paint_rc.bottom)
     });
     draw_settings_content(memdc as _, &content_plan, theme);
+    if !st_ptr.is_null() && cur_page == SettingsPage::Appearance.index() {
+        draw_settings_appearance_preview(&*st_ptr, memdc, scroll_y, theme);
+    }
     if !st_ptr.is_null() {
         draw_settings_lan_qr_blocks(&mut *st_ptr, memdc as _, scroll_y, viewport_clip);
     }

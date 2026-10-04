@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod ai_action_protocol;
+pub(crate) mod clipboard_html;
 pub(crate) mod command_protocol;
 pub(crate) mod component_protocol;
 pub(crate) mod components;
@@ -30,6 +31,7 @@ pub(crate) mod runtime_protocol;
 pub(crate) mod settings_protocol;
 pub(crate) mod timer_protocol;
 pub(crate) mod ui_surface_protocol;
+pub(crate) mod vv_session;
 pub(crate) mod zsui;
 
 #[allow(unused_imports)]
@@ -56,7 +58,7 @@ pub(crate) use main_window::{
     main_row_dialog_action_plan, main_row_external_action_plan, main_row_group_assignment_plan,
     main_row_group_popup_entries, main_row_menu_action_label, main_row_menu_plan,
     main_row_pin_data_plan, main_row_popup_menu_entries, main_vv_select_plan,
-    parse_search_query_with_context, ClipGroup, ClipItem, ClipKind, ClipKindFilter, ClipListState,
+    parse_search_query_with_context, normalize_phrase_title, ClipGroup, ClipItem, ClipKind, ClipKindFilter, ClipListState,
     ItemsCursor, ItemsQuery, MainActivateSelectionPlan, MainCopySelectionPlan, MainEmptyStateKind,
     MainFontRole, MainFrameHitTarget, MainGroupFilterMenuEntry, MainHoverTarget, MainIconColorMode,
     MainIconCommand, MainIconKind, MainPaintCommand, MainPaintFill, MainPasteCompletionInput,

@@ -55,7 +55,15 @@ mod lan_mode_migration_tests {
 
 pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: usize) {
     match SettingsPage::from_index(page) {
-        SettingsPage::General => {
+        SettingsPage::General | SettingsPage::Appearance | SettingsPage::Clipboard => {
+            for &control in &st.card_detail_controls {
+                if !control.is_null() {
+                    settings_host_set_enabled(control, st.draft.card_view_enabled);
+                }
+            }
+            if !st.cb_content_font_size.is_null() {
+                settings_set_text(st.cb_content_font_size, &content_font_size_label(st.draft.content_font_size));
+            }
             if !st.cb_max.is_null() {
                 settings_set_text(
                     st.cb_max,
@@ -91,6 +99,7 @@ pub(super) unsafe fn settings_sync_page_state(st: &mut SettingsWndState, page: u
             }
         }
         SettingsPage::Hotkey => {
+            settings_sync_group_page(st);
             let s = &st.draft;
             settings_set_text(st.cb_hk_mod, &normalize_hotkey_mod(&s.hotkey_mod));
             settings_set_text(st.cb_hk_key, &normalize_hotkey_key(&s.hotkey_key));

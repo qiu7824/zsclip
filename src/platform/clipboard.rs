@@ -16,7 +16,7 @@ use super::memory;
 
 const GMEM_MOVEABLE: u32 = 0x0002;
 const GMEM_ZEROINIT: u32 = 0x0040;
-const MAX_HTML_FORMAT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_HTML_FORMAT_BYTES: usize = crate::app_core::clipboard_html::MAX_HTML_BYTES;
 const MAX_CF_UNICODETEXT_BYTES: usize = 100 * 1024 * 1024;
 const MAX_CF_UNICODETEXT_UNITS: usize = MAX_CF_UNICODETEXT_BYTES / size_of::<u16>();
 pub(crate) const CF_TEXT: u32 = 1;
@@ -508,6 +508,72 @@ pub(crate) fn set_text_ignored_by_monitors(text: &str) -> bool {
     ok
 }
 
+/// Publishes text and HTML under one clipboard lock. The return value reports
+/// whether HTML was restored; a valid text fallback still counts as success.
+pub(crate) fn write_text_and_html(owner: HWND, text: &str, html: &str) -> Option<bool> {
+    let Some(html) = crate::db_runtime::sanitize_rich_text_html(html) else {
+        return WindowsClipboardHost::write_text(text).then_some(false);
+    };
+    if owner.is_null() || text.contains('\0') {
+        return None;
+    }
+    struct Block(*mut core::ffi::c_void);
+    impl Block {
+        fn new(bytes: &[u8]) -> Option<Self> {
+            let block = Self(memory::global_alloc(
+                GMEM_MOVEABLE | GMEM_ZEROINIT,
+                bytes.len(),
+            ));
+            if block.0.is_null() {
+                return None;
+            }
+            let ptr = memory::global_lock(block.0);
+            if ptr.is_null() {
+                return None;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
+            }
+            memory::global_unlock(block.0);
+            Some(block)
+        }
+        fn publish(&mut self, format: u32) -> bool {
+            if format == 0 || !set_data(format, self.0) {
+                return false;
+            }
+            self.0 = core::ptr::null_mut();
+            true
+        }
+    }
+    impl Drop for Block {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                memory::global_free(self.0);
+            }
+        }
+    }
+    let text_bytes: Vec<u8> = text
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let mut html_bytes = html.into_bytes();
+    html_bytes.push(0);
+    let mut text_block = Block::new(&text_bytes)?;
+    let mut html_block = Block::new(&html_bytes)?;
+    let html_format = register_format(FORMAT_HTML_FORMAT);
+    if !open(owner) {
+        return None;
+    }
+    let result = if empty() && text_block.publish(CF_UNICODETEXT) {
+        Some(html_block.publish(html_format))
+    } else {
+        None
+    };
+    close();
+    result
+}
+
 /// Publishes sensitive text and its exclusion markers while the clipboard is locked.
 /// Failure to publish any marker prevents publishing the secret itself.
 pub(crate) fn set_protected_text(owner: HWND, text: &str) -> bool {
@@ -534,7 +600,8 @@ pub(crate) fn set_protected_text(owner: HWND, text: &str) -> bool {
         let locked = memory::global_lock(mem);
         if !locked.is_null() {
             unsafe {
-                std::slice::from_raw_parts_mut(locked as *mut u8, memory::global_size(mem)).zeroize();
+                std::slice::from_raw_parts_mut(locked as *mut u8, memory::global_size(mem))
+                    .zeroize();
             }
             memory::global_unlock(mem);
         }
@@ -713,44 +780,8 @@ fn decode_text_bytes(bytes: &[u8], utf16: bool) -> Option<String> {
     Some(String::from_utf8_lossy(&bytes[..end]).to_string())
 }
 
-fn cf_html_header_offset(raw: &str, key: &str) -> Option<usize> {
-    raw.lines().find_map(|line| {
-        let value = line.strip_prefix(key)?.trim();
-        value.parse::<usize>().ok()
-    })
-}
-
 pub(crate) fn cf_html_extract_fragment(raw: &str) -> Option<String> {
-    let bytes = raw.as_bytes();
-    if let (Some(start), Some(end)) = (
-        cf_html_header_offset(raw, "StartFragment:"),
-        cf_html_header_offset(raw, "EndFragment:"),
-    ) {
-        if start < end && end <= bytes.len() {
-            let fragment = String::from_utf8_lossy(&bytes[start..end])
-                .trim()
-                .to_string();
-            if !fragment.is_empty() {
-                return Some(fragment);
-            }
-        }
-    }
-
-    let lower = raw.to_ascii_lowercase();
-    let start_marker = "<!--startfragment-->";
-    let end_marker = "<!--endfragment-->";
-    if let (Some(start), Some(end)) = (lower.find(start_marker), lower.find(end_marker)) {
-        let start = start + start_marker.len();
-        if start < end {
-            let fragment = raw[start..end].trim().to_string();
-            if !fragment.is_empty() {
-                return Some(fragment);
-            }
-        }
-    }
-
-    let trimmed = raw.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    crate::app_core::clipboard_html::fragment(raw)
 }
 
 pub(crate) fn html_format_payload_from_snapshot(
@@ -769,7 +800,7 @@ pub(crate) fn html_format_payload_from_snapshot(
     }
     let text = format_data_bytes(format, MAX_HTML_FORMAT_BYTES)
         .and_then(|bytes| decode_text_bytes(&bytes, false))
-        .and_then(|raw| cf_html_extract_fragment(&raw));
+        .and_then(|raw| crate::app_core::clipboard_html::normalize(&raw));
     close();
     text
 }

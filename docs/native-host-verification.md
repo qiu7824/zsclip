@@ -1,5 +1,37 @@
 # Native Host Verification
 
+## Windows VV input and full-text preview
+
+The Windows VV host uses the platform-neutral input session in
+`src/app_core/vv_session.rs`. A session owns every consumed physical key through
+release, tags queued show/select requests, and binds paste to its original
+foreground window and focused control. Showing or cancelling the popup must not
+inject Escape into the target editor. IME cancellation is permitted only when the
+complete composition is exactly the trigger owned by the selected session.
+
+The non-activating preview in `src/app/vv_preview.rs` loads only the current
+record asynchronously. Results must match the record, request, session and data
+generation, and the protection revision must still match before display.
+Up/Down select preview candidates; the wheel and Page Up/Down scroll the body.
+Preview input must leave the target editor's focus and text unchanged.
+
+Required Windows runtime evidence:
+
+- In QQ, begin with a multiline draft, type `vv`, cancel with a single or held
+  Escape, then continue Chinese/English typing and commit the IME candidate.
+  Compare the entire draft after continuing, not only when the popup disappears.
+- Repeat cancellation before the delayed popup appears, switch input modes,
+  press modified digits, switch controls within a window, and Alt-Tab while a
+  text or image paste is pending. No stale request may alter the new target.
+- Preview records sharing the same opening text but differing after character
+  120, a 10,000-character body, blank lines and emoji. Check 100%, 150% and 200%
+  DPI, screen edges, wheel/page scrolling, rapid candidate changes, deletion and
+  protection-state changes. No old record may appear under a new candidate.
+
+Shared session/layout unit tests and Windows message-decoding tests are
+code-level evidence. They do not replace QQ/IME runtime proof, and they do not
+establish AppKit or GTK support for the Windows preview surface.
+
 This document is the target-OS evidence path for the macOS AppKit and Linux GTK native hosts.
 Windows-side Rust tests prove that the dispatch bridges compile and route to the product adapter, but they do not prove that AppKit or GTK windows render and respond on the real platforms.
 

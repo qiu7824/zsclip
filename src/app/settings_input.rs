@@ -85,6 +85,21 @@ pub(super) unsafe fn dispatch_settings_ui_event(
             if st_ptr.is_null() {
                 return Some(0);
             }
+            if control_id as isize == crate::win_system_params::IDC_SET_SOUND_TEST {
+                let st = &mut *st_ptr;
+                settings_collect_current_page_to_draft(st);
+                play_paste_success_sound(&st.draft.paste_success_sound_kind, &st.draft.paste_success_sound_path);
+                let message = match crate::shell::last_feedback_sound_playback() {
+                    crate::shell::FeedbackSoundPlayback::Started => "已开始试听；若听不到声音，请检查系统音量与 ZSClip 应用音量。",
+                    crate::shell::FeedbackSoundPlayback::DefaultFallback => "所选音频无法播放，已改用内置默认提示音。",
+                    crate::shell::FeedbackSoundPlayback::SystemFallback => "内置音频无法播放，已改用系统默认提示音。",
+                    crate::shell::FeedbackSoundPlayback::Failed => "未能开始播放，请检查 WAV 文件、音频输出与应用音量。",
+                    crate::shell::FeedbackSoundPlayback::NotRequested => "尚未请求播放。",
+                };
+                settings_set_text(st.lb_sound_status, message);
+                repaint_settings_window(hwnd, true);
+                return Some(0);
+            }
             // Update dialogs pump messages; route them before borrowing SettingsWndState.
             if super::settings_platform_actions_about::handle_about_update_control(hwnd, control_id as isize) {
                 return Some(0);

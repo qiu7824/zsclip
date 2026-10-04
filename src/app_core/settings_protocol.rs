@@ -11,8 +11,8 @@ pub(crate) const SETTINGS_NAV_W: i32 = 236;
 pub(crate) const SETTINGS_TOP_H: i32 = 84;
 pub(crate) const SETTINGS_NAV_Y: i32 = 72;
 pub(crate) const SETTINGS_CONTENT_X: i32 = SETTINGS_NAV_W + 28;
-pub(crate) const SETTINGS_PAGE_LABELS: [&str; 6] =
-    ["常规", "快捷键", "插件", "分组", "多端同步", "关于"];
+pub(crate) const SETTINGS_PAGE_LABELS: [&str; 8] =
+    ["常规", "外观", "剪贴板", "快捷键与 VV", "分组", "插件", "多端同步", "关于"];
 pub(crate) const SETTINGS_NATIVE_TAB_GENERAL_SECTIONS: [&str; 2] =
     ["settings_summary", "settings_controls"];
 pub(crate) const SETTINGS_NATIVE_TAB_GROUPS_SECTIONS: [&str; 2] =

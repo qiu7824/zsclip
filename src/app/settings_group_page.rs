@@ -28,46 +28,6 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     );
     st.chk_group_type_filter = type_btn;
 
-    b.label(
-        st,
-        tr("VV 来源：", "VV Source:"),
-        sec0.left(),
-        sec0.label_y(2, settings_scale(24)),
-        sec0.label_w(),
-        settings_scale(24),
-    );
-    st.cb_vv_source = b.dropdown(
-        st,
-        source_tab_label(0),
-        IDC_SET_VV_SOURCE,
-        sec0.field_x(),
-        sec0.row_y(2),
-        settings_scale(180),
-    );
-    if !st.cb_vv_source.is_null() {
-        st.ownerdraw_ctrls.push(st.cb_vv_source);
-    }
-
-    b.label(
-        st,
-        tr("VV 默认分组：", "VV Default Group:"),
-        sec0.left(),
-        sec0.label_y(3, settings_scale(24)),
-        sec0.label_w(),
-        settings_scale(24),
-    );
-    st.cb_vv_group = b.dropdown(
-        st,
-        source_tab_all_label(0),
-        IDC_SET_VV_GROUP,
-        sec0.field_x(),
-        sec0.row_y(3),
-        settings_scale(220),
-    );
-    if !st.cb_vv_group.is_null() {
-        st.ownerdraw_ctrls.push(st.cb_vv_group);
-    }
-
     let tab_w = settings_scale(118);
     st.btn_group_view_records = b.button(
         st,
@@ -173,5 +133,9 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
     if !handle.is_null() {
         st.ownerdraw_ctrls.push(handle);
     }
+    let phrases = b.section(2, 138);
+    settings_page_toggle(&b, st, &phrases, 0, "启用独立标题", crate::win_system_params::IDC_SET_PHRASE_TITLES);
+    b.label(st, "关闭后显示正文摘要，已保存的标题保留。", phrases.left(), phrases.row_y(1),
+        phrases.full_w(), settings_scale(32));
     st.ui.mark_built(page);
 }

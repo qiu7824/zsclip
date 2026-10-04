@@ -1225,19 +1225,114 @@ pub(crate) fn pick_paste_sound_file(current: &str) -> Result<Option<String>, Str
     })
 }
 
-pub(crate) fn play_paste_success_sound(kind: &str, custom_path: &str) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum FeedbackSoundPlayback {
+    NotRequested,
+    Started,
+    DefaultFallback,
+    SystemFallback,
+    Failed,
+}
+
+static LAST_FEEDBACK_SOUND_PLAYBACK: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(0);
+
+pub(crate) fn last_feedback_sound_playback() -> FeedbackSoundPlayback {
+    use std::sync::atomic::Ordering;
+    match LAST_FEEDBACK_SOUND_PLAYBACK.load(Ordering::Relaxed) {
+        1 => FeedbackSoundPlayback::Started,
+        2 => FeedbackSoundPlayback::DefaultFallback,
+        3 => FeedbackSoundPlayback::SystemFallback,
+        4 => FeedbackSoundPlayback::Failed,
+        _ => FeedbackSoundPlayback::NotRequested,
+    }
+}
+
+pub(crate) fn play_paste_success_sound(kind: &str, custom_path: &str) -> FeedbackSoundPlayback {
+    let result = play_feedback_sound_with_backend(kind, custom_path,
+        platform_sound::play_wav_file, platform_sound::play_wav_memory,
+        platform_sound::play_system_default);
+    LAST_FEEDBACK_SOUND_PLAYBACK.store(result as u8, std::sync::atomic::Ordering::Relaxed);
+    result
+}
+
+fn play_feedback_sound_with_backend(
+    kind: &str, custom_path: &str,
+    mut play_file: impl FnMut(&Path) -> bool,
+    mut play_memory: impl FnMut(&'static [u8]) -> bool,
+    mut play_system: impl FnMut() -> bool,
+) -> FeedbackSoundPlayback {
+    let mut fallback = false;
     if kind.trim() == "custom" {
         let path = custom_path.trim();
-        if !path.is_empty() && platform_sound::play_wav_file(Path::new(path)) {
-            return;
+        if !path.is_empty() && play_file(Path::new(path)) {
+            return FeedbackSoundPlayback::Started;
         }
+        fallback = true;
     }
     let bytes = match kind.trim() {
         "soft" => PASTE_SOUND_SOFT,
         "bright" => PASTE_SOUND_BRIGHT,
         _ => PASTE_SOUND_DEFAULT,
     };
-    let _ = platform_sound::play_wav_memory(bytes);
+    if play_memory(bytes) {
+        return if fallback { FeedbackSoundPlayback::DefaultFallback } else { FeedbackSoundPlayback::Started };
+    }
+    if !std::ptr::eq(bytes, PASTE_SOUND_DEFAULT) && play_memory(PASTE_SOUND_DEFAULT) {
+        return FeedbackSoundPlayback::DefaultFallback;
+    }
+    if play_system() { FeedbackSoundPlayback::SystemFallback } else { FeedbackSoundPlayback::Failed }
+}
+
+#[cfg(test)]
+mod feedback_sound_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn successful_custom_sound_does_not_start_a_second_sound() {
+        let calls = RefCell::new(Vec::new());
+        let result = play_feedback_sound_with_backend("custom", "alert.wav",
+            |_| { calls.borrow_mut().push("file"); true },
+            |_| { calls.borrow_mut().push("memory"); true },
+            || { calls.borrow_mut().push("system"); true });
+        assert_eq!(result, FeedbackSoundPlayback::Started);
+        assert_eq!(*calls.borrow(), ["file"]);
+    }
+
+    #[test]
+    fn unavailable_custom_sound_falls_back_to_embedded_sound_once() {
+        let calls = RefCell::new(Vec::new());
+        let result = play_feedback_sound_with_backend("custom", "missing.wav",
+            |_| { calls.borrow_mut().push("file"); false },
+            |bytes| { assert!(std::ptr::eq(bytes, PASTE_SOUND_DEFAULT)); calls.borrow_mut().push("default"); true },
+            || { calls.borrow_mut().push("system"); true });
+        assert_eq!(result, FeedbackSoundPlayback::DefaultFallback);
+        assert_eq!(*calls.borrow(), ["file", "default"]);
+    }
+
+    #[test]
+    fn failed_preset_tries_default_then_reports_backend_failure() {
+        let calls = RefCell::new(Vec::new());
+        let result = play_feedback_sound_with_backend("soft", "",
+            |_| panic!("built-in sound must not read a file"),
+            |bytes| { calls.borrow_mut().push(if std::ptr::eq(bytes, PASTE_SOUND_DEFAULT) { "default" } else { "soft" }); false },
+            || { calls.borrow_mut().push("system"); false });
+        assert_eq!(result, FeedbackSoundPlayback::Failed);
+        assert_eq!(*calls.borrow(), ["soft", "default", "system"]);
+    }
+
+    #[test]
+    fn default_preset_is_not_retried_before_system_fallback() {
+        let calls = RefCell::new(Vec::new());
+        let result = play_feedback_sound_with_backend("default", "",
+            |_| panic!("built-in sound must not read a file"),
+            |_| { calls.borrow_mut().push("default"); false },
+            || { calls.borrow_mut().push("system"); true });
+        assert_eq!(result, FeedbackSoundPlayback::SystemFallback);
+        assert_eq!(*calls.borrow(), ["default", "system"]);
+    }
 }
 
 fn parse_version_parts(value: &str) -> Vec<u32> {
@@ -1458,6 +1553,7 @@ mod tests {
 
     fn file_item(path: &str) -> ClipItem {
         ClipItem {
+            phrase_title: String::new(),
             id: 1,
             kind: ClipKind::Files,
             preview: path.to_string(),

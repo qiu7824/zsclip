@@ -22,7 +22,15 @@ impl ItemsPageLoadQueue {
     fn enqueue(&mut self, task: ItemsPageLoadTask) -> bool {
         self.pending
             .retain(|pending| !(pending.hwnd == task.hwnd && pending.tab == task.tab));
-        self.pending.push_back(task);
+        // New searches precede speculative continuation pages, while preserving
+        // fairness between windows that both requested a first page.
+        if task.reset {
+            let index = self.pending.iter().position(|queued| !queued.reset)
+                .unwrap_or(self.pending.len());
+            self.pending.insert(index, task);
+        } else {
+            self.pending.push_back(task);
+        }
         if self.worker_running {
             false
         } else {
@@ -58,6 +66,7 @@ struct DbItem {
     id: i64,
     kind: String,
     preview: String,
+    phrase_title: String,
     text: Option<String>,
     rich_text_html: Option<String>,
     source_app: String,
@@ -116,6 +125,7 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
         row.preview
     };
     ClipItem {
+        phrase_title: row.phrase_title,
         id: row.id,
         kind,
         preview,
@@ -123,7 +133,7 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
         rich_text_html: if summary_only {
             None
         } else {
-            row.rich_text_html
+            row.rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html)
         },
         source_app: row.source_app,
         file_paths,
@@ -152,7 +162,7 @@ fn remove_stored_image_files(conn: &rusqlite::Connection, paths: Vec<String>) {
         let path_canon = path.canonicalize().unwrap_or(path);
         let still_referenced = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND image_path = ? COLLATE NOCASE)",
+                "SELECT EXISTS(SELECT 1 FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND image_path = ? COLLATE NOCASE)",
                 [raw],
                 |row| row.get::<_, bool>(0),
             )
@@ -184,7 +194,7 @@ pub(super) fn db_cleanup_orphan_image_files() -> rusqlite::Result<usize> {
         }
         let root_canon = root.canonicalize().unwrap_or(root);
         let mut stmt = conn.prepare(
-            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND image_path IS NOT NULL AND TRIM(image_path)<>''",
+            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND image_path IS NOT NULL AND TRIM(image_path)<>''",
         )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let referenced_paths = rows.filter_map(Result::ok).collect::<Vec<String>>();
@@ -254,6 +264,7 @@ pub(crate) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
         item.preview.clone()
     };
     ClipItem {
+        phrase_title: item.phrase_title.clone(),
         id: item.id,
         kind: item.kind,
         preview,
@@ -360,6 +371,8 @@ fn decode_html_entities(text: &str) -> String {
 }
 
 pub(crate) fn html_to_text(html: &str) -> String {
+    let fragment = crate::app_core::clipboard_html::fragment(html);
+    let html = fragment.as_deref().unwrap_or(html);
     let mut out = String::with_capacity(html.len().min(4096));
     let mut index = 0usize;
     while index < html.len() {
@@ -610,6 +623,7 @@ pub(super) fn build_qr_clip_item(text: &str) -> Option<(ClipItem, String)> {
     let sig = image_content_signature(&bytes, side, side);
     Some((
         ClipItem {
+            phrase_title: String::new(),
             id: 0,
             kind: ClipKind::Image,
             preview: format!("{} {}", tr("二维码", "QR"), preview_text),
@@ -886,21 +900,30 @@ fn db_load_items_page_from_connection(
     cursor: Option<ItemsCursor>,
     limit: usize,
 ) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
-    crate::db_runtime::register_protected_text_filter(conn)?;
+    crate::db_runtime::with_search_protection(|| {
+        db_load_items_page_query(conn, query, cursor, limit)
+    })
+}
+
+fn items_page_query_sql(
+    query: &ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    limit: usize,
+) -> (String, Vec<SqlValue>) {
     let date_context = current_search_date_context();
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(query.search_text.trim(), date_context);
     let select_columns = if near_query.is_some() {
-        "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at"
+        "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title"
     } else {
-        "id, kind, preview, CASE WHEN kind='files' THEN text_data ELSE NULL END AS text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at"
+        "id, kind, preview, CASE WHEN kind='files' THEN text_data ELSE NULL END AS text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title"
     };
     let mut sql = if near_query.is_some() {
         format!(
-                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?"
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"
             )
     } else {
-        format!("SELECT {select_columns} FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=?")
+        format!("SELECT {select_columns} FROM items WHERE category=?")
     };
     let mut bind_values = vec![SqlValue::from(query.category)];
 
@@ -925,52 +948,61 @@ fn db_load_items_page_from_connection(
     }
 
     for term in search_terms {
-        let like = format!("%{}%", term);
+        let like = crate::db_runtime::search_like_pattern(&term);
         sql.push_str(
-                " AND (LOWER(preview) LIKE ? \
-                 OR LOWER(COALESCE(source_app, '')) LIKE ? \
-                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
-                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?)",
+                " AND (LOWER(preview) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(phrase_title) LIKE ? ESCAPE '\\'",
             );
         bind_values.push(SqlValue::from(like.clone()));
         bind_values.push(SqlValue::from(like.clone()));
         bind_values.push(SqlValue::from(like.clone()));
-        bind_values.push(SqlValue::from(like));
+        bind_values.push(SqlValue::from(like.clone()));
+        if crate::db_runtime::search_term_can_match_display_date(&term) {
+            sql.push_str(" OR strftime('%m-%d %H:%M', datetime(created_at, 'localtime')) LIKE ? ESCAPE '\\'");
+            bind_values.push(SqlValue::from(like));
+        }
+        sql.push(')');
     }
 
     if let Some(app_value) = app_filter {
-        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ?");
-        bind_values.push(SqlValue::from(format!("%{}%", app_value)));
+        sql.push_str(" AND LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\'");
+        bind_values.push(SqlValue::from(crate::db_runtime::search_like_pattern(&app_value)));
     }
 
     match time_filter {
         Some(SearchTimeFilter::ExactDay(day)) => {
-            sql.push_str(" AND date(created_at, 'localtime') = ?");
+            sql.push_str(" AND created_at >= datetime(?, 'utc') AND created_at < datetime(?, 'utc')");
             bind_values.push(SqlValue::from(days_to_sqlite_date(day)));
+            bind_values.push(SqlValue::from(days_to_sqlite_date(day + 1)));
         }
         Some(SearchTimeFilter::RecentDays(days)) => {
             let end_day = date_context.current_day;
             let start_day = end_day - (days.max(1) - 1);
             sql.push_str(
-                " AND date(created_at, 'localtime') >= ? AND date(created_at, 'localtime') <= ?",
+                " AND created_at >= datetime(?, 'utc') AND created_at < datetime(?, 'utc')",
             );
             bind_values.push(SqlValue::from(days_to_sqlite_date(start_day)));
-            bind_values.push(SqlValue::from(days_to_sqlite_date(end_day)));
+            bind_values.push(SqlValue::from(days_to_sqlite_date(end_day + 1)));
         }
         None => {}
     }
 
+    let is_near_query = near_query.is_some();
     if let Some(near_value) = near_query {
-        let like = format!("%{}%", near_value);
+        let like = crate::db_runtime::search_like_pattern(&near_value);
         sql.push_str(
-                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? \
-                 OR LOWER(COALESCE(source_app, '')) LIKE ? \
-                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? \
-                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ?), \
+                "), hits AS (SELECT rn FROM base WHERE LOWER(preview) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(source_app, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(file_paths, text_data, '')) LIKE ? ESCAPE '\\' \
+                 OR LOWER(phrase_title) LIKE ? ESCAPE '\\' \
+                 OR LOWER(COALESCE(strftime('%m-%d %H:%M', datetime(created_at, 'localtime')), '')) LIKE ? ESCAPE '\\'), \
                  near_rows AS (SELECT DISTINCT base.rn FROM base JOIN hits ON base.rn BETWEEN hits.rn - 3 AND hits.rn + 3) \
-                 SELECT id, kind, preview, text_data, source_app, file_paths, image_path, image_width, image_height, pinned, group_id, created_at \
+                 SELECT id, kind, preview, text_data, source_app, file_paths, image_path, image_width, image_height, pinned, group_id, created_at, phrase_title \
                  FROM base WHERE rn IN (SELECT rn FROM near_rows)",
             );
+        bind_values.push(SqlValue::from(like.clone()));
         bind_values.push(SqlValue::from(like.clone()));
         bind_values.push(SqlValue::from(like.clone()));
         bind_values.push(SqlValue::from(like.clone()));
@@ -985,8 +1017,23 @@ fn db_load_items_page_from_connection(
         bind_values.push(SqlValue::from(cursor.id));
     }
 
+    if !is_near_query {
+        sql.push_str(" AND (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0))");
+    }
     sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
     bind_values.push(SqlValue::from(limit.max(1) as i64 + 1));
+
+    (sql, bind_values)
+}
+
+fn db_load_items_page_query(
+    conn: &rusqlite::Connection,
+    query: &ItemsQuery,
+    cursor: Option<ItemsCursor>,
+    limit: usize,
+) -> rusqlite::Result<(Vec<ClipItem>, Option<ItemsCursor>, bool)> {
+    crate::db_runtime::register_protected_text_filter(conn)?;
+    let (sql, bind_values) = items_page_query_sql(query, cursor, limit);
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(bind_values.iter()), |row| {
@@ -1005,12 +1052,15 @@ fn db_load_items_page_from_connection(
             pinned: row.get(9)?,
             group_id: row.get(10)?,
             created_at: row.get(11)?,
+            phrase_title: row.get(12)?,
         })
     })?;
 
+    // SQL interruption and corrupt rows are errors, never successful empty or
+    // partial search results.
     let mut items: Vec<ClipItem> = rows
-        .filter_map(|row| row.ok().map(row_to_clip_item_summary))
-        .collect();
+        .map(|row| row.map(row_to_clip_item_summary))
+        .collect::<rusqlite::Result<_>>()?;
     let has_more = items.len() > limit.max(1);
     if has_more {
         items.truncate(limit.max(1));
@@ -1038,12 +1088,31 @@ fn db_load_items_page_if_latest(
     cursor: Option<ItemsCursor>,
     limit: usize,
 ) -> rusqlite::Result<Option<(Vec<ClipItem>, Option<ItemsCursor>, bool)>> {
-    with_db(|conn| {
+    with_db(|conn| run_latest_search(conn, hwnd, tab, request_seq, || {
+        db_load_items_page_from_connection(conn, query, cursor, limit)
+    }))
+}
+
+fn run_latest_search<T>(conn: &rusqlite::Connection, hwnd: isize, tab: usize, request_seq: u64,
+    query: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<Option<T>> {
         if !page_request_is_latest(hwnd, tab, request_seq) {
             return Ok(None);
         }
-        db_load_items_page_from_connection(conn, query, cursor, limit).map(Some)
-    })
+        struct ResetProgress<'a>(&'a rusqlite::Connection);
+        impl Drop for ResetProgress<'_> {
+            fn drop(&mut self) {
+                self.0.progress_handler(0, None::<fn() -> bool>);
+                let _ = self.0.busy_timeout(std::time::Duration::from_secs(5));
+            }
+        }
+        conn.busy_timeout(std::time::Duration::from_millis(50))?;
+        conn.progress_handler(500, Some(move || !page_request_is_latest(hwnd, tab, request_seq)));
+        let _reset = ResetProgress(conn);
+        let result = query();
+        if !page_request_is_latest(hwnd, tab, request_seq) {
+            return Ok(None);
+        }
+        result.map(Some)
 }
 
 pub(super) fn db_load_vv_popup_items(category: i64, group_id: i64, limit: usize) -> Vec<ClipItem> {
@@ -1097,6 +1166,8 @@ fn run_items_page_load_worker() {
         let Some(task) = task else {
             return;
         };
+        let protection_revision = crate::db_runtime::search_protection_revision().unwrap_or_default();
+        let started = Instant::now();
         let loaded =
             crate::db_runtime::with_shared_app_data_generation(task.app_data_generation, || {
                 db_load_items_page_if_latest(
@@ -1121,6 +1192,7 @@ fn run_items_page_load_worker() {
                 next_cursor,
                 has_more,
                 error: None,
+                protection_revision: protection_revision.clone(),
             },
             Ok(None) => continue,
             Err(err) => PageLoadResult {
@@ -1134,9 +1206,15 @@ fn run_items_page_load_worker() {
                 next_cursor: task.cursor,
                 has_more: false,
                 error: Some(err.to_string()),
+                protection_revision: protection_revision.clone(),
             },
         };
 
+        if std::env::var_os("ZSCLIP_SEARCH_TRACE").is_some() {
+            eprintln!("search seq={} category={} query_chars={} sql_ms={} rows={} error={}",
+                task.request_seq, task.tab, result.query.search_text.chars().count(),
+                started.elapsed().as_millis(), result.items.len(), result.error.is_some());
+        }
         if page_request_is_latest(task.hwnd, task.tab, task.request_seq)
             && platform_window::is_window_alive(task.hwnd)
         {
@@ -1152,9 +1230,10 @@ fn run_items_page_load_worker() {
 pub(super) fn spawn_startup_data_reconcile(hwnd: HWND, keep_duplicates: bool) {
     let hwnd_value = hwnd as isize;
     std::thread::spawn(move || {
+        let protected_cleanup = with_db(crate::db_runtime::purge_protected_items).is_ok();
         let deleted = db_reconcile_dedupe_signatures_impl(0, keep_duplicates).unwrap_or(0);
         if platform_window::is_window_alive(hwnd_value) {
-            platform_window::post_message(hwnd_value, WM_STARTUP_DATA_RECONCILED, deleted, 0);
+            platform_window::post_message(hwnd_value, WM_STARTUP_DATA_RECONCILED, deleted.max(if protected_cleanup { 1 } else { 0 }), 0);
         }
     });
 }
@@ -1168,6 +1247,7 @@ pub(super) unsafe fn apply_ready_page_loads(hwnd: HWND, state: &mut AppState) {
 
 unsafe fn apply_ready_page_loads_locked(hwnd: HWND, state: &mut AppState) {
     let mut changed = false;
+    let mut retry_tabs = [false; 2];
     if let Ok(mut queue) = page_load_results().lock() {
         let mut pending = VecDeque::new();
         while let Some(result) = queue.pop_front() {
@@ -1178,9 +1258,30 @@ unsafe fn apply_ready_page_loads_locked(hwnd: HWND, state: &mut AppState) {
             if result.app_data_generation != state.app_data_generation {
                 continue;
             }
+            if result.tab>=retry_tabs.len()
+                || !state.load_state_for_tab(result.tab).accepts_result(result.request_seq,&result.query) {
+                continue;
+            }
+            if result.error.is_none() && crate::db_runtime::search_protection_revision()
+                .ok().as_deref() != Some(result.protection_revision.as_str()) {
+                let tab=result.tab;
+                if state.load_state_for_tab_mut(tab).invalidate_rejected_result(result.request_seq,&result.query) {
+                    state.items_for_tab_mut(tab).clear();
+                    mark_latest_page_request(hwnd as isize,tab,state.load_state_for_tab(tab).request_seq);
+                    retry_tabs[tab]=true;
+                }
+                continue;
+            }
             changed |= state.apply_page_load_result(result);
         }
         *queue = pending;
+    }
+    for (tab,retry) in retry_tabs.into_iter().enumerate() {
+        if !retry {continue;}
+        if tab==state.tab_index {
+            state.refilter();
+            changed=true;
+        }
     }
     if changed {
         platform_gdi::invalidate_rect(hwnd, null(), 1);
@@ -1191,8 +1292,8 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
     with_db(|conn| {
         conn.query_row(
             "SELECT id, kind, preview, text_data, rich_text_html, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
-             COALESCE(created_at, '') as created_at \
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+             COALESCE(created_at, '') as created_at, phrase_title \
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             params![id],
             |row| {
                 Ok(row_to_clip_item(DbItem {
@@ -1210,6 +1311,7 @@ pub(super) fn db_load_item_full(id: i64) -> Option<ClipItem> {
                     pinned: row.get(10)?,
                     group_id: row.get(11)?,
                     created_at: row.get(13)?,
+                    phrase_title: row.get(14)?,
                 }))
             },
         )
@@ -1221,8 +1323,8 @@ pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipI
     with_db(|conn| {
         conn.query_row(
             "SELECT id, kind, preview, text_data, rich_text_html, COALESCE(source_app, '') as source_app, file_paths, image_data, image_width, image_height, pinned, group_id, image_path, \
-             COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? ORDER BY id DESC LIMIT 1",
+             COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature, phrase_title \
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? ORDER BY id DESC LIMIT 1",
             params![category],
             |row| {
                 let item = row_to_clip_item(DbItem {
@@ -1240,6 +1342,7 @@ pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipI
                     pinned: row.get(10)?,
                     group_id: row.get(11)?,
                     created_at: row.get(13)?,
+                    phrase_title: row.get(15)?,
                 });
                 Ok((item, row.get::<_, String>(14)?))
             },
@@ -1251,7 +1354,7 @@ pub(super) fn db_load_latest_item_with_signature(category: i64) -> Option<(ClipI
 pub(super) fn db_latest_item_id(category: i64) -> Option<i64> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? ORDER BY id DESC LIMIT 1",
             params![category],
             |row| row.get::<_, i64>(0),
         )
@@ -1267,7 +1370,7 @@ pub(super) fn db_load_lan_origin_metadata(item_id: i64) -> Option<LanOriginMetad
         conn.query_row(
             "SELECT COALESCE(lan_origin_message_id, ''), COALESCE(lan_origin_device_id, ''), \
              COALESCE(lan_origin_seq, 0), COALESCE(lan_origin_hash, '') \
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             params![item_id],
             |row| {
                 let origin_seq_i64: i64 = row.get(2)?;
@@ -1328,6 +1431,11 @@ pub(super) fn db_insert_item(
 }
 
 pub(super) fn db_insert_item_with_lan_origin(category:i64,item:&ClipItem,signature:Option<&str>,origin:Option<&LanOriginMetadata>) -> rusqlite::Result<i64> {
+    let phrase_title = if category == 1 {
+        crate::app_core::normalize_phrase_title(&item.phrase_title)
+            .map_err(|message| rusqlite::Error::InvalidParameterName(message.into()))?
+    } else { String::new() };
+    if crate::db_runtime::text_is_protected(&phrase_title) { return Ok(0); }
     if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) { return Ok(0); }
     let kind = match item.kind {
         ClipKind::Image => "image",
@@ -1338,7 +1446,7 @@ pub(super) fn db_insert_item_with_lan_origin(category:i64,item:&ClipItem,signatu
     let preview = item.preview.clone();
     let signature = signature.unwrap_or_default().trim().to_string();
     let text_data = item.text.clone();
-    let rich_text_html = item.rich_text_html.clone();
+    let rich_text_html = item.rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html);
     let source_app = item.source_app.clone();
     let file_paths = item.file_paths.as_ref().map(|paths| paths.join("\n"));
     let image_data = item.image_bytes.clone();
@@ -1351,8 +1459,8 @@ pub(super) fn db_insert_item_with_lan_origin(category:i64,item:&ClipItem,signatu
             }
         }
         let inserted = tx.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, rich_text_html, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, lan_origin_message_id,lan_origin_device_id,lan_origin_seq,lan_origin_hash)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+            "INSERT INTO items(category, kind, preview, signature, text_data, rich_text_html, source_app, file_paths, image_data, image_path, image_width, image_height, pinned, group_id, lan_origin_message_id,lan_origin_device_id,lan_origin_seq,lan_origin_hash,phrase_title)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19
              WHERE ?2 NOT IN ('text','phrase') OR NOT zsclip_is_protected(COALESCE(NULLIF(?5,''),?3,''))",
             params![
                 category,
@@ -1373,6 +1481,7 @@ pub(super) fn db_insert_item_with_lan_origin(category:i64,item:&ClipItem,signatu
                 origin.map(|origin|origin.origin_device_id.as_str()).unwrap_or(""),
                 origin.map(|origin|origin.origin_seq as i64).unwrap_or(0),
                 origin.map(|origin|origin.hash.as_str()).unwrap_or(""),
+                phrase_title,
             ],
         )?;
         let id = if inserted == 0 { 0 } else { tx.last_insert_rowid() };
@@ -1391,10 +1500,12 @@ pub(super) fn db_find_duplicate_item_ids(
     item: &ClipItem,
     signature: &str,
 ) -> Vec<i64> {
+    // Explicit phrases are user-owned entries, even when their bodies match.
+    if category == 1 { return Vec::new(); }
     if !signature.trim().is_empty() {
         let found = with_db(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND signature=? ORDER BY pinned DESC, id DESC",
+                "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND signature=? ORDER BY pinned DESC, id DESC",
             )?;
             let rows = stmt.query_map(params![category, signature], |row| row.get::<_, i64>(0))?;
             Ok(rows.filter_map(|row| row.ok()).collect::<Vec<i64>>())
@@ -1412,10 +1523,10 @@ pub(super) fn db_find_duplicate_item_ids(
             .map(|text| {
                 with_db(|conn| {
                     let mut stmt = conn.prepare(
-                        "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND kind IN ('text','phrase') AND COALESCE(text_data, '')=? ORDER BY pinned DESC, id DESC",
+                        "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND kind IN ('text','phrase') AND COALESCE(text_data, '')=? AND COALESCE(rich_text_html,'')=? ORDER BY pinned DESC, id DESC",
                     )?;
                     let rows =
-                        stmt.query_map(params![category, text], |row| row.get::<_, i64>(0))?;
+                        stmt.query_map(params![category, text, item.rich_text_html.as_deref().unwrap_or("")], |row| row.get::<_, i64>(0))?;
                     Ok(rows.filter_map(|row| row.ok()).collect::<Vec<i64>>())
                 })
                 .unwrap_or_default()
@@ -1428,7 +1539,7 @@ pub(super) fn db_find_duplicate_item_ids(
                 let joined = paths.join("\n");
                 with_db(|conn| {
                     let mut stmt = conn.prepare(
-                        "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND kind='files' AND COALESCE(file_paths, '')=? ORDER BY pinned DESC, id DESC",
+                        "SELECT id FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND kind='files' AND COALESCE(file_paths, '')=? ORDER BY pinned DESC, id DESC",
                     )?;
                     let rows =
                         stmt.query_map(params![category, joined], |row| row.get::<_, i64>(0))?;
@@ -1444,7 +1555,7 @@ pub(super) fn db_find_duplicate_item_ids(
 pub(super) fn db_item_is_pinned(item_id: i64) -> bool {
     with_db(|conn| {
         conn.query_row(
-            "SELECT pinned FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+            "SELECT pinned FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             params![item_id],
             |row| row.get::<_, i64>(0),
         )
@@ -1456,7 +1567,7 @@ pub(super) fn db_item_is_pinned(item_id: i64) -> bool {
 pub(super) fn db_latest_item_signature(category: i64) -> Option<String> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT COALESCE(signature, '') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? ORDER BY id DESC LIMIT 1",
+            "SELECT COALESCE(signature, '') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? ORDER BY id DESC LIMIT 1",
             params![category],
             |row| row.get::<_, String>(0),
         )
@@ -1477,6 +1588,7 @@ fn db_reconcile_dedupe_signatures_impl(
     category: i64,
     keep_duplicates: bool,
 ) -> rusqlite::Result<usize> {
+    if category == 1 { return Ok(0); }
     let deleted = with_db_mut(|conn| {
         let rows = {
             let mut stmt = conn.prepare(
@@ -1487,8 +1599,8 @@ fn db_reconcile_dedupe_signatures_impl(
                  CASE WHEN COALESCE(signature, '')='' THEN image_data ELSE NULL END as image_data, \
                  CASE WHEN COALESCE(signature, '')='' THEN image_path ELSE NULL END as image_path, \
                  image_width, image_height, pinned, group_id, \
-                 COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature \
-                 FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? ORDER BY id DESC",
+                 COALESCE(created_at, '') as created_at, COALESCE(signature, '') as signature, phrase_title, rich_text_html \
+                 FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? ORDER BY id DESC",
             )?;
             let mapped = stmt.query_map(params![category], |row| {
                 let item = row_to_clip_item(DbItem {
@@ -1496,7 +1608,7 @@ fn db_reconcile_dedupe_signatures_impl(
                     kind: row.get(1)?,
                     preview: row.get(2)?,
                     text: row.get(3)?,
-                    rich_text_html: None,
+                    rich_text_html: row.get(15)?,
                     source_app: row.get(4)?,
                     file_paths: row.get(5)?,
                     image_bytes: row.get(6)?,
@@ -1506,6 +1618,7 @@ fn db_reconcile_dedupe_signatures_impl(
                     pinned: row.get(10)?,
                     group_id: row.get(11)?,
                     created_at: row.get(12)?,
+                    phrase_title: row.get(14)?,
                 });
                 Ok((item.id, item.pinned, row.get::<_, String>(13)?, item))
             })?;
@@ -1551,7 +1664,7 @@ fn db_reconcile_dedupe_signatures_impl(
         }
         for id in &delete_ids {
             let mut stmt = tx.prepare(
-                "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=? AND image_path IS NOT NULL AND TRIM(image_path)<>''",
+                "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=? AND image_path IS NOT NULL AND TRIM(image_path)<>''",
             )?;
             let rows = stmt.query_map(params![id], |row| row.get::<_, Option<String>>(0))?;
             deleted_image_paths.extend(rows.filter_map(|row| row.ok().flatten()));
@@ -1587,7 +1700,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             created_at,
         ) = tx.query_row(
             "SELECT category, kind, preview, COALESCE(signature, ''), text_data, rich_text_html, COALESCE(source_app, ''), file_paths, image_data, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, CURRENT_TIMESTAMP)
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             params![item_id],
             |row| {
                 Ok((
@@ -1632,6 +1745,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
             ],
         )?;
         let new_id = tx.last_insert_rowid();
+        tx.execute("UPDATE items SET phrase_title=(SELECT phrase_title FROM items WHERE id=?1) WHERE id=?2", params![item_id,new_id])?;
         tx.execute("UPDATE items SET lan_origin_message_id=(SELECT lan_origin_message_id FROM items WHERE id=?1),lan_origin_device_id=(SELECT lan_origin_device_id FROM items WHERE id=?1),lan_origin_seq=(SELECT lan_origin_seq FROM items WHERE id=?1),lan_origin_hash=(SELECT lan_origin_hash FROM items WHERE id=?1) WHERE id=?2",params![item_id,new_id])?;
         tx.execute("DELETE FROM items WHERE id=?", params![item_id])?;
         tx.commit()?;
@@ -1660,7 +1774,7 @@ pub(super) fn db_prune_items(category: i64, max_items: usize) {
         let _ = with_db(|conn| {
             let mut stmt = conn.prepare("SELECT id, image_path,
                 COALESCE(length(CAST(text_data AS BLOB)),0) + COALESCE(length(CAST(rich_text_html AS BLOB)),0) + COALESCE(length(image_data),0)
-                FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND pinned=0 ORDER BY id DESC")?;
+                FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND pinned=0 ORDER BY id DESC")?;
             let rows = stmt
                 .query_map([category], |row| {
                     Ok((
@@ -1729,7 +1843,7 @@ pub(super) fn db_delete_item(id: i64) -> rusqlite::Result<()> {
     with_db(|conn| {
         let paths = collect_image_paths_for_delete(
             conn,
-            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             &[&id],
         )?;
         conn.execute("DELETE FROM items WHERE id=?", params![id])?;
@@ -1742,7 +1856,7 @@ pub(super) fn db_delete_unpinned_items(category: i64) -> rusqlite::Result<usize>
     with_db(|conn| {
         let paths = collect_image_paths_for_delete(
             conn,
-            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND category=? AND pinned=0",
+            "SELECT image_path FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=? AND pinned=0",
             &[&category],
         )?;
         let affected = conn.execute(
@@ -1862,11 +1976,30 @@ pub(super) fn db_update_item_text(item_id: i64, new_text: &str) -> rusqlite::Res
 pub(super) fn db_item_text(item_id: i64) -> rusqlite::Result<String> {
     with_db(|conn| {
         conn.query_row(
-            "SELECT COALESCE(text_data,'') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0)) AND id=?",
+            "SELECT COALESCE(text_data,'') FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND id=?",
             [item_id],
             |row| row.get(0),
         )
     })
+}
+
+pub(super) fn db_save_phrase(item_id: i64, title: &str, body: &str) -> Result<(), String> {
+    let title = crate::app_core::normalize_phrase_title(title)?.to_string();
+    if crate::db_runtime::text_is_protected(&title) || crate::db_runtime::text_is_protected(body) {
+        return Err("受保护内容不能保存到常用短语".into());
+    }
+    with_db(|conn| {
+        let changed = conn.execute(
+            "UPDATE items SET phrase_title=?1, preview=substr(?2,1,120),
+             rich_text_html=CASE WHEN COALESCE(text_data,'')=?2 THEN rich_text_html ELSE NULL END,
+             signature=CASE WHEN COALESCE(text_data,'')=?2 THEN signature ELSE '' END,
+             text_data=?2 WHERE id=?3 AND category=1 AND kind='phrase'
+             AND NOT zsclip_is_protected(COALESCE(text_data,'')) AND NOT zsclip_is_protected_html(rich_text_html)",
+            params![title, body, item_id],
+        )?;
+        if changed == 0 { return Err(rusqlite::Error::QueryReturnedNoRows); }
+        Ok(())
+    }).map_err(|_| "短语不存在、已受保护或保存失败，请重新打开后重试".to_string())
 }
 
 pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> {
@@ -1877,6 +2010,7 @@ pub(super) fn db_add_phrase_from_item(item: &ClipItem) -> rusqlite::Result<i64> 
     clone.image_width = 0;
     clone.image_height = 0;
     clone.kind = ClipKind::Phrase;
+    if item.kind != ClipKind::Phrase { clone.group_id = 0; }
     if clone.text.is_none() {
         clone.text = Some(clone.preview.clone());
     }
@@ -1930,6 +2064,10 @@ fn reload_state_from_db_locked(state: &mut AppState) -> bool {
     state.refilter();
     settings_changed
 }
+
+#[cfg(test)]
+#[path = "search_phrase_tests.rs"]
+mod search_phrase_tests;
 
 #[cfg(test)]
 mod tests {

@@ -1261,6 +1261,7 @@ pub(crate) fn native_host_clip_item_from_projection(
     item: &NativeHostClipListItemProjection,
 ) -> ClipItem {
     ClipItem {
+        phrase_title: String::new(),
         id: item.id,
         kind: item.kind,
         preview: item.preview.clone(),

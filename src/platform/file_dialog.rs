@@ -13,6 +13,59 @@ impl WindowsFileDialogHost {
     pub(crate) const fn new() -> Self {
         Self
     }
+
+    pub(crate) fn save_png(
+        &self,
+        owner: windows_sys::Win32::Foundation::HWND,
+        title: &str,
+        file_name: &str,
+    ) -> Result<Option<std::path::PathBuf>, String> {
+        use windows_sys::Win32::UI::Controls::Dialogs::{
+            CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR,
+            OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        };
+        let title = crate::platform::string::to_wide(title);
+        let extension = crate::platform::string::to_wide("png");
+        let filter = "PNG (*.png)\0*.png\0\0".encode_utf16().collect::<Vec<_>>();
+        let mut path = vec![0u16; 32768];
+        let name = file_name
+            .encode_utf16()
+            .take(path.len() - 1)
+            .collect::<Vec<_>>();
+        path[..name.len()].copy_from_slice(&name);
+        let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        dialog.hwndOwner = owner;
+        dialog.lpstrFilter = filter.as_ptr();
+        dialog.nFilterIndex = 1;
+        dialog.lpstrFile = path.as_mut_ptr();
+        dialog.nMaxFile = path.len() as u32;
+        dialog.lpstrTitle = title.as_ptr();
+        dialog.lpstrDefExt = extension.as_ptr();
+        dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+        if unsafe { GetSaveFileNameW(&mut dialog) } == 0 {
+            let error = unsafe { CommDlgExtendedError() };
+            return if error == 0 {
+                Ok(None)
+            } else {
+                Err(format!("保存对话框错误: {error:#x}"))
+            };
+        }
+        let end = path
+            .iter()
+            .position(|unit| *unit == 0)
+            .unwrap_or(path.len());
+        let path = String::from_utf16(&path[..end]).map_err(|_| "保存路径编码无效".to_string())?;
+        let path = std::path::PathBuf::from(path);
+        if !path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("png"))
+        {
+            return Err("请使用 .png 扩展名保存图片".to_string());
+        }
+        Ok(Some(path))
+    }
 }
 
 fn encode_powershell_script(script: &str) -> String {

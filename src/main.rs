@@ -240,11 +240,13 @@ mod source_encoding_tests {
         let root = crate_root();
         let windows_win32_rs =
             fs::read_to_string(root.join("src/windows_win32_adapter.rs")).unwrap();
-        let macos_rs = fs::read_to_string(root.join("src/macos_app.rs")).unwrap();
+        let macos_rs = ["src/macos_app.rs", "src/macos_app/contract.rs", "src/macos_app/startup.rs"]
+            .iter().map(|path| fs::read_to_string(root.join(path)).unwrap()).collect::<Vec<_>>().join("\n");
         let macos_appkit_rs = fs::read_to_string(root.join("src/macos_appkit_adapter.rs")).unwrap();
         let macos_native_host_rs =
             fs::read_to_string(root.join("src/macos_native_host.rs")).unwrap();
-        let linux_rs = fs::read_to_string(root.join("src/linux_app.rs")).unwrap();
+        let linux_rs = ["src/linux_app.rs", "src/linux_app/contract.rs", "src/linux_app/startup.rs"]
+            .iter().map(|path| fs::read_to_string(root.join(path)).unwrap()).collect::<Vec<_>>().join("\n");
         let linux_gtk_rs = fs::read_to_string(root.join("src/linux_gtk_adapter.rs")).unwrap();
         let linux_native_host_rs =
             fs::read_to_string(root.join("src/linux_native_host.rs")).unwrap();
@@ -340,7 +342,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("zsclipSearchTextChanged:"));
         assert!(macos_native_host_rs.contains("update_clip_list_visibility"));
         assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items"));
-        assert!(macos_native_host_rs.contains("native_host_filtered_projected_clip_item_ids"));
+        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_category_group_kind_filter_search("));
+        assert!(macos_rs.contains("crate::db_runtime::native_clip_list_items_for_query("));
         assert!(macos_native_host_rs.contains("dispatch_appkit_search_text_action"));
         assert!(macos_native_host_rs.contains("setHidden"));
         assert!(macos_native_host_rs.contains("ZSClip Settings"));
@@ -441,7 +444,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("refresh_native_clip_rows"));
         assert!(macos_native_host_rs.contains("NSButton::buttonWithTitle_target_action"));
         assert!(macos_native_host_rs.contains("NSTableView::initWithFrame"));
-        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_group"));
+        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_category_group("));
         assert!(macos_native_host_rs.contains("reload_native_clip_items"));
         assert!(macos_native_host_rs.contains("native_host_edit_text_button_specs()"));
         assert!(!macos_native_host_rs.contains("native_host_main_action_button_specs()"));
@@ -449,7 +452,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("native_host_row_popup_menu_input_for_projection"));
         assert!(macos_native_host_rs.contains("perform_native_row_action"));
         assert!(macos_native_host_rs.contains("native_host_settings_action_button_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_settings_control_button_specs()"));
+        assert!(macos_native_host_rs.contains("native_host_settings_toggle_specs()"));
+        assert!(macos_native_host_rs.contains("native_host_settings_dropdown_specs()"));
         assert!(macos_native_host_rs.contains("native_host_settings_group_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_settings_platform_button_specs()"));
         assert!(macos_native_host_rs.contains("apply_native_settings_control_action"));
@@ -532,7 +536,7 @@ mod source_encoding_tests {
         assert!(macos_rs.contains("dispatch_macos_native_rename_group"));
         assert!(macos_rs.contains("dispatch_macos_native_delete_group"));
         assert!(macos_rs.contains("dispatch_macos_native_move_group"));
-        assert!(macos_rs.contains("native_clip_list_items(0, 64)"));
+        assert!(macos_rs.contains("crate::db_runtime::native_clip_list_items_for_group_kind_filter("));
         assert!(macos_rs.contains("zsclip.row.edit.save_db"));
         assert!(macos_rs.contains("zsclip.row.edit.save_missing"));
         assert!(macos_rs.contains("MainRenderInput::empty_records"));
@@ -572,7 +576,7 @@ mod source_encoding_tests {
         assert!(linux_rs.contains("dispatch_linux_native_rename_group"));
         assert!(linux_rs.contains("dispatch_linux_native_delete_group"));
         assert!(linux_rs.contains("dispatch_linux_native_move_group"));
-        assert!(linux_rs.contains("native_clip_list_items(0, 64)"));
+        assert!(linux_rs.contains("crate::db_runtime::native_clip_list_items_for_group_kind_filter("));
         assert!(linux_rs.contains("zsclip.row.edit.save_db"));
         assert!(linux_rs.contains("zsclip.row.edit.save_missing"));
         assert!(linux_rs.contains("LinuxGtkAdapterBoundary::default_from_linux_contract"));
@@ -623,7 +627,8 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("dispatch_linux_native_delete_group"));
         assert!(linux_native_host_rs.contains("dispatch_linux_native_move_group"));
         assert!(linux_native_host_rs.contains("native_host_settings_action_button_specs()"));
-        assert!(linux_native_host_rs.contains("native_host_settings_control_button_specs()"));
+        assert!(linux_native_host_rs.contains("native_host_settings_toggle_specs()"));
+        assert!(linux_native_host_rs.contains("native_host_settings_dropdown_specs()"));
         assert!(linux_native_host_rs.contains("native_host_settings_group_button_specs()"));
         assert!(linux_native_host_rs.contains("native_host_settings_platform_button_specs()"));
         assert!(linux_native_host_rs.contains("apply_gtk_settings_control_action"));
@@ -696,7 +701,7 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("dispatch_linux_native_edit_text_save"));
         assert!(linux_native_host_rs.contains("edit save item_id="));
         assert!(linux_native_host_rs.contains("struct EditRefreshTarget"));
-        assert!(linux_native_host_rs.contains("linux_native_host_projected_clip_items_for_group"));
+        assert!(linux_native_host_rs.contains("linux_native_host_projected_clip_items_for_category_group("));
         assert!(linux_native_host_rs.contains("target.current_group_filter.get()"));
         assert!(linux_native_host_rs.contains("selected_item_id"));
         assert!(linux_native_host_rs.contains("row selected item_id="));

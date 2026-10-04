@@ -11,6 +11,12 @@ const SND_ASYNC: u32 = 0x0001;
 const SND_FILENAME: u32 = 0x00020000;
 const SND_NODEFAULT: u32 = 0x0002;
 const SND_MEMORY: u32 = 0x0004;
+const SND_ALIAS: u32 = 0x00010000;
+
+pub(crate) fn play_system_default() -> bool {
+    let alias = to_wide("SystemDefault");
+    unsafe { PlaySoundW(alias.as_ptr(), 0, SND_ASYNC | SND_ALIAS | SND_NODEFAULT) != 0 }
+}
 
 pub(crate) fn play_wav_file(path: &Path) -> bool {
     if !path.is_file() {

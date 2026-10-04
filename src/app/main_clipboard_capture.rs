@@ -412,6 +412,7 @@ fn read_clipboard_capture_result(
                 let rich_text_html = if rich_text_enabled {
                     platform_clipboard::html_format_payload_from_snapshot(&snapshot)
                         .filter(|html| !html.trim().is_empty())
+                        .and_then(|html| crate::db_runtime::sanitize_rich_text_html(&html))
                 } else {
                     None
                 };
@@ -492,7 +493,8 @@ fn write_clipboard_helper_result(
             } else {
                 ClipboardCaptureWirePayload::None
             }
-        } else { ClipboardCaptureWirePayload::Text { normalized, rich_text_html } },
+        } else { ClipboardCaptureWirePayload::Text { normalized,
+            rich_text_html: rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html) } },
         ClipboardCaptureReadPayload::Image {
             bytes,
             width,
@@ -716,6 +718,7 @@ fn process_captured_item_db_request_locked(
     max_items: usize,
     removed_ids: &mut Vec<i64>,
 ) -> CapturedItemDbAction {
+    item.rich_text_html = item.rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html);
     if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) && item.text.as_deref().is_some_and(crate::db_runtime::text_is_protected) {
         return CapturedItemDbAction::Duplicate;
     }
@@ -1146,6 +1149,7 @@ unsafe fn add_captured_image_item_locked(
     };
     let preview = format_local_time_for_image_preview();
     let candidate = ClipItem {
+        phrase_title: String::new(),
         id: 0,
         kind: ClipKind::Image,
         preview,
@@ -1239,6 +1243,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
                 return;
             }
             let candidate = ClipItem {
+                phrase_title: String::new(),
                 id: 0,
                 kind: ClipKind::Files,
                 preview,
@@ -1260,6 +1265,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
             normalized,
             rich_text_html,
         } => {
+            let rich_text_html = rich_text_html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html);
             if crate::db_runtime::text_is_protected(&normalized) {
                 remember_clipboard_sequence(state, sequence);
                 if crate::db_runtime::text_is_registered(&normalized) {
@@ -1285,6 +1291,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
                 return;
             }
             let candidate = ClipItem {
+                phrase_title: String::new(),
                 id: 0,
                 kind: ClipKind::Text,
                 preview,
@@ -1397,7 +1404,7 @@ mod clipboard_helper_tests {
     #[test]
     fn protected_capture_db_work_is_discarded_without_retry() {
         crate::db_runtime::with_test_protected_texts(&["synthetic-capture-secret"], || {
-            let item = ClipItem { id: 0, kind: ClipKind::Text, preview: "synthetic-capture-secret".into(),
+            let item = ClipItem { phrase_title: String::new(), id: 0, kind: ClipKind::Text, preview: "synthetic-capture-secret".into(),
                 text: Some("synthetic-capture-secret".into()), rich_text_html: None, source_app: "test".into(),
                 file_paths: None, image_bytes: None, image_path: None, image_width: 0, image_height: 0,
                 pinned: false, group_id: 0, created_at: String::new() };
@@ -1435,7 +1442,7 @@ mod clipboard_helper_tests {
                 rich_text_html,
             } => {
                 assert_eq!(normalized, "clipboard text");
-                assert_eq!(rich_text_html.as_deref(), Some("<b>clipboard text</b>"));
+                assert_eq!(rich_text_html, crate::app_core::clipboard_html::normalize("<b>clipboard text</b>"));
             }
             _ => panic!("expected text clipboard payload"),
         }

@@ -9,6 +9,7 @@ use crate::zsclip_product_adapter::{
 
 fn text_item(text: &str) -> ClipItem {
     ClipItem {
+        phrase_title: String::new(),
         id: 0,
         kind: ClipKind::Text,
         preview: build_preview(text),
@@ -24,6 +25,26 @@ fn text_item(text: &str) -> ClipItem {
         group_id: 0,
         created_at: String::new(),
     }
+}
+
+#[test]
+fn disabling_phrase_titles_keeps_metadata_during_body_edits() {
+    crate::db_runtime::with_test_db(|| {
+        let mut phrase = text_item("原正文");
+        phrase.kind = ClipKind::Phrase;
+        phrase.phrase_title = "联系地址".into();
+        let id = db_insert_item(1, &phrase, None)?;
+        let before = db_load_item_full(id).unwrap();
+        assert_eq!(before.display_title_with_preference(true), "联系地址");
+        assert_eq!(before.display_title_with_preference(false), "原正文");
+        db_update_item_text(id, "更新后的正文")?;
+        let after = db_load_item_full(id).unwrap();
+        assert_eq!(after.phrase_title, "联系地址");
+        assert_eq!(after.display_title_with_preference(false), "更新后的正文");
+        assert_eq!(after.display_title_with_preference(true), "联系地址");
+        assert_eq!(after.text.as_deref(), Some("更新后的正文"));
+        Ok(())
+    }).unwrap();
 }
 
 fn settings_actions_source() -> String {
@@ -1184,22 +1205,28 @@ fn rich_text_html_persists_and_loads_with_full_clip_payload() {
         let loaded = db_load_item_full(id).unwrap();
 
         assert!(loaded.preview.starts_with("HTML 表格 2x2"));
-        assert_eq!(loaded.rich_text_html.as_deref(), Some(html));
+        let canonical = crate::app_core::clipboard_html::normalize(html).unwrap();
+        assert_eq!(loaded.rich_text_html.as_deref(), Some(canonical.as_str()));
+        assert_eq!(crate::app_core::clipboard_html::fragment(loaded.rich_text_html.as_deref().unwrap()).as_deref(), Some(html));
+        assert_eq!(loaded.text, item.text);
+        let stored: String = with_db(|conn| conn.query_row("SELECT rich_text_html FROM items WHERE id=?", [id], |row| row.get(0)))?;
+        assert_eq!(stored, canonical);
         Ok(())
     })
     .unwrap();
 }
 
 #[test]
-fn rich_text_setting_defaults_off_and_is_bound_to_native_settings_ui() {
+fn rich_text_setting_defaults_on_for_new_profiles_and_is_bound_to_native_settings_ui() {
     let settings_model = include_str!("settings_model.rs");
     let startup = settings_general_page_startup_source();
     let toggle_general = settings_toggle_state_general_source();
     let owner_draw_roles = settings_owner_draw_roles_source();
     let surface_controls = settings_window_surface_controls_source();
 
-    assert!(!AppSettings::default().rich_text_clipboard_enabled);
-    assert!(settings_model.contains("(\"rich_text\", \"富文本支持\", Toggle)"));
+    assert!(AppSettings::default().rich_text_clipboard_enabled);
+    assert!(!serde_json::from_str::<AppSettings>("{}").unwrap().rich_text_clipboard_enabled);
+    assert!(settings_model.contains("(\"rich_text\", \"保留文本与表格格式\", Toggle)"));
     assert!(settings_model
         .contains("\"rich_text\" => native_setting_binding(\"rich_text_clipboard_enabled\")"));
     assert!(settings_model.contains("\"rich_text\" => native_toggle_route(5096)"));
@@ -1442,11 +1469,11 @@ fn settings_window_buttons_map_to_stable_commands() {
     }
     assert_eq!(
         settings_page_to_sync_after_toggle(IDC_SET_COPY_SOUND_ENABLE),
-        Some(SettingsPage::General.index())
+        Some(SettingsPage::Clipboard.index())
     );
     assert_eq!(
         settings_page_to_sync_after_toggle(IDC_SET_PASTE_SOUND_ENABLE),
-        Some(SettingsPage::General.index())
+        Some(SettingsPage::Clipboard.index())
     );
     assert_eq!(
         settings_page_to_sync_after_toggle(IDC_SET_LAN_ENABLE),
@@ -2138,16 +2165,11 @@ fn windows_status_item_host_owns_native_tray_menu_operations() {
     assert!(status_host.contains("fn install(&mut self"));
     assert!(status_host.contains("fn remove(&mut self"));
     assert!(status_host.contains("fn present_menu(&mut self"));
-    assert!(status_host.contains("menu::create_popup()"));
-    assert!(status_host.contains("menu::track_popup_raw("));
-    assert!(status_host.contains("icon_name"));
-    assert!(status_host.contains("fn windows_status_menu_bitmap_for_icon_name("));
-    assert!(status_host.contains("fn apply_status_menu_icon("));
-    assert!(status_host.contains("SetMenuItemInfoW"));
-    assert!(status_host.contains("MIIM_BITMAP"));
-    assert!(status_host.contains("HBMMENU_POPUP_CLOSE"));
-    assert!(status_host
-        .contains("apply_status_menu_icon(popup, action.command_id() as u32, icon_name)"));
+    assert!(status_host.contains("NativePopupMenuEntry::Command"));
+    assert!(status_host.contains("id: action.command_id()"));
+    assert!(status_host.contains("StatusMenuEntry::Separator => NativePopupMenuEntry::Separator"));
+    assert!(status_host.contains("menu::present_themed_popup_menu("));
+    assert!(status_host.contains("TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN"));
     let create_popup_call = ["platform_menu", "::", "create_popup"].concat();
     let track_popup_call = ["platform_menu", "::", "track_popup_raw"].concat();
     assert!(
@@ -2439,7 +2461,7 @@ fn windows_paste_target_host_owns_foreground_and_focus_restore() {
     assert!(direct_edit_block
         .contains("WindowsWindowIdentityHost::new().exists(state.hotkey_passthrough_edit)"));
     assert!(
-        direct_edit_block.contains("set_paste_target_text(state.hotkey_passthrough_edit, &text)")
+        direct_edit_block.contains("replace_paste_target_selection(state.hotkey_passthrough_edit, &text)")
     );
     assert!(!production.contains("unsafe fn vv_target_is_text_input_ready"));
     assert!(target_ready_block.contains("paste_target_text_input_ready(target)"));
@@ -3708,7 +3730,8 @@ fn windows_settings_group_sections_live_outside_hosts_rs() {
     assert!(!group_sections.contains("fn settings_create_group_page("));
     assert!(group_page.contains("pub(super) unsafe fn settings_create_group_page("));
     assert!(group_page.contains("IDC_SET_GROUP_ENABLE"));
-    assert!(group_page.contains("IDC_SET_VV_SOURCE"));
+    assert!(!group_page.contains("IDC_SET_VV_SOURCE"));
+    assert!(settings_hotkey_page_source().contains("IDC_SET_VV_SOURCE"));
     assert!(group_page.contains("IDC_SET_GROUP_LIST"));
 
     assert!(group_sections.contains("db_load_groups"));
@@ -3736,22 +3759,22 @@ fn windows_settings_general_page_lives_outside_hosts_rs() {
     assert!(prelude.contains("use super::settings_general_page_window::*;"));
     assert!(!hosts.contains("fn settings_create_general_page("));
     assert!(general_page.contains("pub(super) unsafe fn settings_create_general_page("));
-    assert!(general_page.contains("settings_create_general_startup_behavior_page"));
-    assert!(general_page.contains("settings_create_general_window_position_page"));
-    assert!(!general_page.contains("IDC_SET_AUTOSTART"));
+    assert!(general_page.contains("IDC_SET_AUTOSTART"));
+    assert!(general_page.contains("IDC_SET_BTN_OPENCFG"));
     assert!(!general_page.contains("IDC_SET_SKIP_WINDOW_CLASSNAMES"));
-    assert!(general_startup
-        .contains("pub(super) unsafe fn settings_create_general_startup_behavior_page("));
-    assert!(general_startup.contains("IDC_SET_AUTOSTART"));
+    assert!(general_startup.contains("pub(super) unsafe fn settings_create_appearance_page("));
+    assert!(general_startup.contains("pub(super) unsafe fn settings_create_clipboard_page("));
+    assert!(general_startup.contains("IDC_SET_CONTENT_FONT_SIZE"));
+    assert!(general_startup.contains("IDC_SET_CARD_VIEW"));
+    assert!(!general_startup.contains("IDC_SET_AUTOSTART"));
     assert!(general_startup.contains("IDC_SET_MAX"));
     assert!(general_startup.contains("IDC_SET_RICH_TEXT"));
-    assert!(general_startup.contains("富文本支持"));
+    assert!(general_startup.contains("保留文本与表格格式"));
     assert!(general_startup.contains("IDC_SET_PASTE_SOUND_KIND"));
     assert!(general_window
-        .contains("pub(super) unsafe fn settings_create_general_window_position_page("));
-    assert!(general_window.contains("IDC_SET_SKIP_WINDOW_CLASSNAMES"));
+        .contains("pub(super) unsafe fn settings_create_window_position_controls("));
+    assert!(general_startup.contains("IDC_SET_SKIP_WINDOW_CLASSNAMES"));
     assert!(general_window.contains("IDC_SET_POSMODE"));
-    assert!(general_window.contains("IDC_SET_BTN_OPENCFG"));
     assert!(general_page.contains("SettingsPage::General.index()"));
 }
 
@@ -5287,7 +5310,7 @@ fn windows_window_identity_queries_use_identity_host() {
     assert!(hook_block.contains("WindowsWindowIdentityHost::new()"));
     assert!(hook_block.contains("identity_host.foreground_handle()"));
     assert!(hook_block.contains("identity_host.exists(fg)"));
-    assert!(hook_block.contains("identity_host.exists(target)"));
+    assert!(hook_block.contains("hook.session.begin("));
     assert!(vv_watch_block.contains("WindowsWindowIdentityHost::new()"));
     assert!(vv_watch_block.contains("identity_host.is_foreground(state.vv_popup_target)"));
     assert!(vv_watch_block.contains("identity_host.exists(state.vv_popup_target)"));
@@ -5295,9 +5318,8 @@ fn windows_window_identity_queries_use_identity_host() {
     assert!(vv_show_timer_block.contains("identity_host.exists(target)"));
     assert!(vv_show_timer_block.contains("identity_host.is_foreground(target)"));
     assert!(vv_show_event_block.contains("WindowsWindowIdentityHost::new()"));
-    assert!(vv_show_event_block.contains("identity_host.foreground_handle()"));
     assert!(vv_show_event_block.contains("identity_host.exists(target)"));
-    assert!(vv_show_event_block.contains("identity_host.exists(foreground)"));
+    assert!(!vv_show_event_block.contains("target = foreground"));
     assert!(capture_skip_block.contains("WindowsWindowIdentityHost::new()"));
     assert!(capture_skip_block.contains("identity_host.exists(target)"));
     assert!(capture_skip_block.contains("identity_host.is_current_process_window(target)"));
@@ -7198,7 +7220,9 @@ fn windows_main_popup_menu_executor_lives_outside_app_rs() {
     assert!(main_popup_menus.contains("NativeHostRowPopupMenuInput"));
     assert!(!main_popup_menus.contains("main_row_menu_plan(MainRowMenuInput"));
     assert!(!main_popup_menus.contains("main_row_popup_menu_entries("));
-    assert!(main_popup_menus.contains("native_host_group_filter_popup_menu_entries_for_groups("));
+    assert!(main_popup_menus.contains("main_group_filter_menu_plan("));
+    assert!(main_popup_menus.contains("main_group_filter_popup_entries(&plan,"));
+    assert!(main_popup_menus.contains("clip_kind_filter_options_for_tab(tab_index)"));
     assert!(main_popup_menus.contains("localize_group_filter_entry("));
     assert!(main_popup_menus.contains("WindowsPopupMenuHost::new().present_popup_menu"));
     assert!(main_popup_menus.contains("NativePopupMenuPlacement::TopLeft"));
@@ -7322,7 +7346,7 @@ fn windows_main_search_control_operations_use_search_control_host() {
     assert!(main_search.contains("search_text(state.search_hwnd"));
     assert!(main_search.contains("apply_search_style(request)"));
     assert!(main_search.contains("handle_search_control_command("));
-    assert!(main_search.contains("const SEARCH_DEBOUNCE_MS: u32 = 280"));
+    assert!(main_search.contains("const SEARCH_DEBOUNCE_MS: u32 = 150"));
     assert!(main_search.contains("main_search_visibility_plan(MainSearchVisibilityInput"));
     assert!(main_entry.contains("release_search_style_resource((*ptr).search_font)"));
     assert!(main_search_host.contains("fn apply_search_style("));

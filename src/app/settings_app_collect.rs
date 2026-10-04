@@ -5,7 +5,7 @@ pub(super) unsafe fn settings_collect_current_page_to_draft(st: &mut SettingsWnd
         return;
     }
     match SettingsPage::from_index(st.cur_page) {
-        SettingsPage::General => settings_collect_general_to_draft(st),
+        SettingsPage::General | SettingsPage::Appearance | SettingsPage::Clipboard => settings_collect_general_to_draft(st),
         SettingsPage::Hotkey => settings_collect_hotkey_to_draft(st),
         SettingsPage::Plugin => settings_collect_plugin_to_draft(st),
         SettingsPage::Group => settings_collect_group_to_draft(st),

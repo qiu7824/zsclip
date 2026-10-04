@@ -2,6 +2,10 @@ use super::prelude::*;
 
 pub(super) fn settings_toggle_general_get(st: &SettingsWndState, cid: isize) -> Option<bool> {
     match cid {
+        crate::win_system_params::IDC_SET_CAPTURE_ENABLE => Some(st.draft.clipboard_capture_enabled),
+        IDC_SET_CARD_VIEW => Some(st.draft.card_view_enabled),
+        IDC_SET_CARD_BORDER => Some(st.draft.card_border_enabled),
+        IDC_SET_CARD_SHADOW => Some(st.draft.card_shadow_enabled),
         IDC_SET_SHOW_PIN_BUTTON => Some(st.draft.show_pin_button),
         IDC_SET_AUTOSTART => Some(st.draft.auto_start),
         IDC_SET_SILENTSTART => Some(st.draft.silent_start),
@@ -30,6 +34,10 @@ pub(super) fn settings_toggle_general_get(st: &SettingsWndState, cid: isize) -> 
 
 pub(super) fn settings_toggle_general_flip(st: &mut SettingsWndState, cid: isize) -> bool {
     match cid {
+        crate::win_system_params::IDC_SET_CAPTURE_ENABLE => st.draft.clipboard_capture_enabled = !st.draft.clipboard_capture_enabled,
+        IDC_SET_CARD_VIEW => st.draft.card_view_enabled = !st.draft.card_view_enabled,
+        IDC_SET_CARD_BORDER => st.draft.card_border_enabled = !st.draft.card_border_enabled,
+        IDC_SET_CARD_SHADOW => st.draft.card_shadow_enabled = !st.draft.card_shadow_enabled,
         IDC_SET_SHOW_PIN_BUTTON => st.draft.show_pin_button = !st.draft.show_pin_button,
         IDC_SET_AUTOSTART => st.draft.auto_start = !st.draft.auto_start,
         IDC_SET_SILENTSTART => st.draft.silent_start = !st.draft.silent_start,

@@ -44,6 +44,30 @@ fn overlaps(a: UiRect, b: UiRect) -> bool {
 }
 
 #[test]
+fn unvisited_settings_pages_do_not_overwrite_saved_values() {
+    unsafe {
+        let surface = HiddenSettingsSurface::new();
+        let state = &mut *(platform_window::user_data(surface.0) as *mut SettingsWndState);
+        state.draft.show_mouse_dx = 77;
+        state.draft.show_mouse_dy = -33;
+        state.draft.show_fixed_x = 1200;
+        state.draft.show_fixed_y = 850;
+        state.draft.show_pos_mode = "fixed".into();
+        state.draft.vv_group_id = 901;
+        state.draft.max_items = 500;
+        settings_collect_general_to_draft(state);
+        settings_collect_group_to_draft(state);
+        assert_eq!(state.draft.show_mouse_dx, 77);
+        assert_eq!(state.draft.show_mouse_dy, -33);
+        assert_eq!(state.draft.show_fixed_x, 1200);
+        assert_eq!(state.draft.show_fixed_y, 850);
+        assert_eq!(state.draft.show_pos_mode, "fixed");
+        assert_eq!(state.draft.vv_group_id, 901);
+        assert_eq!(state.draft.max_items, 500);
+    }
+}
+
+#[test]
 fn hotkey_and_about_native_controls_do_not_overlap() {
     unsafe {
         let surface = HiddenSettingsSurface::new();
@@ -52,10 +76,14 @@ fn hotkey_and_about_native_controls_do_not_overlap() {
         settings_create_hotkey_page(surface.0, state);
         settings_create_about_page(surface.0, state);
         settings_create_group_page(surface.0, state);
+        settings_create_appearance_page(surface.0, state);
+        settings_create_clipboard_page(surface.0, state);
         for page in [
             SettingsPage::Hotkey,
             SettingsPage::About,
             SettingsPage::Group,
+            SettingsPage::Appearance,
+            SettingsPage::Clipboard,
         ] {
             let controls = state
                 .ui
@@ -131,7 +159,7 @@ fn scrolling_reuses_controls_and_only_moves_items_intersecting_the_viewport() {
     unsafe {
         let surface = HiddenSettingsSurface::new();
         let state = &mut *(platform_window::user_data(surface.0) as *mut SettingsWndState);
-        settings_show_page(surface.0, state, SettingsPage::General.index());
+        settings_show_page(surface.0, state, SettingsPage::Appearance.index());
         let page = state.cur_page;
         let handles: Vec<_> = state.ui.page_regs(page).map(|reg| reg.hwnd).collect();
         assert!(handles.len() > 10);
@@ -213,21 +241,79 @@ fn plain_paste_controls_have_toggle_and_dropdown_roles_and_follow_enabled_state(
 }
 
 #[test]
-fn group_actions_and_about_content_fit_the_default_settings_window() {
+fn content_font_dropdown_opens_and_selects_through_window_messages() {
+    unsafe {
+        let surface = HiddenSettingsSurface::new();
+        let state_ptr = platform_window::user_data(surface.0) as *mut SettingsWndState;
+        settings_show_page(surface.0, &mut *state_ptr, SettingsPage::Appearance.index());
+        let control = (*state_ptr).cb_content_font_size;
+        assert!(!control.is_null());
+        settings_wnd_proc(surface.0, WM_COMMAND, IDC_SET_CONTENT_FONT_SIZE as WPARAM, control as LPARAM);
+        assert!(settings_dropdown_popup_exists((*state_ptr).dropdown_popup), "Font control command must reach the dropdown host");
+        close_settings_dropdown_popup(&mut *state_ptr);
+        settings_wnd_proc(surface.0, crate::settings_ui_host::WM_SETTINGS_DROPDOWN_SELECTED,
+            IDC_SET_CONTENT_FONT_SIZE as WPARAM, 4);
+        assert_eq!((*state_ptr).draft.content_font_size, 18);
+        assert_eq!(settings_host_text(control), "18 px");
+    }
+}
+
+#[test]
+fn card_toggle_messages_disable_decorations_without_changing_saved_choices() {
+    unsafe {
+        let surface = HiddenSettingsSurface::new();
+        let state_ptr = platform_window::user_data(surface.0) as *mut SettingsWndState;
+        settings_show_page(surface.0, &mut *state_ptr, SettingsPage::Appearance.index());
+        (*state_ptr).draft.card_view_enabled = false;
+        (*state_ptr).draft.card_border_enabled = true;
+        (*state_ptr).draft.card_shadow_enabled = false;
+        settings_sync_page_state(&mut *state_ptr, SettingsPage::Appearance.index());
+        for control in (*state_ptr).card_detail_controls {
+            assert!(!platform_window::is_enabled_by_style(control));
+        }
+        settings_wnd_proc(surface.0, WM_COMMAND, IDC_SET_CARD_BORDER as WPARAM, 0);
+        settings_wnd_proc(surface.0, WM_COMMAND, IDC_SET_CARD_SHADOW as WPARAM, 0);
+        assert!((*state_ptr).draft.card_border_enabled);
+        assert!(!(*state_ptr).draft.card_shadow_enabled);
+        for enabled in [true, false, true] {
+            settings_wnd_proc(surface.0, WM_COMMAND, IDC_SET_CARD_VIEW as WPARAM, 0);
+            assert_eq!((*state_ptr).draft.card_view_enabled, enabled);
+            for control in (*state_ptr).card_detail_controls {
+                assert_eq!(platform_window::is_enabled_by_style(control), enabled);
+            }
+            assert!((*state_ptr).draft.card_border_enabled);
+            assert!(!(*state_ptr).draft.card_shadow_enabled);
+        }
+    }
+}
+
+#[test]
+fn group_actions_and_about_content_are_reachable_in_the_default_settings_window() {
     unsafe {
         let surface = HiddenSettingsSurface::new();
         let state = &mut *(platform_window::user_data(surface.0) as *mut SettingsWndState);
-        settings_create_group_page(surface.0, state);
-        settings_create_about_page(surface.0, state);
-        let bottom = settings_scale(690);
+        platform_window::move_window(surface.0, 0, 0, settings_scale(1080), settings_scale(740), false);
+        refresh_settings_window_metrics(surface.0, state);
+        let client = platform_window::client_rect(surface.0).unwrap();
+        let viewport = settings_viewport_rect(&client);
         for page in [SettingsPage::Group, SettingsPage::About] {
-            for reg in state.ui.page_regs(page.index()).filter(|reg| reg.visible) {
+            settings_show_page(surface.0, state, page.index());
+            let max_scroll = settings_page_max_scroll_for_state(state, page.index(), client.bottom - settings_content_y_scaled());
+            let controls = state.ui.page_regs(page.index()).filter(|reg| reg.visible)
+                .map(|reg| (reg.hwnd, reg.bounds, reg.scrollable)).collect::<Vec<_>>();
+            for (control, bounds, scrollable) in controls {
+                let target = if scrollable {
+                    (bounds.top - viewport.top - settings_scale(16)).clamp(0, max_scroll)
+                } else { 0 };
+                settings_scroll_to(surface.0, state, target);
+                let offset = if scrollable { state.content_scroll_y } else { 0 };
                 assert!(
-                    reg.bounds.bottom <= bottom,
-                    "{page:?} control extends below viewport: {} {:?}",
-                    settings_host_text(reg.hwnd),
-                    reg.bounds
+                    bounds.top - offset >= viewport.top && bounds.bottom - offset <= viewport.bottom,
+                    "{page:?} control cannot be reached by scrolling: {} {:?}, scroll={offset}",
+                    settings_host_text(control), bounds
                 );
+                assert_ne!(platform_window::window_style(control) & WS_VISIBLE, 0,
+                    "{page:?} control stayed hidden after scrolling: {}", settings_host_text(control));
             }
         }
     }
@@ -451,6 +537,7 @@ fn scrolling_time_uses_variable_row_height_and_expires_after_scrolling() {
         .enumerate()
     {
         state.records.push(ClipItem {
+            phrase_title: String::new(),
             id: index as i64 + 1,
             kind,
             preview: String::new(),

@@ -1,5 +1,24 @@
 use super::prelude::*;
 
+pub(super) unsafe fn draw_clipboard_row_card(
+    hdc: HDC, row: RECT, selected: bool, hovered: bool,
+    border: bool, shadow: bool, scale: i32, theme: Theme,
+) {
+    let scale = scale.max(1);
+    let body = RECT { left: row.left + 2 * scale, top: row.top + 2 * scale,
+        right: row.right - 3 * scale, bottom: row.bottom - 4 * scale };
+    if body.right <= body.left || body.bottom <= body.top { return; }
+    if shadow {
+        let shadow_rect = RECT { left: body.left + scale, top: body.top + 2 * scale,
+            right: body.right + scale, bottom: body.bottom + 2 * scale };
+        let color = if platform_appearance::is_dark_mode() { rgb(25, 25, 25) } else { rgb(223, 225, 228) };
+        draw_round_fill(hdc as _, &shadow_rect, color, 6 * scale);
+    }
+    let fill = if selected { theme.item_selected } else if hovered { theme.item_hover } else { theme.surface };
+    let stroke = if selected { theme.accent } else if border { theme.control_stroke } else { fill };
+    draw_round_rect(hdc as _, &body, fill, stroke, 6 * scale);
+}
+
 fn main_paint_fill_color(fill: MainPaintFill, th: Theme) -> u32 {
     match fill {
         MainPaintFill::Theme(role) => main_theme_role_color(role, th),
@@ -359,10 +378,17 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
             th,
         );
     } else {
-        for command in &render_plan.row_background_commands {
-            draw_main_paint_command(memdc, *command, th);
+        if !state.settings.card_view_enabled {
+            for command in &render_plan.row_background_commands {
+                draw_main_paint_command(memdc, *command, th);
+            }
         }
         for row_plan in &render_plan.visible_rows {
+            if state.settings.card_view_enabled {
+                draw_clipboard_row_card(memdc, row_plan.rect.into(), row_plan.selected, row_plan.hovered,
+                    state.settings.card_border_enabled, state.settings.card_shadow_enabled,
+                    ((state.ui_dpi.max(96) + 48) / 96) as i32, th);
+            }
             let i = row_plan.index;
             let item = state.active_items()[i as usize].clone();
             let row_presentation = crate::app_core::native_host_clip_row_presentation_for_clip_item(
@@ -433,7 +459,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                         format_created_at_local(&item.created_at, &row_presentation.preview);
                     &display_preview
                 } else {
-                    &row_presentation.preview
+                    item.display_title_with_preference(state.settings.phrase_titles_enabled)
                 };
             draw_main_row_text_command(memdc, row_content.text_command, preview_str, th);
         }
@@ -446,6 +472,15 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         );
     }
 
+    if state.search_results_pending() && state.visible_count() > 0 {
+        let rect = RECT { left: layout.list_x + 8, top: layout.list_y + 2,
+            right: layout.list_x + layout.list_w - 8, bottom: layout.list_y + 32 };
+        draw_round_fill(memdc as _, &rect, th.surface, 4);
+        let label = if state.active_load_state().error.is_some() {
+            tr("搜索失败，请按 Enter 重试", "Search failed. Press Enter to retry")
+        } else { tr("搜索中，上一组结果暂不可操作…", "Searching; previous results are temporarily unavailable…") };
+        draw_text_ex(memdc, label, &rect, th.text_muted, layout.row_text_size(), false, true, ui_text_font_family());
+    }
     for command in &render_plan.overlay_commands {
         draw_main_paint_command(memdc, *command, th);
     }

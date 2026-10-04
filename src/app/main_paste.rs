@@ -59,10 +59,20 @@ pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &Cl
         ClipKind::Text | ClipKind::Phrase => {
             if let Some(text) = &item.text {
                 let prepared = maybe_ai_clean_text(state, text);
-                let ok = platform_clipboard::WindowsClipboardHost::write_text(&prepared);
+                let html = item.rich_text_html.as_deref().filter(|_| prepared == *text);
+                let outcome = match html {
+                    Some(html) => platform_clipboard::write_text_and_html(state.hwnd, &prepared, html),
+                    None => platform_clipboard::WindowsClipboardHost::write_text(&prepared).then_some(false),
+                };
+                let ok = outcome.is_some();
                 if ok {
+                    let signature = html
+                        .filter(|_| outcome == Some(true))
+                        .and_then(crate::app_core::clipboard_html::normalize)
+                        .map(|html| rich_text_content_signature(&prepared, &html))
+                        .unwrap_or_else(|| text_content_signature(&prepared));
                     state.note_programmatic_clipboard_signature(
-                        text_content_signature(&prepared),
+                        signature,
                         CLIPBOARD_IGNORE_MS_PASTE,
                     );
                 }
@@ -216,6 +226,8 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
     if item_ref.kind != ClipKind::Image || item_ref.id <= 0 || item_ref.image_bytes.is_some() {
         return false;
     }
+    if context != ImagePasteRequestContext::VvPopup { state.vv_paste_guard = None; }
+    if !vv_paste_target_is_current(state) { return true; }
     cancel_queued_paste_attempt(hwnd, state);
     if !WindowsWindowIdentityHost::new().exists(target) {
         post_paste_failure_help(
@@ -322,7 +334,7 @@ pub(super) unsafe fn try_apply_to_explorer_rename(
     };
 
     let ok =
-        WindowsPasteTargetHost::new().set_paste_target_text(state.hotkey_passthrough_edit, &text);
+        WindowsPasteTargetHost::new().replace_paste_target_selection(state.hotkey_passthrough_edit, &text);
     if ok {
         set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_DIRECT_EDIT);
         clear_hotkey_passthrough_state(state);
@@ -459,6 +471,7 @@ pub(super) unsafe fn cancel_queued_paste_attempt(hwnd: HWND, state: &mut AppStat
 }
 
 pub(super) unsafe fn paste_selected(hwnd: HWND, state: &mut AppState) {
+    vv_finish_paste(state);
     let expected_generation = state.app_data_generation;
     if crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
         paste_selected_locked(hwnd, state);
@@ -802,6 +815,7 @@ pub(super) unsafe fn paste_protected_text_to_target(
     target: HWND,
     focus: HWND,
 ) -> bool {
+    state.vv_paste_guard = None;
     // A saved external target is required after closing a password or vault dialog.
     // Never fall back to another window while a secret is being pasted.
     if text.is_empty()
@@ -840,6 +854,7 @@ pub(super) unsafe fn paste_after_clipboard_ready(
     state: &mut AppState,
     hide_main: bool,
 ) {
+    state.vv_paste_guard = None;
     let target = effective_paste_target(state, hwnd);
     paste_after_clipboard_ready_to_target(hwnd, state, target, hide_main, 0);
 }
@@ -877,6 +892,11 @@ unsafe fn queue_paste_after_clipboard_ready_to_target(
     hide_main_immediately: bool,
     backspaces: u8,
 ) {
+    if !vv_paste_target_is_current(state) {
+        cancel_queued_paste_attempt(hwnd, state);
+        state.vv_paste_guard = None;
+        return;
+    }
     state.paste_target_override = target;
     state.paste_backspace_count = backspaces;
     state.paste_focus_retry_attempts = 0;
@@ -884,8 +904,10 @@ unsafe fn queue_paste_after_clipboard_ready_to_target(
         if hide_main_immediately {
             WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
         }
-        let _ = WindowsPasteTargetHost::new().force_paste_target_foreground(target);
-        restore_hotkey_focus_target(state, target);
+        if state.vv_paste_guard.is_none() {
+            let _ = WindowsPasteTargetHost::new().force_paste_target_foreground(target);
+            restore_hotkey_focus_target(state, target);
+        }
         timer::stop(hwnd, ID_TIMER_PASTE);
         timer::start(hwnd, ID_TIMER_PASTE, 150);
     } else {
