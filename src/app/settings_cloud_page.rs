@@ -19,7 +19,7 @@ pub(super) unsafe fn settings_create_cloud_page(hwnd: HWND, st: &mut SettingsWnd
         st,
         &sec0,
         0,
-        multi_sync_mode_display(mode),
+        crate::settings_model::multi_sync_mode_label(mode),
         IDC_SET_MULTI_SYNC_MODE,
         settings_scale(150),
     );

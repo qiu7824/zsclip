@@ -565,13 +565,30 @@ pub(crate) fn write_text_and_html(owner: HWND, text: &str, html: &str) -> Option
     if !open(owner) {
         return None;
     }
-    let result = if empty() && text_block.publish(CF_UNICODETEXT) {
-        Some(html_block.publish(html_format))
-    } else {
-        None
-    };
+    let result = publish_text_formats(
+        html_format,
+        |format| {
+            if format == CF_UNICODETEXT { text_block.publish(format) }
+            else { html_block.publish(format) }
+        },
+        empty,
+    );
     close();
     result
+}
+
+fn publish_text_formats(
+    html_format: u32,
+    mut publish: impl FnMut(u32) -> bool,
+    mut reset: impl FnMut() -> bool,
+) -> Option<bool> {
+    if !reset() { return None; }
+    // Consumers can choose the first recognized format, so rich data must be
+    // enumerated before its plain-text fallback.
+    let rich = html_format != 0 && publish(html_format);
+    if publish(CF_UNICODETEXT) { return Some(rich); }
+    // Discard a partial rich-only result before retrying the text fallback.
+    if reset() && publish(CF_UNICODETEXT) { Some(false) } else { None }
 }
 
 /// Publishes sensitive text and its exclusion markers while the clipboard is locked.
@@ -852,6 +869,34 @@ pub(crate) fn url_format_payloads_from_snapshot(snapshot: &ClipboardFormatSnapsh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rich_clipboard_publication_prefers_html_and_preserves_text_fallback() {
+        use std::cell::RefCell;
+        let calls = RefCell::new(Vec::new());
+        let result = publish_text_formats(0xc100,
+            |format| { calls.borrow_mut().push(format); true },
+            || { calls.borrow_mut().push(0); true });
+        assert_eq!(result, Some(true));
+        assert_eq!(*calls.borrow(), [0, 0xc100, CF_UNICODETEXT]);
+        let result = publish_text_formats(0xc100, |format| format == CF_UNICODETEXT, || true);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn partial_rich_clipboard_publication_is_cleared_before_text_retry() {
+        use std::cell::RefCell;
+        let formats = RefCell::new(Vec::new());
+        let mut text_attempts = 0;
+        let result = publish_text_formats(0xc100, |format| {
+            if format == CF_UNICODETEXT { text_attempts += 1; if text_attempts == 1 { return false; } }
+            formats.borrow_mut().push(format); true
+        }, || { formats.borrow_mut().clear(); true });
+        assert_eq!(result, Some(false));
+        assert_eq!(*formats.borrow(), [CF_UNICODETEXT]);
+        assert_eq!(publish_text_formats(0xc100, |_| false, || true), None);
+        assert_eq!(publish_text_formats(0xc100, |_| panic!("clipboard was not opened"), || false), None);
+    }
 
     #[test]
     fn ignore_formats_follow_capture_semantics() {

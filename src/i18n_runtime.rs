@@ -119,7 +119,22 @@ fn load_embedded_translation(code: &str) -> Option<TranslationMap> {
     parse_translation_map(text).ok()
 }
 
+#[cfg(test)]
+fn normalized_test_ui_language(raw: &str) -> Option<&'static str> {
+    match raw.trim().replace('_', "-").to_ascii_lowercase().as_str() {
+        "en" => Some("en"),
+        "zh-cn" => Some("zh-CN"),
+        _ => None,
+    }
+}
+
 fn detect_system_language_code() -> String {
+    #[cfg(test)]
+    if let Some(language) = std::env::var("ZSCLIP_TEST_UI_LANGUAGE").ok()
+        .as_deref().and_then(normalized_test_ui_language)
+    {
+        return language.to_string();
+    }
     #[cfg(target_os = "windows")]
     {
         if let Some(locale) = platform_locale::preferred_ui_language_code() {
@@ -195,5 +210,21 @@ mod tests {
     fn translation_search_includes_base_language() {
         let codes = translation_search_codes("en-GB");
         assert!(codes.iter().any(|code| code == "en"));
+    }
+
+    #[test]
+    fn process_test_language_override_accepts_only_supported_test_locales() {
+        assert_eq!(normalized_test_ui_language(" en "), Some("en"));
+        assert_eq!(normalized_test_ui_language("EN"), Some("en"));
+        assert_eq!(normalized_test_ui_language("zh-CN"), Some("zh-CN"));
+        assert_eq!(normalized_test_ui_language(" ZH_cn "), Some("zh-CN"));
+        for invalid in ["", "zh", "en-US", "fr", "en;zh-CN"] {
+            assert_eq!(normalized_test_ui_language(invalid), None);
+        }
+        if let Some(expected) = std::env::var("ZSCLIP_TEST_UI_LANGUAGE").ok()
+            .as_deref().and_then(normalized_test_ui_language)
+        {
+            assert_eq!(current_language_code(), expected);
+        }
     }
 }

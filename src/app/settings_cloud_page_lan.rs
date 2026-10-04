@@ -85,8 +85,10 @@ mod lan_layout_tests {
             settings_apply_multi_sync_mode(&mut state.draft,mode);
             if state.ui.is_built(SettingsPage::Cloud.index()) {settings_rebuild_cloud_page(hwnd,&mut state);}
             else {settings_create_cloud_page(hwnd,&mut state);}
+            let mode_label = settings_host_text(state.cb_multi_sync_mode);
+            assert_eq!(mode_label, crate::settings_model::multi_sync_mode_label(mode));
+            assert_eq!(crate::settings_model::multi_sync_mode_from_label(&mode_label), mode);
             if mode=="lan" {
-                assert_eq!(settings_host_text(state.cb_multi_sync_mode), "局域网");
                 assert!(!state.lb_lan_addresses.is_null());
                 assert!(!state.lb_lan_firewall.is_null());
                 assert!(!state.cb_lan_sync_mode.is_null());

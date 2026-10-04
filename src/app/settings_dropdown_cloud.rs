@@ -33,15 +33,19 @@ pub(super) unsafe fn open_settings_cloud_dropdown(
         IDC_SET_MULTI_SYNC_MODE => {
             let rc = settings_control_screen_rect_or_empty(st.cb_multi_sync_mode);
             let current_label = settings_host_text(st.cb_multi_sync_mode);
+            let current_mode = multi_sync_mode_from_label(&current_label);
             let current = MULTI_SYNC_MODE_OPTIONS
                 .iter()
-                .position(|x| *x == current_label)
+                .position(|label| multi_sync_mode_from_label(label) == current_mode)
                 .unwrap_or(0);
+            let labels = MULTI_SYNC_MODE_OPTIONS.iter()
+                .map(|label| crate::settings_model::multi_sync_mode_label(multi_sync_mode_from_label(label)))
+                .collect::<Vec<_>>();
             st.dropdown_popup = present_settings_dropdown_popup(
                 hwnd,
                 IDC_SET_MULTI_SYNC_MODE,
                 &rc,
-                &MULTI_SYNC_MODE_OPTIONS,
+                &labels,
                 current,
                 180,
             );

@@ -4491,7 +4491,7 @@ fn windows_settings_page_sync_lives_outside_hosts_rs() {
     assert!(!cloud_sync.contains("platform_gdi::invalidate_rect(hwnd, null(), 1)"));
     assert!(!cloud_sync.contains("lan_receive_mode_display(&s.lan_receive_mode)"));
     assert!(page_sync.contains("settings_host_set_enabled"));
-    assert!(cloud_sync.contains("multi_sync_mode_display(mode)"));
+    assert!(cloud_sync.contains("multi_sync_mode_label(mode)"));
     assert!(cloud_webdav_sync.contains("pub(super) unsafe fn settings_sync_cloud_webdav_state"));
     assert!(cloud_webdav_sync.contains("localized_cloud_status_text"));
     assert!(cloud_webdav_sync.contains("settings_host_set_enabled"));

@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.9"
+        default: "1.0.9.1"
   push:
     tags:
       - "0.*"
@@ -106,8 +106,17 @@ jobs:
       - name: Test Windows regressions
         shell: pwsh
         run: |
-          cargo test --release --locked --bin zsclip -- --test-threads=1
-          exit $LASTEXITCODE
+          cargo test --release --locked --bin zsclip --no-run --message-format=json > test-artifacts.json
+          if ($LASTEXITCODE -ne 0) { Get-Content test-artifacts.json; exit $LASTEXITCODE }
+          $tests = @(Get-Content test-artifacts.json | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -eq 'zsclip' -and $_.profile.test -and $_.executable })
+          if ($tests.Count -ne 1) { throw 'Expected one Windows test executable' }
+          $testExecutable = $tests[0].executable
+          foreach ($language in @('en', 'zh-CN')) {
+            $env:ZSCLIP_TEST_UI_LANGUAGE = $language
+            & $testExecutable --test-threads=1 2>&1 | Tee-Object -FilePath "test-$language.log"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Build Windows release
         shell: pwsh
         run: |

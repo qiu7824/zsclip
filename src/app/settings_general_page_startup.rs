@@ -1,7 +1,7 @@
 use super::prelude::*;
 
 pub(super) fn content_font_size_label(size: i32) -> String {
-    if size == 0 { "默认".to_string() } else { format!("{} px", size.clamp(12, 20)) }
+    if size == 0 { tr("默认", "Default").to_string() } else { format!("{} px", size.clamp(12, 20)) }
 }
 
 pub(super) unsafe fn draw_settings_appearance_preview(st: &SettingsWndState, dc: HDC, scroll_y: i32, theme: Theme) {

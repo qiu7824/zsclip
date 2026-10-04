@@ -1628,6 +1628,15 @@ pub fn multi_sync_mode_display(mode: &str) -> &'static str {
     }
 }
 
+pub fn multi_sync_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "webdav" => "WebDAV",
+        #[cfg(feature = "lan-sync")]
+        "lan" | "qinput" => tr("局域网", "LAN"),
+        _ => tr("关闭同步", "Off"),
+    }
+}
+
 pub fn multi_sync_mode_from_label(label: &str) -> &'static str {
     #[cfg(feature = "lan-sync")]
     if label == "Q 输入法" || label == "Q输入法" || label.eq_ignore_ascii_case("qinput") {
@@ -3956,7 +3965,14 @@ fn native_dropdown_options_from_pairs<const N: usize>(
         .collect::<Vec<_>>();
     let selected_index = options
         .iter()
-        .position(|option| option.raw_value == display.value || option.label == display.value)
+        .position(|option| {
+            let raw_value = if control.key == "multi_sync_mode" {
+                multi_sync_mode_from_label(&display.value)
+            } else {
+                display.value.as_str()
+            };
+            option.raw_value == raw_value || option.label == display.value
+        })
         .unwrap_or(0);
     Some(SettingsNativeDropdownOptions {
         control_key: control.key,
@@ -4063,7 +4079,10 @@ pub fn settings_native_dropdown_options(
         "multi_sync_mode" => native_dropdown_options_from_pairs(
             control,
             settings_json,
-            MULTI_SYNC_MODE_OPTIONS.map(|label| (multi_sync_mode_from_label(label), label.to_string())),
+            MULTI_SYNC_MODE_OPTIONS.map(|label| {
+                let mode = multi_sync_mode_from_label(label);
+                (mode, multi_sync_mode_label(mode).to_string())
+            }),
         ),
         "cloud_sync_interval" => native_dropdown_options_from_pairs(
             control,
@@ -5294,6 +5313,13 @@ mod tests {
         #[cfg(not(feature = "lan-sync"))]
         assert_eq!(multi_sync_mode_from_label("lan"), "off");
         assert_eq!(multi_sync_mode_from_label("关闭"), "off");
+        assert_eq!(multi_sync_mode_label("off"), tr("关闭同步", "Off"));
+        assert_eq!(multi_sync_mode_from_label("Off"), "off");
+        assert_eq!(multi_sync_mode_from_label("关闭同步"), "off");
+        for source_label in MULTI_SYNC_MODE_OPTIONS {
+            let mode = multi_sync_mode_from_label(source_label);
+            assert_eq!(multi_sync_mode_from_label(multi_sync_mode_label(mode)), mode);
+        }
 
         assert_eq!(multi_sync_mode_from_flags(false, false), "off");
         assert_eq!(multi_sync_mode_from_flags(true, false), "webdav");
@@ -5331,6 +5357,29 @@ mod tests {
     }
 
     #[test]
+    fn native_sync_dropdown_selects_semantic_keys_in_every_ui_language() {
+        let controls = settings_native_control_summaries();
+        let control = controls.iter().find(|control| control.key == "multi_sync_mode").unwrap();
+        let mut cases = vec![
+            (serde_json::json!({"cloud_sync_enabled": false, "lan_sync_enabled": false}), "off"),
+            (serde_json::json!({"cloud_sync_enabled": true, "lan_sync_enabled": false}), "webdav"),
+        ];
+        #[cfg(feature = "lan-sync")]
+        cases.extend([
+            (serde_json::json!({"cloud_sync_enabled": false, "lan_sync_enabled": true}), "lan"),
+            (serde_json::json!({"cloud_sync_enabled": true, "lan_sync_enabled": true}), "lan"),
+            (serde_json::json!({"q_input_sync_enabled": true}), "lan"),
+        ]);
+        for (settings, expected) in cases {
+            let options = settings_native_dropdown_options(control, &settings).unwrap();
+            let selected = &options.options[options.selected_index];
+            assert_eq!(selected.raw_value, expected);
+            assert_eq!(selected.label, multi_sync_mode_label(expected));
+            assert_eq!(multi_sync_mode_from_label(&selected.label), expected);
+        }
+    }
+
+    #[test]
     fn lan_receive_mode_options_are_platform_neutral() {
         assert_eq!(lan_receive_mode_display("records_only"), "只进入记录");
         assert_eq!(lan_receive_mode_display("clipboard"), "直接覆盖剪贴板");
@@ -5357,37 +5406,57 @@ mod tests {
             search_engine_template("unknown"),
             search_engine_template("jzxx")
         );
-        assert_eq!(search_engine_display("baidu"), "百度");
+        assert_eq!(search_engine_display("baidu"), translate("百度").as_ref());
         assert_eq!(search_engine_key_from_display("Google"), "google");
         assert_eq!(
             search_engine_key_from_display(&search_engine_display("custom")),
             "custom"
         );
         assert_eq!(search_engine_key_from_display("unknown"), "jzxx");
+        for (key, source_label, _) in SEARCH_ENGINE_PRESETS {
+            assert_eq!(search_engine_display(key), translate(source_label).as_ref());
+            assert_eq!(search_engine_key_from_display(source_label), key);
+            assert_eq!(search_engine_key_from_display(&search_engine_display(key)), key);
+        }
 
         assert_eq!(IMAGE_OCR_PROVIDER_OPTIONS.len(), 3);
-        assert_eq!(image_ocr_provider_display("baidu"), "百度 OCR");
+        assert_eq!(image_ocr_provider_display("baidu"), translate("百度 OCR").as_ref());
         assert_eq!(
             image_ocr_provider_key_from_display(&image_ocr_provider_display("winocr")),
             "winocr"
         );
         assert_eq!(image_ocr_provider_key_from_display("unknown"), "off");
+        for (key, source_label) in IMAGE_OCR_PROVIDER_OPTIONS {
+            assert_eq!(image_ocr_provider_display(key), translate(source_label).as_ref());
+            assert_eq!(image_ocr_provider_key_from_display(source_label), key);
+            assert_eq!(image_ocr_provider_key_from_display(&image_ocr_provider_display(key)), key);
+        }
 
         assert_eq!(TEXT_TRANSLATE_PROVIDER_OPTIONS.len(), 2);
-        assert_eq!(text_translate_provider_display("baidu"), "百度翻译");
+        assert_eq!(text_translate_provider_display("baidu"), translate("百度翻译").as_ref());
         assert_eq!(
             text_translate_provider_key_from_display(&text_translate_provider_display("baidu")),
             "baidu"
         );
         assert_eq!(text_translate_provider_key_from_display("unknown"), "off");
+        for (key, source_label) in TEXT_TRANSLATE_PROVIDER_OPTIONS {
+            assert_eq!(text_translate_provider_display(key), translate(source_label).as_ref());
+            assert_eq!(text_translate_provider_key_from_display(source_label), key);
+            assert_eq!(text_translate_provider_key_from_display(&text_translate_provider_display(key)), key);
+        }
 
         assert_eq!(TEXT_TRANSLATE_TARGET_OPTIONS.len(), 4);
-        assert_eq!(text_translate_target_display("en"), "英语");
+        assert_eq!(text_translate_target_display("en"), translate("英语").as_ref());
         assert_eq!(
             text_translate_target_key_from_display(&text_translate_target_display("kor")),
             "kor"
         );
         assert_eq!(text_translate_target_key_from_display("unknown"), "zh");
+        for (key, source_label) in TEXT_TRANSLATE_TARGET_OPTIONS {
+            assert_eq!(text_translate_target_display(key), translate(source_label).as_ref());
+            assert_eq!(text_translate_target_key_from_display(source_label), key);
+            assert_eq!(text_translate_target_key_from_display(&text_translate_target_display(key)), key);
+        }
     }
 
     #[test]
@@ -5412,12 +5481,17 @@ mod tests {
         );
 
         assert_eq!(PASTE_SOUND_OPTIONS.len(), 4);
-        assert_eq!(paste_sound_display("soft"), "柔和");
+        assert_eq!(paste_sound_display("soft"), translate("柔和").as_ref());
         assert_eq!(
             paste_sound_key_from_display(&paste_sound_display("custom")),
             "custom"
         );
         assert_eq!(paste_sound_key_from_display("unknown"), "default");
+        for (key, source_label) in PASTE_SOUND_OPTIONS {
+            assert_eq!(paste_sound_display(key), translate(source_label).as_ref());
+            assert_eq!(paste_sound_key_from_display(source_label), key);
+            assert_eq!(paste_sound_key_from_display(&paste_sound_display(key)), key);
+        }
         assert_eq!(
             paste_sound_file_button_text(""),
             tr("选择文件", "Choose file")
@@ -6227,8 +6301,9 @@ mod tests {
         assert!(max_items
             .options
             .iter()
-            .any(|option| option.raw_value == "0" && option.label == "无限制"));
+            .any(|option| option.raw_value == "0" && option.label == settings_dropdown_label_for_max_items(0)));
         assert_eq!(max_items.options[max_items.selected_index].raw_value, "0");
+        assert_eq!(settings_dropdown_max_items_from_label_opt(&max_items.options[max_items.selected_index].label), Some(0));
         let position = dropdown_for_key("position_mode");
         assert_eq!(position.options[position.selected_index].raw_value, "fixed");
         let search_engine = dropdown_for_key("search_engine");
@@ -6318,7 +6393,8 @@ mod tests {
             settings_native_control_display_value(control, &settings_json).unwrap()
         };
         let sync_display = display_for_key("multi_sync_mode");
-        assert_eq!(sync_display.value, "局域网");
+        assert_eq!(sync_display.value, multi_sync_mode_display("lan"));
+        assert_eq!(multi_sync_mode_from_label(&sync_display.value), "lan");
         assert!(!sync_display.sensitive);
         let url_display = display_for_key("cloud_webdav_url");
         assert_eq!(url_display.value, "https://dav.example/zsclip");

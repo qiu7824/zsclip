@@ -788,18 +788,20 @@ impl NativeEditTextDialogHost for WindowsEditTextDialogHost {
 mod tests {
     #[test]
     fn windows_edit_text_dialog_is_owned_by_dedicated_host_module() {
-        let source = include_str!("windows_edit_text_dialog.rs");
-        let production = source
-            .split("\n#[cfg(test)]\nmod tests")
-            .next()
-            .unwrap_or(source);
+        let source = include_str!("windows_edit_text_dialog.rs").replace("\r\n", "\n");
+        for encoded_source in [source.clone(), source.replace('\n', "\r\n")] {
+            let normalized_source = encoded_source.replace("\r\n", "\n");
+            let (production, _) = normalized_source
+                .split_once("\n#[cfg(test)]\nmod tests")
+                .expect("dialog source must have a distinct test module");
 
-        assert!(production.contains("pub(crate) struct WindowsEditTextDialogHost"));
-        assert!(production.contains("impl NativeEditTextDialogHost for WindowsEditTextDialogHost"));
-        assert!(production.contains("unsafe extern \"system\" fn edit_dialog_proc"));
-        assert!(production.contains("save_handler.save_text(&text)"));
-        assert!(!production.contains("db_update_item_text"));
-        assert!(!production.contains("with_db("));
-        assert!(!production.contains("load_settings("));
+            assert!(production.contains("pub(crate) struct WindowsEditTextDialogHost"));
+            assert!(production.contains("impl NativeEditTextDialogHost for WindowsEditTextDialogHost"));
+            assert!(production.contains("unsafe extern \"system\" fn edit_dialog_proc"));
+            assert!(production.contains("save_handler.save_text(&text)"));
+            assert!(!production.contains("db_update_item_text"));
+            assert!(!production.contains("with_db("));
+            assert!(!production.contains("load_settings("));
+        }
     }
 }

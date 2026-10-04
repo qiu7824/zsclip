@@ -24,7 +24,8 @@ pub(super) unsafe fn handle_settings_cloud_selection(
         }
         IDC_SET_MULTI_SYNC_MODE => {
             if let Some(label) = MULTI_SYNC_MODE_OPTIONS.get(index) {
-                settings_set_text(st.cb_multi_sync_mode, label);
+                let mode = multi_sync_mode_from_label(label);
+                settings_set_text(st.cb_multi_sync_mode, crate::settings_model::multi_sync_mode_label(mode));
                 settings_collect_to_app(st);
                 #[cfg(feature = "lan-sync")]
                 if st.draft.lan_sync_enabled {
