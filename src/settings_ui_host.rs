@@ -8,7 +8,8 @@ use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::Gdi::{DEFAULT_GUI_FONT, PAINTSTRUCT},
+    Graphics::Gdi::{GetWindowDC, ReleaseDC, DEFAULT_GUI_FONT, PAINTSTRUCT},
+    UI::Shell::{DefSubclassProc, SetWindowSubclass},
     UI::WindowsAndMessaging::*,
 };
 
@@ -1404,8 +1405,10 @@ pub unsafe fn create_settings_edit(
     );
     if !hwnd.is_null() {
         platform_window::send_message(hwnd, WM_SETFONT, font as usize, 1);
+        // DarkMode_CFD is the edit-box dark theme; DarkMode_Explorer leaves a
+        // bright client edge around dark edit boxes.
         let theme = if platform_appearance::is_dark_mode() {
-            "DarkMode_Explorer"
+            "DarkMode_CFD"
         } else {
             "Explorer"
         };
@@ -1448,11 +1451,29 @@ pub unsafe fn create_settings_listbox(
     h: i32,
     font: *mut c_void,
 ) -> HWND {
+    const LBS_OWNERDRAWFIXED_STYLE: u32 = 0x0010;
+    const LBS_HASSTRINGS_STYLE: u32 = 0x0040;
+    const LB_SETITEMHEIGHT_MSG: u32 = 0x01A0;
+    let dark = platform_appearance::is_dark_mode();
+    // No dark theme restyles the listbox client edge (it stays bright white),
+    // so dark mode uses a plain border painted by `settings_listbox_border_proc`.
+    let (ex_style, border_style) = if dark {
+        (0, WS_BORDER)
+    } else {
+        (WS_EX_CLIENTEDGE, 0)
+    };
     let hwnd = platform_window::create_window_ex(
-        WS_EX_CLIENTEDGE,
+        ex_style,
         to_wide("LISTBOX").as_ptr(),
         to_wide("").as_ptr(),
-        WS_CHILD | WS_VISIBLE | WS_TABSTOP | (LBS_NOTIFY as u32) | WS_VSCROLL,
+        WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | (LBS_NOTIFY as u32)
+            | LBS_OWNERDRAWFIXED_STYLE
+            | LBS_HASSTRINGS_STYLE
+            | border_style
+            | WS_VSCROLL,
         x,
         y,
         w,
@@ -1464,11 +1485,122 @@ pub unsafe fn create_settings_listbox(
     );
     if !hwnd.is_null() {
         platform_window::send_message(hwnd, WM_SETFONT, font as usize, 1);
-        platform_appearance::set_window_theme(hwnd, "Explorer");
+        platform_window::send_message(
+            hwnd,
+            LB_SETITEMHEIGHT_MSG,
+            0,
+            settings_list_item_height() as isize,
+        );
+        platform_appearance::set_window_theme(
+            hwnd,
+            if dark { "DarkMode_Explorer" } else { "Explorer" },
+        );
+        if dark {
+            SetWindowSubclass(hwnd, Some(settings_listbox_border_proc), 1, 0);
+        }
         platform_window::show_scrollbar(hwnd, SB_VERT, false);
         platform_window::show_scrollbar(hwnd, SB_HORZ, false);
     }
     hwnd
+}
+
+unsafe extern "system" fn settings_listbox_border_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _subclass_id: usize,
+    _ref_data: usize,
+) -> LRESULT {
+    const PRF_NONCLIENT_FLAG: LPARAM = 0x0002;
+    let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+    let print_frame = msg == WM_PRINT && lparam & PRF_NONCLIENT_FLAG != 0;
+    if msg != WM_NCPAINT && !print_frame {
+        return result;
+    }
+    let Some(bounds) = platform_window::window_rect(hwnd) else {
+        return result;
+    };
+    let frame = RECT {
+        left: 0,
+        top: 0,
+        right: bounds.right - bounds.left,
+        bottom: bounds.bottom - bounds.top,
+    };
+    let (dc, owned) = if print_frame {
+        (wparam as *mut c_void, false)
+    } else {
+        (GetWindowDC(hwnd) as *mut c_void, true)
+    };
+    if !dc.is_null() {
+        let brush = platform_gdi::create_solid_brush(Theme::default().control_stroke);
+        platform_gdi::frame_rect(dc as _, &frame, brush);
+        platform_gdi::delete_object(brush as _);
+        if owned {
+            ReleaseDC(hwnd, dc as _);
+        }
+    }
+    result
+}
+
+pub fn settings_list_item_height() -> i32 {
+    settings_scale(24)
+}
+
+/// Owner-drawn settings list row: the dropdown popup's rounded selection and
+/// accent bar instead of the system's full-width blue highlight.
+pub unsafe fn draw_settings_list_item(
+    hdc: *mut c_void,
+    rc: &RECT,
+    text: &str,
+    selected: bool,
+    disabled: bool,
+    th: Theme,
+) {
+    let bg = platform_gdi::create_solid_brush(th.surface);
+    platform_gdi::fill_rect(hdc, rc, bg);
+    platform_gdi::delete_object(bg as _);
+    if selected {
+        let inset = settings_scale(2);
+        let pill = RECT {
+            left: rc.left + inset,
+            top: rc.top + inset / 2,
+            right: rc.right - inset,
+            bottom: rc.bottom - inset / 2,
+        };
+        draw_round_fill(hdc, &pill, th.item_selected, settings_scale(4));
+        let half_bar = ((pill.bottom - pill.top) / 2 - settings_scale(5)).max(settings_scale(4));
+        let cy = (pill.top + pill.bottom) / 2;
+        let bar = RECT {
+            left: pill.left + settings_scale(2),
+            top: cy - half_bar,
+            right: pill.left + settings_scale(5),
+            bottom: cy + half_bar,
+        };
+        if !disabled {
+            draw_round_fill(hdc, &bar, th.accent, settings_scale(2));
+        }
+    }
+    let text_rc = RECT {
+        left: rc.left + settings_scale(14),
+        top: rc.top,
+        right: rc.right - settings_scale(8),
+        bottom: rc.bottom,
+    };
+    draw_text_ex(
+        hdc,
+        text,
+        &text_rc,
+        if disabled {
+            settings_disabled_text(th)
+        } else {
+            th.text
+        },
+        14,
+        false,
+        false,
+        ui_text_font_family(),
+    );
 }
 
 pub unsafe fn get_ctrl_text_wide(hwnd: HWND) -> Vec<u16> {
@@ -1499,13 +1631,54 @@ pub unsafe fn draw_text_wide_centered(
     platform_gdi::delete_object(font as _);
 }
 
+fn settings_theme_is_dark(th: Theme) -> bool {
+    th.bg == rgb(32, 32, 32)
+}
+
+/// Fluent "disabled" tones: readable but clearly inactive.
+fn settings_disabled_text(th: Theme) -> u32 {
+    if settings_theme_is_dark(th) {
+        rgb(120, 120, 120)
+    } else {
+        rgb(160, 160, 160)
+    }
+}
+
+fn settings_disabled_stroke(th: Theme) -> u32 {
+    if settings_theme_is_dark(th) {
+        rgb(66, 66, 66)
+    } else {
+        rgb(224, 224, 224)
+    }
+}
+
+fn settings_disabled_accent_fill(th: Theme) -> u32 {
+    if settings_theme_is_dark(th) {
+        rgb(84, 84, 84)
+    } else {
+        rgb(199, 199, 199)
+    }
+}
+
+fn settings_control_stroke(th: Theme, emphasized: bool) -> u32 {
+    match (settings_theme_is_dark(th), emphasized) {
+        (true, false) => th.control_stroke,
+        (true, true) => rgb(104, 104, 104),
+        (false, false) => rgb(204, 204, 204),
+        (false, true) => rgb(196, 196, 196),
+    }
+}
+
 pub unsafe fn draw_settings_toggle_component(
     hdc: *mut c_void,
     rc: &RECT,
     hover: bool,
     checked: bool,
+    disabled: bool,
     th: Theme,
 ) {
+    let hover = hover && !disabled;
+    let dark = settings_theme_is_dark(th);
     let bg = platform_gdi::create_solid_brush(th.surface);
     platform_gdi::fill_rect(hdc, rc, bg);
     platform_gdi::delete_object(bg as _);
@@ -1525,7 +1698,14 @@ pub unsafe fn draw_settings_toggle_component(
     let radius = (thh / 2).max(6);
 
     if checked {
-        draw_round_rect(hdc, &track, th.accent, th.accent, radius);
+        let track_fill = if disabled {
+            settings_disabled_accent_fill(th)
+        } else if hover {
+            th.accent_hover
+        } else {
+            th.accent
+        };
+        draw_round_rect(hdc, &track, track_fill, track_fill, radius);
         let k = ((thh * 14) / 20).max(12);
         let ky = cy + (thh - k) / 2;
         let knob_pad = ((thh - k) / 2).max(3);
@@ -1535,12 +1715,34 @@ pub unsafe fn draw_settings_toggle_component(
             right: cx + tw - knob_pad,
             bottom: ky + k,
         };
-        draw_round_rect(hdc, &krc, rgb(255, 255, 255), rgb(255, 255, 255), 7);
-    } else {
-        let border = if hover {
-            rgb(28, 28, 28)
+        let knob = if disabled && dark {
+            rgb(150, 150, 150)
         } else {
-            rgb(136, 136, 136)
+            rgb(255, 255, 255)
+        };
+        draw_round_rect(hdc, &krc, knob, knob, 7);
+    } else {
+        // Light theme keeps its original dark knob; dark theme needs a light
+        // knob or it disappears into the track.
+        let knob_color = match (dark, disabled, hover) {
+            (_, true, _) => {
+                if dark {
+                    rgb(92, 92, 92)
+                } else {
+                    rgb(196, 196, 196)
+                }
+            }
+            (true, false, true) => rgb(235, 235, 235),
+            (true, false, false) => rgb(200, 200, 200),
+            (false, false, true) => rgb(28, 28, 28),
+            (false, false, false) => rgb(102, 102, 102),
+        };
+        let border = match (dark, disabled, hover) {
+            (_, true, _) => knob_color,
+            (true, false, true) => rgb(235, 235, 235),
+            (true, false, false) => rgb(160, 160, 160),
+            (false, false, true) => rgb(28, 28, 28),
+            (false, false, false) => rgb(136, 136, 136),
         };
         let fill = settings_toggle_off_track_fill(th.bg);
         draw_round_rect(hdc, &track, fill, border, radius);
@@ -1552,11 +1754,6 @@ pub unsafe fn draw_settings_toggle_component(
             top: ky,
             right: cx + knob_pad + k,
             bottom: ky + k,
-        };
-        let knob_color = if hover {
-            rgb(28, 28, 28)
-        } else {
-            rgb(102, 102, 102)
         };
         draw_round_rect(hdc, &krc, knob_color, knob_color, 6);
     }
@@ -1577,8 +1774,11 @@ pub unsafe fn draw_settings_button_component(
     kind: SettingsComponentKind,
     hover: bool,
     pressed: bool,
+    disabled: bool,
     th: Theme,
 ) {
+    let hover = hover && !disabled;
+    let pressed = pressed && !disabled;
     let rr = RECT {
         left: rc.left + 1,
         top: rc.top + 1,
@@ -1588,22 +1788,29 @@ pub unsafe fn draw_settings_button_component(
     let text_px = 14;
     match kind {
         SettingsComponentKind::Dropdown => {
-            draw_settings_dropdown_button(hdc, &rr, text, hover, pressed, th);
+            draw_settings_dropdown_button(hdc, &rr, text, hover, pressed, disabled, th);
         }
         SettingsComponentKind::AccentButton => {
-            let fill = if pressed {
+            let fill = if disabled {
+                settings_disabled_accent_fill(th)
+            } else if pressed {
                 th.accent_pressed
             } else if hover {
                 th.accent_hover
             } else {
                 th.accent
             };
+            let text_color = if disabled && settings_theme_is_dark(th) {
+                rgb(150, 150, 150)
+            } else {
+                rgb(255, 255, 255)
+            };
             draw_round_rect(hdc, &rr, fill, fill, 4);
             draw_text_ex(
                 hdc,
                 text,
                 &rr,
-                rgb(255, 255, 255),
+                text_color,
                 text_px,
                 false,
                 true,
@@ -1618,17 +1825,21 @@ pub unsafe fn draw_settings_button_component(
             } else {
                 th.button_bg
             };
-            let border = if pressed || hover {
-                rgb(196, 196, 196)
+            let border = if disabled {
+                settings_disabled_stroke(th)
             } else {
-                rgb(204, 204, 204)
+                settings_control_stroke(th, pressed || hover)
             };
             draw_round_rect(hdc, &rr, fill, border, 4);
             draw_text_ex(
                 hdc,
                 text,
                 &rr,
-                th.text,
+                if disabled {
+                    settings_disabled_text(th)
+                } else {
+                    th.text
+                },
                 text_px,
                 false,
                 true,
@@ -1644,10 +1855,13 @@ pub unsafe fn draw_settings_dropdown_button(
     hdc: *mut c_void,
     rc: &RECT,
     text: &str,
-    _hover: bool,
+    hover: bool,
     pressed: bool,
+    disabled: bool,
     th: Theme,
 ) {
+    let hover = hover && !disabled;
+    let pressed = pressed && !disabled;
     let rr = RECT {
         left: rc.left + 1,
         top: rc.top + 1,
@@ -1661,10 +1875,16 @@ pub unsafe fn draw_settings_dropdown_button(
     let arrow_w = (control_h * 20 / 32).max(18);
     let fill = if pressed {
         th.button_pressed
+    } else if hover {
+        th.button_hover
     } else {
         th.surface
     };
-    let border = th.control_stroke;
+    let border = if disabled {
+        settings_disabled_stroke(th)
+    } else {
+        th.control_stroke
+    };
     draw_round_rect(hdc, &rr, fill, border, 6);
 
     let text_rc = RECT {
@@ -1677,7 +1897,11 @@ pub unsafe fn draw_settings_dropdown_button(
         hdc,
         text,
         &text_rc,
-        th.text,
+        if disabled {
+            settings_disabled_text(th)
+        } else {
+            th.text
+        },
         text_px,
         false,
         false,
@@ -1690,16 +1914,30 @@ pub unsafe fn draw_settings_dropdown_button(
         right: rr.right - (control_h * 8 / 32).max(6),
         bottom: rr.bottom,
     };
+    // Segoe MDL2 Assets has no U+25BE; use its ChevronDown glyph.
     draw_text_ex(
         hdc,
-        "\u{25BE}",
+        "\u{E70D}",
         &arrow_rc,
-        th.text_muted,
+        if disabled {
+            settings_disabled_text(th)
+        } else {
+            th.text_muted
+        },
         arrow_px,
         false,
         true,
         ui_icon_font_family(),
     );
+}
+
+/// Same tone as the settings navigation hover, so list hover reads consistently.
+fn settings_dropdown_hover_fill(th: Theme) -> u32 {
+    if settings_theme_is_dark(th) {
+        rgb(60, 60, 60)
+    } else {
+        rgb(237, 237, 237)
+    }
 }
 
 unsafe fn apply_dark_mode_to_window(hwnd: HWND) {
@@ -1876,19 +2114,25 @@ unsafe extern "system" fn dropdown_popup_proc(
                             bottom: top + interaction.item_height,
                         };
                         let selected = st.selected == idx as i32;
-                        if selected {
-                            let fill = th.nav_sel_fill;
-                            draw_round_fill(memdc as _, &item_rc, fill, 6);
+                        let hovered = interaction.hover == idx as i32;
+                        if selected || hovered {
+                            let fill = if selected {
+                                th.nav_sel_fill
+                            } else {
+                                settings_dropdown_hover_fill(th)
+                            };
+                            draw_round_fill(memdc as _, &item_rc, fill, settings_scale(6));
                         }
                         if selected {
                             let cy = (item_rc.top + item_rc.bottom) / 2;
+                            let half_bar = settings_scale(8);
                             let bar = RECT {
-                                left: item_rc.left + 4,
-                                top: cy - 8,
-                                right: item_rc.left + 7,
-                                bottom: cy + 8,
+                                left: item_rc.left + settings_scale(4),
+                                top: cy - half_bar,
+                                right: item_rc.left + settings_scale(7),
+                                bottom: cy + half_bar,
                             };
-                            draw_round_fill(memdc as _, &bar, th.accent, 2);
+                            draw_round_fill(memdc as _, &bar, th.accent, settings_scale(2));
                         }
                         let text_rc = RECT {
                             left: item_rc.left + settings_scale(18),
@@ -1917,7 +2161,7 @@ unsafe extern "system" fn dropdown_popup_proc(
                             };
                             draw_text_ex(
                                 memdc as _,
-                                "\u{25B4}",
+                                "\u{E70E}",
                                 &top_hint,
                                 th.text_muted,
                                 8,
@@ -1935,7 +2179,7 @@ unsafe extern "system" fn dropdown_popup_proc(
                             };
                             draw_text_ex(
                                 memdc as _,
-                                "\u{25BE}",
+                                "\u{E70D}",
                                 &bottom_hint,
                                 th.text_muted,
                                 8,

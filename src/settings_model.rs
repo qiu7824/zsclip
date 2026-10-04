@@ -965,12 +965,12 @@ pub fn settings_nav_item_paint_plan(item: &SettingsNavItemRender) -> SettingsNav
         });
     }
 
+    // Thin outline glyphs read much lighter than text, so they use the full
+    // text colour even when the label is muted.
     let icon_color = if item.selected {
         SettingsThemeRole::Accent
-    } else if item.hovered {
-        SettingsThemeRole::Text
     } else {
-        SettingsThemeRole::TextMuted
+        SettingsThemeRole::Text
     };
     let label_color = if item.selected || item.hovered {
         SettingsThemeRole::Text
@@ -1128,7 +1128,7 @@ pub fn settings_chrome_paint_plan(
             SettingsTextCommand {
                 rect: plan.menu_icon_rect,
                 content: SettingsTextContent::Icon(ZsIcon::Sidebar),
-                color: SettingsThemeRole::TextMuted,
+                color: SettingsThemeRole::Text,
                 size: 16,
                 bold: false,
                 font: SettingsTextFontRole::FluentIcon,
@@ -1156,10 +1156,15 @@ pub fn settings_chrome_paint_plan(
 pub fn settings_viewport_mask_paint_plan(
     plan: &SettingsChromeRenderPlan,
 ) -> SettingsContentPaintPlan {
+    // The mask starts at the nav divider; keep that 1px stroke visible.
+    let mut mask_fill_rect = plan.viewport_mask_rect;
+    if mask_fill_rect.left <= plan.divider_x {
+        mask_fill_rect.left = plan.divider_x + 1;
+    }
     SettingsPaintPlan {
         paint_commands: vec![
             SettingsPaintCommand::FillRect {
-                rect: plan.viewport_mask_rect,
+                rect: mask_fill_rect,
                 fill: SettingsThemeRole::Background,
             },
             SettingsPaintCommand::FillRect {
@@ -4966,7 +4971,7 @@ mod tests {
                 SettingsTextCommand {
                     rect: chrome.menu_icon_rect,
                     content: SettingsTextContent::Icon(ZsIcon::Sidebar),
-                    color: SettingsThemeRole::TextMuted,
+                    color: SettingsThemeRole::Text,
                     size: 16,
                     bold: false,
                     font: SettingsTextFontRole::FluentIcon,
@@ -4996,12 +5001,14 @@ mod tests {
         crate::app_core::set_settings_ui_dpi(96);
         let chrome = settings_chrome_render_plan(UiRect::new(0, 0, 1100, 740));
         let plan = settings_viewport_mask_paint_plan(&chrome);
+        let mut mask_fill_rect = chrome.viewport_mask_rect;
+        mask_fill_rect.left = chrome.divider_x + 1;
 
         assert_eq!(
             plan.paint_commands,
             vec![
                 SettingsPaintCommand::FillRect {
-                    rect: chrome.viewport_mask_rect,
+                    rect: mask_fill_rect,
                     fill: SettingsThemeRole::Background,
                 },
                 SettingsPaintCommand::FillRect {

@@ -1,4 +1,42 @@
 use super::prelude::*;
+use crate::win_system_ui::draw_settings_list_item;
+use windows_sys::Win32::UI::Controls::{ODS_DISABLED, ODT_LISTBOX};
+
+const LB_GETTEXT_MSG: u32 = 0x0189;
+const LB_GETTEXTLEN_MSG: u32 = 0x018A;
+
+unsafe fn settings_list_item_text(list: HWND, index: u32) -> String {
+    let len = platform_window::send_message(list, LB_GETTEXTLEN_MSG, index as usize, 0);
+    if len <= 0 {
+        return String::new();
+    }
+    let mut buf = vec![0u16; len as usize + 1];
+    let copied = platform_window::send_message(
+        list,
+        LB_GETTEXT_MSG,
+        index as usize,
+        buf.as_mut_ptr() as isize,
+    );
+    String::from_utf16_lossy(&buf[..copied.clamp(0, len) as usize])
+}
+
+unsafe fn draw_settings_list_window_item(dis: &DRAWITEMSTRUCT) -> LRESULT {
+    let th = Theme::default();
+    let text = if dis.itemID == u32::MAX {
+        String::new()
+    } else {
+        settings_list_item_text(dis.hwndItem, dis.itemID)
+    };
+    draw_settings_list_item(
+        dis.hDC as _,
+        &dis.rcItem,
+        &text,
+        dis.itemID != u32::MAX && (dis.itemState & ODS_SELECTED) != 0,
+        (dis.itemState & ODS_DISABLED) != 0,
+        th,
+    );
+    1
+}
 
 pub(super) unsafe fn draw_settings_window_item(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
@@ -7,6 +45,9 @@ pub(super) unsafe fn draw_settings_window_item(hwnd: HWND, lparam: LPARAM) -> LR
     }
     let st = &mut *st_ptr;
     let dis = &*(lparam as *const DRAWITEMSTRUCT);
+    if dis.CtlType == ODT_LISTBOX {
+        return draw_settings_list_window_item(dis);
+    }
     let rc0 = dis.rcItem;
     let w = (rc0.right - rc0.left).max(1);
     let h = (rc0.bottom - rc0.top).max(1);

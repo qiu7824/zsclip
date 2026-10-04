@@ -18,7 +18,8 @@ pub use crate::settings_ui_host::{
     create_settings_button, create_settings_component, create_settings_dropdown_button,
     create_settings_edit, create_settings_fonts, create_settings_label, create_settings_label_auto,
     create_settings_listbox, create_settings_password_edit, create_settings_small_button,
-    create_settings_toggle_plain, draw_settings_button_component, draw_settings_toggle_component,
+    create_settings_toggle_plain, draw_settings_button_component, draw_settings_list_item,
+    draw_settings_toggle_component,
     draw_text_wide_centered, get_ctrl_text_wide, set_settings_font, settings_child_visible,
     settings_dropdown_index_for_max_items, settings_dropdown_index_for_pos_mode,
     settings_dropdown_label_for_max_items, settings_dropdown_label_for_pos_mode,
@@ -54,6 +55,19 @@ pub(crate) fn resolve_ui_font_family(family: &str) -> &str {
         "Segoe UI Variable Display" => system_ui_text_font_family(),
         "Segoe Fluent Icons" => "Segoe MDL2 Assets",
         other => other,
+    }
+}
+
+const CLEARTYPE_QUALITY: u32 = 5;
+const ANTIALIASED_QUALITY: u32 = 4;
+
+/// Icon-font glyphs are thin outlines; ClearType gives them coloured fringes,
+/// so they use grayscale anti-aliasing while text keeps ClearType.
+fn font_quality_for(font_name: &str) -> u32 {
+    if font_name == "Segoe MDL2 Assets" {
+        ANTIALIASED_QUALITY
+    } else {
+        CLEARTYPE_QUALITY
     }
 }
 
@@ -106,7 +120,7 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
             1,
             0,
             0,
-            5,
+            font_quality_for(font_name),
             0,
             to_wide(font_name).as_ptr(),
         ) as isize;
@@ -127,7 +141,7 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
             1,
             0,
             0,
-            5,
+            font_quality_for(font_name),
             0,
             to_wide(font_name).as_ptr(),
         ) as _
@@ -147,7 +161,7 @@ pub(crate) unsafe fn create_font_px(family: &str, pixel_size: i32, weight: i32) 
         1,
         0,
         0,
-        5,
+        font_quality_for(resolve_ui_font_family(family)),
         0,
         to_wide(resolve_ui_font_family(family)).as_ptr(),
     ) as _
@@ -179,6 +193,7 @@ pub(crate) unsafe fn draw_translated_text_line(
         | DT_VCENTER
         | DT_SINGLELINE
         | DT_END_ELLIPSIS
+        | DT_NOPREFIX
         | flags_extra;
     platform_gdi::draw_text(
         hdc as _,
@@ -216,6 +231,7 @@ pub(crate) unsafe fn draw_translated_text_line_px(
         | DT_VCENTER
         | DT_SINGLELINE
         | DT_END_ELLIPSIS
+        | DT_NOPREFIX
         | flags_extra;
     platform_gdi::draw_text(
         hdc as _,

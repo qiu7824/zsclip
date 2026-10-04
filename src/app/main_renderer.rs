@@ -4,8 +4,15 @@ fn main_paint_fill_color(fill: MainPaintFill, th: Theme) -> u32 {
     match fill {
         MainPaintFill::Theme(role) => main_theme_role_color(role, th),
         MainPaintFill::ScrollbarThumb { alpha } => {
-            let c = ((alpha as u32 * 100 + 127) / 255) as u8 + 100;
-            rgb(c, c, c)
+            // Fade towards the list surface; a fixed grey ramp darkened the
+            // thumb on light themes right before it disappeared.
+            let full: u32 = if th.bg == rgb(32, 32, 32) { 200 } else { 160 };
+            let a = alpha as u32;
+            let channel = |shift: u32| {
+                let base = (th.surface >> shift) & 0xFF;
+                (full * a + base * (255 - a) + 127) / 255
+            };
+            rgb(channel(0) as u8, channel(8) as u8, channel(16) as u8)
         }
     }
 }
@@ -287,16 +294,26 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
 
     if window_pin_visible(state) {
         let pin_rect = window_pin_rect(state);
-        if state.window_pinned || state.hover_btn == "window_pin" {
+        let pin_pressed = state.down_btn == "window_pin";
+        if state.window_pinned || pin_pressed || state.hover_btn == "window_pin" {
+            // Same inset and radius as the other title buttons' hover state.
+            let fill_rect = RECT {
+                left: pin_rect.left + 2,
+                top: pin_rect.top + 2,
+                right: pin_rect.right - 2,
+                bottom: pin_rect.bottom - 2,
+            };
             draw_round_fill(
                 memdc as _,
-                &pin_rect,
-                if state.window_pinned {
+                &fill_rect,
+                if pin_pressed {
+                    th.button_pressed
+                } else if state.window_pinned {
                     th.nav_sel_fill
                 } else {
                     th.button_hover
                 },
-                5,
+                6,
             );
         }
         draw_text_ex(
@@ -625,6 +642,7 @@ mod visual_regression_tests {
                         bottom: top + 32,
                     },
                     value,
+                    false,
                     false,
                     false,
                     theme,

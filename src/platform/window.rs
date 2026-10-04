@@ -7,13 +7,13 @@ use windows_sys::Win32::{
         BeginDeferWindowPos, ChildWindowFromPointEx, CreateWindowExW, DefWindowProcW,
         DeferWindowPos, DestroyWindow, DispatchMessageW, EndDeferWindowPos, EnumWindows,
         FindWindowW, GetAncestor, GetClassNameW, GetClientRect, GetDlgItem, GetForegroundWindow,
-        GetGUIThreadInfo, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowLongW,
-        GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+        GetGUIThreadInfo, GetMessageW, GetSystemMetrics, GetWindow, GetWindowLongPtrW,
+        GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
         IsWindow, IsWindowVisible, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
         RegisterClassExW, RegisterClassW, RegisterWindowMessageW, SendMessageW,
         SetForegroundWindow, SetWindowLongPtrW, SetWindowLongW, SetWindowPos, SetWindowTextW,
         ShowWindow, TranslateMessage, WindowFromPoint, GA_ROOT, GUITHREADINFO, GWLP_USERDATA,
-        GWL_EXSTYLE, GWL_STYLE, HMENU, IDC_ARROW, MSG, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+        GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT, HMENU, IDC_ARROW, MSG, SWP_HIDEWINDOW, SWP_NOACTIVATE,
         SWP_NOREDRAW, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOW,
         SW_SHOWNOACTIVATE, WM_CLOSE, WM_NULL, WNDCLASSEXW, WNDCLASSW, WS_DISABLED,
     },
@@ -103,6 +103,21 @@ pub(crate) fn parent(hwnd: HWND) -> HWND {
         return hwnd;
     }
     unsafe { GetParent(hwnd) }
+}
+
+/// Direct children ordered bottom-to-top, i.e. the order in which they are painted.
+pub(crate) fn children_bottom_to_top(parent: HWND) -> Vec<HWND> {
+    let mut children = Vec::new();
+    if parent.is_null() {
+        return children;
+    }
+    let mut child = unsafe { GetWindow(parent, GW_CHILD) };
+    while !child.is_null() && children.len() < 4096 {
+        children.push(child);
+        child = unsafe { GetWindow(child, GW_HWNDNEXT) };
+    }
+    children.reverse();
+    children
 }
 
 pub(crate) fn child(parent: HWND, id: i32) -> HWND {

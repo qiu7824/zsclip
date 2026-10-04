@@ -1,6 +1,7 @@
 use super::prelude::*;
 use crate::platform::input as platform_input;
 use crate::win_system_ui::{draw_settings_button_component, draw_settings_toggle_component};
+use windows_sys::Win32::UI::Controls::ODS_DISABLED;
 
 pub(super) unsafe fn settings_button_hover(st: &SettingsWndState, hwnd_item: HWND) -> bool {
     if hwnd_item.is_null() {
@@ -25,6 +26,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &mut SettingsWndState, dis: &
     let rc = dis.rcItem;
     let cid = dis.CtlID as isize;
     let pressed = (dis.itemState & ODS_SELECTED) != 0;
+    let disabled = (dis.itemState & ODS_DISABLED) != 0;
     let hover = settings_button_hover(st, dis.hwndItem);
     let text = settings_host_text(dis.hwndItem);
 
@@ -35,7 +37,7 @@ pub(super) unsafe fn settings_draw_button_item(st: &mut SettingsWndState, dis: &
 
     if settings_owner_draw_is_toggle(cid) {
         let checked = settings_toggle_get(st, cid);
-        draw_settings_toggle_component(hdc as _, &rc, hover, checked, th);
+        draw_settings_toggle_component(hdc as _, &rc, hover, checked, disabled, th);
         return;
     }
 
@@ -44,5 +46,5 @@ pub(super) unsafe fn settings_draw_button_item(st: &mut SettingsWndState, dis: &
     }
 
     let kind = settings_owner_draw_button_kind(st, cid);
-    draw_settings_button_component(hdc as _, &rc, &text, kind, hover, pressed, th);
+    draw_settings_button_component(hdc as _, &rc, &text, kind, hover, pressed, disabled, th);
 }

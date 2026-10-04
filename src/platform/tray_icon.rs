@@ -1,4 +1,4 @@
-use std::{mem::zeroed, ptr::null};
+use std::mem::zeroed;
 
 use windows_sys::Win32::{
     Foundation::HWND,
@@ -6,14 +6,12 @@ use windows_sys::Win32::{
         Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_REALTIME, NIF_TIP,
         NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     },
-    UI::WindowsAndMessaging::{
-        MF_SEPARATOR, MF_STRING, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
-    },
+    UI::WindowsAndMessaging::{TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON},
 };
 
-use crate::app_core::{StatusItemHost, StatusMenuEntry};
+use crate::app_core::{NativePopupMenuEntry, StatusItemHost, StatusMenuEntry};
 
-use super::{appearance, input, menu, string::to_wide, window};
+use super::{input, menu};
 
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -105,45 +103,30 @@ impl StatusItemHost for WindowsStatusItemHost {
     }
 
     fn present_menu(&mut self, entries: &[StatusMenuEntry]) {
-        let popup = menu::create_popup();
-        if popup.is_null() {
-            return;
-        }
-        unsafe {
-            appearance::apply_theme_to_menu(popup as _);
-        }
-        for entry in entries {
-            match entry {
+        let entries = entries
+            .iter()
+            .map(|entry| match entry {
                 StatusMenuEntry::Command {
                     action,
                     label,
                     icon_name: _,
-                } => {
-                    menu::append_raw(
-                        popup,
-                        MF_STRING,
-                        action.command_id(),
-                        to_wide(label).as_ptr(),
-                    );
-                }
-                StatusMenuEntry::Separator => {
-                    menu::append_raw(popup, MF_SEPARATOR, 0, null());
-                }
-            }
-        }
-
+                } => NativePopupMenuEntry::Command {
+                    id: action.command_id(),
+                    label: label.to_string(),
+                    enabled: true,
+                    checked: false,
+                },
+                StatusMenuEntry::Separator => NativePopupMenuEntry::Separator,
+            })
+            .collect::<Vec<_>>();
         let point = input::cursor_pos().unwrap_or_else(|| unsafe { zeroed() });
-        window::set_foreground(self.owner);
-        menu::track_popup_raw(
-            popup,
-            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+        // Without TPM_RETURNCMD the choice still arrives as WM_COMMAND.
+        menu::present_themed_popup_menu(
+            self.owner,
             point.x,
             point.y,
-            0,
-            self.owner,
-            null(),
+            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
+            &entries,
         );
-        window::ping(self.owner);
-        menu::destroy(popup);
     }
 }

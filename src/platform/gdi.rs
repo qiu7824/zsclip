@@ -4,7 +4,8 @@ use windows_sys::Win32::{
         BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateDIBSection,
         CreateFontW, CreateRectRgn, CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint,
         FillRect, FrameRect, GetDC, GetDeviceCaps, GetStockObject, IntersectClipRect,
-        InvalidateRect, RedrawWindow, ReleaseDC, RestoreDC, RoundRect, SaveDC, SelectObject,
+        InvalidateRect, OffsetViewportOrgEx, RedrawWindow, ReleaseDC, RestoreDC, RoundRect,
+        SaveDC, SelectObject,
         SetBkColor, SetBkMode, SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits,
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, HALFTONE, HBITMAP,
         HBRUSH, HDC, HFONT, HGDIOBJ, HRGN, NULL_PEN, PAINTSTRUCT, SRCCOPY,
@@ -356,6 +357,10 @@ pub(crate) fn restore_dc(dc: HDC, saved_dc: i32) -> bool {
 
 pub(crate) fn intersect_clip_rect(dc: HDC, left: i32, top: i32, right: i32, bottom: i32) -> i32 {
     unsafe { IntersectClipRect(dc, left, top, right, bottom) }
+}
+
+pub(crate) fn offset_viewport_org(dc: HDC, dx: i32, dy: i32) -> bool {
+    unsafe { OffsetViewportOrgEx(dc, dx, dy, core::ptr::null_mut()) != 0 }
 }
 
 pub(crate) fn redraw_window(

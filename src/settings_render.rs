@@ -74,9 +74,14 @@ unsafe fn draw_settings_text_command(
 ) {
     let rc: RECT = command.rect.into();
     if let SettingsTextContent::Icon(icon) = command.content {
+        // Navigation glyphs picked for meaning: keyboard (hotkeys), puzzle
+        // (plugins), tag (groups), sync arrows (multi-device sync), info.
         let glyph = match icon {
             crate::zsui::ZsIcon::Code => "\u{E765}",
             crate::zsui::ZsIcon::Inspector => "\u{E946}",
+            crate::zsui::ZsIcon::Tool => "\u{EA86}",
+            crate::zsui::ZsIcon::Group => "\u{E8EC}",
+            crate::zsui::ZsIcon::Refresh => "\u{E895}",
             _ => icon.windows_fluent_glyph(),
         };
         draw_text_ex(

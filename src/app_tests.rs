@@ -4359,14 +4359,19 @@ fn windows_settings_scroll_moves_do_not_reshow_visible_controls() {
 }
 
 #[test]
-fn windows_settings_paint_uses_the_window_compositor_as_its_single_buffer() {
+fn windows_settings_paint_composes_cards_and_controls_in_one_back_buffer() {
     let paint = settings_window_paint_source();
 
     assert!(paint.contains("let paint_rc = if ps.rcPaint.right > ps.rcPaint.left"));
-    assert!(paint.contains("let memdc = hdc"));
+    assert!(paint.contains("SettingsBackBuffer::new(hdc"));
     assert!(!paint.contains("begin_buffered_paint("));
     assert!(!paint.contains("end_buffered_paint("));
     assert!(paint.contains("platform_gdi::fill_rect(memdc, &paint_rc, bg)"));
+    // Scrolling must not present frames with cards but no controls.
+    assert!(paint.contains("print_settings_child_controls("));
+    assert!(paint.contains("platform_window::children_bottom_to_top(child)"));
+    assert!(paint.contains("PRF_NONCLIENT_FLAG | PRF_CLIENT_FLAG"));
+    assert!(paint.contains("platform_gdi::copy_bits(\n            hdc,"));
 }
 
 #[test]

@@ -10,7 +10,7 @@ use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{DEFAULT_GUI_FONT, PAINTSTRUCT},
     UI::{
-        Controls::{DRAWITEMSTRUCT, ODS_SELECTED},
+        Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_SELECTED},
         Input::KeyboardAndMouse::{VK_CONTROL, VK_SHIFT},
         WindowsAndMessaging::*,
     },
@@ -1235,6 +1235,7 @@ unsafe extern "system" fn wnd_proc(
                 button_kind(dis.CtlID as isize),
                 hover,
                 (dis.itemState & ODS_SELECTED) != 0,
+                (dis.itemState & ODS_DISABLED) != 0,
                 Theme::default(),
             );
             let _ = st;
