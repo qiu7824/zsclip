@@ -23,6 +23,96 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
+class X11ClipboardFixture:
+    """Publish and inspect the synthetic clipboard through separate X11 clients."""
+
+    def __init__(self):
+        from Xlib import X, Xatom, display, protocol
+
+        self.X, self.Xatom, self.protocol = X, Xatom, protocol
+        self.publisher = display.Display()
+        self.reader = display.Display()
+        self.owner = self.publisher.screen().root.create_window(
+            0, 0, 1, 1, 0, X.CopyFromParent, X.InputOutput, X.CopyFromParent)
+        self.requestor = self.reader.screen().root.create_window(
+            0, 0, 1, 1, 0, X.CopyFromParent, X.InputOutput, X.CopyFromParent)
+        self.selection = self.publisher.intern_atom("CLIPBOARD")
+        self.property = self.reader.intern_atom("ZSCLIP_RECEIVER_SELECTION")
+        self.targets = {
+            self.publisher.intern_atom(name): value.encode("utf-8")
+            for name, value in [("UTF8_STRING", PAYLOAD), ("STRING", PAYLOAD),
+                                ("text/plain;charset=utf-8", PAYLOAD), ("text/html", HTML_PAYLOAD)]
+        }
+        self.targets_atom = self.publisher.intern_atom("TARGETS")
+        self.requests = []
+
+    def publish(self):
+        self.owner.set_selection_owner(self.selection, self.X.CurrentTime)
+        self.publisher.sync()
+        if self.publisher.get_selection_owner(self.selection).id != self.owner.id:
+            raise RuntimeError("The fixture could not own the X11 clipboard")
+
+    def poll(self):
+        while self.publisher.pending_events():
+            event = self.publisher.next_event()
+            if event.type != self.X.SelectionRequest:
+                continue
+            property_atom = event.property or event.target
+            payload = self.targets.get(event.target)
+            if event.selection != self.selection:
+                property_atom = self.X.NONE
+            elif event.target == self.targets_atom:
+                event.requestor.change_property(property_atom, self.Xatom.ATOM, 32,
+                                                [self.targets_atom, *self.targets])
+            elif payload is not None:
+                # MIME target and returned property type must agree. Tk's
+                # clipboard_append(type="text/html") instead returns STRING.
+                event.requestor.change_property(property_atom, event.target, 8, payload)
+            else:
+                property_atom = self.X.NONE
+            self.requests.append({"target": self.publisher.get_atom_name(event.target),
+                                  "accepted": property_atom != self.X.NONE})
+            self.requests = self.requests[-64:]
+            event.requestor.send_event(self.protocol.event.SelectionNotify(
+                time=event.time, requestor=event.requestor, selection=event.selection,
+                target=event.target, property=property_atom), propagate=False)
+            self.publisher.flush()
+
+    def read(self, target_name):
+        target = self.reader.intern_atom(target_name)
+        self.requestor.delete_property(self.property)
+        self.requestor.convert_selection(self.selection, target, self.property, self.X.CurrentTime)
+        self.reader.flush()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            self.poll()
+            while self.reader.pending_events():
+                event = self.reader.next_event()
+                if event.type != self.X.SelectionNotify or event.target != target:
+                    continue
+                if event.property == self.X.NONE:
+                    return {"target": target_name, "available": False}
+                value = self.requestor.get_full_property(self.property, self.X.AnyPropertyType)
+                if value is None:
+                    return {"target": target_name, "available": False}
+                result = {"target": target_name, "available": True,
+                          "returned_type": self.reader.get_atom_name(value.property_type), "format": value.format}
+                if value.format == 8:
+                    raw = bytes(value.value)
+                    result.update(byte_length=len(raw), text=raw.decode("utf-8"))
+                elif value.property_type == self.Xatom.ATOM and value.format == 32:
+                    result["targets"] = [self.reader.get_atom_name(atom) for atom in value.value]
+                return result
+            time.sleep(0.005)
+        raise RuntimeError(f"Timed out reading X11 clipboard target {target_name}")
+
+    def close(self):
+        self.owner.destroy()
+        self.requestor.destroy()
+        self.publisher.close()
+        self.reader.close()
+
+
 def serve(artifact_dir, timeout):
     import tkinter as tk
 
@@ -40,8 +130,10 @@ def serve(artifact_dir, timeout):
     paste_events = 0
     key_events = []
     pasted_html = []
+    pasted_transfers = []
     case_id = "paste"
     started = time.monotonic()
+    clipboard = X11ClipboardFixture()
 
     def snapshot():
         nonlocal paste_events, case_id
@@ -55,6 +147,7 @@ def serve(artifact_dir, timeout):
                 paste_events = 0
                 key_events.clear()
                 pasted_html.clear()
+                pasted_transfers.clear()
         except (OSError, json.JSONDecodeError):
             pass
         value = {
@@ -64,9 +157,11 @@ def serve(artifact_dir, timeout):
             "paste_events": paste_events,
             "key_events": key_events[-64:],
             "pasted_html": pasted_html,
+            "pasted_transfers": pasted_transfers,
             "case_id": case_id,
             "cursor": editor.index("insert"),
             "elapsed_seconds": round(time.monotonic() - started, 3),
+            "clipboard_requests": clipboard.requests,
         }
         write_json(artifact_dir / "receiver-result.json", value)
         root.after(100, snapshot)
@@ -75,8 +170,11 @@ def serve(artifact_dir, timeout):
         nonlocal paste_events
         paste_events += 1
         try:
-            pasted_html.append(root.clipboard_get(type="text/html"))
-        except tk.TclError:
+            value = clipboard.read("text/html")
+            pasted_transfers.append(value)
+            pasted_html.append(value.get("text") if value.get("returned_type") == "text/html" and value.get("format") == 8 else None)
+        except (RuntimeError, UnicodeDecodeError) as error:
+            pasted_transfers.append({"error": str(error)})
             pasted_html.append(None)
 
     def key_pressed(event):
@@ -94,24 +192,43 @@ def serve(artifact_dir, timeout):
     editor.bind("<KeyRelease>", key_released, add="+")
     editor.bind("<Control-Key-1>", control_digit)
     root.update()
-    root.clipboard_clear()
-    root.clipboard_append(PAYLOAD)
-    root.clipboard_append(HTML_PAYLOAD, type="text/html")
+    clipboard.publish()
+    offers = {target: clipboard.read(target) for target in ("TARGETS", "UTF8_STRING", "text/html")}
+    write_json(artifact_dir / "clipboard-offer.json", offers)
+    if not {"UTF8_STRING", "text/html"}.issubset(offers["TARGETS"].get("targets", [])):
+        clipboard.close()
+        raise SystemExit("The fixture did not advertise its text and HTML selection targets")
+    for target, expected in (("UTF8_STRING", PAYLOAD), ("text/html", HTML_PAYLOAD)):
+        if offers[target].get("returned_type") != target or offers[target].get("format") != 8 or offers[target].get("text") != expected:
+            clipboard.close()
+            raise SystemExit(f"The fixture did not publish a valid X11 {target} selection")
+
+    def poll_clipboard():
+        clipboard.poll()
+        root.after(10, poll_clipboard)
+
+    poll_clipboard()
     root.lift()
     editor.focus_force()
     root.update()
     write_json(artifact_dir / "receiver-ready.json", {
         "pid": os.getpid(), "window_title": TITLE, "widget_id": editor.winfo_id(),
         "payload": PAYLOAD, "prefix": PREFIX, "suffix": SUFFIX,
+        "clipboard_targets": offers["TARGETS"].get("targets", []),
+        "clipboard_offer_verified": True,
     })
     snapshot()
     root.after(int(timeout * 1000), root.destroy)
-    root.mainloop()
+    try:
+        root.mainloop()
+    finally:
+        clipboard.close()
 
 
 def assert_captured(database, output):
     deadline = time.monotonic() + 15
     last_error = None
+    diagnostics = {"row_found": False, "text_equals": False, "html_present": False, "html_length": 0}
     while time.monotonic() < deadline:
         try:
             uri = Path(database).resolve().as_uri() + "?mode=ro"
@@ -119,13 +236,23 @@ def assert_captured(database, output):
                 row = connection.execute(
                     "SELECT id,kind,text_data,rich_text_html FROM items WHERE category=0 AND text_data=? ORDER BY id DESC LIMIT 1", (PAYLOAD,)
                 ).fetchone()
-            if row is not None and row[3]:
-                write_json(output, {"captured": True, "item_id": row[0], "kind": row[1], "text": row[2], "html": row[3]})
+                latest = connection.execute(
+                    "SELECT id,kind,text_data,length(rich_text_html) FROM items WHERE category=0 ORDER BY id DESC LIMIT 4"
+                ).fetchall()
+            last_error = None
+            html_matches = row is not None and bool(row[3]) and all(line in html.unescape(row[3]) for line in PAYLOAD.splitlines())
+            diagnostics = {"row_found": row is not None, "text_equals": row is not None and row[2] == PAYLOAD,
+                           "html_present": row is not None and bool(row[3]),
+                           "html_length": len(row[3] or "") if row is not None else 0,
+                           "html_payload_matches": html_matches,
+                           "latest_rows": latest, "expected_payload": PAYLOAD}
+            if html_matches:
+                write_json(output, {"captured": True, "item_id": row[0], "kind": row[1], "text": row[2], "html": row[3], **diagnostics})
                 return
         except (sqlite3.Error, OSError) as error:
             last_error = str(error)
         time.sleep(0.1)
-    write_json(output, {"captured": False, "error": last_error})
+    write_json(output, {"captured": False, "error": last_error, **diagnostics})
     raise SystemExit("The receiver payload was not captured by the running application")
 
 
@@ -140,7 +267,11 @@ def assert_received(result, output, mode="vv", case_id=None):
         try:
             observed = json.loads(Path(result).read_text(encoding="utf-8"))
             html_values = observed.get("pasted_html", [])
-            formats_match = mode == "vv" or (html_values == [None] if mode == "plain" else len(html_values) == 1 and bool(html_values[0]))
+            transfers = observed.get("pasted_transfers", [])
+            formats_match = mode == "vv" or (html_values == [None] and len(transfers) == 1
+                and transfers[0].get("available") is False and "error" not in transfers[0] if mode == "plain" else
+                len(html_values) == 1 and isinstance(html_values[0], str)
+                and all(line in html.unescape(html_values[0]) for line in PAYLOAD.splitlines()))
             shortcut_leaked = mode != "vv" and any(event.get("key", "").lower() == "v" and not (event.get("state", 0) & 4) for event in observed.get("key_events", []))
             if observed.get("text") == expected and observed.get("paste_events", 0) == 1 and formats_match and not shortcut_leaked and (case_id is None or observed.get("case_id") == case_id):
                 write_json(output, {
@@ -149,6 +280,7 @@ def assert_received(result, output, mode="vv", case_id=None):
                     "expected": expected, "actual": observed["text"],
                     "paste_events": observed["paste_events"],
                     "pasted_html": html_values,
+                    "pasted_transfers": transfers,
                 })
                 return
         except (OSError, json.JSONDecodeError):

@@ -2522,7 +2522,7 @@ searchentry {
 
     fn present_gtk_save_image(app: &Application, item_id: i64, status: &Label) {
         let expected_generation = crate::db_runtime::current_app_data_generation();
-        let parent = app.active_window();
+        let parent = gtk_clipboard_dialog_parent(app);
         let chooser = gtk::FileChooserNative::new(
             Some(crate::i18n::tr("图片另存为", "Save Image")),
             parent.as_ref(),
@@ -2530,6 +2530,7 @@ searchentry {
             Some(crate::i18n::tr("保存", "Save")),
             Some(crate::i18n::tr("取消", "Cancel")),
         );
+        chooser.set_modal(true);
         chooser.set_current_name(&format!("ZSClip-{}.png", item_id));
         let filter = gtk::FileFilter::new();
         filter.set_name(Some("PNG"));
@@ -4178,6 +4179,7 @@ searchentry {
                     initial_title: item.phrase_title,
                 }
             });
+        let parent = gtk_clipboard_dialog_parent(app);
         let window = ApplicationWindow::builder()
             .application(app)
             .default_width(560)
@@ -4185,9 +4187,10 @@ searchentry {
             .title(&format!("ZSClip Edit - {}", plan.title))
             .build();
         window.set_modal(true);
-        if let Some(parent) = gtk_transient_parent_for(app, &window) {
+        if let Some(parent) = parent {
             window.set_transient_for(Some(&parent));
         }
+        install_gtk_editor_layer(&window);
         let root = GtkBox::new(Orientation::Vertical, 8);
         root.set_margin_top(16);
         root.set_margin_bottom(16);
@@ -4308,6 +4311,47 @@ searchentry {
                 save.emit_clicked();
             }
         }
+    }
+
+    fn gtk_clipboard_dialog_parent(app: &Application) -> Option<gtk::Window> {
+        // The registered clipboard window owns row editing and image export.
+        // Hidden VV/settings windows must not become an editor's transient parent.
+        GTK_MAIN_SEARCH_VIEW.with(|slot| {
+            slot.borrow().as_ref().and_then(|view| view.window.upgrade())
+        })
+        .filter(|window| window.is_visible())
+        .map(|window| window.upcast::<gtk::Window>())
+        .or_else(|| app.active_window().filter(|window| window.is_visible()))
+        .or_else(|| app.windows().into_iter().find(|window| window.is_visible()))
+    }
+
+    fn install_gtk_editor_layer(window: &ApplicationWindow) {
+        window.connect_map(|window| {
+            let editor = window.downgrade();
+            let mut attempts = 0;
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let Some(editor) = editor.upgrade().filter(|window| window.is_visible()) else {
+                    return glib::ControlFlow::Break;
+                };
+                // GTK transient/modal ownership handles Wayland. X11's main
+                // window uses ABOVE, so put its editor in the same WM layer.
+                if !editor.surface().is_some_and(|surface| surface.type_().name().contains("X11")) {
+                    return glib::ControlFlow::Break;
+                }
+                attempts += 1;
+                let result = gtk_select_window_system_backend().apply_always_on_top(&editor, true);
+                if result.supported {
+                    editor.present();
+                    eprintln!("ZSClip GTK editor layer above-requested=true transient={}", editor.transient_for().is_some());
+                    glib::ControlFlow::Break
+                } else if attempts >= 5 {
+                    eprintln!("ZSClip GTK editor layer above-requested=false");
+                    glib::ControlFlow::Break
+                } else {
+                    glib::ControlFlow::Continue
+                }
+            });
+        });
     }
 
     fn gtk_transient_parent_for(
@@ -4520,6 +4564,129 @@ searchentry {
         )
     }
 
+    fn gtk_settings_page_label(page: crate::settings_model::SettingsPage) -> &'static str {
+        use crate::settings_model::SettingsPage::*;
+        match page {
+            General => crate::i18n::tr("常规", "General"),
+            Appearance => crate::i18n::tr("外观", "Appearance"),
+            Clipboard => crate::i18n::tr("剪贴板", "Clipboard"),
+            Hotkey => crate::i18n::tr("快捷键与 VV", "Hotkeys & VV"),
+            Group => crate::i18n::tr("分组", "Groups"),
+            Plugin => crate::i18n::tr("插件", "Plugins"),
+            Cloud => crate::i18n::tr("多端同步", "Sync"),
+            About => crate::i18n::tr("关于", "About"),
+        }
+    }
+
+    fn gtk_settings_section_label(page: crate::settings_model::SettingsPage, index: usize, source: &'static str) -> &'static str {
+        use crate::settings_model::SettingsPage::*;
+        let english = match (page, index) {
+            (General, 0) => "Startup & tray", (General, _) => "Configuration",
+            (Appearance, 0) => "Text & cards", (Appearance, 1) => "History list & previews",
+            (Appearance, 2) => "Window behavior", (Appearance, _) => "Window position",
+            (Clipboard, 0) => "History & formatting", (Clipboard, 1) => "Paste behavior", (Clipboard, _) => "Sounds",
+            (Hotkey, 0) => "Keyboard shortcuts", (Hotkey, 1) => "Mouse buttons", (Hotkey, 2) => "System clipboard", (Hotkey, 3) => "Using shortcuts", (Hotkey, _) => "VV quick paste",
+            (Group, 0) => "Grouping", (Group, 1) => "Manage groups", (Group, _) => "Phrases",
+            (Plugin, 0) => "Search", (Plugin, 1) => "Text recognition", (Plugin, 2) => "Translation",
+            (Plugin, 3) => "Text cleanup", (Plugin, 4) => "Mail merge", (Plugin, 5) => "WPS task pane", (Plugin, _) => "QR codes",
+            (Cloud, 0) => "Sync method", (Cloud, 1) => "WebDAV connection", (Cloud, 2) => "Cloud backup",
+            (Cloud, 3) => "LAN connection", (Cloud, 4) => "Pair devices", (Cloud, _) => "Trusted devices",
+            (About, 0) => "ZSClip", (About, 1) => "Updates", (About, _) => "Storage",
+        };
+        crate::i18n::tr(source, english)
+    }
+
+    fn gtk_settings_control_label(control: &crate::settings_model::SettingsNativeControlSummary) -> String {
+        let text = control.label;
+        let english = match control.key {
+            "auto_start" => "Start at login", "silent_start" => "Start without opening the window",
+            "tray_icon" => "Show tray icon", "app_icon" => "Show application icon", "close_to_tray" => "Keep running when the window closes",
+            "dark_mode" => "Dark appearance", "content_font_size" => "Content font size", "card_view" => "Card view",
+            "card_border" => "Card borders", "card_shadow" => "Subtle card shadows", "image_preview" => "Image thumbnails",
+            "hover_preview" => "Preview on hover", "quick_delete" => "Quick delete button", "show_pin" => "Pin button",
+            "image_row_height" => "Image row height", "text_row_height" => "Text row height", "file_row_height" => "File row height",
+            "auto_hide_on_blur" => "Hide when focus leaves", "edge_auto_hide" => "Hide at the screen edge", "click_hide" => "Hide after pasting",
+            "persistent_search" => "Keep search visible", "position_mode" => "Open window at", "mouse_offset" => "Pointer offset x / y",
+            "fixed_position" => "Fixed position x / y", "capture_enable" => "Capture clipboard history", "max_items" => "Maximum saved items",
+            "rich_text" => "Preserve text and table formatting", "dedupe_filter" => "Move duplicate content to the top",
+            "paste_move_top" => "Move pasted items to the top", "context_menu_copy" => "Show Copy in the context menu", "skip_window" => "Skip selected paste targets",
+            "skip_window_classes" => "Excluded window classes", "capture_skip_window" => "Capture current target",
+            "copy_sound" => "Sound after copying", "paste_sound" => "Sound after pasting", "paste_sound_kind" => "Sound", "paste_sound_file" => "Choose sound file",
+            "hotkey_enable" => "Enable global shortcut", "hotkey_modifier" => "Modifier", "hotkey_key" => "Key", "hotkey_record" => "Record shortcut",
+            "plain_hotkey_enable" => "Enable plain-text paste shortcut", "plain_hotkey_modifier" => "Plain-text modifier", "plain_hotkey_key" => "Plain-text key",
+            "mouse_side_button_enable" => "Enable mouse side buttons", "mouse_side_button_1" => "Side button 1", "mouse_side_button_2" => "Side button 2",
+            "vv_mode" => "VV quick paste", "vv_source" => "VV source", "vv_group" => "Default VV group",
+            "group_enable" => "Enable grouping", "group_type_filter" => "Show content type filters", "phrase_titles" => "Use separate phrase titles",
+            "plugin_search" => "Enable web search", "search_engine" => "Search engine", "search_engine_reset" => "Restore preset",
+            "ocr_provider" => "OCR provider", "ocr_cloud_url" => "OCR service address", "ocr_cloud_token" => "OCR access token",
+            "ocr_wechat_detect" => "Detect WeChat OCR",
+            "translate_provider" => "Translation provider", "translate_app_id" => "Translation application ID", "translate_secret" => "Translation key", "translate_target" => "Target language",
+            "plugin_ai_clean" => "Clean up text", "plugin_super_mail_merge" => "Super Mail Merge", "plugin_mail_merge" => "Open mail merge",
+            "plugin_wps_taskpane" => "WPS task pane", "wps_taskpane_docs" => "WPS connection guide", "plugin_qr_quick" => "Convert text to QR code",
+            "multi_sync_mode" => "Sync method", "cloud_sync_interval" => "Sync interval", "cloud_webdav_url" => "WebDAV address",
+            "cloud_webdav_user" => "Username", "cloud_webdav_pass" => "Password", "cloud_remote_dir" => "Remote folder", "cloud_status" => "Last sync",
+            "cloud_sync_now" => "Sync now", "cloud_upload_config" => "Upload configuration", "cloud_apply_config" => "Apply cloud configuration", "cloud_restore_backup" => "Restore cloud backup",
+            "lan_device_name" => "Device name", "lan_tcp_port" => "TCP port", "lan_receive_mode" => "Received content", "lan_sync_mode" => "Automatic sync direction",
+            "lan_manual_host" => "Desktop IP address", "lan_pair" => "Pair selected device", "lan_refresh" => "Refresh devices", "lan_accept_pair" => "Allow pairing", "lan_reject_pair" => "Reject pairing",
+            "open_config" => "Open configuration file", "open_source" => "Source repository", "check_updates" => "Check for updates",
+            "hotkey_preview" => "Current shortcut", "plain_hotkey_preview" => "Plain-text shortcut",
+            "mouse_side_button_note" => "A mouse button assigned to VV works independently of the VV toggle",
+            "clipboard_history_disable" => "Disable system clipboard history", "clipboard_history_enable" => "Enable system clipboard history",
+            "restart_shell" => "Restart the system shell", "hotkey_note_main" => "Using shortcuts", "hotkey_note_plain" => "Plain-text paste",
+            "group_view_records" => "Clipboard record groups", "group_view_phrases" => "Phrase groups", "group_list" => "Groups",
+            "group_name" => "Group name", "group_add" => "New group", "group_rename" => "Rename", "group_delete" => "Delete", "group_up" => "Move up", "group_down" => "Move down",
+            "phrase_titles_note" => "When disabled, show a text preview and keep saved titles.",
+            "cloud_enable" => "WebDAV sync", "lan_enable" => "LAN sync", "lan_status" => "LAN status",
+            "lan_receive_note" => "How received content is handled", "lan_device_note" => "Nearby devices",
+            "lan_discovered_list" => "Nearby devices / pending requests", "lan_trusted_summary" => "Trusted devices", "lan_bind_note" => "Sync automatically after connecting",
+            "about_version" => "Version", "data_directory" => "Data directory",
+            _ => return crate::i18n::translate(text).into_owned(),
+        };
+        crate::i18n::tr(text, english).to_string()
+    }
+
+    fn gtk_settings_option_label(control_key: &str, raw_value: &str, label: &str) -> String {
+        // Group names are user content; only the synthetic all-groups entry is localized.
+        if crate::i18n::is_source_language() || (control_key == "vv_group" && raw_value != "0") {
+            return label.to_string();
+        }
+        let english = match (control_key, raw_value) {
+            ("vv_group", "0") => "All",
+            ("content_font_size", "0") => "Default",
+            ("cloud_sync_interval", "15分钟") => "15 minutes",
+            ("cloud_sync_interval", "30分钟") => "30 minutes",
+            ("cloud_sync_interval", "1小时") => "1 hour",
+            ("cloud_sync_interval", "6小时") => "6 hours",
+            ("cloud_sync_interval", "12小时") => "12 hours",
+            ("cloud_sync_interval", "24小时") => "24 hours",
+            ("lan_sync_mode", "manual") => "Manual only",
+            ("lan_sync_mode", "phone_to_pc") => "Phone → desktop",
+            ("lan_sync_mode", "pc_to_phone") => "Desktop → phone",
+            ("lan_sync_mode", "bidirectional") => "Both directions",
+            ("lan_receive_mode", "records_only") => "Save to history only",
+            ("lan_receive_mode", "clipboard") => "Replace clipboard content",
+            ("translate_provider", "baidu") => "Baidu Translate",
+            ("translate_target", "zh") => "Simplified Chinese",
+            ("translate_target", "en") => "English",
+            ("translate_target", "jp") => "Japanese",
+            ("translate_target", "kor") => "Korean",
+            _ => return crate::i18n::translate(label).into_owned(),
+        };
+        english.to_string()
+    }
+
+    fn gtk_settings_group_action_label(action: NativeHostSettingsGroupAction) -> &'static str {
+        match action {
+            NativeHostSettingsGroupAction::ShowRecords => crate::i18n::tr("复制记录", "Records"),
+            NativeHostSettingsGroupAction::ShowPhrases => crate::i18n::tr("常用短语", "Phrases"),
+            NativeHostSettingsGroupAction::Add => crate::i18n::tr("新建分组", "Add"),
+            NativeHostSettingsGroupAction::Rename => crate::i18n::tr("重命名", "Rename"),
+            NativeHostSettingsGroupAction::Delete => crate::i18n::tr("删除", "Delete"),
+            NativeHostSettingsGroupAction::MoveUp => crate::i18n::tr("上移", "Up"),
+            NativeHostSettingsGroupAction::MoveDown => crate::i18n::tr("下移", "Down"),
+        }
+    }
+
     fn append_settings_control_blueprint(
         root: &GtkBox,
         route_status: &Label,
@@ -4530,14 +4697,16 @@ searchentry {
         let mut previous_section = None;
         for control in controls {
             if previous_section != Some(control.section_index) {
-                let heading = Label::new(Some(control.section_title));
+                let heading = Label::new(Some(gtk_settings_section_label(
+                    control.page, control.section_index, control.section_title,
+                )));
                 heading.set_xalign(0.0);
                 heading.add_css_class("heading");
                 heading.set_margin_top(10);
                 root.append(&heading);
                 previous_section = Some(control.section_index);
             }
-            let text = control.label;
+            let text = gtk_settings_control_label(control);
             match control.kind {
                 crate::settings_model::SettingsNativeControlKind::Toggle => {
                     let row = GtkBox::new(Orientation::Horizontal, 8);
@@ -4609,11 +4778,12 @@ searchentry {
                         let label = Label::new(Some(&text));
                         label.set_xalign(0.0);
                         label.set_hexpand(true);
-                        let labels = options
+                        let localized_labels = options
                             .options
                             .iter()
-                            .map(|option| option.label.as_str())
+                            .map(|option| gtk_settings_option_label(control.key, &option.raw_value, &option.label))
                             .collect::<Vec<_>>();
+                        let labels = localized_labels.iter().map(String::as_str).collect::<Vec<_>>();
                         let dropdown = DropDown::from_strings(&labels);
                         dropdown.set_size_request(132, -1);
                         dropdown.set_halign(gtk::Align::End);
@@ -4639,7 +4809,7 @@ searchentry {
                         row.append(&dropdown);
                         root.append(&row);
                     } else {
-                        let row = Label::new(Some(text));
+                        let row = Label::new(Some(&text));
                         row.set_halign(gtk::Align::Start);
                         row.add_css_class("settings-row");
                         root.append(&row);
@@ -4655,7 +4825,7 @@ searchentry {
                         );
                         continue;
                     }
-                    let row = Button::with_label(text);
+                    let row = Button::with_label(&text);
                     row.set_widget_name(control.key);
                     row.set_halign(gtk::Align::Start);
                     row.add_css_class("settings-row");
@@ -4980,7 +5150,7 @@ searchentry {
         root.set_margin_start(24);
         root.set_margin_end(24);
 
-        let title = Label::new(Some("Settings"));
+        let title = Label::new(Some(crate::i18n::tr("设置", "Settings")));
         title.add_css_class("title-2");
         title.set_xalign(0.0);
 
@@ -5017,7 +5187,7 @@ searchentry {
                 .vscrollbar_policy(PolicyType::Automatic)
                 .build();
             scroller.set_child(Some(&page));
-            notebook.append_page(&scroller, Some(&Label::new(Some(spec.label))));
+            notebook.append_page(&scroller, Some(&Label::new(Some(gtk_settings_page_label(spec.page)))));
             let controls = control_summaries
                 .iter()
                 .copied()
@@ -5048,27 +5218,29 @@ searchentry {
 
         let group_category = Rc::new(Cell::new(0_i64));
         let selected_group_id = Rc::new(Cell::new(0_i64));
-        let group_title = Label::new(native_host_settings_section_label("group_selector"));
+        let group_title_text = native_host_settings_section_label("group_selector")
+            .map(|label| crate::i18n::tr("分组管理", label));
+        let group_title = Label::new(group_title_text);
         group_title.set_xalign(0.0);
         group_page.append(&group_title);
         let group_editor = GtkBox::new(Orientation::Horizontal, 8);
         let group_name = Entry::new();
-        group_name.set_text("新分组");
+        group_name.set_text(crate::i18n::tr("新分组", "New group"));
         group_editor.append(&group_name);
 
-        let group_rows: Vec<_> = (0..5)
-            .map(|_| {
-                let row = Button::with_label("");
-                row.set_hexpand(true);
-                row.set_halign(gtk::Align::Fill);
-                row.set_visible(false);
-                row
-            })
-            .collect();
+        let group_scene_fixture = seed_gtk_group_scene_fixture();
+        let group_rows = Rc::new(GtkSettingsGroupRows {
+            container: GtkBox::new(Orientation::Vertical, 8),
+            buttons: RefCell::new(Vec::new()),
+            category: group_category.clone(),
+            selected: selected_group_id.clone(),
+            name: group_name.clone(),
+        });
+        group_rows.container.set_widget_name("settings-group-list");
         let group_actions = GtkBox::new(Orientation::Horizontal, 8);
         for spec in native_host_settings_group_button_specs() {
             let action = spec.action;
-            let button = Button::with_label(spec.label);
+            let button = Button::with_label(gtk_settings_group_action_label(action));
             button.set_widget_name(spec.id);
             apply_gtk_button_style_role(&button, spec.style_role);
             if let Some(target_category) = action.target_category() {
@@ -5078,7 +5250,7 @@ searchentry {
                 button.connect_clicked(move |_| {
                     category.set(target_category);
                     selected.set(0);
-                    refresh_settings_group_rows(category.get(), &selected, &rows);
+                    refresh_settings_group_rows(&rows);
                 });
                 group_editor.append(&button);
                 continue;
@@ -5128,33 +5300,22 @@ searchentry {
                     ),
                 };
                 route.set_text(gtk_action_status(&result));
-                refresh_settings_group_rows(category.get(), &selected, &rows);
+                refresh_settings_group_rows(&rows);
                 refresh_group_popup_menus_for_category(category.get(), menus.as_ref());
             });
             group_actions.append(&button);
         }
         group_page.append(&group_editor);
-        for row in &group_rows {
-            let selected_group_id = selected_group_id.clone();
-            let group_category = group_category.clone();
-            let group_name = group_name.clone();
-            let rows = group_rows.clone();
-            row.connect_clicked(move |button| {
-                let group_id = button.widget_name().parse::<i64>().unwrap_or_default();
-                if group_id > 0 {
-                    select_settings_group(
-                        group_id,
-                        group_category.get(),
-                        &selected_group_id,
-                        &group_name,
-                        &rows,
-                    );
-                }
-            });
-            group_page.append(row);
-        }
-        refresh_settings_group_rows(group_category.get(), &selected_group_id, &group_rows);
+        group_page.append(&group_rows.container);
+        refresh_settings_group_rows(&group_rows);
         group_page.append(&group_actions);
+        if group_scene_fixture {
+            let scroller = notebook
+                .nth_page(Some(crate::settings_model::SettingsPage::Group.index() as u32))
+                .and_then(|page| page.downcast::<ScrolledWindow>().ok())
+                .expect("Group page scroll viewport");
+            install_gtk_group_scene_verification(&window, &scroller, &group_rows);
+        }
 
         let controls = GtkBox::new(Orientation::Horizontal, 8);
         for spec in native_host_settings_toggle_specs() {
@@ -5242,7 +5403,12 @@ searchentry {
         let mut screenshot_save_button = None;
         for spec in native_host_settings_action_button_specs() {
             let action = spec.action;
-            let button = Button::with_label(spec.label);
+            let label = match action {
+                NativeHostSettingsAction::Save => crate::i18n::tr("保存", "Save"),
+                NativeHostSettingsAction::Close => crate::i18n::tr("关闭", "Close"),
+                NativeHostSettingsAction::OpenConfig => crate::i18n::tr("打开设置文件", "Open Config"),
+            };
+            let button = Button::with_label(label);
             if matches!(action, NativeHostSettingsAction::Save) {
                 screenshot_save_button = Some(button.clone());
             }
@@ -5502,45 +5668,146 @@ searchentry {
         } else {
             main_window.present();
         }
+        if scene == "settings-group" && gtk_group_scene_fixture_requested() {
+            // This scene is ready only after the seventh real group is selected
+            // and has entered the scrolling viewport.
+            return;
+        }
         eprintln!("ZSClip GTK screenshot scene ready={}", scene);
     }
 
-    fn select_settings_group(
-        group_id: i64,
-        category: i64,
-        selected_group_id: &Cell<i64>,
-        group_name: &Entry,
-        rows: &[Button],
-    ) {
-        selected_group_id.set(group_id);
-        if let Ok(groups) = crate::db_runtime::native_clip_groups(category) {
+    struct GtkSettingsGroupRows {
+        container: GtkBox,
+        buttons: RefCell<Vec<Button>>,
+        category: Rc<Cell<i64>>,
+        selected: Rc<Cell<i64>>,
+        name: Entry,
+    }
+
+    fn select_settings_group(group_id: i64, rows: &Rc<GtkSettingsGroupRows>) {
+        rows.selected.set(group_id);
+        if let Ok(groups) = crate::db_runtime::native_clip_groups(rows.category.get()) {
             if let Some(group) = groups.into_iter().find(|group| group.id == group_id) {
-                group_name.set_text(&group.name);
+                rows.name.set_text(&group.name);
             }
         }
-        refresh_settings_group_rows(category, selected_group_id, rows);
+        refresh_settings_group_rows(rows);
         eprintln!("ZSClip GTK settings group selected id={}", group_id);
     }
 
-    fn refresh_settings_group_rows(category: i64, selected_group_id: &Cell<i64>, rows: &[Button]) {
-        let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
-        let mut selected = selected_group_id.get();
+    fn refresh_settings_group_rows(rows: &Rc<GtkSettingsGroupRows>) {
+        let groups = crate::db_runtime::native_clip_groups(rows.category.get()).unwrap_or_default();
+        let mut selected = rows.selected.get();
         if selected == 0 || !groups.iter().any(|group| group.id == selected) {
             selected = groups.first().map(|group| group.id).unwrap_or_default();
-            selected_group_id.set(selected);
+            rows.selected.set(selected);
         }
-        for (index, row) in rows.iter().enumerate() {
-            if let Some(group) = groups.get(index) {
-                let prefix = if group.id == selected { "> " } else { "  " };
-                row.set_label(&format!("{}{}", prefix, group.name));
-                row.set_widget_name(&group.id.to_string());
-                row.set_visible(true);
-            } else {
-                row.set_label("");
-                row.set_widget_name("0");
-                row.set_visible(false);
+        let mut buttons = rows.buttons.borrow_mut();
+        while buttons.len() > groups.len() {
+            if let Some(button) = buttons.pop() {
+                rows.container.remove(&button);
             }
         }
+        while buttons.len() < groups.len() {
+            let button = Button::with_label("");
+            button.set_hexpand(true);
+            button.set_halign(gtk::Align::Fill);
+            let weak_rows = Rc::downgrade(rows);
+            button.connect_clicked(move |button| {
+                let Some(rows) = weak_rows.upgrade() else { return; };
+                let id = button.widget_name().parse::<i64>().unwrap_or_default();
+                if id > 0 { select_settings_group(id, &rows); }
+            });
+            rows.container.append(&button);
+            buttons.push(button);
+        }
+        for (row, group) in buttons.iter().zip(&groups) {
+            let prefix = if group.id == selected { "> " } else { "  " };
+            row.set_label(&format!("{}{}", prefix, group.name));
+            row.set_widget_name(&group.id.to_string());
+        }
+    }
+
+    fn gtk_group_scene_fixture_requested() -> bool {
+        if std::env::var("ZSCLIP_NATIVE_HOST_AUTO_SMOKE").as_deref() != Ok("1")
+            || std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").as_deref() != Ok("settings-group")
+        {
+            return false;
+        }
+        let Some(root) = std::env::var_os("ZSCLIP_DATA_DIR").map(std::path::PathBuf::from) else { return false; };
+        root.is_absolute()
+            && root.file_name().is_some_and(|name| name == "settings-group")
+            && root.parent().and_then(|parent| parent.file_name())
+                .is_some_and(|name| name.to_string_lossy().starts_with("zsclip-native-scenes-"))
+    }
+
+    fn seed_gtk_group_scene_fixture() -> bool {
+        if !gtk_group_scene_fixture_requested() { return false; }
+        for index in 1..=7 {
+            let name = format!("项目资料 {index:02}");
+            let groups = crate::db_runtime::native_clip_groups(0).expect("Read isolated scene groups");
+            if !groups.iter().any(|group| group.name == name) {
+                assert!(crate::linux_app::dispatch_linux_native_create_group(0, &name).accepted,
+                    "Create isolated screenshot group");
+            }
+        }
+        true
+    }
+
+    fn install_gtk_group_scene_verification(
+        window: &ApplicationWindow,
+        scroller: &ScrolledWindow,
+        rows: &Rc<GtkSettingsGroupRows>,
+    ) {
+        let scroller = scroller.clone();
+        let rows = rows.clone();
+        window.connect_map(move |window| {
+            let window = window.downgrade();
+            let scroller = scroller.clone();
+            let rows = rows.clone();
+            let started = std::time::Instant::now();
+            let mut clicked = false;
+            glib::timeout_add_local(Duration::from_millis(100), move || {
+                let Some(window) = window.upgrade().filter(|window| window.is_visible()) else {
+                    return glib::ControlFlow::Break;
+                };
+                assert!(started.elapsed() < Duration::from_secs(5), "Group scene never reached its seventh row");
+                if GTK_MAIN_SEARCH_VIEW.with(|slot| slot.borrow().as_ref()
+                    .and_then(|view| view.window.upgrade()).is_some_and(|main| main.is_visible()))
+                {
+                    return glib::ControlFlow::Continue;
+                }
+                if !clicked {
+                    refresh_settings_group_rows(&rows);
+                    let seventh = rows.buttons.borrow().get(6).cloned().expect("Seven real group rows");
+                    seventh.emit_clicked();
+                    seventh.grab_focus();
+                    let adjustment = scroller.vadjustment();
+                    adjustment.set_value((adjustment.upper() - adjustment.page_size()).max(adjustment.lower()));
+                    clicked = true;
+                    return glib::ControlFlow::Continue;
+                }
+                let (count, seventh) = {
+                    let buttons = rows.buttons.borrow();
+                    (buttons.len(), buttons[6].clone())
+                };
+                let id = seventh.widget_name().parse::<i64>().expect("Seventh group ID");
+                let group = crate::db_runtime::native_clip_groups(0).expect("Read selected scene group")
+                    .into_iter().find(|group| group.id == id).expect("Selected group remains in the database");
+                let selected = rows.selected.get() == id && rows.name.text().as_str() == group.name;
+                let visible = seventh.is_mapped() && seventh.height() > 0
+                    && scroller.height() > 0
+                    && seventh.compute_bounds(&scroller).is_some_and(|bounds| {
+                        bounds.y() >= 0.0 && bounds.y() + bounds.height() <= scroller.height() as f32
+                    });
+                if !visible { return glib::ControlFlow::Continue; }
+                assert!(selected, "Seventh group click did not update the actual selected ID/name");
+                eprintln!("ZSClip GTK settings group scene rows={count} seventh_selected={selected} seventh_visible={visible}");
+                eprintln!("ZSClip GTK screenshot scene ready=settings-group");
+                drop(window);
+                glib::ControlFlow::Break
+            });
+        });
     }
 
     fn present_gtk_dialog_action(

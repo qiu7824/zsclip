@@ -234,6 +234,7 @@ jobs:
             pkg-config \
             python3 \
             python3-tk \
+            python3-xlib \
             scrot \
             wmctrl \
             xdotool \

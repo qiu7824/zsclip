@@ -217,13 +217,17 @@ vv_fail() {
   echo "VV receiver verification failed: $1" >&2
   capture_screenshot "$vv_artifacts/failure.png" || true
   if [[ -f "$vv_artifacts/application.log" ]]; then cat "$vv_artifacts/application.log" >&2; fi
+  if [[ -f "$vv_artifacts/receiver.log" ]]; then cat "$vv_artifacts/receiver.log" >&2; fi
   if [[ -f "$vv_artifacts/receiver-result.json" ]]; then cat "$vv_artifacts/receiver-result.json" >&2; fi
+  if [[ -f "$vv_artifacts/clipboard-offer.json" ]]; then cat "$vv_artifacts/clipboard-offer.json" >&2; fi
+  if [[ -f "$vv_artifacts/capture.json" ]]; then cat "$vv_artifacts/capture.json" >&2; fi
   exit 1
 }
 [[ -n "${DISPLAY:-}" ]] || vv_fail "an X11 DISPLAY is required; pure Wayland is not covered by this test"
 command -v xdotool >/dev/null 2>&1 || vv_fail "xdotool is unavailable"
 command -v xprop >/dev/null 2>&1 || vv_fail "xprop is unavailable"
 python3 -c 'import tkinter' || vv_fail "python3-tk is unavailable"
+python3 -c 'import Xlib' || vv_fail "python3-xlib is unavailable"
 cat > "$vv_profile/settings.json" <<'JSON'
 {"clipboard_capture_enabled":true,"vv_mode_enabled":true,"rich_text_clipboard_enabled":true,"hotkey_enabled":true,"hotkey_mod":"Win","hotkey_key":"V","plain_paste_hotkey_enabled":true,"plain_paste_hotkey_mod":"Ctrl+Shift","plain_paste_hotkey_key":"V","close_without_exit":true}
 JSON
