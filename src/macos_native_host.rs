@@ -30,7 +30,7 @@ mod appkit {
         NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
         NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSImageView, NSLineBreakMode,
         NSMenu, NSMenuItem, NSPanel, NSPopUpButton, NSRunningApplication, NSScrollView, NSSearchField, NSStatusBar,
-        NSStatusBarButton, NSStatusItem, NSTabView, NSTabViewItem, NSTabViewType, NSTableColumn,
+        NSStatusBarButton, NSStatusItem, NSTabView, NSTabViewDelegate, NSTabViewItem, NSTabViewType, NSTableColumn,
         NSTableView, NSTableViewDataSource, NSTableViewDelegate,
         NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment, NSTextField,
         NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
@@ -204,6 +204,7 @@ mod appkit {
         settings_route_label: OnceCell<Retained<NSTextField>>,
         settings_tabs: OnceCell<Retained<NSTabView>>,
         settings_page_scrollers: OnceCell<Vec<Retained<NSScrollView>>>,
+        settings_page_scroll_initialized: [Cell<bool>; 8],
         settings_save_button: OnceCell<Retained<NSButton>>,
         settings_group_list_view: OnceCell<Retained<NSView>>,
         settings_group_list_scroll: OnceCell<Retained<NSScrollView>>,
@@ -852,10 +853,10 @@ mod appkit {
                 for button in &tool_buttons {
                     button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
                 }
+                let mut source_tab_x = 16.0;
                 let source_tab_buttons: Vec<_> = NATIVE_HOST_SOURCE_TABS
                     .iter()
-                    .enumerate()
-                    .map(|(index, tab)| {
+                    .map(|tab| {
                         let title =
                             NSString::from_str(appkit_tr(tab.label_source, tab.label_en));
                         let button = unsafe {
@@ -866,11 +867,14 @@ mod appkit {
                                 mtm,
                             )
                         };
-                        button.setFrame(NSRect::new(
-                            NSPoint::new(16.0 + index as f64 * 116.0, 326.0),
-                            NSSize::new(108.0, 28.0),
-                        ));
                         button.setButtonType(NSButtonType::PushOnPushOff);
+                        button.sizeToFit();
+                        let width = button.frame().size.width.max(108.0);
+                        button.setFrame(NSRect::new(
+                            NSPoint::new(source_tab_x, 326.0),
+                            NSSize::new(width, 28.0),
+                        ));
+                        source_tab_x += width + 8.0;
                         button.setTag(tab.category as isize);
                         button.setState(if tab.category == 0 {
                             NSControlStateValueOn
@@ -1068,6 +1072,15 @@ mod appkit {
         }
 
         unsafe impl NSControlTextEditingDelegate for Delegate {}
+
+        unsafe impl NSTabViewDelegate for Delegate {
+            #[unsafe(method(tabView:didSelectTabViewItem:))]
+            fn settings_tab_did_select(&self, tabs: &NSTabView, item: Option<&NSTabViewItem>) {
+                if let Some(item) = item {
+                    self.initialize_settings_page_scroll(tabs, item);
+                }
+            }
+        }
 
         unsafe impl NSTableViewDataSource for Delegate {
             #[unsafe(method(numberOfRowsInTableView:))]
@@ -1660,11 +1673,12 @@ mod appkit {
             "group_enable" => "Enable grouping", "group_type_filter" => "Show content type filters", "phrase_titles" => "Use separate phrase titles",
             "plugin_search" => "Enable web search", "search_engine" => "Search engine", "search_engine_reset" => "Restore preset",
             "ocr_provider" => "OCR provider", "ocr_cloud_url" => "OCR service address", "ocr_cloud_token" => "OCR access token",
+            "ocr_wechat_detect" => "Detect WeChat OCR",
             "translate_provider" => "Translation provider", "translate_app_id" => "Translation application ID", "translate_secret" => "Translation key", "translate_target" => "Target language",
             "plugin_ai_clean" => "Clean up text", "plugin_super_mail_merge" => "Super Mail Merge", "plugin_mail_merge" => "Open mail merge",
             "plugin_wps_taskpane" => "WPS task pane", "wps_taskpane_docs" => "WPS connection guide", "plugin_qr_quick" => "Convert text to QR code",
             "multi_sync_mode" => "Sync method", "cloud_sync_interval" => "Sync interval", "cloud_webdav_url" => "WebDAV address",
-            "cloud_webdav_user" => "Username", "cloud_webdav_pass" => "Password", "cloud_remote_dir" => "Remote folder",
+            "cloud_webdav_user" => "Username", "cloud_webdav_pass" => "Password", "cloud_remote_dir" => "Remote folder", "cloud_status" => "Last sync",
             "cloud_sync_now" => "Sync now", "cloud_upload_config" => "Upload configuration", "cloud_apply_config" => "Apply cloud configuration", "cloud_restore_backup" => "Restore cloud backup",
             "lan_device_name" => "Device name", "lan_tcp_port" => "TCP port", "lan_receive_mode" => "Received content", "lan_sync_mode" => "Automatic sync direction",
             "lan_manual_host" => "Desktop IP address", "lan_pair" => "Pair selected device", "lan_refresh" => "Refresh devices", "lan_accept_pair" => "Allow pairing", "lan_reject_pair" => "Reject pairing",
@@ -2901,6 +2915,7 @@ mod appkit {
                 }
                 page_scrollers.push((scroller, document_height));
             }
+            settings_tab_view.setDelegate(Some(ProtocolObject::from_ref(self)));
             self.ivars().settings_tabs.set(settings_tab_view).ok();
             let target: &AnyObject = self.as_ref();
             for (action, x, width) in [(NativeHostSettingsAction::Close, 700.0, 100.0), (NativeHostSettingsAction::Save, 814.0, 118.0)] {
@@ -2916,13 +2931,33 @@ mod appkit {
             window.makeKeyAndOrderFront(None);
             self.ivars().settings_window.set(window).ok();
             self.ivars().settings_page_scrollers.set(page_scrollers.iter().map(|(scroller, _)| scroller.clone()).collect()).ok();
-            for (scroller, height) in page_scrollers {
-                let clip = scroller.contentView();
-                clip.scrollToPoint(NSPoint::new(0.0, (height - clip.bounds().size.height).max(0.0)));
-                scroller.reflectScrolledClipView(&clip);
+            if let Some(tabs) = self.ivars().settings_tabs.get() {
+                if let Some(item) = tabs.selectedTabViewItem() {
+                    self.initialize_settings_page_scroll(tabs, &item);
+                }
             }
             self.refresh_settings_group_rows();
             self.refresh_settings_dependencies();
+        }
+
+        fn initialize_settings_page_scroll(&self, tabs: &NSTabView, item: &NSTabViewItem) {
+            let Ok(index) = usize::try_from(tabs.indexOfTabViewItem(item)) else { return; };
+            let Some(initialized) = self.ivars().settings_page_scroll_initialized.get(index) else { return; };
+            if initialized.get() { return; }
+            let Some(scroller) = self.ivars().settings_page_scrollers.get().and_then(|pages| pages.get(index)) else { return; };
+            // Inactive tabs still have their provisional size. Measure only
+            // after AppKit attaches and lays out the selected page.
+            tabs.layoutSubtreeIfNeeded();
+            scroller.layoutSubtreeIfNeeded();
+            scroller.tile();
+            let Some(document) = scroller.documentView() else { return; };
+            let clip = scroller.contentView();
+            if clip.bounds().size.height <= 0.0 { return; }
+            let top = (document.frame().size.height - clip.bounds().size.height).max(0.0);
+            clip.scrollToPoint(NSPoint::new(0.0, top));
+            scroller.reflectScrolledClipView(&clip);
+            // Returning to a page must retain the user's scroll position.
+            initialized.set(true);
         }
 
         fn build_settings_control(&self, view: &NSView, control: &crate::settings_model::SettingsNativeControlSummary,

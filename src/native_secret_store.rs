@@ -559,13 +559,56 @@ mod tests {
     #[cfg(target_os="linux")]
     impl IsolatedKeyringUnlock {
         fn unlock(&self) -> Result<(), String> {
-            use std::process::{Command, Stdio};
-            let mut child=Command::new("gnome-keyring-daemon").args(["--unlock","--components=secrets","--control-directory"])
-                .arg(&self.control).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|_|"Unable to start isolated provider unlock")?;
-            let write=child.stdin.take().ok_or("Missing isolated unlock pipe")?.write_all(self.password.as_bytes());
-            if write.is_err() {let _=child.kill();let _=child.wait();return Err("Unable to write isolated unlock pipe".into());}
-            let status=child.wait().map_err(|_|"Isolated provider unlock did not complete")?;
-            if status.success() {Ok(())} else {Err("Isolated provider unlock failed".into())}
+            use std::os::unix::{fs::{FileTypeExt, MetadataExt}, net::UnixStream};
+            use std::time::Duration;
+
+            let root = isolated_secret_service_root();
+            let expected = root.join("runtime/keyring");
+            let owner = fs::metadata(&root).map_err(|_| "Missing isolated fixture root")?.uid();
+            let directory = fs::symlink_metadata(&self.control)
+                .map_err(|_| "Missing isolated provider control directory")?;
+            if self.control != expected || !directory.is_dir() || directory.uid() != owner
+                || fs::canonicalize(&self.control).map_err(|_| "Invalid isolated control directory")? != expected
+            {
+                return Err("Unlock is restricted to the isolated provider control directory".into());
+            }
+            let socket = self.control.join("control");
+            let metadata = fs::symlink_metadata(&socket).map_err(|_| "Missing isolated provider control socket")?;
+            if !metadata.file_type().is_socket() || metadata.uid() != owner {
+                return Err("Invalid isolated provider control socket".into());
+            }
+            // The fixture password is exactly 32 random bytes encoded as hex.
+            if self.password.len() != 64 || !self.password.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("Invalid synthetic provider password".into());
+            }
+
+            // --unlock initializes a new daemon; it does not unlock an existing one.
+            // GNOME 46 control client/protocol: daemon/control/gkd-control-client.c,
+            // daemon/control/gkd-control-codes.h and egg/egg-unix-credentials.c:
+            // https://github.com/GNOME/gnome-keyring/tree/46.2/daemon/control
+            // Linux authenticates a NUL credential byte with SO_PEERCRED, then reads
+            // big-endian packet length, UNLOCK(1), string length and password bytes.
+            let mut stream = UnixStream::connect(&socket).map_err(|_| "Unable to connect to isolated provider")?;
+            stream.set_read_timeout(Some(Duration::from_secs(2)))
+                .map_err(|_| "Unable to bound isolated provider reads")?;
+            stream.set_write_timeout(Some(Duration::from_secs(2)))
+                .map_err(|_| "Unable to bound isolated provider writes")?;
+            let password_length = self.password.len() as u32;
+            let mut request = zeroize::Zeroizing::new(Vec::with_capacity(12 + self.password.len()));
+            request.extend_from_slice(&(12 + password_length).to_be_bytes());
+            request.extend_from_slice(&1_u32.to_be_bytes());
+            request.extend_from_slice(&password_length.to_be_bytes());
+            request.extend_from_slice(self.password.as_bytes());
+            stream.write_all(&[0]).and_then(|_| stream.write_all(&request))
+                .map_err(|_| "Unable to send isolated provider unlock request")?;
+            let mut response = [0_u8; 8];
+            stream.read_exact(&mut response).map_err(|_| "Isolated provider unlock reply did not complete")?;
+            if u32::from_be_bytes(response[..4].try_into().unwrap()) != 8
+                || u32::from_be_bytes(response[4..].try_into().unwrap()) != 0
+            {
+                return Err("Isolated provider rejected the unlock request".into());
+            }
+            Ok(())
         }
     }
     #[cfg(target_os="linux")]
@@ -592,7 +635,11 @@ mod tests {
         assert_eq!(load_with(&SystemBackend,&reference).unwrap_err(),SecretError::Locked);
         assert_eq!(store_with(&SystemBackend,"synthetic rejected write").unwrap_err(),SecretError::Locked);
         unlock.unlock().unwrap();
-        assert!(!collection.is_locked().unwrap());
+        // An independent connection observes the provider, not the earlier proxy's
+        // property cache after the control socket changed the collection state.
+        let refreshed_service=secret_service::blocking::SecretService::connect(secret_service::EncryptionType::Dh).unwrap();
+        let refreshed_collection=refreshed_service.get_default_collection().unwrap();
+        assert!(!refreshed_collection.is_locked().unwrap());
         assert_eq!(load_with(&SystemBackend,&reference).unwrap(),"synthetic locked value");
         cleanup.delete().unwrap();
         assert_eq!(load_with(&SystemBackend,&reference).unwrap_err(),SecretError::Missing);

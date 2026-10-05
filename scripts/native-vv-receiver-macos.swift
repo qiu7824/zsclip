@@ -4,9 +4,37 @@ import Foundation
 // Test driver posts normal system input. It never invokes a ZSClip callback or
 // the receiver's paste action; the receiver records what AppKit actually did.
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--activate" {
-    guard let pid = Int32(CommandLine.arguments[2]),
-          let app = NSRunningApplication(processIdentifier: pid),
-          app.activate(options: [.activateIgnoringOtherApps]) else { exit(2) }
+    // A background command-line helper cannot force activation on recent macOS.
+    // Click the receiver's exposed title bar, without touching its draft/caret.
+    guard CGPreflightPostEventAccess(),
+          let bytes = try? Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2])),
+          let state = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+          let pid = (state["pid"] as? NSNumber)?.int32Value,
+          let windowNumber = (state["window_number"] as? NSNumber)?.intValue,
+          let coordinates = state["activation_point"] as? [String: NSNumber],
+          let x = coordinates["x"]?.doubleValue, let y = coordinates["y"]?.doubleValue,
+          let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
+          let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+    else { fputs("Receiver activation metadata or event access unavailable\n", stderr); exit(2) }
+    let point = CGPoint(x: x, y: y)
+    let topWindow = windows.first { info in
+        guard ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0) > 0,
+              let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
+              let bx = bounds["X"]?.doubleValue, let by = bounds["Y"]?.doubleValue,
+              let width = bounds["Width"]?.doubleValue, let height = bounds["Height"]?.doubleValue
+        else { return false }
+        return CGRect(x: bx, y: by, width: width, height: height).contains(point)
+    }
+    guard (topWindow?[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+          (topWindow?[kCGWindowNumber as String] as? NSNumber)?.intValue == windowNumber
+    else { fputs("Receiver title bar is occluded; refusing to click another window\n", stderr); exit(3) }
+    for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+        else { exit(4) }
+        event.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.05)
+    }
+    print("Receiver title-bar activation click sent pid=\(pid) window=\(windowNumber)")
     exit(0)
 }
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--send" {
@@ -123,6 +151,12 @@ final class ReceiverDelegate: NSObject, NSApplicationDelegate {
                                   "clipboard_published": published, "key_window": window.isKeyWindow,
                                   "published_sequence": publishedSequence,
                                   "active": NSApp.isActive, "first_responder_is_editor": window.firstResponder === editor,
+                                  "selection_location": editor.selectedRange().location,
+                                  "selection_length": editor.selectedRange().length,
+                                  "frontmost_pid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0,
+                                  "window_number": window.windowNumber,
+                                  "activation_point": ["x": Double(window.frame.maxX - 24),
+                                                       "y": Double((NSScreen.screens.first?.frame.maxY ?? 0) - window.frame.maxY + 14)],
                                   "key_down_count": keyDownCount, "key_up_count": keyUpCount,
                                   "last_key_code": lastKeyCode, "last_modifiers": lastModifiers,
                                   "key_events": keyEvents,

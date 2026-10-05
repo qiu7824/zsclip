@@ -229,9 +229,17 @@ try:
     state, log = wait_for(lambda s,l: s.get('clipboard_published') and
                           ('clipboard capture sequence=' + str(s.get('published_sequence')) + ' inserted=true') in l,
                           'The externally published rich-text record was not captured')
-    subprocess.run([helper, '--activate', str(state['pid'])], check=True)
-    wait_for(lambda s,l: s.get('active') and s.get('key_window') and s.get('first_responder_is_editor'),
-             'The receiver did not become the active editor')
+    original_text = state.get('text')
+    original_selection = (state.get('selection_location'), state.get('selection_length'))
+    if original_text != 'LEFT-RIGHT' or original_selection != (5, 0):
+        raise RuntimeError('The receiver did not start with the expected synthetic draft and caret')
+    subprocess.run([helper, '--activate', str(state_path)], check=True)
+    activated, log = wait_for(lambda s,l: s.get('active') and s.get('key_window') and s.get('first_responder_is_editor')
+                             and s.get('frontmost_pid') == s.get('pid'),
+                             'The receiver did not become the active editor')
+    if activated.get('text') != original_text or (
+            activated.get('selection_location'), activated.get('selection_length')) != original_selection:
+        raise RuntimeError('Receiver activation changed the draft or insertion point')
     subprocess.run([helper, '--send', mode], check=True)
     opened = 'ZSClip AppKit global shortcut opened mode=' + mode
     ready = 'ZSClip AppKit main list ready mode=' + mode
@@ -258,7 +266,8 @@ try:
     if state.get('clipboard_has_html') != (mode == 'normal'):
         raise RuntimeError('The selected paste mode did not preserve/remove HTML as required')
     result = {'delivered': True, 'draft_preserved': True, 'mode': mode,
-              'shortcut_repeats_consumed': True, 'format_verified': True, 'state': state}
+              'activation_preserved_selection': True, 'shortcut_repeats_consumed': True,
+              'format_verified': True, 'state': state}
     (folder/'verification.json').write_text(json.dumps(result, indent=2))
 except Exception as error:
     try: state = json.loads(state_path.read_text())
