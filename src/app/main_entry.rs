@@ -98,6 +98,8 @@ pub(super) unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     if msg == super::main_hover_preview::WM_SEARCH_HOVER_READY {
         super::main_hover_preview::apply_hover_preview_result(hwnd, lparam);
+        let ptr=get_state_ptr(hwnd);
+        if !ptr.is_null() {schedule_hidden_reclaim_after_activity(hwnd,&mut *ptr);}
         return 0;
     }
     if vv_handle_session_message(hwnd, msg, wparam, lparam) { return 0; }
@@ -454,15 +456,24 @@ pub(super) unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: u
 }
 
 unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize) {
+    super::vv_trace::snapshot("selection.enter", state);
+    if !vv_commit_visible_selection(state, index) {
+        super::vv_trace::snapshot("selection.reject.commit", state);
+        vv_cancel_failed_selection(state);
+        vv_popup_hide(hwnd, state);
+        return;
+    }
     let popup_visible = state.vv_popup_visible;
     let target = state.vv_popup_target;
     let focus = state.vv_popup_focus;
     let session_id = state.vv_popup_session_id;
     let Some(backspaces) = vv_prepare_selection(state) else {
+        super::vv_trace::snapshot("selection.reject.prepare", state);
         vv_cancel_failed_selection(state);
         vv_popup_hide(hwnd, state);
         return;
     };
+    super::vv_trace::event("selection.prepared", format_args!("index={index} backspaces={backspaces}"));
     cancel_queued_paste_attempt(hwnd,state);
     let items = if popup_visible {
         state
@@ -474,6 +485,7 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
         Vec::new()
     };
     let Some(plan) = main_vv_select_plan(popup_visible, index, &items, backspaces) else {
+        super::vv_trace::event("selection.reject.plan", format_args!("index={index} count={}",items.len()));
         vv_cancel_failed_selection(state);
         vv_popup_hide(hwnd, state);
         return;
@@ -495,6 +507,9 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
         MainPasteCompletionKind::VvAsyncImage,
         paste_completion_input(state, item.id),
     );
+    super::vv_trace::event("selection.item", format_args!(
+        "sid={session_id} item_id={} kind={:?}", item.id, item.kind,
+    ));
     if queue_async_image_paste_if_needed(
         hwnd,
         state,
@@ -508,18 +523,22 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
         return;
     }
     if !vv_paste_target_is_current(state) {
+        super::vv_trace::snapshot("selection.reject.target_after_hide",state);
         vv_finish_paste(state);
         return;
     }
     if !apply_item_to_clipboard(state, &item) {
+        super::vv_trace::event("selection.reject.clipboard",format_args!("item_id={}",item.id));
         vv_finish_paste(state);
         show_clipboard_write_failure_message(hwnd);
         return;
     }
+    super::vv_trace::event("selection.clipboard_written",format_args!("item_id={}",item.id));
     let plan = main_paste_completion_plan_with_backspaces(
         MainPasteCompletionKind::VvClipboard,
         paste_completion_input(state, item.id),
         backspaces,
     );
     execute_paste_completion_plan_to_target(hwnd, state, plan, Some(target));
+    super::vv_trace::snapshot("selection.queued",state);
 }

@@ -7,6 +7,23 @@ struct HoverRequest {
     generation: u64,
     request_seq: u64,
     item_id: i64,
+    font_size: i32,
+    protection_revision: String,
+}
+
+impl HoverRequest {
+    fn same_target(&self, other: &Self) -> bool {
+        self.generation == other.generation && self.request_seq == other.request_seq
+            && self.item_id == other.item_id && self.font_size == other.font_size
+            && self.protection_revision == other.protection_revision
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoverEnqueue {
+    StartWorker,
+    Queued,
+    KeepCurrent,
 }
 
 #[derive(Default)]
@@ -14,6 +31,8 @@ struct HoverSlot {
     token: u64,
     running: bool,
     wanted: Option<HoverRequest>,
+    current: Option<HoverRequest>,
+    displayed: bool,
 }
 
 #[derive(Default)]
@@ -22,16 +41,23 @@ struct HoverQueue {
 }
 
 impl HoverQueue {
-    fn enqueue(&mut self, window: isize, mut request: HoverRequest) -> bool {
+    fn enqueue(&mut self, window: isize, mut request: HoverRequest, still_displayed: bool) -> HoverEnqueue {
         let slot = self.slots.entry(window).or_default();
+        if slot.current.as_ref().is_some_and(|current| current.same_target(&request))
+            && (!slot.displayed || still_displayed)
+        {
+            return HoverEnqueue::KeepCurrent;
+        }
         slot.token = slot.token.wrapping_add(1).max(1);
         request.token = slot.token;
+        slot.current = Some(request.clone());
+        slot.displayed = false;
         slot.wanted = Some(request);
         if slot.running {
-            false
+            HoverEnqueue::Queued
         } else {
             slot.running = true;
-            true
+            HoverEnqueue::StartWorker
         }
     }
     fn next(&mut self, window: isize) -> Option<HoverRequest> {
@@ -46,11 +72,18 @@ impl HoverQueue {
         let slot = self.slots.entry(window).or_default();
         slot.token = slot.token.wrapping_add(1).max(1);
         slot.wanted = None;
+        slot.current = None;
+        slot.displayed = false;
     }
     fn current(&self, window: isize, token: u64) -> bool {
         self.slots
             .get(&window)
-            .is_some_and(|slot| slot.token == token)
+            .is_some_and(|slot| slot.token == token && slot.current.is_some())
+    }
+    fn complete(&mut self, window: isize, token: u64, displayed: bool) {
+        let Some(slot) = self.slots.get_mut(&window).filter(|slot| slot.token == token) else { return; };
+        slot.displayed = displayed;
+        if !displayed { slot.current = None; }
     }
 }
 
@@ -69,7 +102,19 @@ pub(super) fn cancel_hover_request(hwnd: HWND) {
 struct HoverPreviewResult {
     item: Option<ClipItem>,
     request: HoverRequest,
-    protection_revision: String,
+}
+
+struct HoverResultCompletion {
+    window: isize,
+    token: u64,
+    displayed: bool,
+}
+
+impl Drop for HoverResultCompletion {
+    fn drop(&mut self) {
+        hover_queue().lock().unwrap_or_else(|e| e.into_inner())
+            .complete(self.window, self.token, self.displayed);
+    }
 }
 
 fn hover_target_matches(
@@ -87,6 +132,16 @@ pub(super) unsafe fn apply_hover_preview_result(hwnd: HWND, value: LPARAM) {
         return;
     }
     let result = Box::from_raw(value as *mut HoverPreviewResult);
+    let ptr = get_state_ptr(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    let state = &mut *ptr;
+    if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+        hover_queue().lock().unwrap_or_else(|e| e.into_inner())
+            .complete(hwnd as isize, result.request.token, false);
+        return;
+    }
     if !hover_queue()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -94,20 +149,17 @@ pub(super) unsafe fn apply_hover_preview_result(hwnd: HWND, value: LPARAM) {
     {
         return;
     }
-    let ptr = get_state_ptr(hwnd);
-    if ptr.is_null() {
-        return;
-    }
-    let state = &mut *ptr;
+    let mut completion = HoverResultCompletion { window: hwnd as isize, token: result.request.token, displayed: false };
     if state.app_data_generation != result.request.generation
         || state.search_results_pending()
         || !state.settings.hover_preview
         || state.edge_hidden
+        || state.settings.content_font_size() != result.request.font_size
         || state.active_load_state().request_seq != result.request.request_seq
         || crate::db_runtime::search_protection_revision()
             .ok()
             .as_deref()
-            != Some(result.protection_revision.as_str())
+            != Some(result.request.protection_revision.as_str())
     {
         return;
     }
@@ -152,6 +204,7 @@ pub(super) unsafe fn apply_hover_preview_result(hwnd: HWND, value: LPARAM) {
         screen.y,
         state.settings.content_font_size(),
     );
+    completion.displayed = crate::hover_preview::hover_preview_is_showing(item.id, state.settings.content_font_size());
 }
 
 fn run_hover_worker(window: isize) {
@@ -163,8 +216,6 @@ fn run_hover_worker(window: isize) {
         else {
             return;
         };
-        let protection_revision =
-            crate::db_runtime::search_protection_revision().unwrap_or_default();
         let item = std::panic::catch_unwind(|| {
             crate::db_runtime::with_shared_app_data_generation(request.generation, || {
                 db_load_item_full(request.item_id)
@@ -178,13 +229,15 @@ fn run_hover_worker(window: isize) {
             .unwrap_or_else(|e| e.into_inner())
             .current(window, request.token)
         {
+            let token = request.token;
             let result = HoverPreviewResult {
                 item,
                 request,
-                protection_revision,
             };
             unsafe {
-                let _ = post_boxed_message(window, WM_SEARCH_HOVER_READY, 0, Box::new(result));
+                if !post_boxed_message(window, WM_SEARCH_HOVER_READY, 0, Box::new(result)) {
+                    hover_queue().lock().unwrap_or_else(|e| e.into_inner()).complete(window, token, false);
+                }
             }
         }
     }
@@ -226,18 +279,27 @@ unsafe fn refresh_hover_preview(hwnd: HWND, state: &mut AppState, x: i32, y: i32
         return;
     };
     let item = if matches!(item_summary.kind, ClipKind::Text | ClipKind::Phrase) {
+        let Ok(protection_revision) = crate::db_runtime::search_protection_revision() else {
+            cancel_hover_request(hwnd);
+            hide_hover_preview();
+            return;
+        };
         let window = hwnd as isize;
+        let font_size = state.settings.content_font_size();
         let request = HoverRequest {
             token: 0,
             generation: state.app_data_generation,
             request_seq: state.active_load_state().request_seq,
             item_id: item_summary.id,
+            font_size,
+            protection_revision,
         };
-        let start = hover_queue()
+        let enqueue = hover_queue()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .enqueue(window, request);
-        if start {
+            .enqueue(window, request, crate::hover_preview::hover_preview_is_showing(item_summary.id, font_size));
+        if enqueue == HoverEnqueue::KeepCurrent { return; }
+        if enqueue == HoverEnqueue::StartWorker {
             std::thread::spawn(move || run_hover_worker(window));
         }
         hide_hover_preview();
@@ -327,32 +389,84 @@ mod hover_request_tests {
             generation: 1,
             request_seq: 1,
             item_id,
+            font_size: 12,
+            protection_revision: "verified".into(),
         }
     }
     #[test]
     fn busy_hover_keeps_only_latest_target_and_runs_it_without_more_mouse_events() {
         let mut queue = HoverQueue::default();
-        assert!(queue.enqueue(1, request(10)));
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::StartWorker);
         let a = queue.next(1).unwrap();
-        assert!(!queue.enqueue(1, request(20)));
-        assert!(!queue.enqueue(1, request(30)));
+        assert_eq!(queue.enqueue(1, request(20), false), HoverEnqueue::Queued);
+        assert_eq!(queue.enqueue(1, request(30), false), HoverEnqueue::Queued);
         assert!(!queue.current(1, a.token));
         let c = queue.next(1).unwrap();
         assert_eq!(c.item_id, 30);
         assert!(queue.current(1, c.token));
         assert!(queue.next(1).is_none());
-        assert!(queue.enqueue(1, request(40)));
+        assert_eq!(queue.enqueue(1, request(40), false), HoverEnqueue::StartWorker);
     }
     #[test]
     fn leaving_or_hiding_invalidates_a_finished_response_even_on_same_row_reentry() {
         let mut queue = HoverQueue::default();
-        queue.enqueue(1, request(10));
+        queue.enqueue(1, request(10), false);
         let a = queue.next(1).unwrap();
         queue.cancel(1);
         assert!(!queue.current(1, a.token));
-        queue.enqueue(1, request(10));
+        queue.enqueue(1, request(10), false);
         assert!(!queue.current(1, a.token));
         assert_eq!(queue.next(1).unwrap().item_id, 10);
+    }
+    #[test]
+    fn same_hover_preserves_inflight_posted_and_visible_result_without_new_requests() {
+        let mut queue = HoverQueue::default();
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::StartWorker);
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::KeepCurrent);
+        let first = queue.next(1).unwrap();
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::KeepCurrent);
+        assert!(queue.next(1).is_none());
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::KeepCurrent);
+        queue.complete(1, first.token, true);
+        assert_eq!(queue.enqueue(1, request(10), true), HoverEnqueue::KeepCurrent);
+        assert!(queue.current(1, first.token));
+        assert!(queue.next(1).is_none());
+    }
+    #[test]
+    fn hidden_renderer_or_rejected_result_can_reload_the_same_item() {
+        let mut queue = HoverQueue::default();
+        queue.enqueue(1, request(10), false);
+        let first = queue.next(1).unwrap();
+        queue.next(1);
+        queue.complete(1, first.token, true);
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::StartWorker);
+        assert!(!queue.current(1, first.token));
+        let second = queue.next(1).unwrap();
+        queue.next(1);
+        queue.complete(1, second.token, false);
+        assert_eq!(queue.enqueue(1, request(10), false), HoverEnqueue::StartWorker);
+    }
+    #[test]
+    fn changed_query_generation_protection_or_font_invalidates_visible_content() {
+        for field in 0..4 {
+            let mut queue = HoverQueue::default();
+            queue.enqueue(1, request(10), false);
+            let first = queue.next(1).unwrap();
+            queue.next(1);
+            queue.complete(1, first.token, true);
+            let mut changed = request(10);
+            match field {
+                0 => changed.generation += 1,
+                1 => changed.request_seq += 1,
+                2 => changed.protection_revision = "updated".into(),
+                _ => changed.font_size = 18,
+            }
+            assert_eq!(queue.enqueue(1, changed, true), HoverEnqueue::StartWorker);
+            queue.complete(1, first.token, false);
+            let current = queue.next(1).unwrap();
+            assert!(queue.current(1, current.token));
+            assert!(!queue.current(1, first.token));
+        }
     }
     #[test]
     fn completion_requires_a_visible_window_and_current_pointer_target() {

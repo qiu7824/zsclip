@@ -2440,7 +2440,7 @@ fn windows_paste_target_host_owns_foreground_and_focus_restore() {
         .find("unsafe fn vv_target_is_text_input_ready")
         .unwrap();
     let target_ready_end = vv_hook[target_ready_start..]
-        .find("\nunsafe extern \"system\" fn vv_keyboard_hook_proc")
+        .find("unsafe extern \"system\" fn vv_keyboard_hook_proc")
         .map(|offset| target_ready_start + offset)
         .unwrap();
     let target_ready_block = &vv_hook[target_ready_start..target_ready_end];

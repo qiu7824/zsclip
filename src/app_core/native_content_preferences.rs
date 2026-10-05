@@ -83,7 +83,7 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
     for (key, value) in [
         ("show_pos_mode", "mouse"),
         ("paste_success_sound_kind", "default"),
-        ("hotkey_mod", "Win"),
+        ("hotkey_mod", if cfg!(target_os = "macos") { "Ctrl+Alt" } else { "Win" }),
         ("hotkey_key", "V"),
         ("plain_paste_hotkey_mod", "Ctrl+Shift"),
         ("plain_paste_hotkey_key", "V"),

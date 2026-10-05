@@ -45,8 +45,7 @@ struct HoverPreviewData {
     header: String,
     body: String,
     image: Option<(Vec<u8>, usize, usize)>,
-    image_width: usize,
-    image_height: usize,
+    image_shape: Option<(usize, usize)>,
     loading_item_id: i64,
     last_x: i32,
     last_y: i32,
@@ -55,6 +54,12 @@ struct HoverPreviewData {
 }
 
 impl HoverPreviewData {
+    fn matches_content(&self, item_id: i64, header: &str, body: &str,
+        image_shape: Option<(usize, usize)>, font_size: i32) -> bool {
+        self.item_id == item_id && self.header == header && self.body == body
+            && self.image_shape == image_shape && self.font_size == font_size
+    }
+
     fn release_cached_content(&mut self) {
         self.item_id = 0;
         self.header.clear();
@@ -62,8 +67,7 @@ impl HoverPreviewData {
         self.body.clear();
         self.body.shrink_to_fit();
         self.image = None;
-        self.image_width = 0;
-        self.image_height = 0;
+        self.image_shape = None;
         self.loading_item_id = 0;
     }
 }
@@ -203,7 +207,7 @@ unsafe extern "system" fn preview_wnd_proc(
             if payload_ptr.is_null() {
                 return 0;
             }
-            let payload = Box::from_raw(payload_ptr);
+            let mut payload = Box::from_raw(payload_ptr);
             let ptr = platform_window::user_data(hwnd) as *mut HoverPreviewData;
             if !ptr.is_null() {
                 let data = &mut *ptr;
@@ -211,11 +215,17 @@ unsafe extern "system" fn preview_wnd_proc(
                     && payload.app_data_generation
                         == crate::db_runtime::current_app_data_generation()
                 {
-                    data.image = payload.image;
-                    data.loading_item_id = 0;
-                    platform_gdi::invalidate_rect(hwnd, null(), 0);
+                    if platform_window::is_visible(hwnd) {
+                        data.image = payload.image.take();
+                        data.loading_item_id = 0;
+                        platform_gdi::invalidate_rect(hwnd, null(), 0);
+                    } else {
+                        data.release_cached_content();
+                    }
                 }
             }
+            drop(payload);
+            crate::app::schedule_hidden_memory_reclaim_after_activity();
             0
         }
         WM_NCDESTROY => {
@@ -263,8 +273,7 @@ unsafe fn create_preview_window() -> HWND {
             header: String::new(),
             body: String::new(),
             image: None,
-            image_width: 0,
-            image_height: 0,
+            image_shape: None,
             loading_item_id: 0,
             last_x: i32::MIN,
             last_y: i32::MIN,
@@ -354,6 +363,14 @@ fn markdown_file_preview_text(paths: &[String]) -> Option<String> {
     (!preview.is_empty()).then_some(preview)
 }
 
+pub(crate) unsafe fn hover_preview_is_showing(item_id: i64, font_size: i32) -> bool {
+    let Some(&raw) = HOVER_HWND.get() else { return false; };
+    let hwnd = raw as HWND;
+    if !platform_window::is_visible(hwnd) { return false; }
+    let data = platform_window::user_data(hwnd) as *const HoverPreviewData;
+    !data.is_null() && (*data).item_id == item_id && (*data).font_size == font_size.clamp(12, 20)
+}
+
 pub(crate) unsafe fn hide_hover_preview() {
     let Some(raw) = HOVER_HWND.get() else {
         return;
@@ -420,6 +437,36 @@ fn preview_origin_near_cursor(
         (cursor_x + GAP_X).clamp(work_area.left, max_x),
         (cursor_y + GAP_Y).clamp(work_area.top, max_y),
     )
+}
+
+fn preview_bounds_near_cursor(cursor_x: i32, cursor_y: i32, width: i32, height: i32,
+    work_area: RECT) -> Option<(i32, i32, i32, i32)> {
+    let area_w = work_area.right - work_area.left;
+    let area_h = work_area.bottom - work_area.top;
+    if area_w <= 0 || area_h <= 0 { return None; }
+    let width = width.clamp(1, area_w);
+    let height = height.clamp(1, area_h);
+    let (x, y) = preview_origin_near_cursor(cursor_x, cursor_y, width, height, work_area);
+    if !rect_contains_point(x, y, width, height, cursor_x, cursor_y) {
+        return Some((x, y, width, height));
+    }
+    // At high DPI a full-size preview may cover the pointer from every corner.
+    // Keep the largest usable side rectangle instead of hiding its hover target.
+    let left_w = width.min((cursor_x - 16 - work_area.left).max(0));
+    let right_w = width.min((work_area.right - cursor_x - 16).max(0));
+    let above_h = height.min((cursor_y - 22 - work_area.top).max(0));
+    let below_h = height.min((work_area.bottom - cursor_y - 22).max(0));
+    let candidates = [
+        (cursor_x - 16 - left_w, y, left_w, height),
+        (cursor_x + 16, y, right_w, height),
+        (x, cursor_y - 22 - above_h, width, above_h),
+        (x, cursor_y + 22, width, below_h),
+    ];
+    candidates.into_iter().filter(|&(x, y, w, h)| w > 0 && h > 0
+        && x >= work_area.left && y >= work_area.top
+        && x + w <= work_area.right && y + h <= work_area.bottom
+        && !rect_contains_point(x, y, w, h, cursor_x, cursor_y))
+        .max_by_key(|&(_, _, w, h)| i64::from(w) * i64::from(h))
 }
 
 fn spawn_hover_image_load(hwnd: HWND, item: ClipItem) -> bool {
@@ -534,15 +581,13 @@ pub(crate) unsafe fn show_hover_preview(
     .max(96) as i32;
     let w = ((w * dpi + 48) / 96).min((wa.right - wa.left - 16).max(1));
     let h = ((h * dpi + 48) / 96).min((wa.bottom - wa.top - 16).max(1));
-    let (x, y) = preview_origin_near_cursor(cursor_x, cursor_y, w, h, wa);
+    let Some((x, y, w, h)) = preview_bounds_near_cursor(cursor_x, cursor_y, w, h, wa) else {
+        hide_hover_preview();
+        return;
+    };
 
     let data = &mut *ptr;
-    let same_image_shape = image_shape == Some((data.image_width, data.image_height));
-    let same_content = data.item_id == item.id
-        && data.header == header
-        && data.body == body
-        && same_image_shape
-        && data.font_size == font_size;
+    let same_content = data.matches_content(item.id, &header, &body, image_shape, font_size);
     data.font_size = font_size;
     let same_geometry =
         data.last_x == x && data.last_y == y && data.last_w == w && data.last_h == h;
@@ -586,8 +631,7 @@ pub(crate) unsafe fn show_hover_preview(
     data.header = header;
     data.body = body;
     data.image = image;
-    data.image_width = image_shape.map(|shape| shape.0).unwrap_or(0);
-    data.image_height = image_shape.map(|shape| shape.1).unwrap_or(0);
+    data.image_shape = image_shape;
     data.last_x = x;
     data.last_y = y;
     data.last_w = w;
@@ -610,10 +654,99 @@ pub(crate) unsafe fn show_hover_preview(
 #[cfg(test)]
 mod tests {
     use super::{
-        limit_preview_text, preview_origin_near_cursor, preview_update_plan, rect_contains_point,
-        PreviewUpdatePlan, PREVIEW_TEXT_MAX_CHARS, PREVIEW_TEXT_MAX_LINES,
+        limit_preview_text, preview_bounds_near_cursor, preview_origin_near_cursor, preview_update_plan, rect_contains_point,
+        HoverPreviewData, PreviewUpdatePlan, PREVIEW_TEXT_MAX_CHARS, PREVIEW_TEXT_MAX_LINES,
     };
     use windows_sys::Win32::Foundation::RECT;
+
+    #[test]
+    fn text_and_file_content_have_a_reusable_absent_image_shape() {
+        let mut data = HoverPreviewData {
+            item_id: 12, font_size: 16, header: "Text preview".into(), body: "Stable body".into(),
+            image: None, image_shape: None, loading_item_id: 0,
+            last_x: 0, last_y: 0, last_w: 420, last_h: 220,
+        };
+        assert!(data.matches_content(12,"Text preview","Stable body",None,16));
+        assert!(!data.matches_content(12,"Text preview","Changed body",None,16));
+        assert!(!data.matches_content(12,"Text preview","Stable body",None,18));
+        assert!(!data.matches_content(12,"Text preview","Stable body",Some((0,0)),16));
+        data.image_shape=Some((40,30));
+        assert!(data.matches_content(12,"Text preview","Stable body",Some((40,30)),16));
+        assert!(!data.matches_content(12,"Text preview","Stable body",None,16));
+        data.release_cached_content();
+        assert!(data.image_shape.is_none());
+        assert!(!data.matches_content(12,"Text preview","Stable body",None,16));
+    }
+
+    #[test]
+    fn oversized_preview_shrinks_on_a_side_without_covering_the_cursor() {
+        for area in [RECT {left:0,top:0,right:1920,bottom:1080},
+            RECT {left:-1920,top:-40,right:0,bottom:1040}, RECT {left:0,top:0,right:800,bottom:600}]
+        {
+            for (w,h) in [(1400,732),(1040,720),(2200,1500)] {
+                for (cx,cy) in [(area.left,area.top), (area.right-1,area.bottom-1),
+                    ((area.left+area.right)/2,(area.top+area.bottom)/2)]
+                {
+                    let (x,y,w,h)=preview_bounds_near_cursor(cx,cy,w,h,area).unwrap();
+                    assert!(x>=area.left && y>=area.top && x+w<=area.right && y+h<=area.bottom);
+                    assert!(!rect_contains_point(x,y,w,h,cx,cy));
+                }
+            }
+        }
+        assert!(preview_bounds_near_cursor(0,0,10,10,RECT {left:0,top:0,right:1,bottom:1}).is_none());
+    }
+
+    #[test]
+    #[ignore = "Requires an interactive desktop and a fresh process; shows only synthetic preview text"]
+    fn repeated_text_preview_reuses_the_real_window_without_repaint_or_hide() {
+        use super::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static OLD_PROC: AtomicUsize = AtomicUsize::new(0);
+        static PAINTS: AtomicUsize = AtomicUsize::new(0);
+        static VISIBILITY: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "system" fn observed(hwnd:HWND,msg:u32,wp:WPARAM,lp:LPARAM)->LRESULT {
+            if msg==WM_PAINT {PAINTS.fetch_add(1,Ordering::SeqCst);}
+            if msg==WM_SHOWWINDOW {VISIBILITY.fetch_add(1,Ordering::SeqCst);}
+            CallWindowProcW(Some(core::mem::transmute::<usize,unsafe extern "system" fn(HWND,u32,WPARAM,LPARAM)->LRESULT>(OLD_PROC.load(Ordering::SeqCst))),hwnd,msg,wp,lp)
+        }
+        unsafe fn pump() {
+            let mut msg:MSG=core::mem::zeroed();
+            while PeekMessageW(&mut msg,null_mut(),0,0,PM_REMOVE)!=0 {
+                TranslateMessage(&msg);DispatchMessageW(&msg);
+            }
+        }
+        struct Cleanup(HWND);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {unsafe {
+                SetWindowLongPtrW(self.0,GWLP_WNDPROC,OLD_PROC.load(Ordering::SeqCst) as isize);
+                hide_hover_preview();release_hover_preview_memory();DestroyWindow(self.0);
+            }}
+        }
+        unsafe {
+            assert!(HOVER_HWND.get().is_none(),"Run in a fresh test process");
+            let hwnd=preview_hwnd();assert!(!hwnd.is_null());
+            OLD_PROC.store(SetWindowLongPtrW(hwnd,GWLP_WNDPROC,observed as *const () as isize) as usize,Ordering::SeqCst);
+            assert_ne!(OLD_PROC.load(Ordering::SeqCst),0);
+            let _cleanup=Cleanup(hwnd);
+            let point=crate::platform::input::cursor_pos().unwrap_or(POINT {x:300,y:300});
+            let item=ClipItem {id:1,kind:ClipKind::Text,preview:"Stable preview".into(),phrase_title:String::new(),
+                text:Some("Stable preview body".into()),rich_text_html:None,source_app:String::new(),file_paths:None,
+                image_bytes:None,image_path:None,image_width:0,image_height:0,pinned:false,group_id:0,created_at:String::new()};
+            show_hover_preview(&item,point.x,point.y,16);pump();
+            assert!(hover_preview_is_showing(1,16));
+            assert!(!hover_preview_is_showing(2,16));
+            assert!(!hover_preview_is_showing(1,18));
+            let paint_count=PAINTS.load(Ordering::SeqCst);
+            let visibility_count=VISIBILITY.load(Ordering::SeqCst);
+            for _ in 0..24 {show_hover_preview(&item,point.x,point.y,16);pump();}
+            assert_eq!(VISIBILITY.load(Ordering::SeqCst),visibility_count,"Same content caused a hide/show cycle");
+            assert_eq!(PAINTS.load(Ordering::SeqCst),paint_count,"Same text was repainted repeatedly");
+            hide_hover_preview();pump();
+            assert!(!hover_preview_is_showing(1,16));
+            show_hover_preview(&item,point.x,point.y,16);pump();
+            assert!(hover_preview_is_showing(1,16),"A hidden cached item must be able to reappear");
+        }
+    }
 
     #[test]
     fn text_preview_capacity_matches_text_window() {

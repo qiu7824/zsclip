@@ -135,8 +135,31 @@ impl VvInputSession {
         true
     }
 
+    /// The visible popup commits an explicit selection. A keyboard request need
+    /// not have changed the hook phase before its posted UI message is handled.
+    pub fn accept_selection(&mut self, id: u64, index: usize, visible_count: usize) -> bool {
+        if self.id != id || !matches!(self.phase, VvPhase::Visible | VvPhase::Selected)
+            || index >= visible_count.min(9)
+        {
+            return false;
+        }
+        self.candidates = visible_count.min(9);
+        self.phase = VvPhase::Selected;
+        true
+    }
+
     // Consumed key ownership survives cancellation and lasts through the physical release.
     pub fn key(&mut self, vk: u32, down: bool, modifiers: bool, same_target: bool) -> VvKeyResult {
+        self.key_inner(vk, down, modifiers, same_target, true)
+    }
+
+    /// Windows selection is committed by the popup UI, which owns the rendered
+    /// candidate list. The hook only requests it and owns the physical key cycle.
+    pub fn key_request(&mut self, vk: u32, down: bool, modifiers: bool, same_target: bool) -> VvKeyResult {
+        self.key_inner(vk, down, modifiers, same_target, false)
+    }
+
+    fn key_inner(&mut self, vk: u32, down: bool, modifiers: bool, same_target: bool, commit_selection: bool) -> VvKeyResult {
         let slot = vk as usize;
         let repeat = down && self.pressed.get(slot).copied().unwrap_or(false);
         if let Some(pressed) = self.pressed.get_mut(slot) {
@@ -157,6 +180,14 @@ impl VvInputSession {
             }
         }
         if !down {
+            // Some IMEs switch language on Shift release. Invalidate even when
+            // the corresponding press was missed, while forwarding Shift itself.
+            if !commit_selection && matches!(vk, 0x10 | 0xa0 | 0xa1)
+                && (self.active() || self.phase == VvPhase::Selected)
+            {
+                self.cancel();
+                result.action = VvKeyAction::Hide;
+            }
             return result;
         }
         if self.phase == VvPhase::Selected {
@@ -184,7 +215,7 @@ impl VvInputSession {
         } else if let Some(index) =
             digit.filter(|&i| self.phase == VvPhase::Visible && i < self.candidates)
         {
-            self.phase = VvPhase::Selected;
+            if commit_selection { self.phase = VvPhase::Selected; }
             result.consume = true;
             VvKeyAction::Select(index)
         } else if self.phase == VvPhase::Visible && self.candidates > 0 && matches!(vk, 0x26 | 0x28)
@@ -339,6 +370,124 @@ mod tests {
             let r = s.key(key, true, mods, same);
             assert!(!r.consume);
             assert_eq!(r.action, VvKeyAction::Hide);
+        }
+    }
+
+    #[test]
+    fn posted_digit_request_is_committed_by_visible_ui_and_keeps_key_ownership() {
+        let mut s = session();
+        s.show(s.id, 2);
+        let id = s.id;
+        assert_eq!(s.key_request(0x31, true, false, true).action, VvKeyAction::Select(0));
+        assert_eq!(s.phase, VvPhase::Visible);
+        assert!(s.key_request(0x31, true, false, true).consume);
+        assert!(s.accept_selection(id, 0, 2));
+        assert!(s.accept_selection(id, 0, 2));
+        assert_eq!(s.phase, VvPhase::Selected);
+        assert!(s.key_request(0x31, false, false, true).consume);
+    }
+
+    #[test]
+    fn ui_selection_does_not_revive_cancelled_or_superseded_requests() {
+        let mut s = session();
+        let id = s.id;
+        assert!(!s.accept_selection(id, 0, 2));
+        s.show(id, 2);
+        assert!(!s.accept_selection(id, 2, 2));
+        s.key_request(0x31, true, false, true);
+        assert_eq!(s.key_request(0x1b, true, false, true).action, VvKeyAction::Hide);
+        assert!(!s.accept_selection(id, 0, 2));
+        assert!(s.key_request(0x31, false, false, true).consume);
+        let next = s.begin(10, 11, true);
+        s.show(next, 2);
+        assert!(!s.accept_selection(id, 0, 2));
+        assert!(s.accept_selection(next, 1, 2));
+    }
+
+    #[test]
+    fn modifier_down_cancels_each_live_phase_and_forwards_the_whole_cycle() {
+        for phase in [VvPhase::Pending, VvPhase::Visible, VvPhase::Selected] {
+            for key in [0x10, 0xa0, 0xa1, 0x11, 0xa2, 0xa3, 0x12, 0xa4, 0xa5, 0x5b, 0x5c] {
+                let mut s = session_in_phase(phase);
+                let id = s.id;
+                let down = s.key_request(key, true, true, true);
+                assert!(!down.consume, "modifier {key:x} in {phase:?} must reach its target");
+                assert_eq!(down.action, VvKeyAction::Hide);
+                assert_eq!(s.phase, VvPhase::Cancelled);
+                assert!(!s.show(id, 2), "a queued show must not survive a mode change");
+                assert!(!s.accept_selection(id, 0, 2), "a queued selection must not revive cancellation");
+                let held = s.key_request(key, true, true, true);
+                assert!(held.repeat);
+                assert!(!held.consume);
+                assert_eq!(held.action, VvKeyAction::None);
+                let up = s.key_request(key, false, false, true);
+                assert!(!up.consume);
+                assert_eq!(up.action, VvKeyAction::None);
+                let text = s.key_request(0x4a, true, false, true);
+                assert!(!text.consume);
+                assert_eq!(text.action, VvKeyAction::None);
+            }
+        }
+    }
+
+    fn session_in_phase(phase: VvPhase) -> VvInputSession {
+        let mut s = session();
+        if phase != VvPhase::Pending { assert!(s.show(s.id, 2)); }
+        if phase == VvPhase::Selected { assert!(s.accept_selection(s.id, 0, 2)); }
+        assert_eq!(s.phase, phase);
+        s
+    }
+
+    #[test]
+    fn missed_shift_down_still_cancels_on_generic_left_or_right_shift_up() {
+        for phase in [VvPhase::Pending, VvPhase::Visible, VvPhase::Selected] {
+            for key in [0x10, 0xa0, 0xa1] {
+                let mut s = session_in_phase(phase);
+                let id = s.id;
+                let up = s.key_request(key, false, false, true);
+                assert!(!up.consume);
+                assert_eq!(up.action, VvKeyAction::Hide);
+                assert_eq!(s.phase, VvPhase::Cancelled);
+                assert!(!s.show(id, 2));
+                assert!(!s.accept_selection(id, 0, 2));
+                assert_eq!(s.key_request(key, false, false, true).action, VvKeyAction::None);
+            }
+        }
+    }
+
+    #[test]
+    fn shift_cancellation_preserves_owned_digit_and_escape_releases() {
+        for shift_down in [false, true] {
+            let mut s = session_in_phase(VvPhase::Visible);
+            assert_eq!(s.key_request(0x31, true, false, true).action, VvKeyAction::Select(0));
+            assert!(s.accept_selection(s.id, 0, 2));
+            assert_eq!(s.key_request(0xa0, shift_down, shift_down, true).action, VvKeyAction::Hide);
+            assert!(s.key_request(0x31, true, false, true).consume);
+            assert!(s.key_request(0x31, false, false, true).consume);
+            assert!(!s.key_request(0x31, true, false, true).consume);
+
+            let mut s = session_in_phase(VvPhase::Visible);
+            assert!(s.key_request(0x1b, true, false, true).consume);
+            assert!(!s.key_request(0xa1, shift_down, shift_down, true).consume);
+            assert!(s.key_request(0x1b, true, false, true).consume);
+            assert!(s.key_request(0x1b, false, false, true).consume);
+            assert!(!s.key_request(0x1b, true, false, true).consume);
+        }
+    }
+
+    #[test]
+    fn other_key_releases_do_not_cancel_windows_or_native_session_behavior() {
+        for phase in [VvPhase::Pending, VvPhase::Visible, VvPhase::Selected] {
+            for key in [0x11, 0x12, 0x5b, 0x41] {
+                let mut s = session_in_phase(phase);
+                let up = s.key_request(key, false, false, true);
+                assert!(!up.consume);
+                assert_eq!(up.action, VvKeyAction::None);
+                assert_eq!(s.phase, phase);
+            }
+            let mut s = session_in_phase(phase);
+            assert_eq!(s.key(0x10, false, false, true).action, VvKeyAction::None);
+            assert_eq!(s.phase, phase);
         }
     }
     #[test]

@@ -5,9 +5,16 @@
 The Windows VV host uses the platform-neutral input session in
 `src/app_core/vv_session.rs`. A session owns every consumed physical key through
 release, tags queued show/select requests, and binds paste to its original
-foreground window and focused control. Showing or cancelling the popup must not
-inject Escape into the target editor. IME cancellation is permitted only when the
-complete composition is exactly the trigger owned by the selected session.
+foreground window and focused control. Modifier presses and Shift releases
+invalidate queued display and paste work while the physical keys continue to
+the target application. Input revisions also reject stale work when a keyboard
+callback cannot acquire the session lock. A text-triggered session exits an observed
+native IME composition with one Escape before selection, after rechecking the
+target, focus and modifier keys. Unknown or alphanumeric modes and non-text
+invocation do not inject Escape.
+Cancelling the VV popup consumes the physical Escape sequence without injecting
+another Escape. Direct IMM cancellation during selection requires the complete
+composition to match the owned trigger exactly.
 
 The non-activating preview in `src/app/vv_preview.rs` loads only the current
 record asynchronously. Results must match the record, request, session and data
@@ -61,6 +68,34 @@ The `vv` screenshot scene reports ready only after its asynchronous full-text
 preview is applied (or the candidate list is empty). Screenshot readiness does
 not prove keyboard triggering or paste delivery. Verify external typing, held
 keys, Escape, focus changes, scrolling and candidate switching separately.
+
+## Native credential storage
+
+macOS stores native settings credentials and LAN tokens in the user's Keychain.
+Linux uses the desktop Secret Service with an encrypted D-Bus session and requires
+an unlocked default collection. Missing, locked or inaccessible credential storage
+must return a visible error; native hosts must not fall back to plaintext.
+
+The five sensitive settings use opaque `*_encrypted` references. Their native
+input controls start empty and mask new input. Saving an empty control preserves
+the existing value. A nonempty value is written to the system store and read back
+before its reference replaces the setting. Explicit settings save also migrates
+legacy native plaintext credentials and LAN pairing tokens. All credential
+verification completes before replacing files; each file replacement is atomic.
+Windows DPAPI values are never interpreted as native plaintext during migration.
+An unreadable or invalid LAN book must survive failed pairing and refresh attempts.
+
+Native WebDAV requests resolve the reference at use time and pass authentication
+to curl through a pipe, with curlrc disabled. Authentication does not enter process
+arguments, temporary files or diagnostic output. Export of legacy settings that
+still contain plaintext credentials is rejected until settings migration succeeds.
+
+Run `native_secret_store::tests::actual_system_store_round_trip` explicitly on each
+target with `--ignored --exact --test-threads=1` and an unlocked system credential
+store. It writes, reads and removes one synthetic credential. The ordinary tests
+use an in-memory backend to check preservation and failure behavior; they do not
+prove Keychain or Secret Service access. The native WebDAV test uses a local HTTP
+receiver to verify the actual authentication header through the stdin path.
 
 ## What Counts As Verified
 
@@ -229,6 +264,47 @@ The Linux shell-open host records shell-open requests for tests and uses GIO `Ap
 The Linux file-picker host records file-picker requests for tests and uses GTK `FileChooserNative` in non-test target builds. The default auto smoke temporarily sets `ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH` to a temporary file path, so it proves the real GTK host reaches the file-picker boundary without opening an interactive chooser. Leave that environment variable unset for a manual target picker check.
 
 The `linux-gtk` GitHub Actions job installs `libgtk-4-dev`, runs the same smoke script under Xvfb and uploads `native-host-smoke-linux`.
+
+### Linux global shortcut acceptance
+
+The GTK host registers the configured main and plain-text shortcuts on X11. It
+requires XKB detectable autorepeat, retains ownership of each consumed key until
+its real release, and opens the list after release. The paste target is captured
+on keydown; a changed focus or failed key delivery cancels the pending opening.
+Settings Save removes the old registrations and installs the saved bindings.
+Unavailable key mappings and registration conflicts are reported in the UI and
+logs. A Wayland desktop is reported unavailable because this host does not yet
+implement the GlobalShortcuts portal.
+
+The plain-text shortcut opens the normal history list with a visible plain-text
+mode indicator. Selection resolves the stored item again under the data
+generation and protection guards, writes only its text or file paths, restores
+the captured external editor, and sends the paste shortcut. Images are rejected.
+Opening the main window normally resets plain-text mode.
+
+Run the following inside the same X11 session as the native smoke script:
+
+```bash
+cargo test -q x11_server_preserves_owned_release_during_rebind_and_reports_conflicts -- --ignored --test-threads=1
+```
+
+This target-only test checks held-key removal and rebinding against the X server,
+including repeat/up ownership, return of disabled shortcuts to the recipient,
+and a real conflicting registration on a second connection. The smoke script
+also supplies text and HTML from its independent Tk editor, verifies actual
+capture, holds Super+V and Ctrl+Shift+V, selects a record using real input, and
+compares the recipient's complete draft and clipboard formats. Normal paste must
+retain HTML; plain-text paste must omit it. Results and screenshots are stored in
+the `vv-receiver.*` artifact directory. Source guards and parsed test files alone
+do not establish this target behavior.
+
+Core X11 passive grabs also route other keys to the registering client while the
+trigger is held. The host forwards those events to the unchanged original focus
+with SendEvent; applications that reject synthetic events need separate runtime
+verification. Settings Save re-registration should additionally be exercised
+interactively, including disable, modifier changes, and a shortcut already owned
+by the desktop. An unavailable backend must not replace these checks with an
+accepted command-route log.
 
 ## Known Limits
 

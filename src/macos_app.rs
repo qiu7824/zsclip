@@ -8337,9 +8337,16 @@ pub(crate) fn persist_macos_native_settings_submission(
     submission: &crate::settings_model::SettingsNativeCollectSubmission,
 ) -> ProductAdapterCommandResult {
     let path = macos_native_settings_file();
-    let existing_json = read_macos_native_settings_json(&path);
-    let applied =
-        crate::settings_model::settings_native_apply_submission_to_json(existing_json, submission);
+    let applied = match crate::native_secret_store::save_settings(&path, submission) {
+        Ok(applied) => applied,
+        Err(error) => return ProductAdapterCommandResult {
+            accepted: false,
+            result_name: format!("zsclip.settings.native_save_failed: {error}"),
+        },
+    };
+    if !applied.rejected_fields.is_empty() {
+        return ProductAdapterCommandResult { accepted: false, result_name: "zsclip.settings.native_save_failed: Invalid setting value".into() };
+    }
     if applied.field_updates.is_empty() {
         return ProductAdapterCommandResult {
             accepted: applied.rejected_fields.is_empty(),
@@ -8347,22 +8354,6 @@ pub(crate) fn persist_macos_native_settings_submission(
                 "zsclip.settings.native_save.no_updates.rejected_{}",
                 applied.rejected_fields.len()
             ),
-        };
-    }
-
-    let write_result = (|| -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        let text =
-            serde_json::to_string_pretty(&applied.settings_json).map_err(|err| err.to_string())?;
-        std::fs::write(&path, text).map_err(|err| err.to_string())
-    })();
-
-    if write_result.is_err() {
-        return ProductAdapterCommandResult {
-            accepted: false,
-            result_name: "zsclip.settings.native_save_failed".to_string(),
         };
     }
 
@@ -8534,7 +8525,7 @@ fn macos_native_cloud_sync_action_for_shared_action(
 
 fn macos_native_cloud_sync_config_from_json(
     settings_json: &serde_json::Value,
-) -> crate::cloud_sync::CloudSyncConfig {
+) -> Result<crate::cloud_sync::CloudSyncConfig, crate::native_secret_store::SecretError> {
     fn field(settings_json: &serde_json::Value, key: &str) -> String {
         settings_json
             .get(key)
@@ -8542,12 +8533,12 @@ fn macos_native_cloud_sync_config_from_json(
             .unwrap_or_default()
             .to_string()
     }
-    crate::cloud_sync::CloudSyncConfig {
+    Ok(crate::cloud_sync::CloudSyncConfig {
         webdav_url: field(settings_json, "cloud_webdav_url"),
         webdav_user: field(settings_json, "cloud_webdav_user"),
-        webdav_pass: field(settings_json, "cloud_webdav_pass"),
+        webdav_pass: crate::native_secret_store::resolve_setting(settings_json, "cloud_webdav_pass")?,
         remote_dir: field(settings_json, "cloud_remote_dir"),
-    }
+    })
 }
 
 fn macos_native_cloud_sync_paths() -> crate::cloud_sync::CloudSyncPaths {
@@ -8569,11 +8560,11 @@ fn macos_native_lan_runtime_context() -> crate::lan_sync_core::LanRuntimePlatfor
 }
 
 fn macos_native_encrypt_secret_for_storage(secret: &str) -> Option<String> {
-    Some(secret.to_string())
+    crate::native_secret_store::store(secret).map_err(|error| eprintln!("ZSClip native LAN credential write failed: {error}")).ok()
 }
 
 fn macos_native_decrypt_secret_from_storage(encoded: &str) -> Option<String> {
-    Some(encoded.to_string())
+    crate::native_secret_store::load(encoded).map_err(|error| eprintln!("ZSClip native LAN credential read failed: {error}")).ok()
 }
 
 fn macos_native_latest_lan_clip_envelope(
@@ -8676,7 +8667,13 @@ pub(crate) fn dispatch_macos_native_settings_webdav_action(
             result_name: "zsclip.settings_sync.not_webdav_action".to_string(),
         };
     };
-    let config = macos_native_cloud_sync_config_from_json(&macos_native_settings_json_snapshot());
+    let config = match macos_native_cloud_sync_config_from_json(&macos_native_settings_json_snapshot()) {
+        Ok(config) => config,
+        Err(error) => return ProductAdapterCommandResult {
+            accepted: false,
+            result_name: format!("zsclip.settings_sync.webdav.failed.{error}"),
+        },
+    };
     let paths = macos_native_cloud_sync_paths();
     match crate::cloud_sync::perform_cloud_sync(cloud_action, &config, &paths) {
         Ok(outcome) => ProductAdapterCommandResult {
@@ -8743,6 +8740,9 @@ pub(crate) fn dispatch_macos_native_settings_lan_device_book_action(
 ) -> Option<ProductAdapterCommandResult> {
     if action != SettingsAction::RefreshLanDevices {
         return None;
+    }
+    if let Err(error) = crate::native_secret_store::validate_lan_profile(&macos_native_data_dir()) {
+        return Some(ProductAdapterCommandResult { accepted: false, result_name: format!("zsclip.settings_sync.credential_error: {error}") });
     }
     let settings_json = macos_native_settings_json_snapshot();
     let runtime_settings =

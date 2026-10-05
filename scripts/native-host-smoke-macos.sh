@@ -192,4 +192,90 @@ fi
 cleanup
 RECEIVER_PID=""
 
+echo "==> Verifying global shortcuts and selected-history delivery"
+for hotkey_mode in normal plain; do
+  hotkey_artifacts="$(mktemp -d "$ARTIFACT_DIR/hotkey-${hotkey_mode}.XXXXXX")"
+  hotkey_profile="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-mac-hotkey-${hotkey_mode}.XXXXXX")"
+  mkdir -p "$hotkey_artifacts"
+  hotkey_payload="HOTKEY-${hotkey_mode}-$(date +%s)-$$"
+  ZSCLIP_VV_RECEIVER_PAYLOAD="$hotkey_payload" ZSCLIP_VV_PUBLISH_AFTER=4 ZSCLIP_RECEIVER_PUBLISH_HTML=1 \
+    "$receiver_binary" "$hotkey_artifacts/receiver-state.json" >"$hotkey_artifacts/receiver.log" 2>&1 &
+  RECEIVER_PID=$!
+  cat > "$hotkey_profile/settings.json" <<'JSON'
+{"clipboard_capture_enabled":true,"rich_text_clipboard_enabled":true,"hotkey_enabled":true,"hotkey_mod":"Ctrl+Alt","hotkey_key":"V","plain_paste_hotkey_enabled":true,"plain_paste_hotkey_mod":"Ctrl+Shift","plain_paste_hotkey_key":"V","vv_mode_enabled":false,"lan_sync_enabled":false,"cloud_sync_enabled":false,"auto_start":false}
+JSON
+  ZSCLIP_DATA_DIR="$hotkey_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$hotkey_profile/settings.json" \
+    ZSCLIP_NATIVE_HOST_AUTO_SMOKE=0 ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN=1 ZSCLIP_NATIVE_HOTKEY_SMOKE=1 \
+    "$ROOT_DIR/target/debug/zsclip" >"$hotkey_artifacts/application.log" 2>&1 &
+  APP_PID=$!
+  set +e
+  python3 - "$hotkey_artifacts" "$hotkey_payload" "$hotkey_mode" "$receiver_binary" <<'PY'
+import json, subprocess, sys, time
+from pathlib import Path
+folder, payload, mode, helper = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+state_path = folder / 'receiver-state.json'
+log_path = folder / 'application.log'
+def wait_for(predicate, description):
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads(state_path.read_text())
+            log = log_path.read_text()
+            if predicate(state, log): return state, log
+        except (OSError, json.JSONDecodeError): pass
+        time.sleep(0.1)
+    raise RuntimeError(description)
+try:
+    state, log = wait_for(lambda s,l: s.get('clipboard_published') and
+                          ('clipboard capture sequence=' + str(s.get('published_sequence')) + ' inserted=true') in l,
+                          'The externally published rich-text record was not captured')
+    subprocess.run([helper, '--activate', str(state['pid'])], check=True)
+    wait_for(lambda s,l: s.get('active') and s.get('key_window') and s.get('first_responder_is_editor'),
+             'The receiver did not become the active editor')
+    subprocess.run([helper, '--send', mode], check=True)
+    opened = 'ZSClip AppKit global shortcut opened mode=' + mode
+    ready = 'ZSClip AppKit main list ready mode=' + mode
+    state, log = wait_for(lambda s,l: opened in l and ready in l.split(opened,1)[1],
+                          'The actual global shortcut did not open a ready history list')
+    if state['text'] != 'LEFT-RIGHT': raise RuntimeError('Shortcut input leaked into the draft')
+    if log.count(opened) != 1: raise RuntimeError('A repeated keydown reopened the list')
+    subprocess.run([helper, '--send', 'return'], check=True)
+    expected = 'LEFT-' + payload + 'RIGHT'
+    state, log = wait_for(lambda s,l: s.get('text') == expected and
+                          any(e.get('code') == 9 and e.get('phase') == 'up' for e in s.get('key_events', [])),
+                          'The selected history record did not reach the external editor')
+    time.sleep(0.3)
+    state = json.loads(state_path.read_text())
+    log = log_path.read_text()
+    if state.get('text') != expected: raise RuntimeError('Late input changed the received draft')
+    v_events = [e for e in state.get('key_events', []) if e.get('code') == 9]
+    shortcut_mask = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+    if [e.get('phase') for e in v_events] != ['down', 'up'] or any(
+            (e.get('modifiers', 0) & shortcut_mask) != (1 << 20) or e.get('repeat') for e in v_events):
+        raise RuntimeError('The receiver saw a leaked trigger cycle or an invalid Command-V cycle')
+    if log.count(opened) != 1: raise RuntimeError('The shortcut retriggered after key release')
+    if state.get('paste_count') != 1: raise RuntimeError('Selection did not produce exactly one native paste')
+    if state.get('clipboard_has_html') != (mode == 'normal'):
+        raise RuntimeError('The selected paste mode did not preserve/remove HTML as required')
+    result = {'delivered': True, 'draft_preserved': True, 'mode': mode,
+              'shortcut_repeats_consumed': True, 'format_verified': True, 'state': state}
+    (folder/'verification.json').write_text(json.dumps(result, indent=2))
+except Exception as error:
+    try: state = json.loads(state_path.read_text())
+    except Exception: state = None
+    (folder/'verification.json').write_text(json.dumps({'delivered': False, 'error': str(error), 'state': state}, indent=2))
+    raise
+PY
+  hotkey_status=$?
+  set -e
+  screencapture -x "$hotkey_artifacts/received.png"
+  if [[ "$hotkey_status" != 0 ]]; then
+    cat "$hotkey_artifacts/application.log" >&2
+    cat "$hotkey_artifacts/verification.json" >&2
+    exit "$hotkey_status"
+  fi
+  cleanup
+  RECEIVER_PID=""
+done
+
 echo "OK: macOS AppKit native host smoke artifacts in $ARTIFACT_DIR"

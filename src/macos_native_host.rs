@@ -146,6 +146,11 @@ mod appkit {
         image_export_result: RefCell<Option<std::sync::mpsc::Receiver<Result<(),String>>>>,
         last_external_pid: Cell<i32>,
         pending_row_paste: RefCell<Option<(i32,u64,u32,String,std::time::Instant)>>,
+        global_hotkey_bindings: RefCell<crate::native_hotkey::NativeHotkeyBindings>,
+        global_hotkey_cycles: RefCell<crate::native_hotkey::NativeHotkeyCycles>,
+        global_hotkey_status_label: OnceCell<Retained<NSTextField>>,
+        plain_text_paste_mode: Cell<bool>,
+        main_hotkey_target: Cell<Option<(i32, u64)>>,
         window: OnceCell<Retained<NSWindow>>,
         settings_window: OnceCell<Retained<NSWindow>>,
         status_item: OnceCell<Retained<NSStatusItem>>,
@@ -261,6 +266,7 @@ mod appkit {
     struct NativeSettingsTextFieldBinding {
         control_key: &'static str,
         initial_value: String,
+        sensitive: bool,
         field: Retained<NSTextField>,
     }
 
@@ -996,12 +1002,14 @@ mod appkit {
                 }
 
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+                self.install_native_edit_menu();
                 self.install_status_item();
                 self.install_clipboard_capture_timer();
                 self.install_native_search_timer();
                 self.install_vv_local_event_monitor();
                 self.install_vv_global_event_monitor();
                 self.install_vv_cg_event_tap_monitor();
+                self.reload_native_global_hotkeys();
                 self.install_row_context_event_monitor();
                 #[allow(deprecated)]
                 app.activateIgnoringOtherApps(true);
@@ -1749,13 +1757,109 @@ mod appkit {
         }
 
         fn hide_main_window(&self) {
+            self.ivars().plain_text_paste_mode.set(false);
+            self.ivars().main_hotkey_target.set(None);
             self.cancel_native_search();
             if let Some(window) = self.ivars().window.get() {
                 window.orderOut(None);
             }
         }
 
+        fn native_main_window_title(&self) -> &'static str {
+            if self.ivars().plain_text_paste_mode.get() { appkit_tr("ZSClip · 纯文本粘贴", "ZSClip · Paste as plain text") } else { "ZSClip" }
+        }
+
+        fn native_global_hotkey_status(&self) -> String {
+            let bindings = self.ivars().global_hotkey_bindings.borrow();
+            if !bindings.errors.is_empty() {
+                return appkit_tr("部分快捷键未启用：请更换系统保留组合或重复快捷键。Win 在 macOS 上代表 Command。", "Some shortcuts are disabled. Choose a supported combination that is not reserved or duplicated. Win means Command on macOS.").into();
+            }
+            if bindings.bindings.is_empty() { return appkit_tr("全局快捷键已关闭。", "Global shortcuts are disabled.").into(); }
+            if self.ivars().vv_cg_event_tap.get().is_none() {
+                return appkit_tr("全局快捷键不可用：请在系统设置中允许辅助功能和输入监控，再保存设置。", "Global shortcuts are unavailable. Allow Accessibility and Input Monitoring in System Settings, then save again.").into();
+            }
+            appkit_tr("全局快捷键已启用；纯文本快捷键打开列表后，仅粘贴正文或文件路径。Win 代表 Command。", "Global shortcuts are enabled. Plain-text mode pastes text or file paths only. Win means Command.").into()
+        }
+
+        fn reload_native_global_hotkeys(&self) {
+            let settings = crate::macos_app::macos_native_settings_json_snapshot();
+            let bindings = crate::native_hotkey::NativeHotkeyBindings::from_settings(&settings, true);
+            for error in &bindings.errors { eprintln!("ZSClip AppKit global shortcut rejected: {error}"); }
+            if !bindings.bindings.is_empty() && self.ivars().vv_cg_event_tap.get().is_none() {
+                self.install_vv_cg_event_tap_monitor();
+            }
+            let count = bindings.bindings.len();
+            *self.ivars().global_hotkey_bindings.borrow_mut() = bindings;
+            // Keep owned physical releases when settings disable or change a chord.
+            if let Some(label) = self.ivars().global_hotkey_status_label.get() {
+                label.setStringValue(&NSString::from_str(&self.native_global_hotkey_status()));
+            }
+            eprintln!("ZSClip AppKit global shortcuts configured={count} event_tap_available={}", self.ivars().vv_cg_event_tap.get().is_some());
+        }
+
+        fn perform_native_global_hotkey(&self, event: &CGEvent) -> bool {
+            let key_code = CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventKeycode) as u16;
+            let down = CGEvent::r#type(Some(event)) == CGEventType::KeyDown;
+            let repeat = CGEvent::integer_value_field(Some(event), CGEventField::KeyboardEventAutorepeat) != 0;
+            let flags = CGEvent::flags(Some(event));
+            let modifiers = (if flags.contains(CGEventFlags::MaskControl) { crate::native_hotkey::CTRL } else { 0 })
+                | (if flags.contains(CGEventFlags::MaskAlternate) { crate::native_hotkey::ALT } else { 0 })
+                | (if flags.contains(CGEventFlags::MaskShift) { crate::native_hotkey::SHIFT } else { 0 })
+                | (if flags.contains(CGEventFlags::MaskCommand) { crate::native_hotkey::SUPER } else { 0 });
+            let label = match key_code {
+                49 => "Space".into(), 36|76 => "Enter".into(), 48 => "Tab".into(), 53 => "Esc".into(),
+                51 => "Backspace".into(), 117 => "Delete".into(), 126 => "Up".into(), 125 => "Down".into(),
+                123 => "Left".into(), 124 => "Right".into(), 115 => "Home".into(), 119 => "End".into(),
+                116 => "PageUp".into(), 121 => "PageDown".into(),
+                _ => NSEvent::eventWithCGEvent(event)
+                    .and_then(|event| event.charactersByApplyingModifiers(NSEventModifierFlags::empty()))
+                    .map(|text| text.to_string()).unwrap_or_default(),
+            };
+            let decision = self.ivars().global_hotkey_cycles.borrow_mut().handle(
+                &self.ivars().global_hotkey_bindings.borrow(), key_code, &label, modifiers, down, repeat);
+            if let Some(action) = decision.action { self.show_native_main_from_hotkey(action); }
+            decision.consume
+        }
+
+        fn show_native_main_from_hotkey(&self, action: crate::native_hotkey::NativeHotkeyAction) {
+            let Some(window) = self.ivars().window.get() else { return; };
+            let foreground = Self::appkit_frontmost_pid();
+            if action == crate::native_hotkey::NativeHotkeyAction::ShowMain
+                && foreground == Some(std::process::id() as i32) && window.isKeyWindow() {
+                self.hide_main_window();
+                return;
+            }
+            if let Some(pid) = foreground.filter(|pid| *pid > 0 && *pid != std::process::id() as i32) {
+                self.ivars().last_external_pid.set(pid);
+                self.ivars().main_hotkey_target.set(Some((pid, crate::db_runtime::current_app_data_generation())));
+            }
+            self.ivars().pending_row_paste.borrow_mut().take();
+            self.dismiss_native_vv_popup("global_shortcut");
+            self.ivars().plain_text_paste_mode.set(action == crate::native_hotkey::NativeHotkeyAction::PastePlain);
+            window.setTitle(&NSString::from_str(self.native_main_window_title()));
+            window.makeKeyAndOrderFront(None);
+            #[allow(deprecated)]
+            NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
+            self.reload_native_clip_items();
+            eprintln!("ZSClip AppKit global shortcut opened mode={} target_pid={}", if self.ivars().plain_text_paste_mode.get() { "plain" } else { "normal" }, self.ivars().main_hotkey_target.get().map(|(pid,_)|pid).unwrap_or(0));
+        }
+
+        fn write_native_plain_text_item(&self, item_id: i64) -> ProductAdapterCommandResult {
+            let generation = self.ivars().main_hotkey_target.get().map(|(_,generation)|generation).unwrap_or_else(crate::db_runtime::current_app_data_generation);
+            let accepted = crate::db_runtime::with_shared_app_data_generation(generation, || {
+                let Some(item) = crate::db_runtime::native_clip_item(item_id).ok().flatten() else { return false; };
+                let Some(text) = crate::native_hotkey::plain_text_for_item(&item) else { return false; };
+                <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::write_text_ignored_by_monitors(&text)
+            }).unwrap_or(false);
+            if !accepted {
+                if let Some(window) = self.ivars().window.get() { window.setTitle(&NSString::from_str(appkit_tr("无法纯文本粘贴：请选择可用的文字或文件记录", "Plain-text paste unavailable: select a text or file record"))); }
+            }
+            ProductAdapterCommandResult { accepted, result_name: if accepted { "row_paste.clipboard_plain_text" } else { "row_paste.plain_text_unavailable" }.into() }
+        }
+
         fn toggle_main_window_visibility(&self) {
+            self.ivars().plain_text_paste_mode.set(false);
+            self.ivars().main_hotkey_target.set(None);
             let Some(window) = self.ivars().window.get() else {
                 return;
             };
@@ -1769,6 +1873,33 @@ mod appkit {
             unsafe {
                 NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
             }
+        }
+
+        fn install_native_edit_menu(&self) {
+            let mtm = self.mtm();
+            let main = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("ZSClip"));
+            let app_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), ns_string!("ZSClip"));
+            let app_item = unsafe { main.addItemWithTitle_action_keyEquivalent(ns_string!("ZSClip"), None, ns_string!("")) };
+            app_item.setSubmenu(Some(&app_menu));
+            let quit = unsafe { app_menu.addItemWithTitle_action_keyEquivalent(
+                &NSString::from_str(appkit_tr("退出 ZSClip", "Quit ZSClip")), Some(sel!(terminate:)), ns_string!("q")) };
+            appkit_set_menu_item_command_modifier(&quit);
+            let edit_title = NSString::from_str(appkit_tr("编辑", "Edit"));
+            let edit_menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &edit_title);
+            let edit_item = unsafe { main.addItemWithTitle_action_keyEquivalent(&edit_title, None, ns_string!("")) };
+            edit_item.setSubmenu(Some(&edit_menu));
+            for (title, action, key) in [
+                (appkit_tr("剪切", "Cut"), sel!(cut:), "x"),
+                (appkit_tr("复制", "Copy"), sel!(copy:), "c"),
+                (appkit_tr("粘贴", "Paste"), sel!(paste:), "v"),
+                (appkit_tr("全选", "Select All"), sel!(selectAll:), "a"),
+            ] {
+                let item = unsafe { edit_menu.addItemWithTitle_action_keyEquivalent(
+                    &NSString::from_str(title), Some(action), &NSString::from_str(key)) };
+                appkit_set_menu_item_command_modifier(&item);
+            }
+            // Nil targets preserve AppKit's normal text-editor responder chain.
+            NSApplication::sharedApplication(mtm).setMainMenu(Some(&main));
         }
 
         fn install_status_item(&self) {
@@ -2685,6 +2816,9 @@ mod appkit {
         }
 
         fn present_settings_window(&self, _route_name: &str) {
+            // The main window may float above normal windows. Settings must be
+            // unobstructed and must not retain a previous plain-paste session.
+            self.hide_main_window();
             if let Some(window) = self.ivars().settings_window.get() {
                 window.makeKeyAndOrderFront(None);
                 self.refresh_settings_dependencies();
@@ -2815,21 +2949,22 @@ mod appkit {
                 Kind::TextInput => {
                     view.addSubview(&appkit_settings_text_label(mtm, &title,
                         NSRect::new(NSPoint::new(32.0, y + 4.0), NSSize::new(264.0, 26.0)), 13.0, false));
-                    let field = NSTextField::labelWithString(ns_string!(""), mtm);
+                    let sensitive = display.as_ref().is_some_and(|value| value.sensitive);
+                    let field: Retained<NSTextField> = if sensitive {
+                        objc2_app_kit::NSSecureTextField::new(mtm).into_super()
+                    } else { NSTextField::new(mtm) };
                     field.setFrame(NSRect::new(NSPoint::new(310.0, y), NSSize::new(492.0, 30.0)));
                     field.setBezeled(true);
-                    let sensitive = display.as_ref().is_some_and(|value| value.sensitive);
-                    field.setEditable(!sensitive);
-                    field.setSelectable(!sensitive);
-                    field.setEnabled(!sensitive);
+                    field.setEditable(true);
+                    field.setSelectable(true);
+                    field.setEnabled(true);
                     let initial_value = display.as_ref().map(|value| value.value.clone()).unwrap_or_default();
-                    field.setStringValue(&NSString::from_str(if sensitive { appkit_tr("凭据单独管理", "Credentials are managed separately") } else { &initial_value }));
+                    field.setStringValue(&NSString::from_str(&initial_value));
+                    if sensitive { field.setPlaceholderString(Some(&NSString::from_str(appkit_tr("留空保留原凭据；输入后存入系统钥匙串", "Leave blank to keep; new values are stored in Keychain")))); }
                     appkit_set_accessibility_label::<NSTextField>(field.as_ref(), &title);
-                    if !sensitive {
-                        self.ivars().settings_native_text_fields.borrow_mut().push(NativeSettingsTextFieldBinding {
-                            control_key: control.key, initial_value, field: field.clone(),
-                        });
-                    }
+                    self.ivars().settings_native_text_fields.borrow_mut().push(NativeSettingsTextFieldBinding {
+                        control_key: control.key, initial_value, sensitive, field: field.clone(),
+                    });
                     view.addSubview(&field);
                 }
                 Kind::Dropdown => {
@@ -2886,7 +3021,7 @@ mod appkit {
                         "phrase_titles_note" => appkit_tr("关闭后显示正文摘要，已保存的标题保留。", "Turning titles off keeps existing titles and shows a content preview.").to_string(),
                         "hotkey_preview" => format!("{} + {}", settings_json["hotkey_mod"].as_str().unwrap_or(""), settings_json["hotkey_key"].as_str().unwrap_or("")),
                         "plain_hotkey_preview" => format!("{} + {}", settings_json["plain_paste_hotkey_mod"].as_str().unwrap_or(""), settings_json["plain_paste_hotkey_key"].as_str().unwrap_or("")),
-                        "hotkey_note_main" => appkit_tr("全局快捷键与 VV 可分别开启。", "The global shortcut and VV can be enabled independently.").to_string(),
+                        "hotkey_note_main" => self.native_global_hotkey_status(),
                         "hotkey_note_plain" => appkit_tr("纯文本粘贴不保留格式。", "Plain-text paste removes formatting.").to_string(),
                         "lan_discovered_list" => appkit_tr("发现的设备会在局域网连接中显示。", "Discovered devices are shown in the LAN connection list.").to_string(),
                         _ => display.map(|value| if value.value.is_empty() { title.clone() } else { format!("{title}: {}", value.value) }).unwrap_or(title),
@@ -2894,6 +3029,7 @@ mod appkit {
                     let label = appkit_settings_text_label(mtm, &text,
                         NSRect::new(NSPoint::new(32.0, y), NSSize::new(770.0, 34.0)), 12.0, false);
                     label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                    if control.key == "hotkey_note_main" { self.ivars().global_hotkey_status_label.set(label.clone()).ok(); }
                     view.addSubview(&label);
                 }
             }
@@ -3143,6 +3279,7 @@ mod appkit {
         }
 
         fn refresh_main_state_after_settings_save(&self) {
+            self.reload_native_global_hotkeys();
             appkit_apply_content_theme(self.mtm());
             let preferences=NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot());
             self.ivars().content_preferences.set(preferences);
@@ -3239,13 +3376,23 @@ mod appkit {
                 self.refresh_main_state_after_settings_save();
                 self.refresh_status_menu_state_from_settings();
                 self.refresh_settings_dependencies();
+                if persist_result.accepted {
+                    for binding in self.ivars().settings_native_text_fields.borrow().iter().filter(|binding| binding.sensitive) {
+                        binding.field.setStringValue(ns_string!(""));
+                    }
+                }
                 if let Some(label) = self.ivars().settings_route_label.get() {
-                    let text = if persist_result.accepted && json_apply.rejected_fields.is_empty() {
-                        appkit_tr("已保存", "Saved")
+                    let hotkeys=self.ivars().global_hotkey_bindings.borrow();
+                    let hotkey_issue=!hotkeys.errors.is_empty() || (!hotkeys.bindings.is_empty() && self.ivars().vv_cg_event_tap.get().is_none());
+                    drop(hotkeys);
+                    let text = if persist_result.accepted && hotkey_issue {
+                        self.native_global_hotkey_status()
+                    } else if persist_result.accepted {
+                        appkit_tr("已保存", "Saved").to_string()
                     } else {
-                        appkit_tr("部分设置未能保存，请检查输入。", "Some settings could not be saved. Check the entered values.")
+                        persist_result.result_name.strip_prefix("zsclip.settings.native_save_failed: ").unwrap_or(appkit_tr("部分设置未能保存，请检查输入。", "Some settings could not be saved. Check the entered values.")).to_string()
                     };
-                    label.setStringValue(&NSString::from_str(text));
+                    label.setStringValue(&NSString::from_str(&text));
                 }
             }
             let result = super::dispatch_appkit_settings_action(action);
@@ -3298,7 +3445,8 @@ mod appkit {
                 label.setStringValue(&NSString::from_str(if result.accepted {
                     appkit_tr("操作完成", "Done")
                 } else {
-                    appkit_tr("操作未完成，请检查设置。", "Unable to complete this action. Check the settings.")
+                    crate::native_secret_store::action_error_message(&result.result_name)
+                        .unwrap_or(appkit_tr("操作未完成，请检查设置。", "Unable to complete this action. Check the settings."))
                 }));
             }
         }
@@ -3428,8 +3576,13 @@ mod appkit {
             }
             if action==NativeHostRowAction::Edit {self.ivars().edit_save_as_phrase.set(false);}
             let item_id = self.ivars().selected_item_id.get();
-            let result =
-                crate::macos_app::dispatch_macos_native_row_action_for_item(action, item_id);
+            let result = if action == NativeHostRowAction::Paste && self.ivars().plain_text_paste_mode.get() {
+                self.write_native_plain_text_item(item_id)
+            } else if action == NativeHostRowAction::Paste && self.ivars().main_hotkey_target.get().is_some_and(|(_,generation)| generation != crate::db_runtime::current_app_data_generation()) {
+                ProductAdapterCommandResult { accepted: false, result_name: "row_paste.stale_hotkey_target".into() }
+            } else {
+                crate::macos_app::dispatch_macos_native_row_action_for_item(action, item_id)
+            };
             eprintln!(
                 "ZSClip AppKit row action {} item_id={} -> {}",
                 action.action_name(),
@@ -3466,6 +3619,10 @@ mod appkit {
                 if let (Some(window),Some(field))=(self.ivars().edit_window.get(),self.ivars().edit_title_field.get()) {window.makeFirstResponder(Some(field));unsafe {field.selectText(None);}}
                 return;
             }
+            if let Some(action) = NativeHostRowAction::from_menu_id(menu_id) {
+                self.perform_native_row_action(action);
+                return;
+            }
             let result = super::dispatch_appkit_menu_command_id(menu_id);
             eprintln!(
                 "ZSClip AppKit popup menu command {} -> {}",
@@ -3473,9 +3630,6 @@ mod appkit {
             );
             if self.perform_native_group_menu_command(menu_id) {
                 return;
-            }
-            if let Some(action) = NativeHostRowAction::from_menu_id(menu_id) {
-                self.perform_native_row_action(action);
             }
         }
 
@@ -3594,7 +3748,7 @@ mod appkit {
                     }
                 }
             }
-            let values=[("content_font_size","16"),("card_view","true"),("card_border","true"),("card_shadow","true"),("phrase_titles","true")]
+            let values=[("content_font_size","16"),("card_view","true"),("card_border","true"),("card_shadow","true"),("phrase_titles","true"),("vv_source","1"),("vv_group","0")]
                 .into_iter().map(|(key,value)|crate::settings_model::SettingsNativeSubmittedControlValue {control_key:key.into(),raw_value:value.into()}).collect::<Vec<_>>();
             let submission=crate::settings_model::settings_native_collect_submission(&values);
             let _=crate::macos_app::persist_macos_native_settings_submission(&submission);
@@ -3664,12 +3818,15 @@ mod appkit {
                     *self.ivars().clip_items.borrow_mut()=items;
                     self.refresh_native_clip_rows();
                     if let Some(table)=self.ivars().clip_table_view.get() {table.setEnabled(true);}
-                    if let Some(window)=self.ivars().window.get() {window.setTitle(ns_string!("ZSClip"));}
+                    if let Some(window)=self.ivars().window.get() {window.setTitle(&NSString::from_str(self.native_main_window_title()));}
                     if let Some(button)=self.ivars().previous_page_button.get() {button.setEnabled(result.page_index>0);}
                     if let Some(button)=self.ivars().next_page_button.get() {button.setEnabled(result.has_more);}
                     if let Some(label)=self.ivars().page_label.get() {label.setStringValue(&NSString::from_str(&format!("{} {}",appkit_tr("第","Page"),result.page_index+1)));}
                     self.finish_auto_smoke_rows_after_search();
                     self.finish_native_screenshot_scene();
+                    if std::env::var("ZSCLIP_NATIVE_HOTKEY_SMOKE").as_deref() == Ok("1") && std::env::var_os("ZSCLIP_DATA_DIR").is_some() {
+                        eprintln!("ZSClip AppKit main list ready mode={} rows={}", if self.ivars().plain_text_paste_mode.get() { "plain" } else { "normal" }, self.ivars().clip_table_items.borrow().len());
+                    }
                 }
                 Err(error)=>{
                     // Old rows remain visible but cannot be acted on after a failed query.
@@ -3709,7 +3866,7 @@ mod appkit {
         }
 
         fn begin_native_row_paste(&self) {
-            let pid=self.ivars().last_external_pid.get();
+            let pid=self.ivars().main_hotkey_target.get().map(|(pid,_)|pid).unwrap_or(self.ivars().last_external_pid.get());
             if pid<=0 || pid==std::process::id() as i32 {
                 Self::present_appkit_message_dialog(self.mtm(),appkit_tr("无法粘贴","Unable to paste"),appkit_tr("请先将光标放入目标应用，再返回选择记录。内容已复制到剪贴板。","Place the cursor in the destination app, then return and select a record. The content is on the clipboard."),NSAlertStyle::Warning);
                 return;
@@ -4215,6 +4372,11 @@ mod appkit {
         }
 
         fn perform_native_clip_list_key_event(&self, event: &NSEvent) -> bool {
+            let Some(main) = self.ivars().window.get().filter(|window| window.isKeyWindow()) else { return false; };
+            let Some(event_window) = event.window(self.mtm()) else { return false; };
+            if Retained::<NSWindow>::as_ptr(&event_window) != Retained::<NSWindow>::as_ptr(main) {
+                return false;
+            }
             if appkit_event_has_command_modifier(event.modifierFlags())
                 && appkit_event_key_text(event).eq_ignore_ascii_case("f")
             {
@@ -4223,6 +4385,9 @@ mod appkit {
             }
             if event.keyCode() == 53 && self.hide_native_search_field() {
                 return true;
+            }
+            if self.ivars().search_field.get().is_some_and(|field| field.currentEditor().is_some()) {
+                return false;
             }
             if appkit_event_has_navigation_blocking_modifier(event.modifierFlags()) {
                 return false;
@@ -4664,6 +4829,9 @@ mod appkit {
                 return event.as_ptr();
             }
 
+            if delegate.perform_native_global_hotkey(unsafe { event.as_ref() }) {
+                return ptr::null_mut();
+            }
             let transition = delegate.perform_native_vv_cg_event(unsafe { event.as_ref() });
             if transition.consume_key {
                 ptr::null_mut()

@@ -196,6 +196,9 @@ mod platform {
     impl X11VvLease {
         pub(crate) fn acquire_before_map(popup: u32) -> Result<Self, String> {
             let (connection, screen) = x11rb::connect(None).map_err(|error| error.to_string())?;
+            // Removing passive grabs while Escape is held must retain the
+            // active key cycle until its physical release, including repeats.
+            crate::native_x11_hotkey::enable_x11_detectable_autorepeat(&connection)?;
             let root = connection.setup().roots[screen].root;
             let focus = connection
                 .get_input_focus()
@@ -213,6 +216,9 @@ mod platform {
                 .map_err(|error| error.to_string())?
                 .reply()
                 .map_err(|error| error.to_string())?;
+            if mapping.keysyms_per_keycode == 0 {
+                return Err("X11 keyboard map is empty".into());
+            }
             let keycode = |symbol: u32| {
                 mapping
                     .keysyms

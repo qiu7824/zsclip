@@ -1,6 +1,6 @@
 [package]
 name = "zsclip"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2021"
 repository = "https://github.com/qiu7824/zsclip/"
 
@@ -60,6 +60,7 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3.7"
 block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSAccessibilityProtocols", "NSAppearance", "NSApplication", "NSEvent", "NSButtonCell", "NSFontDescriptor", "NSPopUpButton", "NSScrollView", "NSTabView", "NSTabViewItem", "NSTableView", "NSTableColumn", "NSTableHeaderView", "NSControl", "NSText", "NSTextView", "NSView", "NSVisualEffectView", "NSResponder", "NSClipView", "block2"] }
@@ -69,8 +70,9 @@ objc2-foundation = "0.3"
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "objc2-core-foundation", "objc2-core-graphics"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "5.2", default-features = false, features = ["rt-async-io-crypto-rust"] }
 gtk4 = "0.11"
-x11rb = { version = "0.13", features = ["record"] }
+x11rb = { version = "0.13", features = ["record", "xkb"] }
 keytap = { version = "0.4.0", default-features = false }
 ksni = { version = "0.3.5", features = ["blocking"] }
 

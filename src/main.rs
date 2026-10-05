@@ -29,14 +29,20 @@ mod native_search;
 mod native_paths;
 #[cfg(any(not(target_os = "windows"), test))]
 mod native_protection;
+#[cfg(any(not(windows), test))]
+mod native_secret_store;
 #[cfg(any(target_os = "macos", test))]
 mod native_vv;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod native_image_export;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod native_feedback;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod native_hotkey;
 #[cfg(any(target_os = "linux", test))]
 mod native_x11_vv;
+#[cfg(any(target_os = "linux", test))]
+mod native_x11_hotkey;
 #[cfg(any(target_os = "macos", test))]
 mod macos_app;
 #[cfg(test)]

@@ -5,7 +5,7 @@ use windows_sys::Win32::{
     UI::{
         Controls::{EM_REPLACESEL, EM_SETSEL},
         WindowsAndMessaging::{
-            DLGC_HASSETSEL, DLGC_WANTARROWS, DLGC_WANTCHARS, DLGC_WANTTAB, GUITHREADINFO,
+            DLGC_HASSETSEL, DLGC_WANTARROWS, DLGC_WANTCHARS, DLGC_WANTTAB, GUITHREADINFO, GetWindow, GW_OWNER,
             WM_GETDLGCODE, WM_PASTE, WM_SETTEXT,
         },
     },
@@ -154,6 +154,38 @@ fn is_telegram_process(process_name: &str) -> bool {
         process.as_str(),
         "telegram.exe" | "telegram" | "telegramdesktop.exe" | "telegramdesktop"
     ) || process.contains("telegram")
+}
+
+fn is_weixin_qt_main_frame(process_name: &str, target_class: &str, focus_class: &str) -> bool {
+    if !matches!(process_name.trim().to_ascii_lowercase().as_str(), "weixin.exe" | "wechat.exe")
+        || !target_class.eq_ignore_ascii_case(focus_class)
+    {
+        return false;
+    }
+    let class = target_class.to_ascii_lowercase();
+    class.strip_prefix("qt")
+        .and_then(|suffix| suffix.strip_suffix("qwindowicon"))
+        .is_some_and(|version| !version.is_empty() && version.bytes().all(|ch| ch.is_ascii_digit()))
+}
+
+fn weixin_qt_main_frame_accepts_input(target: HWND, focus: HWND) -> bool {
+    if focus != target
+        || !platform_window::is_foreground(target)
+        || !platform_window::is_root_window(target)
+        || !unsafe { GetWindow(target, GW_OWNER) }.is_null()
+        || !has_default_ime_window(target)
+    {
+        return false;
+    }
+    // This custom main frame exposes no native edit HWND or accessible caret.
+    // Identify its real rendering child; other Qt applications and owned dialogs
+    // must continue through the ordinary editor/caret checks.
+    let pid = platform_window::window_process_id(target);
+    platform_window::children_bottom_to_top(target).into_iter().any(|child| {
+        platform_window::is_visible(child)
+            && platform_window::window_process_id(child) == pid
+            && platform_window::class_name(child) == "MMUIRenderSubWindowHW"
+    })
 }
 
 fn is_word_document_class(class_name: &str) -> bool {
@@ -355,6 +387,12 @@ impl NativePasteTargetHost for WindowsPasteTargetHost {
             target
         };
         let focus_cls = identity_host.class_name(focus).to_ascii_lowercase();
+        if !info.hwndFocus.is_null()
+            && is_weixin_qt_main_frame(&process_name, &target_cls, &focus_cls)
+            && weixin_qt_main_frame_accepts_input(target, focus)
+        {
+            return true;
+        }
         let text_input_capabilities = self.paste_target_text_input_capabilities(focus);
 
         if is_telegram_process(&process_name) {
@@ -432,6 +470,38 @@ mod tests {
     use super::{
         class_accepts_direct_paste_message, explorer_rename_ancestor_classes, is_telegram_process,
     };
+
+    #[test]
+    fn weixin_custom_frame_identity_excludes_other_apps_and_qt_popups() {
+        use super::is_weixin_qt_main_frame as matches_frame;
+        for process in ["Weixin.exe", "WeChat.exe"] {
+            assert!(matches_frame(process, "Qt51514QWindowIcon", "Qt51514QWindowIcon"));
+            assert!(matches_frame(process, "Qt681QWindowIcon", "Qt681QWindowIcon"));
+        }
+        for process in ["other.exe", "WeChatAppEx.exe", "fake-weixin.exe"] {
+            assert!(!matches_frame(process, "Qt51514QWindowIcon", "Qt51514QWindowIcon"));
+        }
+        for class in ["QtQWindowIcon", "Qt5xQWindowIcon", "Qt51514QWindowToolSaveBits", "Edit"] {
+            assert!(!matches_frame("Weixin.exe", class, class));
+        }
+        assert!(!matches_frame("Weixin.exe", "Qt51514QWindowIcon", "Qt51514QWindowToolSaveBits"));
+    }
+
+    #[test]
+    #[ignore = "Read-only probe of an explicitly supplied, foreground Weixin HWND"]
+    fn weixin_live_target_readiness_probe() {
+        use super::*;
+        let raw: usize = std::env::var("ZSCLIP_TEST_WEIXIN_HWND").expect("Provide the observed Weixin HWND")
+            .parse().unwrap();
+        let target = raw as HWND;
+        let identity = WindowsWindowIdentityHost::new();
+        let process = identity.process_name(target);
+        assert!(matches!(process.to_ascii_lowercase().as_str(), "weixin.exe" | "wechat.exe"));
+        let focus = WindowsPasteTargetHost::new().focused_control(target);
+        let ready = WindowsPasteTargetHost::new().paste_target_text_input_ready(target);
+        eprintln!("Weixin readiness: target={raw:x} class={} focus={:x} ready={ready}", identity.class_name(target), focus as usize);
+        assert!(ready, "The observed foreground Weixin main frame was rejected");
+    }
 
     #[test]
     fn direct_edit_paste_replaces_only_native_selection_and_supports_undo() {

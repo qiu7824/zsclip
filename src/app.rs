@@ -150,6 +150,7 @@ mod transient_window_host;
 mod vv_hook;
 mod vv_popup;
 mod vv_preview;
+mod vv_trace;
 mod windows_messages;
 
 pub(crate) use self::constants::TRAY_UID;
@@ -163,6 +164,7 @@ pub(crate) use self::main_low_level_input::refresh_low_level_input_hooks;
 pub(crate) use self::main_search::{layout_children, reset_search_ui_state};
 pub(crate) use self::main_window::{
     hide_main_window, present_main_window, refresh_main_window_layout_for_monitor,
+    schedule_hidden_memory_reclaim_after_activity,
     set_main_window_activation_policy, set_main_window_bounds,
 };
 pub(crate) use self::main_window_refresh::refresh_window_for_show;
@@ -182,3 +184,5 @@ mod settings_layout_tests;
 
 #[cfg(test)]
 mod vv_integration_tests;
+#[cfg(test)]
+mod memory_integration_tests;

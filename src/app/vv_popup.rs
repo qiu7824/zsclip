@@ -466,6 +466,14 @@ pub(super) unsafe fn vv_popup_hide(hwnd: HWND, state: &mut AppState) {
     }
 }
 
+unsafe fn vv_abort_popup(hwnd: HWND, state: &mut AppState) {
+    if state.vv_paste_guard.is_some() {
+        cancel_queued_paste_attempt(hwnd, state);
+        vv_finish_paste(state);
+    }
+    vv_popup_hide(hwnd, state);
+}
+
 // Raw Win32 messages carry the session in LPARAM; old queued messages cannot act on a new popup.
 pub(super) unsafe fn vv_handle_session_message(
     hwnd: HWND,
@@ -485,7 +493,7 @@ pub(super) unsafe fn vv_handle_session_message(
         else if msg == WM_VV_HIDE {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
-                vv_popup_hide(hwnd, &mut *ptr);
+                vv_abort_popup(hwnd, &mut *ptr);
             }
         }
         return true;
@@ -500,6 +508,7 @@ pub(super) unsafe fn vv_handle_session_message(
         return true;
     };
     if hook.session.id != id {
+        super::vv_trace::event("message.reject.session",format_args!("msg={msg} message_sid={id} current_sid={}",hook.session.id));
         return true;
     }
     if msg == WM_VV_HIDE {
@@ -507,15 +516,23 @@ pub(super) unsafe fn vv_handle_session_message(
             windows_sys::Win32::UI::WindowsAndMessaging::EndMenu();
         }
         drop(hook);
-        vv_popup_hide(hwnd, state);
+        vv_abort_popup(hwnd, state);
+        return true;
+    }
+    if !vv_input_revision_is_current(&hook) {
+        super::vv_trace::event("message.reject.input_revision", format_args!("msg={msg} sid={id}"));
+        hook.session.cancel();
+        drop(hook);
+        vv_abort_popup(hwnd, state);
         return true;
     }
     let target = hook.session.target as HWND;
     let focus = hook.session.focus as HWND;
     if platform_window::foreground() != target || vv_current_focus(target) != focus {
+        super::vv_trace::event("message.reject.focus",format_args!("msg={msg} sid={id} target={:x} focus={:x} current_fg={:x} current_focus={:x}",target as usize,focus as usize,platform_window::foreground() as usize,vv_current_focus(target) as usize));
         hook.session.cancel();
         drop(hook);
-        vv_popup_hide(hwnd, state);
+        vv_abort_popup(hwnd, state);
         return true;
     }
     if msg == WM_VV_SHOW {
@@ -530,7 +547,9 @@ pub(super) unsafe fn vv_handle_session_message(
                 return true;
             };
             hook = current;
-            if hook.session.id != id || hook.session.phase != VvPhase::Pending {
+            if hook.session.id != id || hook.session.phase != VvPhase::Pending
+                || !vv_input_revision_is_current(&hook)
+            {
                 return true;
             }
         }
@@ -545,10 +564,10 @@ pub(super) unsafe fn vv_handle_session_message(
             },
         );
     } else {
-        if hook.session.phase != VvPhase::Selected
-            || state.vv_popup_session_id != id
+        if state.vv_popup_session_id != id
             || !state.vv_popup_visible
         {
+            super::vv_trace::event("message.reject.selection_state",format_args!("sid={id} phase={:?} state_sid={} visible={}",hook.session.phase,state.vv_popup_session_id,state.vv_popup_visible));
             return true;
         }
         drop(hook);
@@ -571,7 +590,7 @@ pub(super) unsafe fn vv_session_target_current(state: &AppState, pending: bool) 
         && platform_window::foreground() == target
         && vv_current_focus(target) == state.vv_popup_focus
         && vv_hook_state().lock().is_ok_and(|hook| {
-            hook.session.matches(
+            vv_input_revision_is_current(&hook) && hook.session.matches(
                 state.vv_popup_session_id,
                 target as usize,
                 state.vv_popup_focus as usize,
@@ -581,6 +600,15 @@ pub(super) unsafe fn vv_session_target_current(state: &AppState, pending: bool) 
                 matches!(hook.session.phase, VvPhase::Visible | VvPhase::Selected)
             }
         })
+}
+
+pub(super) unsafe fn vv_commit_visible_selection(state: &AppState, index: usize) -> bool {
+    if !state.vv_popup_visible || !vv_session_target_current(state, false) {
+        return false;
+    }
+    vv_hook_state().lock().is_ok_and(|mut hook| {
+        hook.session.accept_selection(state.vv_popup_session_id, index, state.vv_popup_items.len())
+    })
 }
 
 pub(super) unsafe fn vv_prepare_selection(state: &AppState) -> Option<u8> {
@@ -595,7 +623,7 @@ pub(super) unsafe fn vv_prepare_selection(state: &AppState) -> Option<u8> {
         return None;
     }
     let hook = vv_hook_state().lock().ok()?;
-    if !hook.session.matches(
+    if !vv_input_revision_is_current(&hook) || !hook.session.matches(
         state.vv_popup_session_id,
         state.vv_popup_target as usize,
         state.vv_popup_focus as usize,
@@ -608,11 +636,15 @@ pub(super) unsafe fn vv_prepare_selection(state: &AppState) -> Option<u8> {
     let literal_trigger_confirmed = state.vv_popup_trigger_text_visible
         && WindowsImeHost::new().input_mode(state.vv_popup_focus)
             == WindowsImeInputMode::Alphanumeric;
+    if !vv_session_target_current(state, false) {
+        return None;
+    }
     let cleanup = crate::app_core::vv_session::vv_selection_cleanup(
         triggered_by_text,
         literal_trigger_confirmed,
         || WindowsImeHost::new().cancel_exact_vv_composition(state.vv_popup_focus),
     );
+    super::vv_trace::event("selection.cleanup",format_args!("sid={} strategy={cleanup:?} literal_confirmed={literal_trigger_confirmed}",state.vv_popup_session_id));
     Some(cleanup.backspaces())
 }
 
@@ -633,6 +665,10 @@ pub(super) fn vv_cancel_failed_selection(state: &mut AppState) {
     {
         state.vv_paste_guard = None;
     }
+}
+
+fn vv_trigger_needs_ime_exit(triggered_by_text: bool, mode: WindowsImeInputMode) -> bool {
+    triggered_by_text && mode == WindowsImeInputMode::Native
 }
 
 pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool {
@@ -669,17 +705,67 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
         return false;
     }
     vv_popup_sync_hook_state(true, target);
+    super::vv_trace::snapshot("popup.visible",state);
     let popup = vv_popup_hwnd(hwnd);
     if !vv_popup_move_near_target(state, popup) {
         vv_popup_hide(hwnd, state);
         return false;
     }
-    // Showing and cancelling are presentation-only: never send Escape into an editor.
-    state.vv_popup_trigger_text_visible =
-        WindowsImeHost::new().input_mode(state.vv_popup_focus) == WindowsImeInputMode::Alphanumeric;
+    let input_mode = WindowsImeHost::new().input_mode(state.vv_popup_focus);
+    if !vv_session_target_current(state, false) {
+        vv_popup_hide(hwnd, state);
+        return false;
+    }
+    let triggered_by_text = vv_hook_state().lock().is_ok_and(|hook| {
+        hook.session.id == state.vv_popup_session_id && hook.session.triggered_by_text
+    });
+    super::vv_trace::event("popup.input_mode", format_args!(
+        "sid={} mode={input_mode:?} text_triggered={triggered_by_text}", state.vv_popup_session_id,
+    ));
+    if vv_trigger_needs_ime_exit(triggered_by_text, input_mode) {
+        // An observed native IME can keep consuming shortcuts during composition.
+        // Never use an unknown mode to authorize Escape in the target editor.
+        if !vv_session_target_current(state, false)
+            || platform_input::paste_command_modifiers_down()
+        {
+            vv_popup_hide(hwnd, state);
+            return false;
+        }
+        super::vv_trace::event("popup.ime_exit", format_args!(
+            "sid={} mode={input_mode:?} target={:x} focus={:x}",
+            state.vv_popup_session_id, target as usize, state.vv_popup_focus as usize,
+        ));
+        send_escape_key();
+        if !vv_session_target_current(state, false) {
+            vv_popup_hide(hwnd, state);
+            return false;
+        }
+    }
+    state.vv_popup_trigger_text_visible = input_mode == WindowsImeInputMode::Alphanumeric;
     platform_gdi::invalidate_rect(popup, null(), 1);
     let _ = vv_popup_move_near_target(state, popup);
     true
+}
+
+#[cfg(test)]
+mod ime_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn text_trigger_exits_only_observed_native_ime_before_selection() {
+        assert!(vv_trigger_needs_ime_exit(true, WindowsImeInputMode::Native));
+        assert!(!vv_trigger_needs_ime_exit(true, WindowsImeInputMode::Unknown));
+        assert!(!vv_trigger_needs_ime_exit(true, WindowsImeInputMode::Alphanumeric));
+    }
+
+    #[test]
+    fn non_text_invocation_does_not_inject_escape() {
+        for mode in [WindowsImeInputMode::Native, WindowsImeInputMode::Unknown,
+            WindowsImeInputMode::Alphanumeric]
+        {
+            assert!(!vv_trigger_needs_ime_exit(false, mode));
+        }
+    }
 }
 
 unsafe extern "system" fn vv_popup_wnd_proc(
@@ -859,6 +945,7 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                 return 0;
             }
             let state = &mut *ptr;
+            super::vv_trace::snapshot("popup.mouse_up",state);
             let x = get_x_lparam(lparam);
             let y = get_y_lparam(lparam);
             let layout = platform_window::client_rect(hwnd)
@@ -881,10 +968,8 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                     }
                 }
                 MainVvPopupHit::Row(row) => {
-                    let selected = vv_hook_state()
-                        .lock()
-                        .is_ok_and(|mut hook| hook.session.select(state.vv_popup_session_id, row));
-                    if selected {
+                    super::vv_trace::event("popup.mouse_select",format_args!("sid={} row={row} visible={}",state.vv_popup_session_id,state.vv_popup_visible));
+                    if state.vv_popup_visible {
                         platform_window::post_hwnd_message(
                             main_hwnd,
                             WM_VV_SELECT,

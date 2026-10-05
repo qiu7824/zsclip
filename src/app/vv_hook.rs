@@ -1,6 +1,25 @@
 use super::prelude::*;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const VV_TRIGGER_TIMEOUT_MS: u128 = 300;
+static VV_INPUT_REVISION: AtomicU64 = AtomicU64::new(0);
+
+fn vv_mode_change_edge(vk: u32, down: bool) -> bool {
+    matches!(vk, 0x10 | 0xa0 | 0xa1)
+        || down && matches!(vk, 0x11..=0x12 | 0x5b..=0x5c | 0xa2..=0xa5
+            | 0x14..=0x15 | 0x19 | 0x1c..=0x1f | 0xe5)
+}
+
+pub(super) fn vv_input_revision_is_current(hook: &VvHookState) -> bool {
+    hook.session_input_revision == VV_INPUT_REVISION.load(Ordering::SeqCst)
+}
+
+fn vv_reset_trigger(hook: &mut VvHookState) {
+    hook.last_was_v = false;
+    hook.last_v_at = None;
+    hook.last_v_target = 0;
+    hook.last_v_focus = 0;
+}
 
 pub(super) unsafe fn window_process_name(hwnd: HWND) -> String {
     WindowsWindowIdentityHost::new().process_name(hwnd)
@@ -133,6 +152,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mode_change_edges_invalidate_shift_release_and_mode_keys_only() {
+        for key in [0x10, 0xa0, 0xa1] {
+            assert!(vv_mode_change_edge(key, true));
+            assert!(vv_mode_change_edge(key, false));
+        }
+        for key in [0x11, 0x12, 0x5b, 0x14, 0x15, 0x19, 0x1c, 0x1d, 0x1f, 0xe5] {
+            assert!(vv_mode_change_edge(key, true));
+            assert!(!vv_mode_change_edge(key, false));
+        }
+        for key in [0x41, 0x56, 0x31, 0x1b] {
+            assert!(!vv_mode_change_edge(key, true));
+            assert!(!vv_mode_change_edge(key, false));
+        }
+    }
+
+    #[test]
     fn english_vv_trigger_is_replaced_including_browser_targets() {
         assert_eq!(
             vv_backspace_count_for_trigger_state(
@@ -178,6 +213,7 @@ pub(super) unsafe fn vv_request_show(main: HWND, target: HWND, triggered_by_text
     let id = hook
         .session
         .begin(target as usize, focus as usize, triggered_by_text);
+    hook.session_input_revision = VV_INPUT_REVISION.load(Ordering::SeqCst);
     hook.popup_active = false;
     platform_window::post_hwnd_message(main, WM_VV_SHOW, target as usize, id as isize);
 }
@@ -189,7 +225,8 @@ pub(super) unsafe fn vv_paste_target_is_current(state: &AppState) -> bool {
     platform_window::foreground() as isize == target
         && vv_current_focus(target as HWND) as isize == focus
         && vv_hook_state().lock().is_ok_and(|hook| {
-            hook.session.matches(id, target as usize, focus as usize)
+            vv_input_revision_is_current(&hook)
+                && hook.session.matches(id, target as usize, focus as usize)
                 && hook.session.phase == crate::app_core::vv_session::VvPhase::Selected
         })
 }
@@ -233,7 +270,7 @@ pub(super) unsafe fn vv_cancel_for_pointer(point: POINT) {
     hook.last_was_v = false;
 }
 
-unsafe extern "system" fn vv_keyboard_hook_proc(
+pub(super) unsafe extern "system" fn vv_keyboard_hook_proc(
     code: i32,
     wparam: WPARAM,
     lparam: LPARAM,
@@ -245,6 +282,14 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
     if event.is_injected_or_lower_integrity() {
         return platform_hook::call_next(code, wparam, lparam);
     }
+    let mode_change = vv_mode_change_edge(event.vk_code, event.down);
+    // Invalidate before taking the state lock. A reentrant hook may have to
+    // pass this event through while UI work still holds that lock.
+    let input_revision = if mode_change {
+        VV_INPUT_REVISION.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+    } else {
+        VV_INPUT_REVISION.load(Ordering::SeqCst)
+    };
     let Ok(mut hook) = vv_hook_state().try_lock() else {
         return platform_hook::call_next(code, wparam, lparam);
     };
@@ -252,6 +297,9 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
         return platform_hook::call_next(code, wparam, lparam);
     }
     let main = hook.main_hwnd as HWND;
+    if mode_change {
+        vv_reset_trigger(&mut hook);
+    }
     let identity_host = WindowsWindowIdentityHost::new();
     let fg = identity_host.foreground_handle();
     let focus = vv_current_focus(fg);
@@ -262,20 +310,24 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
     let same = (menu_active && hotkey::is_escape_vk(event.vk_code))
         || hook.session.target == fg as usize && hook.session.focus == focus as usize;
     // Menus retain their own keyboard navigation; owned releases still go through the session.
-    let result = if menu_active && event.down && !hotkey::is_escape_vk(event.vk_code) {
+    let result = if menu_active && event.down && !mode_change && !hotkey::is_escape_vk(event.vk_code) {
         None
     } else {
-        Some(hook.session.key(event.vk_code, event.down, modifiers, same))
+        Some(hook.session.key_request(event.vk_code, event.down, modifiers, same))
     };
     if let Some(result) = result {
+        if result.action != VvKeyAction::None {
+            super::vv_trace::event("hook.action",format_args!("sid={} phase={:?} action={:?} down={} modifiers={} mode_change={} same_target={} foreground={:x} focus={:x}",hook.session.id,hook.session.phase,result.action,event.down,modifiers,mode_change,same,fg as usize,focus as usize));
+        }
         match result.action {
             VvKeyAction::Hide => {
                 hook.popup_active = false;
-                hook.last_was_v = false;
+                vv_reset_trigger(&mut hook);
                 platform_window::post_hwnd_message(main, WM_VV_HIDE, 0, hook.session.id as isize);
             }
             VvKeyAction::Select(index) => {
-                hook.popup_active = false;
+                // The UI owns the visible candidate list and commits selection.
+                // Keep its visibility synchronized until that request is handled.
                 hook.last_was_v = false;
                 platform_window::post_hwnd_message(
                     main,
@@ -312,8 +364,7 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
         return platform_hook::call_next(code, wparam, lparam);
     }
     if modifiers || !identity_host.exists(fg) || vv_target_is_ignored(fg, main) {
-        hook.last_was_v = false;
-        hook.last_v_at = None;
+        vv_reset_trigger(&mut hook);
         return platform_hook::call_next(code, wparam, lparam);
     }
     if event.vk_code == hook.trigger_vk {
@@ -321,21 +372,31 @@ unsafe extern "system" fn vv_keyboard_hook_proc(
             .last_v_at
             .is_some_and(|at| at.elapsed().as_millis() <= VV_TRIGGER_TIMEOUT_MS);
         if hook.last_was_v
+            && hook.last_v_input_revision == input_revision
             && hook.last_v_target == fg as isize
             && hook.last_v_focus == focus as isize
             && timely
         {
             hook.last_was_v = false;
             hook.last_v_at = None;
-            if vv_target_is_text_input_ready(fg) {
+            if vv_target_is_text_input_ready(fg)
+                && VV_INPUT_REVISION.load(Ordering::SeqCst) == input_revision
+            {
                 let id = hook.session.begin(fg as usize, focus as usize, true);
+                hook.session_input_revision = input_revision;
+                super::vv_trace::event("hook.trigger",format_args!("sid={id} target={:x} focus={:x}",fg as usize,focus as usize));
                 platform_window::post_hwnd_message(main, WM_VV_SHOW, fg as usize, id as isize);
+            } else {
+                super::vv_trace::event("hook.reject.input_target", format_args!(
+                    "target={:x} focus={:x}", fg as usize, focus as usize,
+                ));
             }
         } else {
             let _ = vv_target_is_text_input_ready(fg);
             hook.last_was_v = true;
             hook.last_v_target = fg as isize;
             hook.last_v_focus = focus as isize;
+            hook.last_v_input_revision = input_revision;
             hook.last_v_at = Some(Instant::now());
         }
     } else {

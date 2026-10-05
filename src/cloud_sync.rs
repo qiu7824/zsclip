@@ -306,6 +306,8 @@ fn upload_config(
             return Err("本地设置文件不存在，无法上传。".to_string());
         }
         validate_settings_json(&paths.settings_file)?;
+        #[cfg(not(windows))]
+        crate::native_secret_store::validate_settings_for_export(&paths.settings_file).map_err(|error|error.to_string())?;
         fs::copy(&paths.settings_file, &settings_copy)
             .map_err(|err| format!("无法暂存本地设置：{err}"))?;
         sync_file(&settings_copy).map_err(|err| format!("无法同步本地设置副本：{err}"))?;
@@ -583,6 +585,8 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         return Err("无法创建云备份：本地缺少 settings.json。".to_string());
     }
     validate_settings_json(&paths.settings_file)?;
+    #[cfg(not(windows))]
+    crate::native_secret_store::validate_settings_for_export(&paths.settings_file).map_err(|error|error.to_string())?;
     if !paths.db_file.is_file() {
         return Err("无法创建云备份：本地缺少 clipboard.db。".to_string());
     }
@@ -1195,6 +1199,7 @@ fn build_webdav_args(extra: &[String]) -> Vec<String> {
     args
 }
 
+#[cfg(windows)]
 fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<String, String> {
     let mut args = build_webdav_args(extra);
     let config_path = if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
@@ -1225,6 +1230,38 @@ fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<
     }
     if let Some(path) = config_path {
         let _ = fs::remove_file(path);
+    }
+    result
+}
+
+#[cfg(not(windows))]
+fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<String, String> {
+    let mut args=build_webdav_args(extra);
+    let auth=if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
+        args.insert(0,"-".to_string());
+        args.insert(0,"--config".to_string());
+        Some(zeroize::Zeroizing::new(format!("user = {}\n",curl_config_quote(&format!("{}:{}",config.webdav_user.trim(),config.webdav_pass)))))
+    } else { None };
+    // Ignore curlrc directives that could redirect or trace the credential stream.
+    args.insert(0,"--disable".to_string());
+    let execute=||->Result<String,String> {
+        use std::process::Stdio;
+        let mut child=hidden_curl().args(&args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|_|tr("无法启动 WebDAV 传输。","Unable to start WebDAV transfer.").to_string())?;
+        if let Some(auth)=auth.as_ref() {
+            let write=child.stdin.take().ok_or_else(||std::io::Error::new(std::io::ErrorKind::BrokenPipe,"Missing credential pipe")).and_then(|mut pipe|pipe.write_all(auth.as_bytes()));
+            if write.is_err() {let _=child.kill();let _=child.wait();return Err(tr("无法传递 WebDAV 凭据。","Unable to pass WebDAV credentials.").to_string());}
+        } else {drop(child.stdin.take());}
+        let output=child.wait_with_output().map_err(|_|tr("WebDAV 传输未能完成。","WebDAV transfer did not complete.").to_string())?;
+        if !output.status.success() {
+            return Err(format!("curl: ({}) {}",output.status.code().unwrap_or(-1),tr("WebDAV 请求失败。","WebDAV request failed.")));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    };
+    let mut result=execute();
+    for _ in 0..5 {
+        if !matches!(&result,Err(error) if is_transient_curl_recv_error(error)) {break;}
+        std::thread::sleep(Duration::from_millis(150));
+        result=execute();
     }
     result
 }
@@ -2826,6 +2863,51 @@ mod tests {
         })
         .unwrap();
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn native_webdav_authentication_reaches_server_through_stdin_without_secret_arguments() {
+        use base64::Engine;
+        use std::io::{BufRead, BufReader};
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port=listener.local_addr().unwrap().port();
+        let user="synthetic-native-user";
+        let password=" synthetic : password ";
+        let expected=format!("Authorization: Basic {}",base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}")));
+        let server=thread::spawn(move|| {
+            let deadline=std::time::Instant::now()+Duration::from_secs(15);
+            let mut stream=loop {
+                match listener.accept() {
+                    Ok((stream,_))=>break stream,
+                    Err(error) if error.kind()==std::io::ErrorKind::WouldBlock && std::time::Instant::now()<deadline=>thread::sleep(Duration::from_millis(10)),
+                    Err(error)=>panic!("synthetic WebDAV listener: {error}"),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut reader=BufReader::new(stream.try_clone().unwrap());
+            let mut authenticated=false;
+            loop {
+                let mut line=String::new();
+                if reader.read_line(&mut line).unwrap()==0 || line=="\r\n" {break;}
+                authenticated |= line.trim_end()==expected;
+            }
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK").unwrap();
+            authenticated
+        });
+        let config=CloudSyncConfig {webdav_url:format!("http://127.0.0.1:{port}"),webdav_user:user.into(),webdav_pass:password.into(),remote_dir:String::new()};
+        let extra=vec!["--noproxy".into(),"*".into(),config.webdav_url.clone()];
+        let result=run_webdav_curl_status(&config,&extra);
+        assert!(server.join().unwrap(),"synthetic credentials must reach the local server");
+        assert_eq!(result.unwrap(),"OK");
+        assert!(!build_webdav_args(&extra).iter().any(|arg|arg.contains(password)));
+        let source=include_str!("cloud_sync.rs");
+        let native=source.split_once("#[cfg(not(windows))]\nfn run_webdav_curl_status").or_else(||source.split_once("#[cfg(not(windows))]\r\nfn run_webdav_curl_status")).unwrap().1.split_once("fn run_curl_status").unwrap().0;
+        assert!(native.contains("stdin(Stdio::piped())"));
+        assert!(native.contains("args.insert(0,\"--disable\".to_string())"));
+        assert!(!native.contains("fs::write"));
+        assert!(!native.contains("output.stderr"));
     }
 
     struct FakeWebDavServer {

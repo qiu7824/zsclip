@@ -3605,7 +3605,11 @@ pub fn settings_native_collect_submission(
             control_key: submitted_value.control_key.clone(),
             control_label: collect_binding.control_label,
             field_name,
-            value: submitted_value.raw_value.trim().to_string(),
+            value: if settings_native_json_is_sensitive_field(field_name) {
+                submitted_value.raw_value.clone()
+            } else {
+                submitted_value.raw_value.trim().to_string()
+            },
         });
     }
 

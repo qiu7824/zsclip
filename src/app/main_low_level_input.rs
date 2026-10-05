@@ -247,7 +247,7 @@ pub(super) unsafe fn ensure_quick_escape_keyboard_hook() {
     }
 }
 
-unsafe extern "system" fn outside_click_mouse_hook_proc(
+pub(super) unsafe extern "system" fn outside_click_mouse_hook_proc(
     code: i32,
     wparam: WPARAM,
     lparam: LPARAM,

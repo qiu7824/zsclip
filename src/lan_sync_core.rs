@@ -1196,6 +1196,8 @@ impl LanRuntimePlatformContext {
         devices: &[LanDevice],
         normalize_capabilities: impl FnMut(Vec<String>, u16) -> Vec<String>,
     ) -> io::Result<()> {
+        #[cfg(not(windows))]
+        validate_native_lan_tokens(self.device_book_path(), self.decrypt_secret)?;
         save_lan_devices_to_store(
             &self.data_dir,
             devices,
@@ -1618,9 +1620,16 @@ pub(crate) fn save_lan_devices_to_store(
     let data_dir = data_dir.as_ref();
     fs::create_dir_all(data_dir)?;
     let stored = stored_book_from_lan_devices(devices, encrypt_token, normalize_capabilities);
+    #[cfg(not(windows))]
+    if stored.devices.len() != devices.iter().filter(|device| device.trusted).count() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Secure credential storage failed; the device book was preserved"));
+    }
     let text = serde_json::to_string_pretty(&stored)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    fs::write(lan_device_book_path(data_dir), text)
+    #[cfg(windows)]
+    { fs::write(lan_device_book_path(data_dir), text) }
+    #[cfg(not(windows))]
+    { write_native_lan_book(&lan_device_book_path(data_dir), &text) }
 }
 
 pub(crate) fn save_lan_pending_pairs_to_store(
@@ -1632,9 +1641,16 @@ pub(crate) fn save_lan_pending_pairs_to_store(
     let data_dir = data_dir.as_ref();
     fs::create_dir_all(data_dir)?;
     let stored = stored_book_from_lan_pending_pairs(pairs, encrypt_token, normalize_capabilities);
+    #[cfg(not(windows))]
+    if stored.pairs.len() != pairs.len() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Secure credential storage failed; pending pairs were preserved"));
+    }
     let text = serde_json::to_string_pretty(&stored)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    fs::write(lan_pending_pair_book_path(data_dir), text)
+    #[cfg(windows)]
+    { fs::write(lan_pending_pair_book_path(data_dir), text) }
+    #[cfg(not(windows))]
+    { write_native_lan_book(&lan_pending_pair_book_path(data_dir), &text) }
 }
 
 pub(crate) fn save_lan_discovered_devices_to_store(
@@ -1647,9 +1663,51 @@ pub(crate) fn save_lan_discovered_devices_to_store(
     fs::create_dir_all(data_dir)?;
     let stored =
         stored_book_from_lan_discovered_devices(devices, encrypt_token, normalize_capabilities);
+    #[cfg(not(windows))]
+    if stored.devices.iter().filter(|device| device.token_encrypted.is_some()).count()
+        != devices.iter().filter(|device| !device.token.trim().is_empty()).count() {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Secure credential storage failed; discovery records were preserved"));
+    }
     let text = serde_json::to_string_pretty(&stored)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-    fs::write(lan_discovered_device_cache_path(data_dir), text)
+    #[cfg(windows)]
+    { fs::write(lan_discovered_device_cache_path(data_dir), text) }
+    #[cfg(not(windows))]
+    { write_native_lan_book(&lan_discovered_device_cache_path(data_dir), &text) }
+}
+
+#[cfg(not(windows))]
+fn write_native_lan_book(path: &Path, text: &str) -> io::Result<()> {
+    let value = serde_json::from_str(text).map_err(|error|io::Error::new(io::ErrorKind::InvalidData,error))?;
+    crate::native_secret_store::write_json_atomically(path, &value).map_err(|error|io::Error::new(io::ErrorKind::Other,error))
+}
+
+#[cfg(not(windows))]
+fn validate_native_lan_tokens(path: impl AsRef<Path>, mut decrypt: impl FnMut(&str) -> Option<String>) -> io::Result<()> {
+    fn inspect(value: &serde_json::Value, decrypt: &mut impl FnMut(&str) -> Option<String>) -> io::Result<()> {
+        match value {
+            serde_json::Value::Object(fields) => for (key,value) in fields {
+                if key == "token_encrypted" && !value.is_null() {
+                    let token=value.as_str().ok_or_else(||io::Error::new(io::ErrorKind::InvalidData,"Invalid stored credential"))?;
+                    if !token.is_empty() && decrypt(token).is_none() {
+                        return Err(io::Error::new(io::ErrorKind::PermissionDenied,"A stored credential cannot be read; pairing files were preserved. Unlock the system keyring or migrate legacy credentials in Settings."));
+                    }
+                } else { inspect(value,decrypt)?; }
+            },
+            serde_json::Value::Array(values) => for value in values { inspect(value,decrypt)?; },
+            _ => {},
+        }
+        Ok(())
+    }
+    let path=path.as_ref();
+    let bytes=match fs::read(path) {
+        Ok(bytes)=>bytes,
+        Err(error) if error.kind()==io::ErrorKind::NotFound=>return Ok(()),
+        Err(error)=>return Err(error),
+    };
+    let value=serde_json::from_slice(&bytes).map_err(|error|io::Error::new(io::ErrorKind::InvalidData,error))?;
+    crate::native_secret_store::validate_lan_json_shape(path,&value).map_err(|error|io::Error::new(io::ErrorKind::InvalidData,error))?;
+    inspect(&value,&mut decrypt)
 }
 
 pub(crate) fn merge_lan_discovered_devices(
@@ -2096,6 +2154,12 @@ pub(crate) fn upsert_lan_discovered_device_in_store(
     normalize_capabilities: impl FnMut(Vec<String>, u16) -> Vec<String> + Copy,
 ) -> io::Result<Vec<LanDevice>> {
     let data_dir = data_dir.as_ref();
+    #[cfg(not(windows))]
+    let decrypt_token = {
+        let mut decrypt_token = decrypt_token;
+        validate_native_lan_tokens(lan_discovered_device_cache_path(data_dir), &mut decrypt_token)?;
+        decrypt_token
+    };
     let mut devices = load_lan_discovered_devices_from_store(
         lan_discovered_device_cache_path(data_dir),
         decrypt_token,
@@ -2209,6 +2273,12 @@ pub(crate) fn upsert_lan_device_in_store(
     normalize_capabilities: impl FnMut(Vec<String>, u16) -> Vec<String> + Copy,
 ) -> io::Result<()> {
     let data_dir = data_dir.as_ref();
+    #[cfg(not(windows))]
+    let decrypt_token = {
+        let mut decrypt_token = decrypt_token;
+        validate_native_lan_tokens(lan_device_book_path(data_dir), &mut decrypt_token)?;
+        decrypt_token
+    };
     let mut devices = load_lan_devices_from_store(
         lan_device_book_path(data_dir),
         decrypt_token,
@@ -2229,6 +2299,11 @@ pub(crate) fn apply_lan_pending_pair_decision_in_store(
     normalize_capabilities: impl FnMut(Vec<String>, u16) -> Vec<String> + Copy,
 ) -> io::Result<Option<LanPendingPairDecision>> {
     let data_dir = data_dir.as_ref();
+    #[cfg(not(windows))]
+    {
+        validate_native_lan_tokens(lan_pending_pair_book_path(data_dir), decrypt_token)?;
+        validate_native_lan_tokens(lan_device_book_path(data_dir), decrypt_token)?;
+    }
     let mut pairs = load_lan_pending_pairs_from_store(
         lan_pending_pair_book_path(data_dir),
         decrypt_token,
@@ -3790,6 +3865,26 @@ mod tests {
         assert_eq!(devices[0].token, "new");
         assert_eq!(devices[0].capabilities, vec!["image", "text"]);
         let _ = fs::remove_dir_all(data_dir);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn native_lan_crypto_failure_preserves_existing_device_and_discovery_books() {
+        let data_dir=std::env::temp_dir().join(format!("zsclip-native-lan-crypto-{}-{}",std::process::id(),LAN_TOKEN_COUNTER.fetch_add(1,Ordering::SeqCst)));
+        let device=LanDevice {device_id:"synthetic-device".into(),name:"Synthetic phone".into(),addr:"127.0.0.1".into(),tcp_port:LAN_TCP_PORT_DEFAULT,
+            token:"synthetic-token".into(),last_seen_ms:1,trusted:true,capabilities:vec!["text".into()]};
+        let normalize=|capabilities:Vec<String>,_:u16|capabilities;
+        save_lan_devices_to_store(&data_dir,&[device.clone()],|token|Some(format!("enc:{token}")),normalize).unwrap();
+        save_lan_discovered_devices_to_store(&data_dir,&[device.clone()],|token|Some(format!("enc:{token}")),normalize).unwrap();
+        let old_devices=fs::read(lan_device_book_path(&data_dir)).unwrap();
+        let old_discovery=fs::read(lan_discovered_device_cache_path(&data_dir)).unwrap();
+        assert!(save_lan_devices_to_store(&data_dir,&[device.clone()],|_|None,normalize).is_err());
+        assert!(save_lan_discovered_devices_to_store(&data_dir,&[device.clone()],|_|None,normalize).is_err());
+        assert!(upsert_lan_device_in_store(&data_dir,device.clone(),|_|None,|token|Some(format!("enc:{token}")),normalize).is_err());
+        assert!(upsert_lan_discovered_device_in_store(&data_dir,device,2,|_|None,|token|Some(format!("enc:{token}")),normalize).is_err());
+        assert_eq!(fs::read(lan_device_book_path(&data_dir)).unwrap(),old_devices);
+        assert_eq!(fs::read(lan_discovered_device_cache_path(&data_dir)).unwrap(),old_discovery);
+        fs::remove_dir_all(data_dir).unwrap();
     }
 
     #[test]

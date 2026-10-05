@@ -27,7 +27,7 @@ unsafe fn reclaim_hidden_peer_window_memory(current_hwnd: HWND) {
     for hwnd in window_host_hwnds() {
         if !platform_window::exists(hwnd)
             || hwnd == current_hwnd
-            || platform_window::is_visible(hwnd)
+            || window_counts_as_visible_for_memory_reclaim(hwnd)
         {
             continue;
         }
@@ -39,6 +39,9 @@ unsafe fn reclaim_hidden_peer_window_memory(current_hwnd: HWND) {
 }
 
 pub(super) unsafe fn reclaim_hidden_window_memory(hwnd: HWND, state: &mut AppState) {
+    // This entry point is also called directly on minimization, before the
+    // deferred timer. Shared preview/cache resources belong to every host.
+    if main_or_settings_window_blocks_hidden_reclaim() || transient_window_blocks_hidden_reclaim() {return;}
     reclaim_window_state_memory(hwnd, state);
     reclaim_hidden_peer_window_memory(hwnd);
 }
@@ -47,6 +50,44 @@ fn window_counts_as_visible_for_memory_reclaim(hwnd: HWND) -> bool {
     platform_window::exists(hwnd)
         && platform_window::is_visible(hwnd)
         && !platform_window::is_minimized(hwnd)
+}
+
+pub(super) unsafe fn main_or_settings_window_blocks_hidden_reclaim() -> bool {
+    window_host_hwnds().into_iter().any(|hwnd| {
+        if window_counts_as_visible_for_memory_reclaim(hwnd) {return true;}
+        let state=get_state_ptr(hwnd);
+        !state.is_null() && window_counts_as_visible_for_memory_reclaim((*state).settings_hwnd)
+    })
+}
+
+pub(super) fn transient_window_blocks_hidden_reclaim() -> bool {
+    window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
+        || platform_window::current_process_has_visible_window()
+}
+
+/// Rearm once after hidden background work or a settings window is closed.
+/// Visible hosts resume reclamation through their own hide/close lifecycle.
+pub(super) unsafe fn schedule_hidden_reclaim_after_activity(hwnd: HWND, state: &mut AppState) {
+    if platform_window::exists(hwnd)
+        && (!platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd))
+        && !main_or_settings_window_blocks_hidden_reclaim()
+    {
+        schedule_hidden_memory_reclaim(hwnd,state);
+    }
+}
+
+/// Crate-level preview windows can notify the owning UI after dropping a late
+/// payload. One hidden host owns the deferred process-wide reclamation attempt.
+pub(crate) unsafe fn schedule_hidden_memory_reclaim_after_activity() {
+    if main_or_settings_window_blocks_hidden_reclaim() {return;}
+    for hwnd in window_host_hwnds() {
+        if !platform_window::exists(hwnd) || window_counts_as_visible_for_memory_reclaim(hwnd) {continue;}
+        let state=get_state_ptr(hwnd);
+        if !state.is_null() {
+            schedule_hidden_reclaim_after_activity(hwnd,&mut *state);
+            break;
+        }
+    }
 }
 
 pub(super) unsafe fn trim_hidden_process_working_set() -> HiddenWorkingSetTrimResult {
@@ -59,9 +100,7 @@ pub(super) unsafe fn trim_hidden_process_working_set() -> HiddenWorkingSetTrimRe
             return HiddenWorkingSetTrimResult::TransientWindowVisible;
         }
     }
-    if window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
-        || platform_window::current_process_has_visible_window()
-    {
+    if transient_window_blocks_hidden_reclaim() {
         return HiddenWorkingSetTrimResult::TransientWindowVisible;
     }
     if platform_process::trim_current_working_set() {
@@ -117,6 +156,11 @@ pub(super) unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
 }
 
 pub(super) unsafe fn handle_main_window_size(hwnd: HWND, _size: UiSize, minimized: bool) {
+    if minimized && !window_host_hwnds().into_iter().any(window_counts_as_visible_for_memory_reclaim) {
+        // A minimized owner can no longer host a row hover. Clear that stale
+        // presentation before the all-window reclamation barrier is evaluated.
+        clear_main_hover_state(hwnd);
+    }
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
         let state = &mut *ptr;

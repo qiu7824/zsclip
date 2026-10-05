@@ -499,6 +499,8 @@ impl DerefMut for AppState {
 
 pub(super) struct VvHookState {
     pub(super) session: crate::app_core::vv_session::VvInputSession,
+    pub(super) session_input_revision: u64,
+    pub(super) last_v_input_revision: u64,
     pub(super) last_v_focus: isize,
     pub(super) main_hwnd: isize,
     pub(super) enabled: bool,
@@ -516,6 +518,8 @@ impl Default for VvHookState {
     fn default() -> Self {
         Self {
             session: crate::app_core::vv_session::VvInputSession::default(),
+            session_input_revision: 0,
+            last_v_input_revision: 0,
             last_v_focus: 0,
             main_hwnd: 0,
             enabled: false,

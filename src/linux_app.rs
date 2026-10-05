@@ -1019,9 +1019,16 @@ pub(crate) fn persist_linux_native_settings_submission(
     submission: &crate::settings_model::SettingsNativeCollectSubmission,
 ) -> ProductAdapterCommandResult {
     let path = linux_native_settings_file();
-    let existing_json = read_linux_native_settings_json(&path);
-    let applied =
-        crate::settings_model::settings_native_apply_submission_to_json(existing_json, submission);
+    let applied = match crate::native_secret_store::save_settings(&path, submission) {
+        Ok(applied) => applied,
+        Err(error) => return ProductAdapterCommandResult {
+            accepted: false,
+            result_name: format!("zsclip.settings.native_save_failed: {error}"),
+        },
+    };
+    if !applied.rejected_fields.is_empty() {
+        return ProductAdapterCommandResult { accepted: false, result_name: "zsclip.settings.native_save_failed: Invalid setting value".into() };
+    }
     if applied.field_updates.is_empty() {
         return ProductAdapterCommandResult {
             accepted: applied.rejected_fields.is_empty(),
@@ -1029,22 +1036,6 @@ pub(crate) fn persist_linux_native_settings_submission(
                 "zsclip.settings.native_save.no_updates.rejected_{}",
                 applied.rejected_fields.len()
             ),
-        };
-    }
-
-    let write_result = (|| -> Result<(), String> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        let text =
-            serde_json::to_string_pretty(&applied.settings_json).map_err(|err| err.to_string())?;
-        std::fs::write(&path, text).map_err(|err| err.to_string())
-    })();
-
-    if write_result.is_err() {
-        return ProductAdapterCommandResult {
-            accepted: false,
-            result_name: "zsclip.settings.native_save_failed".to_string(),
         };
     }
 
@@ -1216,7 +1207,7 @@ fn linux_native_cloud_sync_action_for_shared_action(
 
 fn linux_native_cloud_sync_config_from_json(
     settings_json: &serde_json::Value,
-) -> crate::cloud_sync::CloudSyncConfig {
+) -> Result<crate::cloud_sync::CloudSyncConfig, crate::native_secret_store::SecretError> {
     fn field(settings_json: &serde_json::Value, key: &str) -> String {
         settings_json
             .get(key)
@@ -1224,12 +1215,12 @@ fn linux_native_cloud_sync_config_from_json(
             .unwrap_or_default()
             .to_string()
     }
-    crate::cloud_sync::CloudSyncConfig {
+    Ok(crate::cloud_sync::CloudSyncConfig {
         webdav_url: field(settings_json, "cloud_webdav_url"),
         webdav_user: field(settings_json, "cloud_webdav_user"),
-        webdav_pass: field(settings_json, "cloud_webdav_pass"),
+        webdav_pass: crate::native_secret_store::resolve_setting(settings_json, "cloud_webdav_pass")?,
         remote_dir: field(settings_json, "cloud_remote_dir"),
-    }
+    })
 }
 
 fn linux_native_cloud_sync_paths() -> crate::cloud_sync::CloudSyncPaths {
@@ -1251,11 +1242,11 @@ fn linux_native_lan_runtime_context() -> crate::lan_sync_core::LanRuntimePlatfor
 }
 
 fn linux_native_encrypt_secret_for_storage(secret: &str) -> Option<String> {
-    Some(secret.to_string())
+    crate::native_secret_store::store(secret).map_err(|error| eprintln!("ZSClip native LAN credential write failed: {error}")).ok()
 }
 
 fn linux_native_decrypt_secret_from_storage(encoded: &str) -> Option<String> {
-    Some(encoded.to_string())
+    crate::native_secret_store::load(encoded).map_err(|error| eprintln!("ZSClip native LAN credential read failed: {error}")).ok()
 }
 
 fn linux_native_latest_lan_clip_envelope(
@@ -1358,7 +1349,13 @@ pub(crate) fn dispatch_linux_native_settings_webdav_action(
             result_name: "zsclip.settings_sync.not_webdav_action".to_string(),
         };
     };
-    let config = linux_native_cloud_sync_config_from_json(&linux_native_settings_json_snapshot());
+    let config = match linux_native_cloud_sync_config_from_json(&linux_native_settings_json_snapshot()) {
+        Ok(config) => config,
+        Err(error) => return ProductAdapterCommandResult {
+            accepted: false,
+            result_name: format!("zsclip.settings_sync.webdav.failed.{error}"),
+        },
+    };
     let paths = linux_native_cloud_sync_paths();
     match crate::cloud_sync::perform_cloud_sync(cloud_action, &config, &paths) {
         Ok(outcome) => ProductAdapterCommandResult {
@@ -1425,6 +1422,9 @@ pub(crate) fn dispatch_linux_native_settings_lan_device_book_action(
 ) -> Option<ProductAdapterCommandResult> {
     if action != SettingsAction::RefreshLanDevices {
         return None;
+    }
+    if let Err(error) = crate::native_secret_store::validate_lan_profile(&linux_native_data_dir()) {
+        return Some(ProductAdapterCommandResult { accepted: false, result_name: format!("zsclip.settings_sync.credential_error: {error}") });
     }
     let settings_json = linux_native_settings_json_snapshot();
     let runtime_settings =
@@ -2591,7 +2591,7 @@ pub(crate) fn dispatch_linux_native_vv_paste(index: usize) -> NativeHostVvPasteE
     dispatch_linux_native_vv_paste_for_group(index, 0)
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LinuxNativeVvTarget { window: u64, focus: u64, pid: u32 }
 
 pub(crate) fn capture_linux_native_vv_target() -> Option<LinuxNativeVvTarget> {
@@ -2603,10 +2603,23 @@ pub(crate) fn capture_linux_native_vv_target() -> Option<LinuxNativeVvTarget> {
 }
 
 fn linux_native_vv_payload_for_item(item_id: i64, expected_generation: u64) -> Option<crate::app_core::NativeHostVvPasteItem> {
+    linux_native_payload_for_item(item_id, expected_generation, false)
+}
+
+fn linux_native_payload_for_item(item_id: i64, expected_generation: u64, plain_text_paste_mode: bool) -> Option<crate::app_core::NativeHostVvPasteItem> {
     crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
         let item = crate::db_runtime::native_clip_item(item_id).ok().flatten()?;
+        // native_clip_item applies the shared protection check before either
+        // normal or plain-text payloads can leave the database boundary.
+        let clipboard_write = if plain_text_paste_mode {
+            let text = crate::native_hotkey::plain_text_for_item(&item)?;
+            if text.is_empty() { return None; }
+            crate::app_core::NativeHostClipboardWrite::Text(text)
+        } else {
+            crate::app_core::native_host_clipboard_write_for_item(&item)?
+        };
         Some(crate::app_core::NativeHostVvPasteItem {
-            item_id, clipboard_write: crate::app_core::native_host_clipboard_write_for_item(&item)?, backspaces: 0,
+            item_id, clipboard_write, backspaces: 0,
         })
     }).flatten()
 }
@@ -2614,19 +2627,25 @@ fn linux_native_vv_payload_for_item(item_id: i64, expected_generation: u64) -> O
 pub(crate) fn dispatch_linux_native_vv_paste_item(
     item_id: i64, expected_generation: u64, target: Option<LinuxNativeVvTarget>,
 ) -> NativeHostVvPasteExecution {
+    dispatch_linux_native_paste_item(item_id, expected_generation, target, false)
+}
+
+pub(crate) fn dispatch_linux_native_paste_item(
+    item_id: i64, expected_generation: u64, target: Option<LinuxNativeVvTarget>, plain_text_paste_mode: bool,
+) -> NativeHostVvPasteExecution {
     let Some(target) = target else { return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.no_external_target"); };
     crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
         let window = LinuxWindowIdentityHandle(target.window);
         if target.pid == std::process::id() || linux_window_pid(window) != Some(target.pid) || !linux_window_exists(window) {
             return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.target_changed");
         }
-        let Some(item) = linux_native_vv_payload_for_item(item_id, expected_generation) else {
+        let Some(item) = linux_native_payload_for_item(item_id, expected_generation, plain_text_paste_mode) else {
             return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.item_unavailable");
         };
         if !linux_activate_window(window) { return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.focus_failed"); }
         let focus = LinuxWindowIdentityHandle(target.focus);
         if linux_window_pid(focus) != Some(target.pid)
-            || linux_command_line("xdotool", &["windowfocus", "--sync", &target.focus.to_string()]).is_none()
+            || !linux_command_status("xdotool", &["windowfocus", "--sync", &target.focus.to_string()]).unwrap_or(false)
             || linux_foreground_window_handle() != Some(focus) {
             return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.focus_changed");
         }
@@ -3402,10 +3421,17 @@ impl LinuxClipboardHost {
 
     fn observed_system_sequence() -> Option<u32> {
         let fingerprint = Self::system_clipboard_fingerprint()?;
-        Some(Self::mutate_state(|state| {
+        Some(Self::observe_clipboard_fingerprint(fingerprint))
+    }
+
+    fn observe_clipboard_fingerprint(fingerprint: u64) -> u32 {
+        Self::mutate_state(|state| {
             match state.last_system_fingerprint {
                 None => {
                     state.last_system_fingerprint = Some(fingerprint);
+                    // Startup can see an empty clipboard. The first later
+                    // payload is still a change and must wake the monitor.
+                    state.sequence = state.sequence.saturating_add(1);
                 }
                 Some(previous) if previous != fingerprint => {
                     state.last_system_fingerprint = Some(fingerprint);
@@ -3414,7 +3440,7 @@ impl LinuxClipboardHost {
                 Some(_) => {}
             }
             state.sequence
-        }))
+        })
     }
 
     fn state() -> &'static Mutex<LinuxClipboardState> {
@@ -4327,7 +4353,8 @@ fn linux_window_exists(handle: LinuxWindowIdentityHandle) -> bool {
     if handle.0 == 0 {
         return false;
     }
-    linux_command_line("xdotool", &["getwindowname", &handle.0.to_string()]).is_some()
+    // An existing window may legitimately have an empty title.
+    linux_command_status("xdotool", &["getwindowname", &handle.0.to_string()]).unwrap_or(false)
 }
 
 fn linux_window_pid(handle: LinuxWindowIdentityHandle) -> Option<u32> {
@@ -4342,18 +4369,18 @@ fn linux_activate_window(handle: LinuxWindowIdentityHandle) -> bool {
     if handle.0 == 0 {
         return false;
     }
-    linux_command_line(
+    linux_command_status(
         "xdotool",
         &["windowactivate", "--sync", &handle.0.to_string()],
     )
-    .is_some()
+    .unwrap_or(false)
 }
 
 fn linux_send_ctrl_v(handle: LinuxWindowIdentityHandle) -> Option<bool> {
     if handle.0 == 0 {
         return None;
     }
-    linux_command_line(
+    linux_command_status(
         "xdotool",
         &[
             "key",
@@ -4363,7 +4390,6 @@ fn linux_send_ctrl_v(handle: LinuxWindowIdentityHandle) -> Option<bool> {
             "ctrl+v",
         ],
     )
-    .map(|_| true)
 }
 
 fn linux_parse_window_id(value: &str) -> Option<LinuxWindowIdentityHandle> {
@@ -4395,6 +4421,29 @@ fn linux_command_line(program: &str, args: &[&str]) -> Option<String> {
 
 #[cfg(not(all(target_os = "linux", not(test))))]
 fn linux_command_line(_program: &str, _args: &[&str]) -> Option<String> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_command_status(program: &str, args: &[&str]) -> Option<bool> {
+    // X11 actions normally succeed without emitting any stdout.
+    std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()
+        .map(|status| status.success())
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn linux_command_status(program: &str, args: &[&str]) -> Option<bool> {
+    linux_process_command_status(program, args)
+}
+
+#[cfg(not(all(target_os = "linux", not(test))))]
+fn linux_command_status(_program: &str, _args: &[&str]) -> Option<bool> {
     None
 }
 
@@ -6138,6 +6187,91 @@ mod tests {
             assert_eq!(LinuxClipboardHost::read_text().as_deref(), Some("keep original"));
             Ok(())
         })).unwrap();
+    }
+
+    #[test]
+    fn linux_plain_paste_resolves_fresh_body_without_rich_text_or_image_fallback() {
+        let _guard = linux_clipboard_test_guard();
+        crate::db_runtime::with_test_protected_texts(&["private-phrase-title"], || crate::db_runtime::with_test_db(|| {
+            let (phrase, files, image, protected) = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,rich_text_html,phrase_title) VALUES(1,'phrase','old summary','first\r\nsecond','<b>first</b><br>second','Saved title')", [])?;
+                let phrase = conn.last_insert_rowid();
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,file_paths) VALUES(0,'files','files','old summary','/one\n/two')", [])?;
+                let files = conn.last_insert_rowid();
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,image_data,image_width,image_height) VALUES(0,'image','image','must not paste OCR or summary',x'FF0000FF',1,1)", [])?;
+                let image = conn.last_insert_rowid();
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,phrase_title) VALUES(1,'phrase','public body','public body','private-phrase-title')", [])?;
+                Ok((phrase, files, image, conn.last_insert_rowid()))
+            })?;
+            let generation = crate::db_runtime::current_app_data_generation();
+            let normal = linux_native_payload_for_item(phrase, generation, false).unwrap();
+            assert!(matches!(normal.clipboard_write, crate::app_core::NativeHostClipboardWrite::RichText { .. }));
+            let plain = linux_native_payload_for_item(phrase, generation, true).unwrap();
+            assert_eq!(plain.clipboard_write, crate::app_core::NativeHostClipboardWrite::Text("first\nsecond".into()));
+            let paths = linux_native_payload_for_item(files, generation, true).unwrap();
+            assert_eq!(paths.clipboard_write.direct_text(), Some("/one\n/two"));
+            assert!(linux_native_payload_for_item(image, generation, false).is_some());
+            assert!(linux_native_payload_for_item(image, generation, true).is_none());
+            assert!(linux_native_payload_for_item(protected, generation, true).is_none());
+            assert!(linux_native_payload_for_item(phrase, generation.wrapping_add(1), true).is_none());
+            Ok(())
+        })).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_paste_command_success_uses_exit_status_without_requiring_stdout() {
+        assert_eq!(linux_process_command_status("/bin/sh", &["-c", "exit 0"]), Some(true));
+        assert_eq!(linux_process_command_status("/bin/sh", &["-c", "printf output; exit 17"]), Some(false));
+        assert_eq!(linux_process_command_status("/zsclip-nonexistent-command-for-status-regression", &[]), None);
+    }
+
+    #[test]
+    fn linux_paste_actions_and_window_existence_use_status_commands() {
+        let source = include_str!("linux_app.rs");
+        for (start, end) in [
+            ("fn linux_window_exists(", "fn linux_window_pid("),
+            ("fn linux_activate_window(", "fn linux_send_ctrl_v("),
+            ("fn linux_send_ctrl_v(", "fn linux_parse_window_id("),
+        ] {
+            let body = source.split_once(start).unwrap().1.split_once(end).unwrap().0;
+            assert!(body.contains("linux_command_status("));
+            assert!(!body.contains("linux_command_line("));
+        }
+        let paste = source.split_once("pub(crate) fn dispatch_linux_native_paste_item(").unwrap().1
+            .split_once("pub(crate) fn dispatch_linux_native_vv_paste_for_group(").unwrap().0;
+        assert!(paste.contains("linux_command_status(\"xdotool\", &[\"windowfocus\""));
+        assert!(!paste.contains("linux_command_line("));
+    }
+
+    // Source guards establish route wiring only; real X11 key delivery and
+    // external editor contents require the target desktop receiver smoke.
+    #[test]
+    fn linux_global_shortcuts_rebind_and_keep_plain_mode_in_real_paste_route() {
+        let host = include_str!("linux_native_host.rs");
+        let x11 = include_str!("native_x11_hotkey.rs");
+        assert!(host.contains("install_gtk_global_hotkeys(&window, &global_hotkey_status)"));
+        assert!(host.contains("!persist_result.accepted || reload_gtk_global_hotkeys()"));
+        assert!(host.contains("dispatch_linux_native_paste_item("));
+        assert!(host.contains("GTK_PLAIN_TEXT_PASTE_MODE.with(Cell::get)"));
+        assert!(host.contains("set_gtk_plain_text_paste_mode(false)"));
+        assert!(host.contains("this host does not implement the Wayland GlobalShortcuts portal"));
+        assert!(x11.contains("remove_passive_grabs"));
+        assert!(x11.contains("DETECTABLE_AUTO_REPEAT"));
+        assert!(!x11.contains(".grab_keyboard("));
+        assert!(x11.contains("self.cycles.held.is_empty()"));
+    }
+
+    #[test]
+    fn linux_first_clipboard_payload_after_empty_start_advances_capture_sequence() {
+        let _guard = linux_clipboard_test_guard();
+        LinuxClipboardHost::reset_for_tests();
+        let before = LinuxClipboardHost::sequence_number();
+        let fingerprint = LinuxClipboardHost::text_payload_fingerprint("first external payload", None);
+        let observed = LinuxClipboardHost::observe_clipboard_fingerprint(fingerprint);
+        assert_ne!(observed, before);
+        assert_eq!(LinuxClipboardHost::observe_clipboard_fingerprint(fingerprint), observed);
+        assert_ne!(LinuxClipboardHost::observe_clipboard_fingerprint(fingerprint.wrapping_add(1)), observed);
     }
 
     #[test]

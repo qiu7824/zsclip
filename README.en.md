@@ -2,13 +2,13 @@
 
 # Clipboard / ZSClip
 
-A lightweight Windows clipboard enhancement tool built for local office workflows.
+A lightweight native clipboard enhancement tool for Windows, macOS, and Linux.
 
 It combines clipboard history, phrases, grouping, VV quick paste, drag-out export, image stickers, and Super Mail Merge in one compact window.
 
 [![Version](https://img.shields.io/github/v/release/qiu7824/zsclip?label=version)](https://github.com/qiu7824/zsclip/releases)
 [![License](https://img.shields.io/github/license/qiu7824/zsclip)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue)
 ![Rust](https://img.shields.io/badge/core-Rust-orange)
 
 [简体中文](README.md) | **English**
@@ -19,7 +19,9 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 
 - GitHub release: <https://github.com/qiu7824/zsclip/releases/latest>
 - The QQ Input Method bridge APK is included on the same release page. Its internal bridge version is `8.7.15-zsclip.8`; the ZSClip version in the asset name identifies the accompanying desktop release. [Connection guide](docs/q-input-sync.md)
+- [1.0.10 release notes](docs/releases/1.0.10.md)
 
+Windows provides installers and portable packages; macOS provides Apple Silicon and Intel DMGs; Linux provides an x86_64 DEB and archive. Linux global shortcuts and VV target X11. macOS requires Accessibility and Input Monitoring permissions. Super Mail Merge, the WPS task pane, and image stickers use Windows integration. See [native host verification](docs/native-host-verification.md) for platform verification scope.
 
 ## What It Is
 

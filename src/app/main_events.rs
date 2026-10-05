@@ -145,8 +145,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                         state.vv_popup_pending_target = null_mut();
                     }
                 } else {
-                    state.vv_popup_pending_target = null_mut();
-                    state.vv_popup_pending_retries = 0;
+                    vv_popup_hide(hwnd, state);
                 }
             }
         }
@@ -160,7 +159,9 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 let state = &mut *ptr;
+                if state.vv_paste_guard.is_some() {super::vv_trace::snapshot("paste.timer",state);}
                 if !vv_paste_target_is_current(state) {
+                    super::vv_trace::snapshot("paste.reject.target",state);
                     cancel_queued_paste_attempt(hwnd, state);
                     vv_finish_paste(state);
                     return;
@@ -175,6 +176,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                     return;
                 }
                 if platform_input::paste_command_modifiers_down() {
+                    super::vv_trace::event("paste.reject.modifier",format_args!("retries={}",state.paste_focus_retry_attempts));
                     cancel_queued_paste_attempt(hwnd, state);
                     vv_finish_paste(state);
                     return;
@@ -185,6 +187,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                         restore_hotkey_focus_target(state, target);
                     }
                     should_send_paste = can_send_ctrl_v_to_target(state, target);
+                    if state.vv_paste_guard.is_some() {super::vv_trace::event("paste.target_readiness",format_args!("ready={should_send_paste} target={:x}",target as usize));}
                     if !should_send_paste {
                         let identity_host = WindowsWindowIdentityHost::new();
                         let foreground = identity_host.foreground_handle();
@@ -223,6 +226,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             }
             if should_send_paste {
                 if !ptr.is_null() && !vv_paste_target_is_current(&*ptr) {
+                    super::vv_trace::snapshot("paste.reject.final_guard",&*ptr);
                     cancel_queued_paste_attempt(hwnd, &mut *ptr);
                     vv_finish_paste(&mut *ptr);
                     return;
@@ -232,6 +236,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 } else {
                     platform_input::send_backspaces_then_ctrl_v(paste_backspaces)
                 };
+                super::vv_trace::event("paste.input_sent",format_args!("sent={input_sent} backspaces={paste_backspaces} target={:x}",paste_target as usize));
                 let ptr = get_state_ptr(hwnd);
                 if !ptr.is_null() {
                     if input_sent {
@@ -267,6 +272,13 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 let state = &mut *ptr;
                 cancel_hidden_memory_reclaim(hwnd, state);
                 if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+                    // Do not clear the shared hover preview while another host
+                    // is visible. Its hide/close event will rearm reclamation.
+                    if main_or_settings_window_blocks_hidden_reclaim() {return;}
+                    if transient_window_blocks_hidden_reclaim() {
+                        retry_hidden_memory_reclaim(hwnd,state);
+                        return;
+                    }
                     reclaim_hidden_window_memory(hwnd, state);
                     if matches!(
                         trim_hidden_process_working_set(),
@@ -449,6 +461,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
             let ptr = get_state_ptr(hwnd);
             if !ptr.is_null() {
                 apply_ready_page_loads(hwnd, &mut *ptr);
+                schedule_hidden_reclaim_after_activity(hwnd, &mut *ptr);
             }
         }
         ApplicationEvent::StartupDataReconciled { deleted } => {
@@ -491,6 +504,8 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
     match event {
         MainAsyncEvent::CapturedItemDb(payload) => {
             apply_captured_item_db_ready(hwnd, payload);
+            let ptr=get_state_ptr(hwnd);
+            if !ptr.is_null() {schedule_hidden_reclaim_after_activity(hwnd,&mut *ptr);}
         }
         MainAsyncEvent::ImagePaste(payload) => {
             let ptr = get_state_ptr(hwnd);
@@ -556,6 +571,12 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
             }
 
             let image_available = payload.image.is_some();
+            if payload.context == ImagePasteRequestContext::VvPopup {
+                super::vv_trace::event("image.ready", format_args!(
+                    "generation={} item_id={} available={image_available}",
+                    payload.generation, payload.item_id,
+                ));
+            }
             let clipboard_written = payload
                 .image
                 .as_ref()
@@ -574,6 +595,12 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 set_ignore_clipboard_for_all_hosts(1200);
             }
             let target_available = clipboard_written && identity_host.exists(target);
+            if payload.context == ImagePasteRequestContext::VvPopup {
+                super::vv_trace::event("image.clipboard", format_args!(
+                    "written={clipboard_written} target_available={target_available} sequence={}",
+                    platform_clipboard::sequence_number(),
+                ));
+            }
             let disposition = image_paste_result_disposition(
                 image_available,
                 clipboard_written,
@@ -650,6 +677,12 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                     return;
                 }
                 state.image_thumb_loading.remove(&payload.item_id);
+                if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+                    // A late thumbnail must not repopulate a cache already
+                    // released when this window was hidden.
+                    schedule_hidden_reclaim_after_activity(hwnd,state);
+                    return;
+                }
                 if let Some(image) = payload.image {
                     state.image_thumb_cache.put(payload.item_id, image);
                 } else {

@@ -96,6 +96,10 @@ fn ticket_current(ticket: Ticket, session: u64, item: i64, generation: u64, requ
         && ticket.request == request
 }
 
+fn preview_request_reusable(ticket: Option<Ticket>, visible: bool, session: u64, item: i64, generation: u64, request: u64) -> bool {
+    visible && ticket.is_some_and(|ticket| ticket_current(ticket, session, item, generation, request))
+}
+
 unsafe fn current(main: HWND, ticket: Ticket) -> bool {
     let ptr = get_state_ptr(main);
     if ptr.is_null() {
@@ -130,9 +134,32 @@ pub(super) unsafe fn request_vv_preview(main: HWND, state: &mut AppState, index:
         hide_vv_preview();
         return;
     }
+    if !vv_session_target_current(state, false) {
+        hide_vv_preview();
+        return;
+    }
     let id = entry.item.id;
     let hwnd = ensure_window(main);
     if hwnd.is_null() {
+        return;
+    }
+    let ptr = data(hwnd);
+    if ptr.is_null() {
+        return;
+    }
+    if (*ptr).main == main && preview_request_reusable((*ptr).ticket,
+        platform_window::is_visible(hwnd), state.vv_popup_session_id, id,
+        state.app_data_generation, REQUEST.load(Ordering::SeqCst))
+        && state.app_data_generation == crate::db_runtime::current_app_data_generation()
+        && ((&(*ptr).protection).is_empty() || state.vv_popup_protection_revision.as_ref() == Some(&(*ptr).protection))
+    {
+        // Re-entering the same row must not clear its body, reset its scroll,
+        // or replace an in-flight request with an identical one.
+        if (*ptr).font_size != state.settings.content_font_size() {
+            (*ptr).font_size = state.settings.content_font_size();
+            position(hwnd);
+            platform_gdi::invalidate_rect(hwnd, null(), 0);
+        }
         return;
     }
     let ticket = Ticket {
@@ -141,10 +168,6 @@ pub(super) unsafe fn request_vv_preview(main: HWND, state: &mut AppState, index:
         item: id,
         generation: state.app_data_generation,
     };
-    let ptr = data(hwnd);
-    if ptr.is_null() {
-        return;
-    }
     (*ptr).ticket = Some(ticket);
     (*ptr).text.clear();
     (*ptr).wide.clear();
@@ -484,6 +507,16 @@ mod tests {
             (8, 12, 16, 5),
         ] {
             assert!(!ticket_current(ticket, args.0, args.1, args.2, args.3));
+        }
+    }
+    #[test]
+    fn repeat_request_reuses_only_a_visible_current_ticket() {
+        let ticket = Ticket { request: 4, session: 8, item: 12, generation: 16 };
+        assert!(preview_request_reusable(Some(ticket), true, 8, 12, 16, 4));
+        assert!(!preview_request_reusable(Some(ticket), false, 8, 12, 16, 4));
+        assert!(!preview_request_reusable(None, true, 8, 12, 16, 4));
+        for (session, item, generation, request) in [(9, 12, 16, 4), (8, 13, 16, 4), (8, 12, 17, 4), (8, 12, 16, 5)] {
+            assert!(!preview_request_reusable(Some(ticket), true, session, item, generation, request));
         }
     }
 }

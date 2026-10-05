@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.9.2"
+        default: "1.0.10"
   push:
     tags:
       - "0.*"
@@ -874,11 +874,13 @@ jobs:
           3. 运行: ./bin/zsclip
 
           Ubuntu/Debian 运行依赖示例:
-          sudo apt install libgtk-4-1 libx11-6 libxi6 libxtst6 dbus-x11
+          sudo apt install libgtk-4-1 libx11-6 libxi6 libxtst6 dbus-x11 xdotool x11-utils wmctrl curl ca-certificates
 
           说明:
           - 当前包是便携 tar.gz，不是 deb/AppImage。
-          - 托盘、全局热键、VV 粘贴在 Wayland/X11 下可能需要对应桌面环境权限或工具支持。
+          - 全局快捷键和 VV 使用 X11；原生 Wayland 应用的全局输入不在支持范围。
+          - 同步凭据需要兼容 Secret Service 的服务及已解锁的默认密钥环，例如 gnome-keyring；凭据库不可用时不能保存凭据。
+          - 粘贴音效需要 paplay、pw-play 或 aplay，例如安装 pulseaudio-utils。
           TXT
           sed -i "s/__RELEASE_VERSION__/${RELEASE_VERSION}/g" dist/zsclip-linux-x86_64/INSTALL.txt
           tar -czf dist/zsclip-linux-x86_64.tar.gz -C dist zsclip-linux-x86_64
@@ -894,7 +896,8 @@ jobs:
           Section: utils
           Priority: optional
           Architecture: amd64
-          Depends: libgtk-4-1, libx11-6, libxi6, libxtst6, dbus-x11
+          Depends: libgtk-4-1, libx11-6, libxi6, libxtst6, dbus-x11, xdotool, x11-utils, wmctrl, curl, ca-certificates
+          Recommends: gnome-keyring, pulseaudio-utils | pipewire-bin | alsa-utils
           Maintainer: ZSClip
           Description: Native clipboard manager with sync features.
           CONTROL

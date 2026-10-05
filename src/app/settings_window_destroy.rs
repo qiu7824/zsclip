@@ -45,6 +45,7 @@ pub(super) unsafe fn handle_settings_destroy(hwnd: HWND) -> LRESULT {
         let pst = get_state_ptr(parent);
         if !pst.is_null() {
             (*pst).settings_hwnd = null_mut();
+            schedule_hidden_reclaim_after_activity(parent,&mut *pst);
         }
         refresh_low_level_input_hooks();
     }

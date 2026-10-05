@@ -69,6 +69,104 @@ jobs:
           fi
       - name: Check smoke script syntax
         run: bash -n scripts/native-host-smoke-macos.sh
+      - name: Build native credential integration tests
+        id: native_secret_tests
+        timeout-minutes: 30
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+          RUSTFLAGS: -A warnings
+        run: |
+          set -euo pipefail
+          log_dir="$RUNNER_TEMP/native-secret-store-macos"
+          mkdir -p "$log_dir"
+          cargo test --locked --bin zsclip --no-run --message-format=json \
+            2> >(tee "$log_dir/build.log" >&2) | tee "$log_dir/build.jsonl" >/dev/null
+          python3 - "$log_dir/build.jsonl" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          executables = set()
+          with open(sys.argv[1], encoding="utf-8") as messages:
+              for line in messages:
+                  message = json.loads(line)
+                  if (message.get("reason") == "compiler-artifact"
+                          and message.get("target", {}).get("name") == "zsclip"
+                          and "bin" in message.get("target", {}).get("kind", [])
+                          and message.get("profile", {}).get("test")
+                          and message.get("executable")):
+                      executables.add(str(pathlib.Path(message["executable"]).resolve()))
+          if len(executables) != 1:
+              raise SystemExit("Expected exactly one compiled zsclip test executable")
+          executable = executables.pop()
+          if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+              raise SystemExit("Compiled zsclip test executable is not executable")
+          if "\n" in executable or "\r" in executable:
+              raise SystemExit("Unexpected newline in test executable path")
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write("executable=" + executable + "\n")
+          PY
+      - name: Verify native Keychain credential storage
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ZSCLIP_SECRET_TEST_EXECUTABLE: ${{ steps.native_secret_tests.outputs.executable }}
+        run: |
+          set -euo pipefail
+          export ZSCLIP_SECRET_TEST_LOG_DIR="$RUNNER_TEMP/native-secret-store-macos"
+          mkdir -p "$ZSCLIP_SECRET_TEST_LOG_DIR"
+          cat > "$RUNNER_TEMP/verify-native-keychain-macos.sh" <<'CREDENTIAL_FIXTURE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          test_executable=${1:?Provide the already built zsclip test executable}
+          [[ -x "$test_executable" ]]
+          test_list=$("$test_executable" --list)
+          grep -Fxq 'native_secret_store::tests::actual_system_store_round_trip: test' <<< "$test_list"
+          grep -Fxq 'native_secret_store::tests::actual_system_store_cleanup_recorded_account: test' <<< "$test_list"
+          work_root=$(cd "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" && pwd -P)
+          fixture_root=$(mktemp -d "$work_root/zsclip-keychain-ci-XXXXXX")
+          chmod 700 "$fixture_root"
+          export ZSCLIP_NATIVE_SECRET_TEST_ACCOUNT_FILE="$fixture_root/created-account"
+          run_test() {
+            python3 - "$test_executable" "$1" <<'BOUNDED_TEST'
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  [sys.argv[1], sys.argv[2], "--ignored", "--exact", "--test-threads=1"],
+                  timeout=90,
+              )
+          except subprocess.TimeoutExpired:
+              print("Native Keychain test exceeded its 90-second timeout", file=sys.stderr)
+              raise SystemExit(124)
+          raise SystemExit(result.returncode if result.returncode >= 0 else 1)
+          BOUNDED_TEST
+          }
+          cleanup() {
+            local outcome=$?
+            if [[ -f "$ZSCLIP_NATIVE_SECRET_TEST_ACCOUNT_FILE" ]]; then
+              if ! run_test native_secret_store::tests::actual_system_store_cleanup_recorded_account; then
+                printf '%s\n' 'The exact synthetic Keychain item could not be removed and verified absent' >&2
+                outcome=1
+              fi
+            fi
+            case "$fixture_root" in
+              "$work_root"/zsclip-keychain-ci-*) rm -rf -- "$fixture_root" ;;
+              *) outcome=1 ;;
+            esac
+            exit "$outcome"
+          }
+          trap cleanup EXIT
+          # One random account under org.zsclip.credentials.v1, with exact-item cleanup.
+          # No default keychain, search-list, or existing-account changes.
+          run_test native_secret_store::tests::actual_system_store_round_trip
+          CREDENTIAL_FIXTURE
+          bash -n "$RUNNER_TEMP/verify-native-keychain-macos.sh"
+          bash "$RUNNER_TEMP/verify-native-keychain-macos.sh" "$ZSCLIP_SECRET_TEST_EXECUTABLE" \
+            2>&1 | tee "$ZSCLIP_SECRET_TEST_LOG_DIR/integration.log"
       - name: Run AppKit smoke
         env:
           CARGO_TERM_COLOR: never
@@ -95,6 +193,13 @@ jobs:
           name: native-host-smoke-macos
           path: target/native-host-smoke/macos/
           if-no-files-found: warn
+      - name: Upload native credential integration logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-secret-store-macos
+          path: ${{ runner.temp }}/native-secret-store-macos/
+          if-no-files-found: warn
 
   linux-gtk:
     name: Linux GTK host
@@ -109,11 +214,16 @@ jobs:
           git -C ../zsui fetch --depth 1 origin "$revision"
           git -C ../zsui checkout --detach FETCH_HEAD
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install GTK smoke dependencies
+      - name: Install GTK and credential integration dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            coreutils \
+            dbus-bin \
+            dbus-daemon \
             dbus-x11 \
+            gnome-keyring \
+            libglib2.0-bin \
             fonts-noto-cjk \
             libdbus-1-dev \
             libgtk-4-dev \
@@ -122,6 +232,7 @@ jobs:
             libxtst-dev \
             openbox \
             pkg-config \
+            python3 \
             python3-tk \
             scrot \
             wmctrl \
@@ -149,6 +260,142 @@ jobs:
           fi
       - name: Check smoke script syntax
         run: bash -n scripts/native-host-smoke-linux.sh
+      - name: Build native credential integration tests
+        id: native_secret_tests
+        timeout-minutes: 30
+        shell: bash
+        env:
+          CARGO_TERM_COLOR: never
+          RUSTFLAGS: -A warnings
+        run: |
+          set -euo pipefail
+          log_dir="$RUNNER_TEMP/native-secret-store-linux"
+          mkdir -p "$log_dir"
+          cargo test --locked --bin zsclip --no-run --message-format=json \
+            2> >(tee "$log_dir/build.log" >&2) | tee "$log_dir/build.jsonl" >/dev/null
+          python3 - "$log_dir/build.jsonl" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          executables = set()
+          with open(sys.argv[1], encoding="utf-8") as messages:
+              for line in messages:
+                  message = json.loads(line)
+                  if (message.get("reason") == "compiler-artifact"
+                          and message.get("target", {}).get("name") == "zsclip"
+                          and "bin" in message.get("target", {}).get("kind", [])
+                          and message.get("profile", {}).get("test")
+                          and message.get("executable")):
+                      executables.add(str(pathlib.Path(message["executable"]).resolve()))
+          if len(executables) != 1:
+              raise SystemExit("Expected exactly one compiled zsclip test executable")
+          executable = executables.pop()
+          if not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+              raise SystemExit("Compiled zsclip test executable is not executable")
+          if "\n" in executable or "\r" in executable:
+              raise SystemExit("Unexpected newline in test executable path")
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write("executable=" + executable + "\n")
+          PY
+      - name: Verify native Secret Service credential storage
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ZSCLIP_SECRET_TEST_EXECUTABLE: ${{ steps.native_secret_tests.outputs.executable }}
+        run: |
+          set -euo pipefail
+          export ZSCLIP_SECRET_TEST_LOG_DIR="$RUNNER_TEMP/native-secret-store-linux"
+          mkdir -p "$ZSCLIP_SECRET_TEST_LOG_DIR"
+          cat > "$RUNNER_TEMP/verify-native-secret-service-linux.sh" <<'CREDENTIAL_FIXTURE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          # Input is the already compiled libtest executable, not the application binary.
+          test_executable=$(realpath -- "${1:?Provide the already built zsclip test executable}")
+          [[ -x "$test_executable" ]]
+          test_list=$("$test_executable" --list)
+          for test_name in actual_system_store_round_trip actual_isolated_secret_service_locked_store_rejects_reads_and_writes actual_isolated_secret_service_missing_backend_does_not_fall_back_to_plaintext; do
+            grep -Fxq "native_secret_store::tests::$test_name: test" <<< "$test_list"
+          done
+          work_root=$(realpath -- "${RUNNER_TEMP:-${TMPDIR:-/tmp}}")
+          fixture_root=$(mktemp -d "$work_root/zsclip-secret-service-ci-XXXXXX")
+          chmod 700 "$fixture_root"
+          cleanup() {
+            # Preserve only provider diagnostics, never the private keyring or synthetic password.
+            for name in provider.log readiness.log; do
+              if [[ -f "$fixture_root/$name" ]]; then
+                cp -- "$fixture_root/$name" "$ZSCLIP_SECRET_TEST_LOG_DIR/$name"
+              fi
+            done
+            case "$fixture_root" in
+              "$work_root"/zsclip-secret-service-ci-*) rm -rf -- "$fixture_root" ;;
+              *) printf '%s\n' 'Refusing cleanup outside the isolated fixture' >&2; return 1 ;;
+            esac
+          }
+          trap cleanup EXIT
+          mkdir -m 700 "$fixture_root/data" "$fixture_root/config" "$fixture_root/cache" "$fixture_root/runtime"
+          printf '%s\n' 'ZSClip synthetic Secret Service fixture v1' > "$fixture_root/isolated-provider.marker"
+          export ZSCLIP_NATIVE_SECRET_TEST_ROOT="$fixture_root"
+          export XDG_DATA_HOME="$fixture_root/data"
+          export XDG_CONFIG_HOME="$fixture_root/config"
+          export XDG_CACHE_HOME="$fixture_root/cache"
+          export XDG_RUNTIME_DIR="$fixture_root/runtime"
+          unset GNOME_KEYRING_CONTROL GNOME_KEYRING_PID
+
+          dbus-run-session -- bash -s -- "$test_executable" "$fixture_root" <<'ISOLATED_SESSION'
+          set -euo pipefail
+          test_executable=$1
+          fixture_root=$2
+          export ZSCLIP_NATIVE_SECRET_TEST_PASSWORD
+          ZSCLIP_NATIVE_SECRET_TEST_PASSWORD=$(python3 -c 'import secrets; print(secrets.token_hex(32), end="")')
+          mkdir -m 700 "$XDG_RUNTIME_DIR/keyring"
+          printf '%s' "$ZSCLIP_NATIVE_SECRET_TEST_PASSWORD" |
+            gnome-keyring-daemon --foreground --unlock --components=secrets \
+              --control-directory="$XDG_RUNTIME_DIR/keyring" > "$fixture_root/provider.log" 2>&1 &
+          provider_pid=$!
+          stop_provider() {
+            kill "$provider_pid" 2>/dev/null || true
+            wait "$provider_pid" 2>/dev/null || true
+          }
+          trap stop_provider EXIT
+          ready=false
+          for attempt in $(seq 1 100); do
+            if ! kill -0 "$provider_pid" 2>/dev/null; then
+              printf '%s\n' 'Private Secret Service provider exited before readiness' >&2
+              cat "$fixture_root/provider.log" >&2
+              exit 1
+            fi
+            if gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
+                --method org.freedesktop.DBus.NameHasOwner org.freedesktop.secrets 2>/dev/null | grep -q true &&
+              gdbus call --session --dest org.freedesktop.secrets \
+                --object-path /org/freedesktop/secrets \
+                --method org.freedesktop.Secret.Service.ReadAlias default > "$fixture_root/readiness.log" 2>/dev/null; then
+              if grep -q '/org/freedesktop/secrets/collection/' "$fixture_root/readiness.log"; then
+                ready=true
+                break
+              fi
+            fi
+            sleep 0.1
+          done
+          [[ "$ready" == true ]] || { printf '%s\n' 'Private default keyring did not become available' >&2; exit 1; }
+
+          timeout --signal=TERM --kill-after=5s 60s "$test_executable" \
+            native_secret_store::tests::actual_system_store_round_trip \
+            --ignored --exact --test-threads=1
+          timeout --signal=TERM --kill-after=5s 60s "$test_executable" \
+            native_secret_store::tests::actual_isolated_secret_service_locked_store_rejects_reads_and_writes \
+            --ignored --exact --test-threads=1
+          DBUS_SESSION_BUS_ADDRESS="unix:path=$fixture_root/runtime/absent-bus" \
+            timeout --signal=TERM --kill-after=5s 30s "$test_executable" \
+              native_secret_store::tests::actual_isolated_secret_service_missing_backend_does_not_fall_back_to_plaintext \
+              --ignored --exact --test-threads=1
+          printf '%s\n' 'Native Secret Service integration passed: DH round trip, missing item, locked collection, unavailable backend'
+          ISOLATED_SESSION
+          CREDENTIAL_FIXTURE
+          bash -n "$RUNNER_TEMP/verify-native-secret-service-linux.sh"
+          bash "$RUNNER_TEMP/verify-native-secret-service-linux.sh" "$ZSCLIP_SECRET_TEST_EXECUTABLE" \
+            2>&1 | tee "$ZSCLIP_SECRET_TEST_LOG_DIR/integration.log"
       - name: Run GTK smoke under Xvfb
         env:
           CARGO_TERM_COLOR: never
@@ -174,4 +421,11 @@ jobs:
         with:
           name: native-host-smoke-linux
           path: target/native-host-smoke/linux/
+          if-no-files-found: warn
+      - name: Upload native credential integration logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-secret-store-linux
+          path: ${{ runner.temp }}/native-secret-store-linux/
           if-no-files-found: warn

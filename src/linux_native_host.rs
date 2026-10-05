@@ -272,6 +272,119 @@ searchentry {
         static GTK_VV_SESSION_ID: Cell<u64> = const { Cell::new(0) };
         static GTK_LAST_EXTERNAL_PASTE_TARGET: Cell<Option<crate::linux_app::LinuxNativeVvTarget>> = const { Cell::new(None) };
         static GTK_MAIN_DATA_GENERATION: Cell<u64> = const { Cell::new(0) };
+        static GTK_GLOBAL_HOTKEYS: RefCell<Option<GtkGlobalHotkeys>> = const { RefCell::new(None) };
+        static GTK_PLAIN_TEXT_PASTE_MODE: Cell<bool> = const { Cell::new(false) };
+        static GTK_PASTE_MODE_LABEL: RefCell<Option<Label>> = const { RefCell::new(None) };
+    }
+
+    struct GtkGlobalHotkeys {
+        registry: Option<crate::native_x11_hotkey::X11HotkeyRegistry>,
+        status: Label,
+    }
+
+    fn set_gtk_plain_text_paste_mode(enabled: bool) {
+        GTK_PLAIN_TEXT_PASTE_MODE.with(|mode| mode.set(enabled));
+        GTK_PASTE_MODE_LABEL.with(|label| {
+            if let Some(label) = label.borrow().as_ref() {
+                label.set_visible(enabled);
+            }
+        });
+    }
+
+    fn show_gtk_hotkey_registration(
+        status: &Label,
+        report: &crate::native_x11_hotkey::X11HotkeyRegistration,
+    ) {
+        eprintln!("ZSClip GTK global shortcuts registered={} errors={:?}", report.registered, report.errors);
+        status.set_visible(!report.errors.is_empty());
+        status.set_text(if report.errors.is_empty() { "" } else {
+            crate::i18n::tr("部分全局快捷键不可用，请检查快捷键设置或桌面权限", "Some global shortcuts are unavailable; check shortcut settings or desktop permissions")
+        });
+        status.set_tooltip_text((!report.errors.is_empty()).then(|| report.errors.join("\n")).as_deref());
+    }
+
+    fn reload_gtk_global_hotkeys() -> bool {
+        use crate::native_x11_hotkey::{X11HotkeyRegistration, X11HotkeyRegistry};
+        let bindings = crate::native_hotkey::NativeHotkeyBindings::from_settings(
+            &crate::linux_app::linux_native_settings_json_snapshot(), false,
+        );
+        GTK_GLOBAL_HOTKEYS.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot.as_mut() else { return false; };
+            let x11 = gdk::Display::default().is_some_and(|display| display.type_().name().contains("X11"))
+                && !std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value.eq_ignore_ascii_case("wayland"));
+            let report = if state.registry.is_some() {
+                state.registry.as_mut().unwrap().replace_bindings(bindings)
+            } else if bindings.bindings.is_empty() {
+                X11HotkeyRegistration { registered: 0, errors: bindings.errors }
+            } else if !x11 {
+                let mut errors = bindings.errors;
+                errors.push("Global shortcuts require an X11 desktop; this host does not implement the Wayland GlobalShortcuts portal".into());
+                X11HotkeyRegistration { registered: 0, errors }
+            } else {
+                match X11HotkeyRegistry::connect() {
+                    Ok(mut registry) => {
+                        let report = registry.replace_bindings(bindings);
+                        state.registry = Some(registry);
+                        report
+                    }
+                    Err(error) => {
+                        let mut errors = bindings.errors;
+                        errors.push(error);
+                        X11HotkeyRegistration { registered: 0, errors }
+                    }
+                }
+            };
+            show_gtk_hotkey_registration(&state.status, &report);
+            report.errors.is_empty()
+        })
+    }
+
+    fn install_gtk_global_hotkeys(window: &ApplicationWindow, status: &Label) {
+        GTK_GLOBAL_HOTKEYS.with(|slot| *slot.borrow_mut() = Some(GtkGlobalHotkeys { registry: None, status: status.clone() }));
+        reload_gtk_global_hotkeys();
+        let window = window.downgrade();
+        glib::timeout_add_local(Duration::from_millis(10), move || {
+            let Some(window) = window.upgrade() else { return glib::ControlFlow::Break; };
+            let actions = GTK_GLOBAL_HOTKEYS.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let Some(state) = slot.as_mut() else { return Vec::new(); };
+                let Some(registry) = state.registry.as_mut() else { return Vec::new(); };
+                match registry.poll() {
+                    Ok((actions, report)) => {
+                        if let Some(report) = report { show_gtk_hotkey_registration(&state.status, &report); }
+                        actions
+                    }
+                    Err(error) => {
+                        state.registry = None;
+                        show_gtk_hotkey_registration(&state.status, &crate::native_x11_hotkey::X11HotkeyRegistration { registered: 0, errors: vec![error] });
+                        Vec::new()
+                    }
+                }
+            });
+            for activation in actions {
+                // The X11 lease captured this target on keydown and validated
+                // unchanged focus through release before emitting the action.
+                let target = activation.target;
+                if target.is_some() && crate::linux_app::capture_linux_native_vv_target() != target {
+                    continue;
+                }
+                if target.is_some() || !window.is_active() {
+                    GTK_LAST_EXTERNAL_PASTE_TARGET.with(|slot| slot.set(target));
+                }
+                let vv_window = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().as_ref().and_then(|session| session.window.upgrade()));
+                if let Some(vv_window) = vv_window { vv_window.set_visible(false); }
+                crate::linux_app::cancel_linux_native_vv_trigger();
+                let plain = matches!(activation.action, crate::native_hotkey::NativeHotkeyAction::PastePlain);
+                set_gtk_plain_text_paste_mode(plain);
+                window.present();
+                GTK_MAIN_SEARCH_VIEW.with(|slot| {
+                    if let Some(view) = slot.borrow().as_ref() { view.list.grab_focus(); }
+                });
+                eprintln!("ZSClip GTK global shortcut opened list plain_text_paste_mode={plain}");
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     struct GtkVvPasteSession {
@@ -860,6 +973,11 @@ searchentry {
             .application_id("io.github.qiu7824.zsclip")
             .build();
         app.connect_activate(move |app| {
+            if let Some(window) = GTK_MAIN_SEARCH_VIEW.with(|slot| slot.borrow().as_ref().and_then(|view| view.window.upgrade())) {
+                set_gtk_plain_text_paste_mode(false);
+                window.present();
+                return;
+            }
             install_zsclip_gtk_css();
             let window_spec = gtk_main_window_spec();
             let window = ApplicationWindow::builder()
@@ -897,6 +1015,18 @@ searchentry {
 
             root.append(&title);
             root.append(&status);
+            let paste_mode = Label::new(Some(crate::i18n::tr("纯文本粘贴：选择一条文字记录或文件路径", "Plain text paste: select text or file paths")));
+            paste_mode.set_xalign(0.0);
+            paste_mode.add_css_class("accent");
+            paste_mode.set_visible(false);
+            root.append(&paste_mode);
+            GTK_PASTE_MODE_LABEL.with(|slot| *slot.borrow_mut() = Some(paste_mode));
+            set_gtk_plain_text_paste_mode(false);
+            let global_hotkey_status = Label::new(None);
+            global_hotkey_status.set_xalign(0.0);
+            global_hotkey_status.set_wrap(true);
+            global_hotkey_status.add_css_class("error");
+            root.append(&global_hotkey_status);
             let search_spec = native_host_search_input_specs()[0];
             let search_entry = SearchEntry::new();
             search_entry.set_placeholder_text(Some(search_spec.placeholder));
@@ -1290,6 +1420,17 @@ searchentry {
                 current_group_filter.clone(),
             );
             install_vv_global_key_tap(app);
+            install_gtk_global_hotkeys(&window, &global_hotkey_status);
+            window.connect_close_request(|window| {
+                let settings = crate::linux_app::linux_native_settings_json_snapshot();
+                if settings.get("close_without_exit").and_then(serde_json::Value::as_bool).unwrap_or(true) {
+                    set_gtk_plain_text_paste_mode(false);
+                    window.set_visible(false);
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
             install_clipboard_capture_timer(
                 &status,
                 selected_item_id.clone(),
@@ -1335,6 +1476,8 @@ searchentry {
         let _exit_code = app.run();
         GTK_MAIN_SEARCH_VIEW.with(|slot| *slot.borrow_mut() = None);
         GTK_SEARCH_SERVICE.with(|slot| *slot.borrow_mut() = None);
+        GTK_GLOBAL_HOTKEYS.with(|slot| *slot.borrow_mut() = None);
+        GTK_PASTE_MODE_LABEL.with(|slot| *slot.borrow_mut() = None);
         crate::linux_app::LinuxClipboardHost::release_system_clipboard();
         Ok(())
     }
@@ -1730,6 +1873,7 @@ searchentry {
     }
 
     fn toggle_gtk_main_window(window: &ApplicationWindow) {
+        set_gtk_plain_text_paste_mode(false);
         if window.is_visible() {
             window.set_visible(false);
         } else {
@@ -2423,8 +2567,10 @@ searchentry {
         let result = if matches!(action, NativeHostRowAction::Paste) {
             let target = GTK_LAST_EXTERNAL_PASTE_TARGET.with(Cell::get);
             let generation = GTK_MAIN_DATA_GENERATION.with(Cell::get);
-            let paste =
-                crate::linux_app::dispatch_linux_native_vv_paste_item(item_id, generation, target);
+            let plain_text_paste_mode = GTK_PLAIN_TEXT_PASTE_MODE.with(Cell::get);
+            let paste = crate::linux_app::dispatch_linux_native_paste_item(
+                item_id, generation, target, plain_text_paste_mode,
+            );
             eprintln!(
                 "ZSClip GTK row paste shortcut posted={}",
                 paste.paste_shortcut_sent
@@ -2442,7 +2588,11 @@ searchentry {
             item_id,
             result.result_name
         );
-        status.set_text(gtk_action_status(&result));
+        status.set_text(if matches!(action, NativeHostRowAction::Paste)
+            && GTK_PLAIN_TEXT_PASTE_MODE.with(Cell::get)
+            && result.result_name == "zsclip.vv_paste.item_unavailable" {
+            crate::i18n::tr("此记录没有可粘贴的纯文本", "This record has no available plain text")
+        } else { gtk_action_status(&result) });
         if result.accepted
             && matches!(
                 action,
@@ -4411,7 +4561,7 @@ searchentry {
                     {
                         if display.sensitive {
                             entry.set_visibility(false);
-                            entry.set_placeholder_text(Some("stored securely"));
+                            entry.set_placeholder_text(Some(crate::i18n::tr("留空保留原凭据；输入后存入系统密钥环", "Leave blank to keep; new values are stored in the system keyring")));
                         } else {
                             entry.set_text(&display.value);
                             initial_value = display.value;
@@ -4726,9 +4876,11 @@ searchentry {
         root.append(&row);
     }
 
-    fn gtk_action_status(result: &ProductAdapterCommandResult) -> &'static str {
+    fn gtk_action_status(result: &ProductAdapterCommandResult) -> &str {
         if result.accepted {
             crate::i18n::tr("操作完成", "Done")
+        } else if let Some(message) = crate::native_secret_store::action_error_message(&result.result_name) {
+            message
         } else {
             crate::i18n::tr(
                 "操作未完成，请检查设置",
@@ -5147,7 +5299,19 @@ searchentry {
                         refresh_group_popup_menus(menus);
                     }
                     refresh_gtk_status_action_states(&app);
-                    Some(persist_result.accepted && json_apply.rejected_fields.is_empty())
+                    let hotkeys_ready = !persist_result.accepted || reload_gtk_global_hotkeys();
+                    if persist_result.accepted {
+                        for binding in &native_control_bindings.entries {
+                            if matches!(binding.control_key, "cloud_webdav_pass" | "ocr_cloud_url" | "ocr_cloud_token" | "translate_app_id" | "translate_secret") { binding.entry.set_text(""); }
+                        }
+                    }
+                    Some(if persist_result.accepted && !hotkeys_ready {
+                        crate::i18n::tr("设置已保存，但部分全局快捷键注册失败；请检查快捷键冲突或桌面权限", "Settings saved, but some global shortcuts are unavailable; check conflicts or desktop permissions").to_string()
+                    } else if persist_result.accepted {
+                        crate::i18n::tr("设置已保存", "Settings saved").to_string()
+                    } else {
+                        persist_result.result_name.strip_prefix("zsclip.settings.native_save_failed: ").unwrap_or(crate::i18n::tr("设置保存失败", "Unable to save settings")).to_string()
+                    })
                 } else {
                     None
                 };
@@ -5157,12 +5321,8 @@ searchentry {
                     action.action_name(),
                     result.result_name
                 );
-                if let Some(saved) = plan {
-                    route.set_text(if saved {
-                        crate::i18n::tr("设置已保存", "Settings saved")
-                    } else {
-                        crate::i18n::tr("设置保存失败", "Unable to save settings")
-                    });
+                if let Some(message) = plan {
+                    route.set_text(&message);
                 } else {
                     route.set_text(gtk_action_status(&result));
                 }

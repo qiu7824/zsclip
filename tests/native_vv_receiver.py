@@ -1,6 +1,7 @@
 """Independent X11 editor fixture for end-to-end native VV paste tests."""
 
 import argparse
+import html
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ PREFIX = "DRAFT BEFORE\n"
 SUFFIX = "\nDRAFT AFTER"
 RUN_ID = os.environ.get("ZSCLIP_NATIVE_RECEIVER_RUN_ID", "standalone")
 PAYLOAD = f"ZSCLIP_NATIVE_VV_PAYLOAD_{RUN_ID}\nSecond payload line"
+HTML_PAYLOAD = "<p><b>" + html.escape(PAYLOAD).replace("\n", "<br>") + "</b></p>"
 
 
 def write_json(path, value):
@@ -37,6 +39,7 @@ def serve(artifact_dir, timeout):
     editor.focus_set()
     paste_events = 0
     key_events = []
+    pasted_html = []
     case_id = "paste"
     started = time.monotonic()
 
@@ -51,6 +54,7 @@ def serve(artifact_dir, timeout):
                 editor.mark_set("insert", "2.0")
                 paste_events = 0
                 key_events.clear()
+                pasted_html.clear()
         except (OSError, json.JSONDecodeError):
             pass
         value = {
@@ -59,6 +63,7 @@ def serve(artifact_dir, timeout):
             "text": editor.get("1.0", "end-1c"),
             "paste_events": paste_events,
             "key_events": key_events[-64:],
+            "pasted_html": pasted_html,
             "case_id": case_id,
             "cursor": editor.index("insert"),
             "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -69,6 +74,10 @@ def serve(artifact_dir, timeout):
     def pasted(_event):
         nonlocal paste_events
         paste_events += 1
+        try:
+            pasted_html.append(root.clipboard_get(type="text/html"))
+        except tk.TclError:
+            pasted_html.append(None)
 
     def key_pressed(event):
         key_events.append({"key": event.keysym, "state": event.state, "phase": "down"})
@@ -87,6 +96,7 @@ def serve(artifact_dir, timeout):
     root.update()
     root.clipboard_clear()
     root.clipboard_append(PAYLOAD)
+    root.clipboard_append(HTML_PAYLOAD, type="text/html")
     root.lift()
     editor.focus_force()
     root.update()
@@ -107,10 +117,10 @@ def assert_captured(database, output):
             uri = Path(database).resolve().as_uri() + "?mode=ro"
             with sqlite3.connect(uri, uri=True, timeout=0.2) as connection:
                 row = connection.execute(
-                    "SELECT id,kind,text_data FROM items WHERE category=0 AND text_data=? ORDER BY id DESC LIMIT 1", (PAYLOAD,)
+                    "SELECT id,kind,text_data,rich_text_html FROM items WHERE category=0 AND text_data=? ORDER BY id DESC LIMIT 1", (PAYLOAD,)
                 ).fetchone()
-            if row is not None:
-                write_json(output, {"captured": True, "item_id": row[0], "kind": row[1], "text": row[2]})
+            if row is not None and row[3]:
+                write_json(output, {"captured": True, "item_id": row[0], "kind": row[1], "text": row[2], "html": row[3]})
                 return
         except (sqlite3.Error, OSError) as error:
             last_error = str(error)
@@ -119,22 +129,26 @@ def assert_captured(database, output):
     raise SystemExit("The receiver payload was not captured by the running application")
 
 
-def assert_received(result, output):
+def assert_received(result, output, mode="vv", case_id=None):
     # The observe-only Linux trigger currently preserves its two literal v keys.
     # The receiver proves delivery and preservation of the pre-existing draft;
     # this assertion does not claim that trigger cleanup is implemented.
-    expected = PREFIX + "vv" + PAYLOAD + SUFFIX
+    expected = PREFIX + ("vv" if mode == "vv" else "") + PAYLOAD + SUFFIX
     deadline = time.monotonic() + 12
     observed = None
     while time.monotonic() < deadline:
         try:
             observed = json.loads(Path(result).read_text(encoding="utf-8"))
-            if observed.get("text") == expected and observed.get("paste_events", 0) >= 1:
+            html_values = observed.get("pasted_html", [])
+            formats_match = mode == "vv" or (html_values == [None] if mode == "plain" else len(html_values) == 1 and bool(html_values[0]))
+            shortcut_leaked = mode != "vv" and any(event.get("key", "").lower() == "v" and not (event.get("state", 0) & 4) for event in observed.get("key_events", []))
+            if observed.get("text") == expected and observed.get("paste_events", 0) == 1 and formats_match and not shortcut_leaked and (case_id is None or observed.get("case_id") == case_id):
                 write_json(output, {
                     "delivered": True, "draft_preserved": True,
-                    "trigger_characters_retained": True,
+                    "trigger_characters_retained": mode == "vv", "mode": mode,
                     "expected": expected, "actual": observed["text"],
                     "paste_events": observed["paste_events"],
+                    "pasted_html": html_values,
                 })
                 return
         except (OSError, json.JSONDecodeError):
@@ -163,7 +177,7 @@ def assert_cancelled(result, output, case_id, middle, forbidden_key, require_con
     expected = PREFIX + middle + SUFFIX
     observed = json.loads(Path(result).read_text(encoding="utf-8"))
     keys = observed.get("key_events", [])
-    forbidden_leaked = forbidden_key and any(event.get("key") == forbidden_key for event in keys)
+    forbidden_leaked = forbidden_key and any(event.get("key", "").casefold() == forbidden_key.casefold() for event in keys)
     modifier_delivered = not require_control_digit or any(event.get("key") == "1" and event.get("phase") == "down" and event.get("state", 0) & 4 for event in keys)
     passed = observed.get("case_id") == case_id and observed.get("text") == expected and observed.get("paste_events") == 0 and not forbidden_leaked and modifier_delivered
     write_json(output, {"passed": bool(passed), "case_id": case_id, "expected": expected, "observed": observed,
@@ -184,6 +198,8 @@ def main():
     received = commands.add_parser("assert-received")
     received.add_argument("--result", required=True)
     received.add_argument("--output", required=True)
+    received.add_argument("--mode", choices=["vv", "normal", "plain"], default="vv")
+    received.add_argument("--case-id")
     reset = commands.add_parser("reset")
     reset.add_argument("--artifact-dir", required=True)
     reset.add_argument("--case-id", required=True)
@@ -200,7 +216,7 @@ def main():
     elif args.command == "assert-captured":
         assert_captured(args.database, args.output)
     elif args.command == "assert-received":
-        assert_received(args.result, args.output)
+        assert_received(args.result, args.output, args.mode, args.case_id)
     elif args.command == "reset":
         reset_case(args.artifact_dir, args.case_id)
     else:

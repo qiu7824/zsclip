@@ -51,6 +51,11 @@ pub(super) unsafe fn handle_settings_window_size(
     minimized: bool,
 ) -> LRESULT {
     let st_ptr = platform_window::user_data(hwnd) as *mut SettingsWndState;
+    if !st_ptr.is_null() && minimized {
+        let parent=(*st_ptr).parent_hwnd;
+        let app=get_state_ptr(parent);
+        if !app.is_null() {schedule_hidden_reclaim_after_activity(parent,&mut *app);}
+    }
     if !st_ptr.is_null() && !minimized {
         let st = &mut *st_ptr;
         if st.suppress_size_refresh || st.dpi_comp.is_applying() {

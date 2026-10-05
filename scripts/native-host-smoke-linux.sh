@@ -35,6 +35,12 @@ cargo test -q linux_native_status_menu_actions_enter_product_command_routes
 cargo test -q linux_native_settings_control_actions_enter_product_command_routes
 cargo test -q linux_native_search_text_enters_product_command_route
 cargo test -q linux_native_vv_select_enters_product_event_bridge
+cargo test -q native_hotkey::tests
+cargo test -q linux_paste_
+cargo test -q native_x11_hotkey::tests
+cargo test -q x11_server_preserves_owned_release_during_rebind_and_reports_conflicts -- --ignored --test-threads=1
+cargo test -q linux_plain_paste_resolves_fresh_body_without_rich_text_or_image_fallback
+cargo test -q linux_first_clipboard_payload_after_empty_start_advances_capture_sequence
 
 echo "==> Linux GTK build"
 cargo build -q --bin zsclip
@@ -196,7 +202,7 @@ command -v xdotool >/dev/null 2>&1 || vv_fail "xdotool is unavailable"
 command -v xprop >/dev/null 2>&1 || vv_fail "xprop is unavailable"
 python3 -c 'import tkinter' || vv_fail "python3-tk is unavailable"
 cat > "$vv_profile/settings.json" <<'JSON'
-{"clipboard_capture_enabled":true,"vv_mode_enabled":true,"rich_text_clipboard_enabled":true}
+{"clipboard_capture_enabled":true,"vv_mode_enabled":true,"rich_text_clipboard_enabled":true,"hotkey_enabled":true,"hotkey_mod":"Win","hotkey_key":"V","plain_paste_hotkey_enabled":true,"plain_paste_hotkey_mod":"Ctrl+Shift","plain_paste_hotkey_key":"V","close_without_exit":true}
 JSON
 ZSCLIP_DATA_DIR="$vv_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$vv_profile/settings.json" \
   ZSCLIP_NATIVE_HOST_AUTO_SMOKE=0 ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN=1 \
@@ -204,7 +210,7 @@ ZSCLIP_DATA_DIR="$vv_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$vv_profile/settings.
 APP_PID=$!
 sleep 2
 kill -0 "$APP_PID" >/dev/null 2>&1 || vv_fail "the application exited before the recipient started"
-python3 "$ROOT_DIR/tests/native_vv_receiver.py" serve --artifact-dir "$vv_artifacts" >"$vv_artifacts/receiver.log" 2>&1 &
+python3 "$ROOT_DIR/tests/native_vv_receiver.py" serve --artifact-dir "$vv_artifacts" --timeout 120 >"$vv_artifacts/receiver.log" 2>&1 &
 RECEIVER_PID=$!
 for attempt in $(seq 1 50); do
   [[ -s "$vv_artifacts/receiver-ready.json" ]] && break
@@ -286,6 +292,55 @@ python3 "$ROOT_DIR/tests/native_vv_receiver.py" assert-cancelled --result "$vv_a
   --output "$vv_artifacts/modified-digit.json" --case-id modified-digit --require-control-digit \
   || vv_fail "Ctrl+1 was consumed as an unmodified selection"
 capture_screenshot "$vv_artifacts/modified-digit.png"
+
+echo "==> Verifying held global shortcuts and plain text delivery into the independent editor"
+for paste_mode in normal plain; do
+  case_id="global-$paste_mode"
+  main_window="$(xdotool search --all --pid "$APP_PID" --onlyvisible --name '^ZSClip$' | tail -n 1 || true)"
+  if [[ -n "$main_window" ]]; then
+    xdotool windowactivate --sync "$main_window" || vv_fail "the main window could not be activated before close-to-tray"
+    xdotool key --clearmodifiers alt+F4 || vv_fail "close-to-tray could not be requested"
+    sleep 0.3
+  fi
+  remaining="$(xdotool search --all --pid "$APP_PID" --onlyvisible --name '^ZSClip$' || true)"
+  [[ -z "$remaining" ]] || vv_fail "close-to-tray did not hide the main list"
+  python3 "$ROOT_DIR/tests/native_vv_receiver.py" reset --artifact-dir "$vv_artifacts" --case-id "$case_id" \
+    || vv_fail "the recipient could not reset for the global shortcut"
+  xdotool windowactivate --sync "$receiver_window" || vv_fail "the recipient could not be activated before the global shortcut"
+  xdotool windowfocus --sync "$receiver_window" || vv_fail "the recipient focus could not be set before the global shortcut"
+  if [[ "$paste_mode" == normal ]]; then
+    xdotool keydown Super_L v || vv_fail "Super+V could not be held"
+  else
+    xdotool keydown Control_L Shift_L v || vv_fail "Ctrl+Shift+V could not be held"
+  fi
+  sleep 0.8
+  # The list opens on the real release, so autorepeat cannot refocus/reopen it.
+  held_window="$(xdotool search --all --pid "$APP_PID" --onlyvisible --name '^ZSClip$' || true)"
+  if [[ "$paste_mode" == normal ]]; then
+    xdotool keyup v Super_L || vv_fail "Super+V could not be released"
+  else
+    xdotool keyup v Shift_L Control_L || vv_fail "Ctrl+Shift+V could not be released"
+  fi
+  [[ -z "$held_window" ]] || vv_fail "the global shortcut opened the list before its owned key was released"
+  main_window=""
+  for attempt in $(seq 1 50); do
+    main_window="$(xdotool search --all --pid "$APP_PID" --onlyvisible --name '^ZSClip$' | tail -n 1 || true)"
+    [[ -n "$main_window" ]] && break
+    sleep 0.1
+  done
+  [[ -n "$main_window" ]] || vv_fail "the configured $paste_mode global shortcut did not open the main list"
+  sleep 0.5
+  python3 "$ROOT_DIR/tests/native_vv_receiver.py" assert-cancelled --result "$vv_artifacts/receiver-result.json" \
+    --output "$vv_artifacts/$case_id-before-selection.json" --case-id "$case_id" --middle '' --forbidden-key V \
+    || vv_fail "the held global shortcut changed the recipient before selection"
+  capture_screenshot "$vv_artifacts/$case_id-list.png"
+  [[ "$(xdotool getactivewindow)" == "$main_window" ]] || vv_fail "the main list did not gain focus after shortcut release"
+  xdotool key --clearmodifiers Home Return || vv_fail "the history record could not be selected"
+  python3 "$ROOT_DIR/tests/native_vv_receiver.py" assert-received --result "$vv_artifacts/receiver-result.json" \
+    --output "$vv_artifacts/$case_id-received.json" --case-id "$case_id" --mode "$paste_mode" \
+    || vv_fail "the $paste_mode list selection did not deliver the correct clipboard formats and intact draft"
+  capture_screenshot "$vv_artifacts/$case_id-received.png"
+done
 cleanup
 RECEIVER_PID=""
 
