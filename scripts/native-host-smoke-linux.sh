@@ -63,9 +63,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep "${NATIVE_HOST_SMOKE_WAIT:-3}"
+ready_timeout="${NATIVE_HOST_SMOKE_READY_TIMEOUT:-20}"
+if [[ ! "$ready_timeout" =~ ^[1-9][0-9]*$ ]]; then
+  echo "NATIVE_HOST_SMOKE_READY_TIMEOUT must be a positive number of seconds." >&2
+  exit 2
+fi
+ready_marker="ZSClip GTK native window traits"
+if [[ "$AUTO_SMOKE" == "1" ]]; then
+  ready_marker="ZSClip GTK auto smoke finished"
+fi
+ready_deadline=$((SECONDS + ready_timeout))
+until grep -Fq "$ready_marker" "$APP_LOG"; do
+  if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
+    echo "ZSClip exited before readiness: $ready_marker" >&2
+    cat "$APP_LOG" >&2 || true
+    exit 1
+  fi
+  if (( SECONDS >= ready_deadline )); then
+    echo "ZSClip did not report readiness: $ready_marker" >&2
+    cat "$APP_LOG" >&2 || true
+    exit 1
+  fi
+  sleep 0.1
+done
 if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-  echo "ZSClip exited before screenshot. Log:" >&2
+  echo "ZSClip exited after readiness and before screenshot." >&2
   cat "$APP_LOG" >&2 || true
   exit 1
 fi
@@ -93,6 +115,7 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
   echo "==> Checking GTK auto smoke route logs"
   for expected in \
     "ZSClip GTK auto smoke started" \
+    "ZSClip GTK auto smoke window ready mapped=true active=true" \
     "ZSClip GTK clipboard text smoke write=true read=true" \
     "ZSClip GTK clipboard file smoke write=true read=true" \
     "ZSClip GTK clipboard sequence smoke" \

@@ -4426,15 +4426,39 @@ fn linux_command_line(_program: &str, _args: &[&str]) -> Option<String> {
 
 #[cfg(target_os = "linux")]
 fn linux_process_command_status(program: &str, args: &[&str]) -> Option<bool> {
+    linux_process_command_status_with_timeout(program, args, std::time::Duration::from_millis(800))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_process_command_status_with_timeout(program: &str, args: &[&str], timeout: std::time::Duration) -> Option<bool> {
     // X11 actions normally succeed without emitting any stdout.
-    std::process::Command::new(program)
+    let mut child = std::process::Command::new(program)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status()
-        .ok()
-        .map(|status| status.success())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status.success()),
+            Ok(None) if started.elapsed() < timeout => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Ok(None) => {
+                // --sync can otherwise wait forever when the WM refuses a
+                // focus request or the target disappears during activation.
+                let _ = child.kill();
+                let _ = child.wait();
+                eprintln!("ZSClip native X11 command timed out: {program}");
+                return Some(false);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
 }
 
 #[cfg(all(target_os = "linux", not(test)))]
@@ -6224,6 +6248,16 @@ mod tests {
         assert_eq!(linux_process_command_status("/bin/sh", &["-c", "exit 0"]), Some(true));
         assert_eq!(linux_process_command_status("/bin/sh", &["-c", "printf output; exit 17"]), Some(false));
         assert_eq!(linux_process_command_status("/zsclip-nonexistent-command-for-status-regression", &[]), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_paste_command_cancels_an_unresponsive_child_within_its_deadline() {
+        let started = std::time::Instant::now();
+        // exec keeps the fixture in one process, so cancellation also proves
+        // the command runner reaps its child without leaving a sleep process.
+        assert_eq!(linux_process_command_status_with_timeout("/bin/sh", &["-c", "exec sleep 5"], std::time::Duration::from_millis(40)), Some(false));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
     }
 
     #[test]

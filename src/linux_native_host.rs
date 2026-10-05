@@ -1441,13 +1441,13 @@ searchentry {
                 clip_items.clone(),
                 search_entry.clone(),
             );
-            run_auto_smoke_if_requested(app, &status);
             reload_clip_items_for_group_search_with_selection(
                 &current_source_category, &current_group_filter, &current_kind_filter,
                 &clip_rows, clip_items.clone(), &selected_item_id, search_entry.text().as_str(),
             );
             window.set_child(Some(&root));
             window.present();
+            schedule_auto_smoke_if_requested(app, &window, &status);
             let scene_app = app.clone();
             let scene_window = window.clone();
             let scene_items = clip_items.clone();
@@ -1544,6 +1544,30 @@ searchentry {
             glib::ControlFlow::Continue
         });
         eprintln!("ZSClip GTK clipboard capture timer installed");
+    }
+
+    fn schedule_auto_smoke_if_requested(app: &Application, window: &ApplicationWindow, status: &Label) {
+        if std::env::var("ZSCLIP_NATIVE_HOST_AUTO_SMOKE").as_deref() != Ok("1") {
+            return;
+        }
+        let app = app.clone();
+        let window = window.clone();
+        let status = status.clone();
+        let started = std::time::Instant::now();
+        glib::timeout_add_local(Duration::from_millis(25), move || {
+            // Window-manager focus events must be processed before the
+            // identity probe requests activation from an external X11 client.
+            if window.is_mapped() && window.is_active() {
+                eprintln!("ZSClip GTK auto smoke window ready mapped=true active=true");
+                run_auto_smoke_if_requested(&app, &status);
+                return glib::ControlFlow::Break;
+            }
+            if started.elapsed() >= Duration::from_secs(5) {
+                eprintln!("ZSClip GTK auto smoke window readiness failed mapped={} active={}", window.is_mapped(), window.is_active());
+                return glib::ControlFlow::Break;
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     fn run_auto_smoke_if_requested(app: &Application, status: &Label) {

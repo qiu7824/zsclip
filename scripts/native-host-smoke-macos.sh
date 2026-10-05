@@ -198,9 +198,6 @@ for hotkey_mode in normal plain; do
   hotkey_profile="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-mac-hotkey-${hotkey_mode}.XXXXXX")"
   mkdir -p "$hotkey_artifacts"
   hotkey_payload="HOTKEY-${hotkey_mode}-$(date +%s)-$$"
-  ZSCLIP_VV_RECEIVER_PAYLOAD="$hotkey_payload" ZSCLIP_VV_PUBLISH_AFTER=4 ZSCLIP_RECEIVER_PUBLISH_HTML=1 \
-    "$receiver_binary" "$hotkey_artifacts/receiver-state.json" >"$hotkey_artifacts/receiver.log" 2>&1 &
-  RECEIVER_PID=$!
   cat > "$hotkey_profile/settings.json" <<'JSON'
 {"clipboard_capture_enabled":true,"rich_text_clipboard_enabled":true,"hotkey_enabled":true,"hotkey_mod":"Ctrl+Alt","hotkey_key":"V","plain_paste_hotkey_enabled":true,"plain_paste_hotkey_mod":"Ctrl+Shift","plain_paste_hotkey_key":"V","vv_mode_enabled":false,"lan_sync_enabled":false,"cloud_sync_enabled":false,"auto_start":false}
 JSON
@@ -208,6 +205,29 @@ JSON
     ZSCLIP_NATIVE_HOST_AUTO_SMOKE=0 ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN=1 ZSCLIP_NATIVE_HOTKEY_SMOKE=1 \
     "$ROOT_DIR/target/debug/zsclip" >"$hotkey_artifacts/application.log" 2>&1 &
   APP_PID=$!
+  # Finish the host's startup activation before opening the external editor.
+  # Otherwise a late didFinishLaunching activation steals focus back from it.
+  host_ready=0
+  for attempt in $(seq 1 100); do
+    if grep -Fq 'ZSClip AppKit main list ready mode=normal' "$hotkey_artifacts/application.log"; then
+      host_ready=1
+      break
+    fi
+    if ! kill -0 "$APP_PID" >/dev/null 2>&1; then break; fi
+    sleep 0.1
+  done
+  if [[ "$host_ready" != "1" ]]; then
+    cat "$hotkey_artifacts/application.log" >&2
+    exit 1
+  fi
+  if ! "$receiver_binary" --wait-frontmost "$APP_PID" >"$hotkey_artifacts/startup-activation.log" 2>&1; then
+    cat "$hotkey_artifacts/startup-activation.log" >&2
+    cat "$hotkey_artifacts/application.log" >&2
+    exit 1
+  fi
+  ZSCLIP_VV_RECEIVER_PAYLOAD="$hotkey_payload" ZSCLIP_VV_PUBLISH_AFTER=1 ZSCLIP_RECEIVER_PUBLISH_HTML=1 \
+    "$receiver_binary" "$hotkey_artifacts/receiver-state.json" >"$hotkey_artifacts/receiver.log" 2>&1 &
+  RECEIVER_PID=$!
   set +e
   python3 - "$hotkey_artifacts" "$hotkey_payload" "$hotkey_mode" "$receiver_binary" <<'PY'
 import json, subprocess, sys, time
@@ -233,7 +253,6 @@ try:
     original_selection = (state.get('selection_location'), state.get('selection_length'))
     if original_text != 'LEFT-RIGHT' or original_selection != (5, 0):
         raise RuntimeError('The receiver did not start with the expected synthetic draft and caret')
-    subprocess.run([helper, '--activate', str(state_path)], check=True)
     activated, log = wait_for(lambda s,l: s.get('active') and s.get('key_window') and s.get('first_responder_is_editor')
                              and s.get('frontmost_pid') == s.get('pid'),
                              'The receiver did not become the active editor')
