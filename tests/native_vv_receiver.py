@@ -256,6 +256,59 @@ def assert_captured(database, output):
     raise SystemExit("The receiver payload was not captured by the running application")
 
 
+def received_checks(observed, mode, case_id=None):
+    expected = PREFIX + ("vv" if mode == "vv" else "") + PAYLOAD + SUFFIX
+    html_values = observed.get("pasted_html", [])
+    transfers = observed.get("pasted_transfers", [])
+    formats_match = mode == "vv" or (html_values == [None] and len(transfers) == 1
+        and transfers[0].get("available") is False and "error" not in transfers[0] if mode == "plain" else
+        len(html_values) == 1 and isinstance(html_values[0], str)
+        and all(line in html.unescape(html_values[0]) for line in PAYLOAD.splitlines()))
+    # Tk's <<Paste>> binding can consume Ctrl+V down, then deliver V up after
+    # Ctrl was released. That release cannot insert an unwanted character.
+    shortcut_leaked = mode != "vv" and any(
+        event.get("key", "").lower() == "v" and event.get("phase") == "down"
+        and not (event.get("state", 0) & 4) for event in observed.get("key_events", []))
+    return {
+        "text_matches": observed.get("text") == expected,
+        "single_paste": observed.get("paste_events", 0) == 1,
+        "formats_match": bool(formats_match),
+        "no_unmodified_v_press": not shortcut_leaked,
+        "case_matches": case_id is None or observed.get("case_id") == case_id,
+    }
+
+
+def self_test():
+    import copy
+
+    for mode in ("normal", "plain"):
+        observed = {"text": PREFIX + PAYLOAD + SUFFIX, "paste_events": 1, "case_id": "self-test",
+                    "key_events": [{"key": "Control_L", "phase": "down", "state": 0},
+                                   {"key": "Control_L", "phase": "up", "state": 4},
+                                   {"key": "v", "phase": "up", "state": 0}],
+                    "pasted_html": [HTML_PAYLOAD] if mode == "normal" else [None],
+                    "pasted_transfers": [{"available": True, "returned_type": "text/html", "format": 8}]
+                        if mode == "normal" else [{"available": False}]}
+        assert all(received_checks(observed, mode, "self-test").values()), f"{mode}: legal V release"
+        bad = copy.deepcopy(observed)
+        bad["key_events"].append({"key": "v", "phase": "down", "state": 0})
+        assert not received_checks(bad, mode, "self-test")["no_unmodified_v_press"], f"{mode}: leaked V press"
+        bad = copy.deepcopy(observed)
+        bad["paste_events"] = 2
+        assert not received_checks(bad, mode, "self-test")["single_paste"], f"{mode}: duplicate paste"
+        bad = copy.deepcopy(observed)
+        bad["text"] = PAYLOAD
+        assert not received_checks(bad, mode, "self-test")["text_matches"], f"{mode}: lost draft"
+        bad = copy.deepcopy(observed)
+        bad["pasted_html"] = [None] if mode == "normal" else [HTML_PAYLOAD]
+        assert not received_checks(bad, mode, "self-test")["formats_match"], f"{mode}: wrong formats"
+        if mode == "plain":
+            bad = copy.deepcopy(observed)
+            bad["pasted_transfers"] = [{"error": "selection timed out"}]
+            assert not received_checks(bad, mode, "self-test")["formats_match"], "plain: unreadable is not absent"
+    print("Native receiver assertions verified: legal V releases, leaked presses, paste count, draft and formats")
+
+
 def assert_received(result, output, mode="vv", case_id=None):
     # The observe-only Linux trigger currently preserves its two literal v keys.
     # The receiver proves delivery and preservation of the pre-existing draft;
@@ -268,12 +321,8 @@ def assert_received(result, output, mode="vv", case_id=None):
             observed = json.loads(Path(result).read_text(encoding="utf-8"))
             html_values = observed.get("pasted_html", [])
             transfers = observed.get("pasted_transfers", [])
-            formats_match = mode == "vv" or (html_values == [None] and len(transfers) == 1
-                and transfers[0].get("available") is False and "error" not in transfers[0] if mode == "plain" else
-                len(html_values) == 1 and isinstance(html_values[0], str)
-                and all(line in html.unescape(html_values[0]) for line in PAYLOAD.splitlines()))
-            shortcut_leaked = mode != "vv" and any(event.get("key", "").lower() == "v" and not (event.get("state", 0) & 4) for event in observed.get("key_events", []))
-            if observed.get("text") == expected and observed.get("paste_events", 0) == 1 and formats_match and not shortcut_leaked and (case_id is None or observed.get("case_id") == case_id):
+            checks = received_checks(observed, mode, case_id)
+            if all(checks.values()):
                 write_json(output, {
                     "delivered": True, "draft_preserved": True,
                     "trigger_characters_retained": mode == "vv", "mode": mode,
@@ -286,7 +335,8 @@ def assert_received(result, output, mode="vv", case_id=None):
         except (OSError, json.JSONDecodeError):
             pass
         time.sleep(0.1)
-    write_json(output, {"delivered": False, "expected": expected, "observed": observed})
+    write_json(output, {"delivered": False, "expected": expected, "observed": observed,
+                        "checks": received_checks(observed or {}, mode, case_id)})
     raise SystemExit("The independent receiver did not receive exactly the expected paste with its draft intact")
 
 
@@ -321,6 +371,7 @@ def assert_cancelled(result, output, case_id, middle, forbidden_key, require_con
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("self-test")
     receiver = commands.add_parser("serve")
     receiver.add_argument("--artifact-dir", required=True)
     receiver.add_argument("--timeout", type=float, default=60)
@@ -343,7 +394,9 @@ def main():
     cancelled.add_argument("--forbidden-key", default="")
     cancelled.add_argument("--require-control-digit", action="store_true")
     args = parser.parse_args()
-    if args.command == "serve":
+    if args.command == "self-test":
+        self_test()
+    elif args.command == "serve":
         serve(args.artifact_dir, args.timeout)
     elif args.command == "assert-captured":
         assert_captured(args.database, args.output)

@@ -28,6 +28,7 @@ mkdir -p "$ARTIFACT_DIR"
 cd "$ROOT_DIR"
 
 echo "==> Linux GTK native host tests"
+python3 "$ROOT_DIR/tests/native_vv_receiver.py" self-test
 cargo test -q linux_native_host_launch_plan_targets_real_gtk_entry
 cargo test -q linux_native_host_actions_enter_product_command_routes
 cargo test -q linux_native_row_actions_enter_product_command_routes
