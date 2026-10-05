@@ -408,6 +408,7 @@ searchentry {
                         lease.cancel();
                     }
                     crate::linux_app::cancel_linux_native_vv_trigger();
+                    eprintln!("ZSClip GTK VV session cancelled id={session_id}");
                 }
             }
         });
@@ -1879,6 +1880,7 @@ searchentry {
             vv_paste.accepted,
             vv_paste.clipboard_kind.unwrap_or("none")
         );
+        verify_gtk_vv_close_lifecycle(app);
 
         #[cfg(feature = "lan-sync")]
         {
@@ -1894,6 +1896,29 @@ searchentry {
 
         status.set_text("");
         eprintln!("ZSClip GTK auto smoke finished");
+    }
+
+    fn verify_gtk_vv_close_lifecycle(app: &Application) {
+        perform_vv_trigger_demo(app, 0, 0);
+        let first = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().as_ref()
+            .map(|session| (session.session_id, session.window.clone())));
+        if let Some(window) = first.as_ref().and_then(|(_, window)| window.upgrade()) {
+            window.close();
+        }
+        let cancelled = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().is_none());
+        // Re-enter through the same two-key state machine without resetting
+        // it from the fixture: closing the first popup must have done that.
+        perform_vv_trigger_demo(app, 0, 0);
+        let second = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().as_ref()
+            .map(|session| (session.session_id, session.window.clone())));
+        let reopened = first.as_ref().zip(second.as_ref()).is_some_and(|(first, second)| {
+            first.0 != second.0 && second.1.upgrade().is_some_and(|window| window.is_visible() && window.is_realized())
+        });
+        if let Some(window) = second.and_then(|(_, window)| window.upgrade()) {
+            window.close();
+        }
+        let cancelled_again = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().is_none());
+        eprintln!("ZSClip GTK VV close lifecycle cancelled={cancelled} reopened={reopened} cancelled_again={cancelled_again}");
     }
 
     fn toggle_gtk_main_window(window: &ApplicationWindow) {
@@ -3157,7 +3182,7 @@ searchentry {
                 || !preview
                     .window
                     .upgrade()
-                    .is_some_and(|window| window.is_visible())
+                    .is_some_and(|window| window.is_visible() && window.is_realized())
             {
                 return;
             }
@@ -3183,7 +3208,7 @@ searchentry {
                     || !preview
                         .window
                         .upgrade()
-                        .is_some_and(|window| window.is_visible())
+                        .is_some_and(|window| window.is_visible() && window.is_realized())
                 {
                     return glib::ControlFlow::Break;
                 }
@@ -3450,6 +3475,16 @@ searchentry {
             }
         });
         window.add_controller(popup_key_controller);
+        let closed_preview = preview.clone();
+        window.connect_close_request(move |_| {
+            // GtkWindow destruction need not emit notify::visible. End the
+            // trigger session before destruction, while the lease timer keeps
+            // any held key cycle alive until its physical release.
+            cancel_gtk_vv_paste_session(session_id);
+            closed_preview.generation.set(closed_preview.generation.get().wrapping_add(1));
+            closed_preview.body.buffer().set_text("");
+            glib::Propagation::Proceed
+        });
         let hidden_preview = preview.clone();
         window.connect_notify_local(Some("visible"), move |window, _| {
             if !window.is_visible() {
@@ -3465,7 +3500,7 @@ searchentry {
             if !protected_preview
                 .window
                 .upgrade()
-                .is_some_and(|window| window.is_visible())
+                .is_some_and(|window| window.is_visible() && window.is_realized())
             {
                 return glib::ControlFlow::Break;
             }
@@ -3524,6 +3559,7 @@ searchentry {
                 Ok(actions) => actions,
                 Err(error) => {
                     eprintln!("ZSClip GTK X11 VV input failed: {}", error);
+                    cancel_gtk_vv_paste_session(session_id);
                     lease.cancel();
                     if let Some(window) = window.as_ref() {
                         window.close();
@@ -3531,12 +3567,20 @@ searchentry {
                     return glib::ControlFlow::Break;
                 }
             };
-            let visible = window.as_ref().is_some_and(|window| window.is_visible());
-            if !visible {
+            let visible = window.as_ref().is_some_and(|window| window.is_visible() && window.is_realized());
+            let current_session = GTK_VV_PASTE_SESSION.with(|slot| slot.borrow().as_ref()
+                .is_some_and(|session| session.session_id == session_id));
+            if !visible || !current_session {
+                if current_session {
+                    cancel_gtk_vv_paste_session(session_id);
+                    keyboard_preview.generation.set(keyboard_preview.generation.get().wrapping_add(1));
+                    keyboard_preview.body.buffer().set_text("");
+                }
                 lease.cancel();
                 return if lease.has_owned_keys() {
                     glib::ControlFlow::Continue
                 } else {
+                    eprintln!("ZSClip GTK X11 VV key cycle drained id={session_id}");
                     glib::ControlFlow::Break
                 };
             }

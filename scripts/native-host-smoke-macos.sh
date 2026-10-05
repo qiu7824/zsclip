@@ -35,7 +35,7 @@ cargo build -q --bin zsclip
 echo "==> Launching ZSClip AppKit host"
 initial_profile="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-native-scenes-$$/baseline"
 mkdir -p "$initial_profile"
-ZSCLIP_DATA_DIR="$initial_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$initial_profile/settings.json" ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &
+ZSCLIP_DATA_DIR="$initial_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$initial_profile/settings.json" ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOTKEY_SMOKE=1 ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
 cleanup() {
@@ -50,11 +50,38 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep "${NATIVE_HOST_SMOKE_WAIT:-3}"
-if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
-  echo "ZSClip exited before screenshot. Log:" >&2
-  cat "$APP_LOG" >&2 || true
-  exit 1
+wait_for_initial_host_readiness() {
+  local expected="$1"
+  local timeout="${NATIVE_HOST_SMOKE_TIMEOUT:-30}"
+  if [[ ! "$timeout" =~ ^[1-9][0-9]*$ ]]; then
+    echo "NATIVE_HOST_SMOKE_TIMEOUT must be a positive number of seconds" >&2
+    return 1
+  fi
+  local deadline=$((SECONDS + timeout))
+  while true; do
+    if ! kill -0 "$APP_PID" >/dev/null 2>&1; then
+      echo "ZSClip exited before initial host readiness: $expected" >&2
+      cat "$APP_LOG" >&2 || true
+      return 1
+    fi
+    if grep -Fq "$expected" "$APP_LOG"; then
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "Timed out waiting for initial AppKit host readiness: $expected" >&2
+      cat "$APP_LOG" >&2 || true
+      return 1
+    fi
+    sleep 0.1
+  done
+}
+
+# Auto smoke completes its native row edits after the asynchronous search result.
+# Normal startup is ready only after that same search has populated the list.
+if [[ "$AUTO_SMOKE" == "1" ]]; then
+  wait_for_initial_host_readiness "ZSClip AppKit auto smoke finished"
+else
+  wait_for_initial_host_readiness "ZSClip AppKit main list ready mode=normal"
 fi
 
 echo "==> Capturing AppKit screenshot: $SCREENSHOT"

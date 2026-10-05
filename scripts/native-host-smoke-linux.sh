@@ -38,6 +38,7 @@ cargo test -q linux_native_vv_select_enters_product_event_bridge
 cargo test -q native_hotkey::tests
 cargo test -q linux_paste_
 cargo test -q native_x11_hotkey::tests
+cargo test -q native_x11_vv::tests
 cargo test -q x11_server_preserves_owned_release_during_rebind_and_reports_conflicts -- --ignored --test-threads=1
 cargo test -q linux_plain_paste_resolves_fresh_body_without_rich_text_or_image_fallback
 cargo test -q linux_first_clipboard_payload_after_empty_start_advances_capture_sequence
@@ -139,6 +140,7 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip GTK VV trigger requested" \
     "ZSClip GTK VV select 0 -> vv_select_requested" \
     "ZSClip GTK VV paste 0 -> zsclip.vv_paste." \
+    "ZSClip GTK VV close lifecycle cancelled=true reopened=true cancelled_again=true" \
     "ZSClip GTK status menu action status_toggle_lan_sync -> zsclip.tray.toggle_lan_sync" \
     "ZSClip GTK auto smoke finished"
   do
