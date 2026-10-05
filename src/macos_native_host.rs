@@ -29,13 +29,13 @@ mod appkit {
         NSButton, NSButtonType, NSColor, NSControlStateValueOff, NSControlStateValueOn,
         NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
         NSFloatingWindowLevel, NSFont, NSImage, NSImageScaling, NSImageView, NSLineBreakMode,
-        NSMenu, NSMenuItem, NSPopUpButton, NSScrollView, NSSearchField, NSStatusBar,
+        NSMenu, NSMenuItem, NSPanel, NSPopUpButton, NSRunningApplication, NSScrollView, NSSearchField, NSStatusBar,
         NSStatusBarButton, NSStatusItem, NSTabView, NSTabViewItem, NSTabViewType, NSTableColumn,
         NSTableView, NSTableViewDataSource, NSTableViewDelegate,
         NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment, NSTextField,
         NSTextView, NSVariableStatusItemLength, NSView, NSVisualEffectBlendingMode,
         NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindow,
-        NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility,
+        NSWindowDelegate, NSWindowStyleMask, NSWindowTitleVisibility, NSWorkspace, NSApplicationActivationOptions,
     };
     use objc2_core_foundation::{
         kCFRunLoopCommonModes, CFMachPort, CFRetained, CFRunLoopAddSource, CFRunLoopGetCurrent,
@@ -43,7 +43,7 @@ mod appkit {
     };
     use objc2_core_graphics::{
         CGEvent, CGEventField, CGEventFlags, CGEventTapLocation, CGEventTapOptions,
-        CGEventTapPlacement, CGEventTapProxy, CGEventType,
+        CGEventTapPlacement, CGEventTapProxy, CGEventType, CGPreflightPostEventAccess,
     };
     use objc2_foundation::{
         ns_string, MainThreadMarker, NSData, NSIndexSet, NSInteger, NSNotification, NSObject,
@@ -142,6 +142,9 @@ mod appkit {
         next_page_button: OnceCell<Retained<NSButton>>,
         page_label: OnceCell<Retained<NSTextField>>,
         screenshot_scene: RefCell<Option<String>>,
+        image_export_result: RefCell<Option<std::sync::mpsc::Receiver<Result<(),String>>>>,
+        last_external_pid: Cell<i32>,
+        pending_row_paste: RefCell<Option<(i32,u64,u32,String,std::time::Instant)>>,
         window: OnceCell<Retained<NSWindow>>,
         settings_window: OnceCell<Retained<NSWindow>>,
         status_item: OnceCell<Retained<NSStatusItem>>,
@@ -158,6 +161,23 @@ mod appkit {
         vv_cg_event_tap_delegate: OnceCell<Retained<AnyObject>>,
         row_context_event_monitor: OnceCell<Retained<AnyObject>>,
         vv_popup_window: OnceCell<Retained<NSWindow>>,
+        vv_presentation: RefCell<Option<MacosVvPresentation>>,
+        vv_input: RefCell<crate::app_core::vv_session::VvInputSession>,
+        vv_session_serial: Cell<u64>,
+        vv_preview_text: RefCell<Option<Retained<NSTextView>>>,
+        vv_preview_scroll: RefCell<Option<Retained<NSScrollView>>>,
+        vv_status_label: RefCell<Option<Retained<NSTextField>>>,
+        vv_candidate_buttons: RefCell<Vec<Retained<NSButton>>>,
+        vv_preview_selected: Cell<usize>,
+        vv_preview_hover: Cell<Option<usize>>,
+        vv_preview_due: Cell<Option<(std::time::Instant, usize)>>,
+        vv_preview_request: Cell<u64>,
+        vv_preview_result: RefCell<Option<std::sync::mpsc::Receiver<MacosVvPreviewResult>>>,
+        vv_screenshot_waiting: Cell<bool>,
+        vv_delivery_smoke_phase: Cell<u8>,
+        vv_delivery_smoke_pid: Cell<i32>,
+        vv_delivery_smoke_item_id: Cell<i64>,
+        vv_delivery_smoke_deadline: Cell<Option<std::time::Instant>>,
         edit_window: OnceCell<Retained<NSWindow>>,
         edit_text_view: OnceCell<Retained<NSTextView>>,
         edit_title_field: OnceCell<Retained<NSTextField>>,
@@ -166,6 +186,7 @@ mod appkit {
         edit_save_as_phrase: Cell<bool>,
         edit_initial_text: RefCell<String>,
         edit_item_id: Cell<i64>,
+        edit_data_generation: Cell<u64>,
         selected_item_id: Cell<i64>,
         current_group_filter: Cell<i64>,
         current_source_category: Cell<i64>,
@@ -185,6 +206,10 @@ mod appkit {
         settings_native_toggle_buttons: RefCell<Vec<NativeSettingsToggleButtonBinding>>,
         settings_native_dropdown_buttons: RefCell<Vec<NativeSettingsDropdownButtonBinding>>,
         settings_native_route_buttons: RefCell<Vec<NativeSettingsRouteButtonBinding>>,
+        settings_sound_path: RefCell<Option<String>>,
+        settings_sound_file_button: OnceCell<Retained<NSButton>>,
+        settings_sound_preview_button: OnceCell<Retained<NSButton>>,
+        sound_preview_result: RefCell<Option<std::sync::mpsc::Receiver<Result<crate::native_feedback::NativeFeedbackPlayback,String>>>>,
         settings_group_rows: RefCell<Vec<Retained<NSButton>>>,
         clip_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         clip_table_items: RefCell<Vec<NativeHostClipListItemProjection>>,
@@ -197,6 +222,33 @@ mod appkit {
             f.debug_struct("AppDelegateIvars").finish_non_exhaustive()
         }
     }
+
+    #[derive(Clone)]
+    struct MacosVvPresentation {
+        serial: u64,
+        target_pid: i32,
+        snapshot: crate::native_vv::NativeVvSnapshot,
+    }
+
+    struct MacosVvPreviewResult {
+        serial: u64,
+        request: u64,
+        index: usize,
+        body: Result<String, String>,
+    }
+
+    define_class!(
+        #[unsafe(super = NSPanel)]
+        #[thread_kind = MainThreadOnly]
+        #[name = "ZSClipVvNonactivatingPanel"]
+        struct VvNonactivatingPanel;
+        impl VvNonactivatingPanel {
+            #[unsafe(method(canBecomeKeyWindow))]
+            fn can_become_key_window(&self) -> bool { false }
+            #[unsafe(method(canBecomeMainWindow))]
+            fn can_become_main_window(&self) -> bool { false }
+        }
+    );
 
     #[derive(Clone)]
     struct NativeStatusMenuItemBinding {
@@ -629,6 +681,9 @@ mod appkit {
             #[unsafe(method(zsclipSearchPoll:))]
             fn zsclip_search_poll(&self, _sender: &AnyObject) {self.poll_native_search();}
 
+            #[unsafe(method(zsclipSoundPreview:))]
+            fn zsclip_sound_preview(&self,_sender:&AnyObject) {self.preview_native_sound();}
+
             #[unsafe(method(zsclipPreviousPage:))]
             fn zsclip_previous_page(&self,_sender:&AnyObject) {
                 if !self.ivars().search_pending.get() && self.ivars().search_page.get()>0 {self.request_native_search_page(self.ivars().search_page.get()-1);}
@@ -658,6 +713,7 @@ mod appkit {
                     .unwrap()
                     .downcast::<NSApplication>()
                     .unwrap();
+                if let Some(pid)=Self::appkit_frontmost_pid().filter(|pid|*pid!=std::process::id() as i32) {self.ivars().last_external_pid.set(pid);}
                 let text_field = unsafe {
                     let text_field = NSTextField::labelWithString(ns_string!("ZSClip"), mtm);
                     text_field.setFrame(NSRect::new(
@@ -701,6 +757,7 @@ mod appkit {
                 let clip_items = crate::macos_app::macos_native_host_projected_clip_items();
                 let preferences=NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot());
                 self.ivars().content_preferences.set(preferences);
+                appkit_apply_content_theme(mtm);
                 search_field.setFont(Some(&NSFont::systemFontOfSize(preferences.content_font_size as f64)));
                 let clip_row_height = preferences.row_height();
                 let clip_list_width = 608.0_f64;
@@ -1107,25 +1164,22 @@ mod appkit {
         if preferences.card_view_enabled {
             let card=NSView::initWithFrame(NSView::alloc(mtm),NSRect::new(NSPoint::new(3.0,3.0),NSSize::new((width-6.0).max(1.0),row_height-6.0)));
             card.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-            unsafe {
-                let _:()=msg_send![&card,setWantsLayer:true];
-                let layer:*mut AnyObject=msg_send![&card,layer];
-                if !layer.is_null() {
-                    let color=if selected {NSColor::selectedControlColor()}else{NSColor::controlBackgroundColor()};
-                    let fill:*mut c_void=msg_send![&color,CGColor];
-                    let border:*mut c_void=msg_send![&NSColor::separatorColor(),CGColor];
-                    let shadow:*mut c_void=msg_send![&NSColor::blackColor(),CGColor];
-                    let _:()=msg_send![layer,setBackgroundColor:fill];
-                    let _:()=msg_send![layer,setCornerRadius:7.0_f64];
-                    let _:()=msg_send![layer,setBorderColor:border];
-                    let _:()=msg_send![layer,setBorderWidth:if preferences.card_border_enabled {1.0_f64}else{0.0_f64}];
-                    let _:()=msg_send![layer,setShadowColor:shadow];
-                    let _:()=msg_send![layer,setShadowOpacity:if preferences.card_shadow_enabled {0.15_f32}else{0.0_f32}];
-                    let _:()=msg_send![layer,setShadowRadius:2.0_f64];
-                    let _:()=msg_send![layer,setShadowOffset:NSSize::new(0.0,-1.0)];
-                }
-                cell.addSubview(&card);
+            card.setWantsLayer(true);
+            if let Some(layer)=card.layer() {
+                let color=if selected {NSColor::selectedControlColor()}else{NSColor::controlBackgroundColor()};
+                let fill=color.CGColor();
+                let border=NSColor::separatorColor().CGColor();
+                let shadow=NSColor::blackColor().CGColor();
+                layer.setBackgroundColor(Some(&fill));
+                layer.setCornerRadius(7.0);
+                layer.setBorderColor(Some(&border));
+                layer.setBorderWidth(if preferences.card_border_enabled {1.0}else{0.0});
+                layer.setShadowColor(Some(&shadow));
+                layer.setShadowOpacity(if preferences.card_shadow_enabled {0.15}else{0.0});
+                layer.setShadowRadius(2.0);
+                layer.setShadowOffset(NSSize::new(0.0,-1.0));
             }
+            unsafe {cell.addSubview(&card);}
         }
 
         let kind_icon = appkit_clip_table_icon_view(
@@ -1144,12 +1198,13 @@ mod appkit {
             };
         let text_width = (width - text_left - text_right_padding).max(160.0);
         let content=if presentation.kind_icon==crate::app_core::NativeHostClipKindIcon::Phrase && !presentation.title.is_empty() {&presentation.title}else{&presentation.preview};
+        let content_color=if selected {NSColor::selectedControlTextColor()}else{NSColor::labelColor()};
         let title_label = appkit_clip_table_label(
             mtm,
             content,
             NSRect::new(NSPoint::new(text_left, (row_height-preferences.content_font_size as f64-6.0)/2.0), NSSize::new(text_width, preferences.content_font_size as f64+6.0)),
             preferences.content_font_size as f64,
-            &NSColor::labelColor(),
+            &content_color,
         );
 
         unsafe { cell.addSubview(&kind_icon) };
@@ -1165,7 +1220,7 @@ mod appkit {
                     NSSize::new(pin_width, 18.0),
                 ),
                 11.0,
-                &NSColor::controlAccentColor(),
+                &if selected {NSColor::selectedControlTextColor()}else{NSColor::controlAccentColor()},
             );
             pin_label.setAlignment(NSTextAlignment::Center);
             pin_label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
@@ -1609,27 +1664,19 @@ mod appkit {
         appkit_tr(control.label, english).to_string()
     }
 
+    fn appkit_apply_content_theme(mtm:MainThreadMarker) {
+        let settings=crate::macos_app::macos_native_settings_json_snapshot();
+        let dark=settings.get("dark_mode_enabled").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        let name=unsafe {if dark {NSAppearanceNameDarkAqua}else{objc2_app_kit::NSAppearanceNameAqua}};
+        let appearance=objc2_app_kit::NSAppearance::appearanceNamed(name);
+        let app=NSApplication::sharedApplication(mtm);
+        unsafe {let _:()=msg_send![&app,setAppearance:appearance.as_deref()];}
+    }
+
     fn appkit_settings_profile() -> serde_json::Value {
-        let mut profile = serde_json::json!({
-            "auto_start": false, "silent_start": false, "tray_icon_enabled": true, "app_icon_visible": true,
-            "close_without_exit": true, "clipboard_capture_enabled": true, "vv_mode_enabled": true,
-            "grouping_enabled": true, "group_type_filter_enabled": false, "phrase_titles_enabled": true,
-            "content_font_size": 0, "card_view_enabled": false, "card_border_enabled": true, "card_shadow_enabled": true,
-            "image_preview_enabled": true, "hover_preview": false, "quick_delete_button": true, "show_pin_button": false,
-            "image_row_height": 132, "text_row_height": 44, "file_row_height": 44, "max_items": 200,
-            "show_pos_mode": "mouse", "show_mouse_dx": 12, "show_mouse_dy": 12, "show_fixed_x": 120, "show_fixed_y": 120,
-            "paste_success_sound_kind": "default", "hotkey_mod": "Win", "hotkey_key": "V",
-            "plain_paste_hotkey_mod": "Ctrl+Shift", "plain_paste_hotkey_key": "V",
-            "mouse_side_button_1_action": "quick_window", "mouse_side_button_2_action": "vv_mode",
-            "vv_source_tab": 0, "vv_group_id": 0, "search_engine": "jzxx", "image_ocr_provider": "off",
-            "text_translate_provider": "off", "text_translate_target_lang": "zh",
-            "cloud_sync_enabled": false, "lan_sync_enabled": false, "cloud_sync_interval": "1小时",
-            "cloud_remote_dir": "ZSClip", "lan_tcp_port": 38473, "lan_receive_mode": "records_only", "lan_sync_mode": "manual"
-        });
-        if let Some(saved) = crate::macos_app::macos_native_settings_json_snapshot().as_object() {
-            profile.as_object_mut().unwrap().extend(saved.iter().map(|(key, value)| (key.clone(), value.clone())));
-        }
-        profile
+        crate::app_core::native_content_preferences::native_settings_profile(
+            &crate::macos_app::macos_native_settings_json_snapshot(),
+        )
     }
 
     fn appkit_settings_control_visible(control: &crate::settings_model::SettingsNativeControlSummary) -> bool {
@@ -1793,14 +1840,19 @@ mod appkit {
                 return;
             }
             let result =
-                crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<
+                crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current_with_html::<
                     crate::macos_app::MacosClipboardHost,
-                >(0, "");
+                >(0, "",|| {
+                    if crate::macos_app::macos_native_settings_json_snapshot().get("rich_text_clipboard_enabled").and_then(serde_json::Value::as_bool).unwrap_or(true) {
+                        crate::macos_app::MacosClipboardHost::read_html()
+                    } else {None}
+                });
             eprintln!(
                 "ZSClip AppKit clipboard capture sequence={} inserted={} item_id={:?} reason={}",
                 sequence, result.inserted, result.item_id, result.reason
             );
             if result.inserted {
+                let _=crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Copy,&crate::macos_app::macos_native_settings_json_snapshot());
                 self.reload_native_clip_items();
             }
         }
@@ -2153,8 +2205,13 @@ mod appkit {
             self.present_native_edit_window(true);
             #[cfg(feature = "ai-actions")]
             self.perform_native_row_action(NativeHostRowAction::TextTranslate);
-            self.perform_native_vv_trigger_demo();
-            self.perform_native_vv_select(0);
+            let self_target = std::process::id() as u64;
+            let first = self.perform_native_vv_key_text("v", false, self_target, 1);
+            let second = self.perform_native_vv_key_text("v", false, self_target, 2);
+            let rejected = matches!(first.action, NativeHostVvTriggerAction::Ignore)
+                && matches!(second.action, NativeHostVvTriggerAction::Ignore)
+                && !first.consume_key && !second.consume_key;
+            eprintln!("ZSClip AppKit auto smoke VV self-target rejected={rejected}");
             #[cfg(feature = "lan-sync")]
             self.perform_native_status_menu_action(NativeHostStatusMenuAction::ToggleLanSync);
 
@@ -2227,98 +2284,247 @@ mod appkit {
         }
 
         fn present_native_vv_popup(&self) {
-            if let Some(window) = self.ivars().vv_popup_window.get() {
-                window.makeKeyAndOrderFront(None);
-                return;
-            }
-
             let mtm = self.mtm();
-            let current_group_id = self.ivars().current_group_filter.get();
-            let source_category = self.active_source_category();
+            self.dismiss_native_vv_popup("replace_session");
+            let settings = crate::macos_app::macos_native_settings_json_snapshot();
+            let source_category = crate::settings_model::settings_native_vv_source_tab(&settings) as i64;
+            let current_group_id = settings.get("vv_group_id").and_then(serde_json::Value::as_i64).unwrap_or(0);
+            let target_pid = Self::appkit_frontmost_pid().filter(|pid| *pid != std::process::id() as i32).unwrap_or(0);
+            let snapshot = match crate::native_vv::NativeVvSnapshot::capture(source_category, current_group_id) {
+                Ok(snapshot) => snapshot,
+                Err(error) => { eprintln!("ZSClip AppKit VV open blocked: {error}"); return; }
+            };
+            let preferences = NativeContentPreferences::from_json(&settings);
+            let items = preferences.apply_projection(snapshot.items.clone());
             let groups = crate::db_runtime::native_clip_groups(source_category).unwrap_or_default();
             let group_label = native_host_group_filter_label_for_groups(&groups, current_group_id);
-            let items = crate::macos_app::macos_native_host_projected_clip_items_for_category_group(
-                source_category,
-                current_group_id,
-            );
-            let plan = native_host_vv_popup_render_plan_for_projection(&items, &group_label);
-            let width = plan
-                .text_commands
-                .iter()
-                .map(|command| command.rect.right)
-                .max()
-                .unwrap_or(360)
-                .max(360);
-            let height = plan
-                .text_commands
-                .iter()
-                .map(|command| command.rect.bottom)
-                .max()
-                .unwrap_or(168)
-                .max(168)
-                + 12;
-            let window = unsafe {
-                NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    NSRect::new(
-                        NSPoint::new(0.0, 0.0),
-                        NSSize::new(width as f64, height as f64),
-                    ),
-                    NSWindowStyleMask::Borderless,
-                    NSBackingStoreType::Buffered,
-                    false,
-                )
-            };
-            unsafe { window.setReleasedWhenClosed(false) };
-            unsafe { window.setOpaque(false) };
-            window.setHasShadow(true);
-            window.setBackgroundColor(Some(&NSColor::clearColor()));
-            window.setTitle(&NSString::from_str(appkit_tr(
-                "ZSClip VV 粘贴",
-                "ZSClip VV Popup",
-            )));
-            let view = window
-                .contentView()
-                .expect("vv popup must have content view");
-            for command in &plan.text_commands {
-                let title = NSString::from_str(&command.text);
-                let label = unsafe { NSTextField::labelWithString(&title, mtm) };
-                let rect = command.rect;
-                label.setFrame(NSRect::new(
-                    NSPoint::new(rect.left as f64, (height - rect.bottom) as f64),
-                    NSSize::new(rect.width() as f64, rect.height() as f64),
-                ));
-                label.setFont(Some(&appkit_vv_popup_text_font(command.role, command.size)));
-                appkit_set_accessibility_label::<NSTextField>(label.as_ref(), &command.text);
-                unsafe { view.addSubview(&label) };
+            let width = 820.0;
+            let height = 460.0;
+            let window = self.ivars().vv_popup_window.get_or_init(|| {
+                let allocated = VvNonactivatingPanel::alloc(mtm);
+                let panel: Retained<VvNonactivatingPanel> = unsafe { msg_send![allocated,
+                    initWithContentRect: NSRect::new(NSPoint::new(0.0,0.0),NSSize::new(width,height)),
+                    styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                    backing: NSBackingStoreType::Buffered, defer: false] };
+                let panel: Retained<NSPanel> = panel.into_super();
+                panel.setBecomesKeyOnlyIfNeeded(true);
+                panel.setFloatingPanel(true);
+                panel.setHidesOnDeactivate(false);
+                let window: Retained<NSWindow> = panel.into_super();
+                unsafe { window.setReleasedWhenClosed(false); }
+                window.setLevel(NSFloatingWindowLevel);
+                window.setHasShadow(true);
+                window.setBackgroundColor(Some(&NSColor::windowBackgroundColor()));
+                window.setTitle(&NSString::from_str(appkit_tr("ZSClip VV 粘贴", "ZSClip VV Popup")));
+                window
+            });
+            let view = unsafe { NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0,0.0),NSSize::new(width,height))) };
+            let heading = appkit_settings_text_label(mtm, &format!("VV · {}", appkit_localized_label(&group_label)), NSRect::new(NSPoint::new(18.0,height-42.0),NSSize::new(760.0,24.0)),15.0,true);
+            heading.setFont(Some(&NSFont::boldSystemFontOfSize(15.0)));
+            unsafe { view.addSubview(&heading); }
+            self.ivars().vv_candidate_buttons.borrow_mut().clear();
+            for (index, item) in items.iter().enumerate() {
+                let summary = if item.kind == crate::app_core::ClipKind::Phrase && !item.title.trim().is_empty() {
+                    item.title.as_str()
+                } else {
+                    item.preview.as_str()
+                };
+                let pinned = if item.pinned { format!(" · {}", appkit_tr("置顶", "Pinned")) } else { String::new() };
+                let title = format!("{}  {}{}", index+1, summary, pinned);
+                let button = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(&title),Some(self.as_ref()),Some(sel!(zsclipVvSelect:)),mtm) };
+                button.setFrame(NSRect::new(NSPoint::new(16.0,height-86.0-index as f64*38.0),NSSize::new(300.0,34.0)));
+                button.setFont(Some(&NSFont::systemFontOfSize(preferences.content_font_size as f64)));
+                button.setAlignment(NSTextAlignment::Left);
+                button.setTag(index as _);
+                appkit_set_accessibility_label::<NSButton>(button.as_ref(), &title);
+                unsafe { view.addSubview(&button); }
+                self.ivars().vv_candidate_buttons.borrow_mut().push(button);
             }
-            #[cfg(feature = "vv-paste")]
-            {
-                let target: &AnyObject = self.as_ref();
-                for spec in crate::app_core::native_host_vv_select_specs(&plan, width, height) {
-                    let action = spec.action;
-                    let localized = appkit_localized_label(&spec.label);
-                    let title = NSString::from_str(&localized);
-                    let button = unsafe {
-                        NSButton::buttonWithTitle_target_action(
-                            &title,
-                            Some(target),
-                            Some(sel!(zsclipVvSelect:)),
-                            mtm,
-                        )
-                    };
-                    button.setFrame(NSRect::new(
-                        NSPoint::new(spec.bounds.left as f64, spec.bounds.top as f64),
-                        NSSize::new(spec.width() as f64, spec.height() as f64),
-                    ));
-                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &localized);
-                    button.setTag(action.index as _);
-                    unsafe { view.addSubview(&button) };
+            if items.is_empty() {
+                let empty=appkit_settings_text_label(mtm,appkit_tr("此分组暂无记录","No records in this group"),NSRect::new(NSPoint::new(20.0,height-96.0),NSSize::new(290.0,36.0)),13.0,false);
+                unsafe {view.addSubview(&empty);}
+            }
+            let scroller = unsafe { NSScrollView::initWithFrame(NSScrollView::alloc(mtm),NSRect::new(NSPoint::new(332.0,54.0),NSSize::new(470.0,350.0))) };
+            scroller.setHasVerticalScroller(true);
+            scroller.setHasHorizontalScroller(false);
+            scroller.setBorderType(NSBorderType::BezelBorder);
+            let body = unsafe { NSTextView::initWithFrame(NSTextView::alloc(mtm),NSRect::new(NSPoint::new(0.0,0.0),NSSize::new(450.0,350.0))) };
+            body.setEditable(false);
+            body.setSelectable(false);
+            body.setRichText(false);
+            body.setVerticallyResizable(true);
+            body.setHorizontallyResizable(false);
+            body.setMinSize(NSSize::new(0.0,350.0));
+            body.setMaxSize(NSSize::new(450.0,f64::MAX));
+            body.setTextContainerInset(NSSize::new(10.0,8.0));
+            body.setFont(Some(&NSFont::systemFontOfSize(preferences.content_font_size as f64)));
+            unsafe {
+                if let Some(container)=body.textContainer() {
+                    container.setContainerSize(NSSize::new(450.0,f64::MAX));
+                    container.setWidthTracksTextView(true);
                 }
             }
+            appkit_set_accessibility_label::<NSTextView>(body.as_ref(),appkit_tr("VV 完整正文预览","VV full text preview"));
+            scroller.setDocumentView(Some(&body));
+            unsafe {view.addSubview(&scroller);}
+            let status=appkit_settings_text_label(mtm,appkit_tr("1–9 粘贴 · ↑↓ 预览 · PgUp/PgDn 翻页 · Esc 关闭","1–9 paste · ↑↓ preview · PgUp/PgDn scroll · Esc close"),NSRect::new(NSPoint::new(18.0,15.0),NSSize::new(780.0,28.0)),12.0,false);
+            if self.ivars().vv_cg_event_tap.get().is_none() {
+                status.setStringValue(&NSString::from_str(appkit_tr("点击候选粘贴；键盘 VV 需要系统的辅助功能与输入监控权限。","Click a candidate to paste; keyboard VV requires Accessibility and Input Monitoring permission.")));
+            }
+            unsafe {view.addSubview(&status);}
+            window.setContentView(Some(&view));
+            *self.ivars().vv_preview_text.borrow_mut()=Some(body);
+            *self.ivars().vv_preview_scroll.borrow_mut()=Some(scroller);
+            *self.ivars().vv_status_label.borrow_mut()=Some(status);
+            let serial=self.ivars().vv_session_serial.get().wrapping_add(1).max(1);
+            self.ivars().vv_session_serial.set(serial);
+            *self.ivars().vv_presentation.borrow_mut()=Some(MacosVvPresentation {serial,target_pid,snapshot});
+            let mut input=self.ivars().vv_input.borrow_mut();
+            let id=input.begin(target_pid as usize,target_pid as usize,false);
+            input.show(id,items.len());
+            drop(input);
             window.center();
-            window.makeKeyAndOrderFront(None);
-            self.ivars().vv_popup_window.set(window).unwrap();
+            window.orderFrontRegardless();
+            self.ivars().vv_preview_hover.set(None);
+            self.queue_native_vv_preview(0,0);
+            self.ivars().vv_screenshot_waiting.set(std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").as_deref()==Ok("vv"));
+            eprintln!("ZSClip AppKit VV opened session={serial} target_pid={target_pid} category={source_category} candidates={} key_window={} frontmost_unchanged={}",items.len(),window.isKeyWindow(),target_pid==0||Self::appkit_frontmost_pid()==Some(target_pid));
+        }
+
+        fn appkit_frontmost_pid() -> Option<i32> {
+            NSWorkspace::sharedWorkspace().frontmostApplication().map(|app|app.processIdentifier()).filter(|pid|*pid>0)
+        }
+
+        fn queue_native_vv_preview(&self, index: usize, delay_ms: u64) {
+            let Some(session)=self.ivars().vv_presentation.borrow().clone() else {return;};
+            if index>=session.snapshot.items.len() {return;}
+            self.ivars().vv_preview_request.set(self.ivars().vv_preview_request.get().wrapping_add(1));
+            self.ivars().vv_preview_due.set(Some((std::time::Instant::now()+std::time::Duration::from_millis(delay_ms),index)));
+            self.ivars().vv_preview_result.borrow_mut().take();
+        }
+
+        fn start_native_vv_preview(&self, index: usize) {
+            let Some(session)=self.ivars().vv_presentation.borrow().clone() else {return;};
+            let request=self.ivars().vv_preview_request.get();
+            self.ivars().vv_preview_selected.set(index);
+            for (row,button) in self.ivars().vv_candidate_buttons.borrow().iter().enumerate() {
+                button.setState(if row==index {NSControlStateValueOn}else{NSControlStateValueOff});
+            }
+            if let Some(body)=self.ivars().vv_preview_text.borrow().as_ref() {
+                body.setString(&NSString::from_str(appkit_tr("正在读取完整正文…","Loading full text…")));
+            }
+            let (sender,receiver)=std::sync::mpsc::channel();
+            *self.ivars().vv_preview_result.borrow_mut()=Some(receiver);
+            if let Err(error)=std::thread::Builder::new().name("zsclip-vv-preview".into()).spawn(move|| {
+                let body=session.snapshot.load_item(index).map(|item| {
+                    item.text.or_else(||item.file_paths.map(|paths|paths.join("\n")))
+                        .unwrap_or_else(||crate::i18n::tr("图片记录","Image record").to_string())
+                });
+                let _=sender.send(MacosVvPreviewResult {serial:session.serial,request,index,body});
+            }) {
+                eprintln!("ZSClip AppKit VV preview worker unavailable: {error}");
+                self.dismiss_native_vv_popup("preview_worker_unavailable");
+            }
+        }
+
+        fn poll_native_vv_preview(&self) {
+            self.poll_native_vv_delivery_smoke();
+            let Some(session)=self.ivars().vv_presentation.borrow().clone() else {return;};
+            let Some(window)=self.ivars().vv_popup_window.get().filter(|window|window.isVisible()) else {return;};
+            if session.snapshot.validate().is_err() || (session.target_pid>0 && Self::appkit_frontmost_pid()!=Some(session.target_pid)) {
+                self.dismiss_native_vv_popup("stale_target_or_history");
+                return;
+            }
+            let point=window.mouseLocationOutsideOfEventStream();
+            let hover=self.ivars().vv_candidate_buttons.borrow().iter().position(|button|NSPointInRect(point,button.frame()));
+            if hover!=self.ivars().vv_preview_hover.get() {
+                let previous=self.ivars().vv_preview_hover.replace(hover);
+                if let Some(index)=hover {self.queue_native_vv_preview(index,200);}
+                else if self.ivars().vv_preview_due.get().is_some_and(|(_,index)|Some(index)==previous) {self.ivars().vv_preview_due.set(None);}
+            }
+            if let Some((due,index))=self.ivars().vv_preview_due.get() {
+                if std::time::Instant::now()>=due {self.ivars().vv_preview_due.set(None);self.start_native_vv_preview(index);}
+            }
+            let received=self.ivars().vv_preview_result.borrow().as_ref().map(|receiver|receiver.try_recv());
+            if matches!(&received,Some(Err(std::sync::mpsc::TryRecvError::Disconnected))) {
+                self.dismiss_native_vv_popup("preview_worker_disconnected");return;
+            }
+            let result=received.and_then(Result::ok);
+            if let Some(result)=result {
+                self.ivars().vv_preview_result.borrow_mut().take();
+                if result.serial!=session.serial || result.request!=self.ivars().vv_preview_request.get() || result.index!=self.ivars().vv_preview_selected.get() || session.snapshot.validate().is_err() {return;}
+                let body=match result.body {
+                    Ok(body)=>body,
+                    Err(error)=>{eprintln!("ZSClip AppKit VV preview rejected: {error}");self.dismiss_native_vv_popup("preview_unavailable");return;}
+                };
+                if let Some(view)=self.ivars().vv_preview_text.borrow().as_ref() {
+                    view.setString(&NSString::from_str(&body));
+                    view.sizeToFit();
+                    view.scrollRangeToVisible(objc2_foundation::NSRange::new(0,0));
+                }
+                eprintln!("ZSClip AppKit VV preview ready session={} item_id={} characters={}",session.serial,session.snapshot.items[result.index].id,body.chars().count());
+                if self.ivars().vv_screenshot_waiting.replace(false) {eprintln!("ZSClip AppKit screenshot scene ready=vv");}
+                if self.ivars().vv_delivery_smoke_phase.get()==2 {
+                    self.ivars().vv_delivery_smoke_phase.set(3);
+                    let selected=session.snapshot.items.iter().position(|item|item.id==self.ivars().vv_delivery_smoke_item_id.get());
+                    let button=selected.and_then(|index|self.ivars().vv_candidate_buttons.borrow().get(index).cloned());
+                    if let Some(button)=button {button.performClick(None);}
+                }
+            } else if session.snapshot.items.is_empty() && self.ivars().vv_screenshot_waiting.replace(false) {
+                eprintln!("ZSClip AppKit screenshot scene ready=vv");
+            }
+        }
+
+        fn scroll_native_vv_preview(&self, direction: i32) {
+            if let Some(scroller)=self.ivars().vv_preview_scroll.borrow().as_ref() {
+                let clip=scroller.contentView();
+                let bounds=clip.bounds();
+                let document_height=scroller.documentView().map(|view|view.frame().size.height).unwrap_or(0.0);
+                let y=(bounds.origin.y+direction as f64*bounds.size.height*0.85).clamp(0.0,(document_height-bounds.size.height).max(0.0));
+                clip.scrollToPoint(NSPoint::new(0.0,y));
+                scroller.reflectScrolledClipView(&clip);
+            }
+        }
+
+        fn poll_native_vv_delivery_smoke(&self) {
+            let phase=self.ivars().vv_delivery_smoke_phase.get();
+            if phase==3 {return;}
+            if self.ivars().vv_delivery_smoke_deadline.get().is_some_and(|deadline|std::time::Instant::now()>deadline) {
+                self.ivars().vv_delivery_smoke_phase.set(3);
+                eprintln!("ZSClip AppKit VV delivery blocked=receiver_or_capture_timeout");return;
+            }
+            if phase==0 {
+                self.ivars().vv_delivery_smoke_phase.set(3);
+                if std::env::var("ZSCLIP_NATIVE_VV_DELIVERY_SMOKE").as_deref()!=Ok("1") || std::env::var_os("ZSCLIP_DATA_DIR").is_none() {return;}
+                let Some(pid)=std::env::var("ZSCLIP_NATIVE_VV_RECEIVER_PID").ok().and_then(|value|value.parse::<i32>().ok()).filter(|pid|*pid>0&&*pid!=std::process::id() as i32) else {
+                    eprintln!("ZSClip AppKit VV delivery blocked=invalid_receiver_pid");return;
+                };
+                if !CGPreflightPostEventAccess() {eprintln!("ZSClip AppKit VV delivery blocked=post_event_permission; allow Accessibility in System Settings");return;}
+                self.ivars().vv_delivery_smoke_pid.set(pid);
+                self.ivars().vv_delivery_smoke_deadline.set(Some(std::time::Instant::now()+std::time::Duration::from_secs(20)));
+                self.ivars().vv_delivery_smoke_phase.set(1);
+                eprintln!("ZSClip AppKit VV delivery waiting=receiver_clipboard target_pid={pid}");
+            } else if phase==1 {
+                let expected=std::env::var("ZSCLIP_VV_RECEIVER_PAYLOAD").unwrap_or_else(|_|"VV-DELIVERY-PAYLOAD".into());
+                if <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::read_text().as_deref()!=Some(expected.as_str()) {return;}
+                let captured=crate::native_clipboard_capture::NativeClipboardCaptureService::capture_current::<crate::macos_app::MacosClipboardHost>(0,"VV receiver");
+                let Some(item_id)=captured.item_id else {return;};
+                self.ivars().vv_delivery_smoke_item_id.set(item_id);
+                let pid=self.ivars().vv_delivery_smoke_pid.get();
+                if let Some(receiver)=NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                    let activated=receiver.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+                    eprintln!("ZSClip AppKit VV delivery activation requested={activated} target_pid={pid}");
+                    self.ivars().vv_delivery_smoke_phase.set(4);
+                } else {self.ivars().vv_delivery_smoke_phase.set(3);eprintln!("ZSClip AppKit VV delivery blocked=receiver_not_running");}
+            } else if phase==4 {
+                if Self::appkit_frontmost_pid()==Some(self.ivars().vv_delivery_smoke_pid.get()) {
+                    self.ivars().vv_delivery_smoke_phase.set(2);
+                    self.present_native_vv_popup();
+                    let selected=self.ivars().vv_presentation.borrow().as_ref().and_then(|session|session.snapshot.items.iter().position(|item|item.id==self.ivars().vv_delivery_smoke_item_id.get()));
+                    if let Some(index)=selected {self.queue_native_vv_preview(index,0);}
+                    else {self.ivars().vv_delivery_smoke_phase.set(3);eprintln!("ZSClip AppKit VV delivery blocked=captured_candidate_unavailable");}
+                }
+            }
         }
 
         fn build_popup_menu(
@@ -2637,6 +2843,13 @@ mod appkit {
                         }
                     }
                     view.addSubview(&button);
+                    if control.key=="paste_sound_file" {
+                        self.ivars().settings_sound_file_button.set(button.clone()).ok();
+                        let preview=unsafe {NSButton::buttonWithTitle_target_action(&NSString::from_str(appkit_tr("试听","Preview sound")),Some(target),Some(sel!(zsclipSoundPreview:)),mtm)};
+                        preview.setFrame(NSRect::new(NSPoint::new(410.0,y),NSSize::new(150.0,30.0)));
+                        appkit_set_accessibility_label::<NSButton>(preview.as_ref(),appkit_tr("试听提示音","Preview notification sound"));
+                        view.addSubview(&preview);self.ivars().settings_sound_preview_button.set(preview).ok();
+                    }
                 }
                 Kind::Label | Kind::List => {
                     let text = match control.key {
@@ -2902,6 +3115,7 @@ mod appkit {
         }
 
         fn refresh_main_state_after_settings_save(&self) {
+            appkit_apply_content_theme(self.mtm());
             let preferences=NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot());
             self.ivars().content_preferences.set(preferences);
             if let Some(table)=self.ivars().clip_table_view.get() {
@@ -2976,6 +3190,9 @@ mod appkit {
                             })
                         }),
                 );
+                if let Some(path)=self.ivars().settings_sound_path.borrow().as_ref() {
+                    submitted_values.push(crate::settings_model::SettingsNativeSubmittedControlValue {control_key:"paste_sound_file".into(),raw_value:path.clone()});
+                }
                 let submission =
                     crate::settings_model::settings_native_collect_submission(&submitted_values);
                 let json_apply = crate::settings_model::settings_native_apply_submission_to_json(
@@ -3028,6 +3245,19 @@ mod appkit {
                 eprintln!("ZSClip AppKit settings route action missing tag={}", tag);
                 return;
             };
+            if binding.action_name=="pick_paste_sound" {
+                let saved=crate::macos_app::macos_native_settings_json_snapshot();
+                let current=self.ivars().settings_sound_path.borrow().clone().unwrap_or_else(||saved.get("paste_success_sound_path").and_then(serde_json::Value::as_str).unwrap_or("").into());
+                let request=crate::app_core::NativeFileDialogRequest {title:appkit_tr("选择提示音文件","Choose notification sound"),filter_name:"WAV",filter_pattern:"*.wav",current_path:&current};
+                if let Ok(Some(path))=<crate::macos_app::MacosFileDialogHost as crate::app_core::NativeFileDialogHost>::pick_file(&crate::macos_app::MacosFileDialogHost::default(),request) {
+                    *self.ivars().settings_sound_path.borrow_mut()=Some(path.clone());
+                    if let Some(button)=self.ivars().settings_sound_file_button.get() {button.setTitle(&NSString::from_str(std::path::Path::new(&path).file_name().and_then(|name|name.to_str()).unwrap_or(&path)));}
+                    if let Some(binding)=self.ivars().settings_native_dropdown_buttons.borrow().iter().find(|binding|binding.control_key=="paste_sound_kind") {
+                        if let Some(index)=binding.option_values.iter().position(|value|value=="custom") {binding.button.selectItemAtIndex(index as _);}
+                    }
+                }
+                return;
+            }
             let result = crate::macos_app::dispatch_macos_native_settings_route_action(
                 binding.route_name,
                 binding.action_name,
@@ -3179,8 +3409,9 @@ mod appkit {
                 result.result_name
             );
             if result.accepted && matches!(action, NativeHostRowAction::Paste) {
-                let posted = Self::appkit_post_native_paste_shortcut();
-                eprintln!("ZSClip AppKit row paste shortcut posted={}", posted);
+                self.begin_native_row_paste();
+            } else if result.accepted && action==NativeHostRowAction::Copy {
+                let _=crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Copy,&crate::macos_app::macos_native_settings_json_snapshot());
             }
             if result.accepted
                 && matches!(
@@ -3196,6 +3427,10 @@ mod appkit {
         }
 
         fn perform_native_popup_menu_command(&self, menu_id: usize) {
+            if menu_id==menu_ids::ROW_SAVE_IMAGE {
+                if !self.ivars().search_pending.get() {self.present_native_save_image();}
+                return;
+            }
             if menu_id==NATIVE_RENAME_PHRASE_COMMAND_ID {
                 if self.ivars().search_pending.get() || !self.ivars().content_preferences.get().phrase_titles_enabled {return;}
                 self.ivars().edit_save_as_phrase.set(false);
@@ -3367,7 +3602,7 @@ mod appkit {
             match scene.as_str() {
                 "main"=>{},
                 "edit"=>{self.ivars().edit_save_as_phrase.set(false);self.present_native_edit_window(false);},
-                "vv"=>{self.present_native_vv_popup();},
+                "vv"=>{self.present_native_vv_popup();return;},
                 _=>{eprintln!("ZSClip AppKit unknown screenshot scene={scene}");return;}
             }
             eprintln!("ZSClip AppKit screenshot scene ready={scene}");
@@ -3381,6 +3616,10 @@ mod appkit {
         }
 
         fn poll_native_search(&self) {
+            self.poll_native_vv_preview();
+            self.poll_native_image_export();
+            self.poll_native_row_paste();
+            self.poll_native_sound_preview();
             let Some(service)=self.ivars().search_service.get() else {return;};
             if self.ivars().search_due.get().is_some_and(|due|std::time::Instant::now()>=due) {
                 self.ivars().search_due.set(None);
@@ -3410,6 +3649,67 @@ mod appkit {
                     eprintln!("ZSClip AppKit search failed: {error}");
                 }
             }
+        }
+
+        fn preview_native_sound(&self) {
+            if self.ivars().sound_preview_result.borrow().is_some() {return;}
+            let mut settings=crate::macos_app::macos_native_settings_json_snapshot();
+            if !settings.is_object() {settings=serde_json::json!({});}
+            if let Some(binding)=self.ivars().settings_native_dropdown_buttons.borrow().iter().find(|binding|binding.control_key=="paste_sound_kind") {
+                if let Some(value)=binding.option_values.get(binding.button.indexOfSelectedItem().max(0) as usize) {settings["paste_success_sound_kind"]=serde_json::Value::String(value.clone());}
+            }
+            if let Some(path)=self.ivars().settings_sound_path.borrow().as_ref() {settings["paste_success_sound_path"]=serde_json::Value::String(path.clone());}
+            if let Some(button)=self.ivars().settings_sound_preview_button.get() {button.setEnabled(false);}
+            if let Some(label)=self.ivars().settings_route_label.get() {label.setStringValue(&NSString::from_str(appkit_tr("正在试听…","Playing preview…")));}
+            let (sender,receiver)=std::sync::mpsc::channel();
+            *self.ivars().sound_preview_result.borrow_mut()=Some(receiver);
+            std::thread::spawn(move || {let result=std::panic::catch_unwind(||crate::native_feedback::preview(&settings)).unwrap_or_else(|_|Err("Sound backend failed".into()));let _=sender.send(result);});
+        }
+
+        fn poll_native_sound_preview(&self) {
+            let result=self.ivars().sound_preview_result.borrow().as_ref().and_then(|receiver|receiver.try_recv().ok());
+            let Some(result)=result else {return;};
+            self.ivars().sound_preview_result.borrow_mut().take();
+            if let Some(button)=self.ivars().settings_sound_preview_button.get() {button.setEnabled(true);}
+            let text=match result {
+                Ok(played)=>{eprintln!("ZSClip AppKit sound preview completed=true backend={} fallback={}",played.backend,played.used_default_fallback);
+                    if played.used_default_fallback {appkit_tr("自定义声音不可用，已试听默认音效。","Custom sound unavailable; the default sound was previewed.")}else{appkit_tr("试听完成","Preview finished")}},
+                Err(error)=>{eprintln!("ZSClip AppKit sound preview completed=false error={error}");appkit_tr("未能播放，请检查声音文件及系统音频输出。","Unable to play. Check the sound file and system audio output.")},
+            };
+            if let Some(label)=self.ivars().settings_route_label.get() {label.setStringValue(&NSString::from_str(text));}
+        }
+
+        fn begin_native_row_paste(&self) {
+            let pid=self.ivars().last_external_pid.get();
+            if pid<=0 || pid==std::process::id() as i32 {
+                Self::present_appkit_message_dialog(self.mtm(),appkit_tr("无法粘贴","Unable to paste"),appkit_tr("请先将光标放入目标应用，再返回选择记录。内容已复制到剪贴板。","Place the cursor in the destination app, then return and select a record. The content is on the clipboard."),NSAlertStyle::Warning);
+                return;
+            }
+            let Some(app)=NSRunningApplication::runningApplicationWithProcessIdentifier(pid) else {return;};
+            let Ok(revision)=crate::db_runtime::search_protection_revision() else {return;};
+            let sequence=<crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::sequence_number();
+            *self.ivars().pending_row_paste.borrow_mut()=Some((pid,crate::db_runtime::current_app_data_generation(),sequence,revision,std::time::Instant::now()+std::time::Duration::from_secs(2)));
+            self.hide_main_window();
+            if !app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps) {
+                self.ivars().pending_row_paste.borrow_mut().take();
+                eprintln!("ZSClip AppKit row paste rejected=target_activation_failed");
+            }
+        }
+
+        fn poll_native_row_paste(&self) {
+            if let Some(pid)=Self::appkit_frontmost_pid().filter(|pid|*pid!=std::process::id() as i32) {self.ivars().last_external_pid.set(pid);}
+            let Some((pid,generation,sequence,revision,deadline))=self.ivars().pending_row_paste.borrow().clone() else {return;};
+            if std::time::Instant::now()>deadline || generation!=crate::db_runtime::current_app_data_generation()
+                || sequence!=<crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::sequence_number()
+                || crate::db_runtime::search_protection_revision().ok().as_ref()!=Some(&revision) {
+                self.ivars().pending_row_paste.borrow_mut().take();
+                eprintln!("ZSClip AppKit row paste rejected=stale_operation");return;
+            }
+            if Self::appkit_frontmost_pid()!=Some(pid) {return;}
+            self.ivars().pending_row_paste.borrow_mut().take();
+            let posted=Self::appkit_post_native_paste_shortcut_to_pid(pid);
+            eprintln!("ZSClip AppKit row paste shortcut posted={posted} target_pid={pid}");
+            if posted {let _=crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Paste,&crate::macos_app::macos_native_settings_json_snapshot());}
         }
 
         fn native_search_text(&self) -> String {
@@ -3485,6 +3785,32 @@ mod appkit {
             }
         }
 
+        fn present_native_save_image(&self) {
+            let item_id=self.ivars().selected_item_id.get();
+            let generation=crate::db_runtime::current_app_data_generation();
+            let panel=objc2_app_kit::NSSavePanel::savePanel(self.mtm());
+            panel.setTitle(Some(&NSString::from_str(appkit_tr("另存为 PNG","Save as PNG"))));
+            panel.setNameFieldStringValue(&NSString::from_str(&format!("ZSClip-{item_id}.png")));
+            panel.setCanCreateDirectories(true);
+            let types=objc2_foundation::NSArray::from_slice(&[ns_string!("png")]);
+            #[allow(deprecated)]
+            panel.setAllowedFileTypes(Some(&types));
+            if panel.runModal()!=objc2_app_kit::NSModalResponseOK {return;}
+            let Some(path)=panel.URL().and_then(|url|url.to_file_path()) else {return;};
+            let (sender,receiver)=std::sync::mpsc::channel();
+            *self.ivars().image_export_result.borrow_mut()=Some(receiver);
+            std::thread::spawn(move ||{let _=sender.send(crate::native_image_export::save_native_item_png(item_id,&path,generation));});
+        }
+
+        fn poll_native_image_export(&self) {
+            let result=self.ivars().image_export_result.borrow().as_ref().and_then(|receiver|receiver.try_recv().ok());
+            let Some(result)=result else {return;};
+            self.ivars().image_export_result.borrow_mut().take();
+            if let Err(message)=result {
+                Self::present_appkit_message_dialog(self.mtm(),appkit_tr("图片保存失败","Image save failed"),&message,NSAlertStyle::Warning);
+            } else {eprintln!("ZSClip AppKit image export saved=true");}
+        }
+
         fn native_edit_plan(&self) -> Option<NativeHostEditTextPlan> {
             let items = self.ivars().clip_items.borrow();
             let selected_item_id = match self.ivars().selected_item_id.get() {
@@ -3492,14 +3818,17 @@ mod appkit {
                 item_id => Some(item_id),
             };
             let mut plan = native_host_edit_text_plan_for_item(&items, selected_item_id)?;
-            if let Ok(Some(text)) = crate::db_runtime::item_text(plan.item_id) {
-                plan.initial_text = text;
-            }
+            let generation=crate::db_runtime::current_app_data_generation();
+            let item=crate::db_runtime::with_shared_app_data_generation(generation,||crate::db_runtime::native_clip_item(plan.item_id))?.ok()??;
+            if !matches!(item.kind,ClipKind::Text|ClipKind::Phrase) {return None;}
+            plan.initial_text=item.text?;
+            self.ivars().edit_data_generation.set(generation);
             Some(plan)
         }
 
-        fn prepare_native_edit_title(&self,item_id:i64) {
-            let item=crate::db_runtime::native_clip_item(item_id).ok().flatten();
+        fn prepare_native_edit_title(&self,item_id:i64)->bool {
+            let Some(Ok(item))=crate::db_runtime::with_shared_app_data_generation(self.ivars().edit_data_generation.get(),||crate::db_runtime::native_clip_item(item_id)) else {return false;};
+            if item.is_none() {return false;}
             self.ivars().edit_is_phrase.set(item.as_ref().is_some_and(|item|item.kind==ClipKind::Phrase));
             let title=item.map(|item|item.phrase_title).unwrap_or_default();
             *self.ivars().edit_initial_title.borrow_mut()=title.clone();
@@ -3507,6 +3836,7 @@ mod appkit {
                 field.setStringValue(&NSString::from_str(&title));
                 field.setHidden(!self.native_edit_title_enabled());
             }
+            true
         }
 
         fn native_edit_title_enabled(&self)->bool {
@@ -3522,8 +3852,9 @@ mod appkit {
 
         fn present_native_edit_window(&self, auto_save: bool) {
             if let Some(window) = self.ivars().edit_window.get() {
-                if let Some(plan) = self.native_edit_plan() {
-                    self.prepare_native_edit_title(plan.item_id);
+                let Some(plan)=self.native_edit_plan() else {return;};
+                {
+                    if !self.prepare_native_edit_title(plan.item_id) {return;}
                     self.ivars().edit_item_id.set(plan.item_id);
                     *self.ivars().edit_initial_text.borrow_mut() = plan.initial_text.clone();
                     if let Some(edit_text_view) = self.ivars().edit_text_view.get() {
@@ -3551,7 +3882,7 @@ mod appkit {
             let Some(plan) = self.native_edit_plan() else {
                 return;
             };
-            self.prepare_native_edit_title(plan.item_id);
+            if !self.prepare_native_edit_title(plan.item_id) {return;}
             let mtm = self.mtm();
             let target: &AnyObject = self.as_ref();
             let window = unsafe {
@@ -3665,7 +3996,7 @@ mod appkit {
                 .unwrap_or_default();
             let item_id = self.ivars().edit_item_id.get();
             let title=self.native_edit_title();
-            let result = if self.ivars().edit_save_as_phrase.get() {
+            let result = crate::db_runtime::with_shared_app_data_generation(self.ivars().edit_data_generation.get(),||if self.ivars().edit_save_as_phrase.get() {
                 let saved=crate::db_runtime::native_clip_item(item_id).and_then(|item| {
                     let Some(mut item)=item else {return Ok(false);};
                     if !matches!(item.kind,ClipKind::Text|ClipKind::Phrase) {return Ok(false);}
@@ -3677,7 +4008,8 @@ mod appkit {
                 ProductAdapterCommandResult {accepted:saved,result_name:"zsclip.row.to_phrase_save".into()}
             } else if self.ivars().edit_is_phrase.get() {
                 ProductAdapterCommandResult {accepted:crate::db_runtime::save_native_phrase(item_id,&title,&text).unwrap_or(false),result_name:"zsclip.row.phrase_save".into()}
-            } else {super::dispatch_appkit_edit_text_save(item_id, &text)};
+            } else {super::dispatch_appkit_edit_text_save(item_id, &text)})
+                .unwrap_or_else(||ProductAdapterCommandResult {accepted:false,result_name:"zsclip.row.edit_stale_data".into()});
             eprintln!(
                 "ZSClip AppKit edit save item_id={} text_len={} -> {}",
                 item_id,
@@ -3797,6 +4129,7 @@ mod appkit {
                 if delegate.perform_native_clip_list_key_event(event_ref) {
                     return ptr::null_mut();
                 }
+                if delegate.ivars().vv_cg_event_tap.get().is_some() {return event.as_ptr();}
                 let transition = delegate.perform_native_vv_key_event(event_ref);
                 if transition.consume_key {
                     ptr::null_mut()
@@ -3839,15 +4172,17 @@ mod appkit {
         }
 
         fn dismiss_native_vv_popup(&self, reason: &str) -> bool {
-            let Some(window) = self.ivars().vv_popup_window.get() else {
-                return false;
-            };
-            if !window.isVisible() {
-                return false;
-            }
-            window.orderOut(None);
-            eprintln!("ZSClip AppKit VV popup dismissed reason={}", reason);
-            true
+            let visible=self.ivars().vv_popup_window.get().is_some_and(|window|window.isVisible());
+            if let Some(window)=self.ivars().vv_popup_window.get() {window.orderOut(None);}
+            self.ivars().vv_input.borrow_mut().cancel();
+            crate::macos_app::reset_macos_native_vv_trigger();
+            self.ivars().vv_presentation.borrow_mut().take();
+            self.ivars().vv_preview_due.set(None);
+            self.ivars().vv_preview_request.set(self.ivars().vv_preview_request.get().wrapping_add(1));
+            self.ivars().vv_preview_result.borrow_mut().take();
+            if let Some(body)=self.ivars().vv_preview_text.borrow().as_ref() {body.setString(ns_string!(""));}
+            if visible {eprintln!("ZSClip AppKit VV popup dismissed reason={}",reason);}
+            visible
         }
 
         fn perform_native_clip_list_key_event(&self, event: &NSEvent) -> bool {
@@ -3920,10 +4255,7 @@ mod appkit {
                     let _ = delegate.dismiss_native_vv_popup("global_mouse_down");
                     return;
                 }
-                let transition = delegate.perform_native_vv_global_key_event(event_ref);
-                if transition.consume_key {
-                    eprintln!("ZSClip AppKit VV global monitor cannot consume external key");
-                }
+                // Observation-only monitors cannot consume keys. CGEventTap owns external VV input.
             });
             let event_mask = NSEventMask::KeyDown
                 | NSEventMask::LeftMouseDown
@@ -3948,7 +4280,7 @@ mod appkit {
             let retained_delegate = self.retain();
             let user_info = Retained::as_ptr(&retained_delegate) as *mut c_void;
             let delegate_object: Retained<AnyObject> = retained_delegate.into();
-            let event_mask = 1_u64 << CGEventType::KeyDown.0;
+            let event_mask = (1_u64 << CGEventType::KeyDown.0) | (1_u64 << CGEventType::KeyUp.0);
             let Some(event_tap) = (unsafe {
                 CGEvent::tap_create(
                     CGEventTapLocation::SessionEventTap,
@@ -4077,7 +4409,7 @@ mod appkit {
                 .unwrap_or_default();
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
                 key: Self::appkit_vv_trigger_key_from_event(&key_text, event.keyCode()),
-                target_token: Self::appkit_vv_target_token_for_event(event, 2),
+                target_token: Self::appkit_vv_target_token_for_event(event, 0),
                 target_ready: true,
                 command_modifier: Self::appkit_vv_has_command_modifier(event.modifierFlags()),
                 popup_menu_active: false,
@@ -4086,10 +4418,33 @@ mod appkit {
         }
 
         fn perform_native_vv_cg_event(&self, event: &CGEvent) -> NativeHostVvTriggerTransition {
+            let key_code=CGEvent::integer_value_field(Some(event),CGEventField::KeyboardEventKeycode) as u16;
+            let down=CGEvent::r#type(Some(event))==CGEventType::KeyDown;
+            let target=Self::appkit_frontmost_pid().unwrap_or(0);
+            let same_target=self.ivars().vv_presentation.borrow().as_ref().is_some_and(|session|session.target_pid==target&&target>0);
+            let modifiers=Self::appkit_vv_has_cg_command_modifier(CGEvent::flags(Some(event)))
+                || CGEvent::flags(Some(event)).contains(CGEventFlags::MaskShift);
+            let result=self.ivars().vv_input.borrow_mut().key(Self::appkit_vv_owned_key(key_code),down,modifiers,same_target);
+            use crate::app_core::vv_session::VvKeyAction;
+            match result.action {
+                VvKeyAction::Hide=>{self.dismiss_native_vv_popup("keyboard_cancel");},
+                VvKeyAction::Select(index)=>self.perform_native_vv_select(index),
+                VvKeyAction::Navigate(direction)=>{
+                    let count=self.ivars().vv_presentation.borrow().as_ref().map(|session|session.snapshot.items.len()).unwrap_or(0);
+                    let selected=self.ivars().vv_preview_selected.get();
+                    let next=if direction<0 {selected.saturating_sub(1)}else{(selected+1).min(count.saturating_sub(1))};
+                    self.queue_native_vv_preview(next,0);
+                },
+                VvKeyAction::Scroll(direction)=>self.scroll_native_vv_preview(direction),
+                VvKeyAction::None=>{},
+            }
+            if result.consume || result.action!=VvKeyAction::None || !down || result.repeat {
+                return NativeHostVvTriggerTransition {action:NativeHostVvTriggerAction::Ignore,consume_key:result.consume};
+            }
             self.perform_native_vv_trigger_input(NativeHostVvTriggerInput {
                 key: Self::appkit_vv_trigger_key_from_cg_event(event),
                 target_token: Self::appkit_vv_target_token_for_cg_event(event),
-                target_ready: true,
+                target_ready: target>0 && target!=std::process::id() as i32,
                 command_modifier: Self::appkit_vv_has_cg_command_modifier(CGEvent::flags(Some(
                     event,
                 ))),
@@ -4099,11 +4454,7 @@ mod appkit {
         }
 
         fn native_window_target_token(&self) -> u64 {
-            self.ivars()
-                .window
-                .get()
-                .map(|window| Retained::<NSWindow>::as_ptr(window) as usize as u64)
-                .unwrap_or(1)
+            Self::appkit_frontmost_pid().unwrap_or(0) as u64
         }
 
         fn perform_native_vv_trigger_demo(&self) {
@@ -4138,6 +4489,11 @@ mod appkit {
             &self,
             input: NativeHostVvTriggerInput,
         ) -> NativeHostVvTriggerTransition {
+            let settings=crate::macos_app::macos_native_settings_json_snapshot();
+            if !cfg!(feature="vv-paste") || !settings.get("vv_mode_enabled").and_then(serde_json::Value::as_bool).unwrap_or(true)
+                || input.target_token==0 || input.target_token==std::process::id() as u64 {
+                return NativeHostVvTriggerTransition {action:NativeHostVvTriggerAction::Ignore,consume_key:false};
+            }
             let transition = super::dispatch_appkit_vv_trigger_key(input);
             self.handle_native_vv_trigger_transition(transition);
             transition
@@ -4148,9 +4504,7 @@ mod appkit {
                 NativeHostVvTriggerAction::Show { .. } => self.present_native_vv_popup(),
                 NativeHostVvTriggerAction::Select { index } => self.perform_native_vv_select(index),
                 NativeHostVvTriggerAction::Hide => {
-                    if let Some(window) = self.ivars().vv_popup_window.get() {
-                        window.orderOut(None);
-                    }
+                    self.dismiss_native_vv_popup("trigger_cancel");
                 }
                 NativeHostVvTriggerAction::Ignore => {}
             }
@@ -4174,6 +4528,7 @@ mod appkit {
             key_code: u16,
         ) -> NativeHostVvTriggerKey {
             match key_code {
+                9 if key_text.is_empty() => NativeHostVvTriggerKey::TriggerV,
                 51 => NativeHostVvTriggerKey::Backspace,
                 53 => NativeHostVvTriggerKey::Escape,
                 _ => Self::appkit_vv_trigger_key_from_text(key_text),
@@ -4194,22 +4549,20 @@ mod appkit {
             )
         }
 
-        fn appkit_vv_target_token_for_event(event: &NSEvent, fallback: u64) -> u64 {
-            let window_number = event.windowNumber();
-            if window_number > 0 {
-                (window_number as u64) | (1_u64 << 63)
-            } else {
-                fallback
-            }
+        fn appkit_vv_target_token_for_event(_event: &NSEvent, _fallback: u64) -> u64 {
+            Self::appkit_frontmost_pid().unwrap_or(0) as u64
         }
 
-        fn appkit_vv_target_token_for_cg_event(event: &CGEvent) -> u64 {
-            let pid =
-                CGEvent::integer_value_field(Some(event), CGEventField::EventTargetUnixProcessID);
-            if pid > 0 {
-                (pid as u64) | (1_u64 << 62)
-            } else {
-                3
+        fn appkit_vv_target_token_for_cg_event(_event: &CGEvent) -> u64 {
+            Self::appkit_frontmost_pid().unwrap_or(0) as u64
+        }
+
+        fn appkit_vv_owned_key(key: u16) -> u32 {
+            match key {
+                18=>0x31,19=>0x32,20=>0x33,21=>0x34,23=>0x35,22=>0x36,26=>0x37,28=>0x38,25=>0x39,
+                83=>0x61,84=>0x62,85=>0x63,86=>0x64,87=>0x65,88=>0x66,89=>0x67,91=>0x68,92=>0x69,
+                53=>0x1b,126=>0x26,125=>0x28,116=>0x21,121=>0x22,
+                _=>0x80+u32::from(key),
             }
         }
 
@@ -4232,33 +4585,29 @@ mod appkit {
             Self::appkit_vv_trigger_key_from_event(&key_text, key_code)
         }
 
-        fn appkit_post_native_key_event(virtual_key: u16, flags: CGEventFlags) -> bool {
+        fn appkit_post_native_key_event(target_pid: i32, virtual_key: u16, flags: CGEventFlags) -> bool {
+            if target_pid<=0 || Self::appkit_frontmost_pid()!=Some(target_pid) || !CGPreflightPostEventAccess() {return false;}
             let Some(key_down) = CGEvent::new_keyboard_event(None, virtual_key, true) else {
                 return false;
             };
-            CGEvent::set_flags(Some(&key_down), flags);
-            CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&key_down));
-
             let Some(key_up) = CGEvent::new_keyboard_event(None, virtual_key, false) else {
                 return false;
             };
+            CGEvent::set_flags(Some(&key_down), flags);
             CGEvent::set_flags(Some(&key_up), flags);
-            CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&key_up));
+            CGEvent::set_integer_value_field(Some(&key_down),CGEventField::EventSourceUserData,0x5a53434c4950);
+            CGEvent::set_integer_value_field(Some(&key_up),CGEventField::EventSourceUserData,0x5a53434c4950);
+            CGEvent::post_to_pid(target_pid,Some(&key_down));
+            CGEvent::post_to_pid(target_pid,Some(&key_up));
             true
         }
 
         fn appkit_post_native_paste_shortcut() -> bool {
-            Self::appkit_post_native_key_event(9, CGEventFlags::MaskCommand)
+            Self::appkit_frontmost_pid().is_some_and(Self::appkit_post_native_paste_shortcut_to_pid)
         }
 
-        fn appkit_post_native_delete_backspaces(backspaces: u8) -> u8 {
-            let mut posted = 0;
-            for _ in 0..backspaces {
-                if Self::appkit_post_native_key_event(51, CGEventFlags::empty()) {
-                    posted += 1;
-                }
-            }
-            posted
+        fn appkit_post_native_paste_shortcut_to_pid(target_pid: i32) -> bool {
+            Self::appkit_post_native_key_event(target_pid,9,CGEventFlags::MaskCommand)
         }
 
         unsafe extern "C-unwind" fn appkit_vv_cg_event_tap_callback(
@@ -4281,7 +4630,8 @@ mod appkit {
                 }
                 return event.as_ptr();
             }
-            if event_type != CGEventType::KeyDown {
+            if !matches!(event_type,CGEventType::KeyDown|CGEventType::KeyUp)
+                || CGEvent::integer_value_field(Some(unsafe {event.as_ref()}),CGEventField::EventSourceUserData)==0x5a53434c4950 {
                 return event.as_ptr();
             }
 
@@ -4301,54 +4651,45 @@ mod appkit {
         }
 
         fn perform_native_vv_select(&self, index: usize) {
-            let result = super::dispatch_appkit_vv_select_event(index);
-            eprintln!("ZSClip AppKit VV select {} -> {}", index, result.event_name);
-            let paste = super::dispatch_appkit_vv_paste_for_group(
-                index,
-                self.ivars().current_group_filter.get(),
-            );
-            eprintln!(
-                "ZSClip AppKit VV paste {} -> {} accepted={} kind={}",
-                index,
-                paste.result_name,
-                paste.accepted,
-                paste.clipboard_kind.unwrap_or("none")
-            );
-            if paste.accepted && paste.backspaces > 0 {
-                let deleted = Self::appkit_post_native_delete_backspaces(paste.backspaces);
-                eprintln!(
-                    "ZSClip AppKit VV delete backspaces requested={} posted={}",
-                    paste.backspaces, deleted
-                );
+            let Some(session)=self.ivars().vv_presentation.borrow().clone() else {return;};
+            if !cfg!(feature="vv-paste") || session.target_pid<=0 || Self::appkit_frontmost_pid()!=Some(session.target_pid) {
+                eprintln!("ZSClip AppKit VV selection rejected=target_changed");
+                self.dismiss_native_vv_popup("invalid_target");return;
             }
-            if paste.accepted && paste.paste_shortcut_sent {
-                let posted = Self::appkit_post_native_paste_shortcut();
-                eprintln!("ZSClip AppKit VV native paste shortcut posted={}", posted);
+            if !CGPreflightPostEventAccess() {
+                eprintln!("ZSClip AppKit VV delivery blocked=post_event_permission; allow Accessibility in System Settings");
+                if let Some(label)=self.ivars().vv_status_label.borrow().as_ref() {
+                    label.setStringValue(&NSString::from_str(appkit_tr("请在系统设置中允许 ZSClip 使用辅助功能后粘贴。","Allow ZSClip in System Settings → Accessibility to paste.")));
+                }
+                return;
             }
-            if let Some(window) = self.ivars().vv_popup_window.get() {
-                window.orderOut(None);
+            let delivered=crate::db_runtime::with_shared_app_data_generation(session.snapshot.data_generation,|| {
+                let item=session.snapshot.load_item(index)?;
+                let write=crate::app_core::native_host_clipboard_write_for_item(&item).ok_or("VV candidate has no clipboard payload")?;
+                if Self::appkit_frontmost_pid()!=Some(session.target_pid) {return Err("VV target changed before clipboard write".to_string());}
+                if !crate::app_core::native_host_write_clipboard_payload_with_html::<crate::macos_app::MacosClipboardHost>(
+                    &write,crate::macos_app::MacosClipboardHost::write_rich_text) {return Err("VV clipboard write failed".into());}
+                session.snapshot.validate()?;
+                // The non-activating panel preserves the editor and its insertion point. No speculative Backspace.
+                self.dismiss_native_vv_popup("selection");
+                let posted=Self::appkit_post_native_paste_shortcut_to_pid(session.target_pid);
+                eprintln!("ZSClip AppKit VV native paste shortcut posted={posted} target_pid={} item_id={} backspaces=0 delivery_unverified=true",session.target_pid,item.id);
+                if posted {
+                    crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Paste,&crate::macos_app::macos_native_settings_json_snapshot());
+                    Ok(())
+                } else {Err("VV target or post-event permission changed".into())}
+            }).unwrap_or_else(||Err("VV history was replaced".into()));
+            if let Err(error)=delivered {
+                eprintln!("ZSClip AppKit VV selection rejected: {error}");
+                self.dismiss_native_vv_popup("selection_failed");
             }
         }
 
         fn update_clip_list_visibility(&self, query: &str) {
-            let visible_items =
-                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter_search(
-                    self.active_source_category(),
-                    self.ivars().current_group_filter.get(),
-                    self.ivars().current_kind_filter.get(),
-                    query,
-                );
-            let selected_item_id = native_host_reconciled_selected_item_id(
-                self.ivars().selected_item_id.get(),
-                &visible_items,
-            );
-            self.ivars().selected_item_id.set(selected_item_id);
-            *self.ivars().clip_items.borrow_mut() = visible_items.clone();
-            *self.ivars().clip_table_items.borrow_mut() = visible_items;
-            if let Some(table_view) = self.ivars().clip_table_view.get() {
-                table_view.reloadData();
+            if let Some(field)=self.ivars().search_field.get() {
+                if field.stringValue().to_string()!=query {field.setStringValue(&NSString::from_str(query));}
             }
-            self.refresh_native_clip_row_selection();
+            self.reload_native_clip_items();
         }
 
         fn present_appkit_message_dialog(

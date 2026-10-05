@@ -826,8 +826,8 @@ impl NativeHostClipboardWrite {
 
     pub(crate) fn direct_text(&self) -> Option<&str> {
         match self {
-            Self::Text(text) | Self::RichText {text,..} => Some(text),
-            Self::FilePaths(_) | Self::ImageRgba { .. } => None,
+            Self::Text(text) => Some(text),
+            Self::RichText {..} | Self::FilePaths(_) | Self::ImageRgba { .. } => None,
         }
     }
 }

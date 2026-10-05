@@ -64,11 +64,12 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSAccessibilityProtocols", "NSAppearance", "NSApplication", "NSEvent", "NSButtonCell", "NSFontDescriptor", "NSPopUpButton", "NSScrollView", "NSTabView", "NSTabViewItem", "NSTableView", "NSTableColumn", "NSTableHeaderView", "NSControl", "NSText", "NSTextView", "NSView", "NSVisualEffectView", "NSResponder", "NSClipView", "block2"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "libc", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
 objc2-foundation = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = "0.11"
+x11rb = { version = "0.13", features = ["record"] }
 keytap = { version = "0.4.0", default-features = false }
 ksni = { version = "0.3.5", features = ["blocking"] }
 

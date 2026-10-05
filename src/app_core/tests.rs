@@ -1467,9 +1467,14 @@ fn native_host_consumes_protocol_builder(source:&str,builder:&str)->bool {
             && (source.contains("perform_native_host_action") || source.contains("dispatch_gtk_host_action"))
             && source.contains("native_host_search_input_specs")
             && source.contains("present_settings_window"),
-        "native_host_settings_control_button_specs" => source.contains("native_host_settings_toggle_specs()")
+        "native_host_settings_control_button_specs" => (source.contains("native_host_settings_toggle_specs()")
             && source.contains("native_host_settings_dropdown_specs()")
-            && source.contains("settings_control_action"),
+            && source.contains("settings_control_action"))
+            || (source.contains("settings_native_control_summaries()")
+                && source.contains("settings_native_toggle_buttons")
+                && source.contains("settings_native_dropdown_buttons")
+                && source.contains("settings_native_collect_submission(")
+                && source.contains("persist_macos_native_settings_submission(")),
         "native_host_row_action_button_specs" => source.contains("native_host_full_row_popup_menu_entries_for_groups(")
             && source.contains("dispatch_gtk_menu_command_id")
             && source.contains("menu_id == menu_ids::ROW_GROUP_REMOVE"),

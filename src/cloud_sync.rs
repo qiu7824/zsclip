@@ -697,6 +697,13 @@ fn stage_snapshot_restore(
     if !source_dir.is_dir() {
         return Err("云备份缺少有效的 payload 目录。".to_string());
     }
+    #[cfg(not(windows))]
+    {
+        crate::native_protection::validate_profile(&extract_root)?;
+        if source_dir != extract_root {
+            crate::native_protection::validate_profile(&source_dir)?;
+        }
+    }
 
     let settings_src = source_dir.join("settings.json");
     if !settings_src.is_file() {
@@ -2138,6 +2145,41 @@ mod tests {
             fs::read(paths.data_dir.join("images").join("local.png")).unwrap(),
             b"local image"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn native_restore_rejects_opaque_or_damaged_protection_before_staging_data() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("restore-native-protection-test");
+        let paths = restore_test_paths(&root.join("active"));
+        write_active_restore_fixture(&paths);
+        for (name, nested, file, bytes) in [
+            ("outer-marker", false, "vault.presence", &b"protected"[..]),
+            ("payload-vault", true, "vault.json", &br#"{"format":1,"filter_key_dpapi":"opaque-key","ciphertext":"opaque-payload"}"#[..]),
+            ("payload-damaged", true, "vault.json", &b"{damaged}"[..]),
+        ] {
+            let archive_root = root.join(name);
+            let payload = archive_root.join("payload");
+            fs::create_dir_all(&payload).unwrap();
+            fs::write(payload.join("settings.json"), r#"{"source":"remote"}"#).unwrap();
+            write_restore_test_database(&payload.join("clipboard.db"), "remote data");
+            let protected = (if nested { &payload } else { &archive_root }).join("protected");
+            fs::create_dir_all(&protected).unwrap();
+            fs::write(protected.join(file), bytes).unwrap();
+            let expected_error = crate::native_protection::validate_profile(
+                if nested { &payload } else { &archive_root },
+            ).unwrap_err();
+            let archive = root.join(format!("{name}.zip"));
+            compress_archive(&archive_root, &archive).unwrap();
+
+            assert_eq!(stage_snapshot_restore(&paths, &archive, None).unwrap_err(), expected_error);
+            assert_eq!(restored_test_preview(&paths.db_file), "local data");
+            assert_eq!(fs::read_to_string(&paths.settings_file).unwrap(), r#"{"source":"local"}"#);
+            assert_eq!(fs::read(paths.data_dir.join("images/local.png")).unwrap(), b"local image");
+            assert!(!paths.data_dir.join("protected").exists());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 

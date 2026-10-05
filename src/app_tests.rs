@@ -6207,10 +6207,12 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     assert!(!workflow.contains("<string>__RELEASE_VERSION__</string>"));
     assert!(workflow.contains("$resourceName = \"zsclip-v$($env:RELEASE_VERSION)-resources\""));
     assert!(workflow.contains("resource_asset=\"zsclip-v${RELEASE_VERSION}-resources.zip\""));
-    assert!(workflow.contains("name: Android test APK"));
-    assert!(workflow.contains("gradle assembleDebug"));
-    assert!(workflow.contains("zsclip-android-test.apk"));
-    assert!(workflow.contains("- android"));
+    assert!(workflow.contains("name: QQ Input Method bridge package"));
+    assert!(workflow.contains("source_hash=\"3164dee59c97d94cc9ed6dba1a45cd12b1dc2a91b9320847dd5ef4c1f19fa06e\""));
+    assert!(workflow.contains("QQ-Input-Method-v8.7.15-ZSClip-${RELEASE_VERSION}.apk"));
+    assert!(workflow.contains("- qq-ime"));
+    assert!(!workflow.contains("gradle assembleDebug"));
+    assert!(!workflow.contains("zsclip-android-test.apk"));
     assert!(workflow.contains("Package resource bundle"));
     assert!(workflow.contains("release_asset_paths+=(\"release-assets/$asset\")"));
     assert_eq!(zsui_revision.len(), 40);
@@ -6222,7 +6224,7 @@ fn release_workflow_bundles_macos_icon_and_ad_hoc_signature() {
     );
     assert!(!workflow.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
     assert!(!native_hosts.contains("git clone --depth 1 https://github.com/qiu7824/zsui"));
-    assert!(workflow.contains("zsclip-android-test.apk"));
+    assert!(workflow.contains("Verify bridge source compatibility"));
     assert!(!workflow.contains("- 当前包未签名、未公证。"));
 }
 

@@ -52,7 +52,8 @@ pub(crate) fn prepare_data_directory() -> Result<(), String> {
     let path = data_directory();
     std::fs::create_dir_all(&path)
         .map_err(|error| format!("Cannot open data directory {}: {error}", path.display()))?;
-    verify_writable(&path).map_err(|error|format!("The existing data directory {} is not writable: {error}. History was not moved or replaced. Use a writable portable directory or select ZSCLIP_DATA_DIR.",path.display()))
+    verify_writable(&path).map_err(|error|format!("The existing data directory {} is not writable: {error}. History was not moved or replaced. Use a writable portable directory or select ZSCLIP_DATA_DIR.",path.display()))?;
+    crate::native_protection::validate_profile(&path)
 }
 
 fn verify_writable(path: &Path) -> std::io::Result<()> {

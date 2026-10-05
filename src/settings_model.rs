@@ -2961,6 +2961,7 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "copy_sound" => native_setting_binding("copy_success_sound_enabled"),
         "paste_sound" => native_setting_binding("paste_success_sound_enabled"),
         "paste_sound_kind" => native_setting_binding("paste_success_sound_kind"),
+        "paste_sound_file" => native_setting_binding("paste_success_sound_path"),
         "skip_window" => native_setting_binding("paste_target_skip_enabled"),
         "skip_window_classes" => native_setting_binding("paste_target_skip_class_names"),
         "position_mode" => native_setting_binding("show_pos_mode"),
@@ -3956,7 +3957,7 @@ fn native_dropdown_options_from_pairs<const N: usize>(
     settings_json: &serde_json::Value,
     pairs: [(&str, String); N],
 ) -> Option<SettingsNativeDropdownOptions> {
-    let display = settings_native_control_display_value(control, settings_json)?;
+    let display = settings_native_control_display_value(control, settings_json);
     let options = pairs
         .into_iter()
         .map(|(raw_value, label)| SettingsNativeDropdownOption {
@@ -3967,6 +3968,7 @@ fn native_dropdown_options_from_pairs<const N: usize>(
     let selected_index = options
         .iter()
         .position(|option| {
+            let Some(display)=display.as_ref() else {return false;};
             let raw_value = if control.key == "multi_sync_mode" {
                 multi_sync_mode_from_label(&display.value)
             } else {
@@ -4139,7 +4141,7 @@ where
     if control.kind != SettingsNativeControlKind::Dropdown || control.key != "vv_group" {
         return None;
     }
-    let display = settings_native_control_display_value(control, settings_json)?;
+    let display = settings_native_control_display_value(control, settings_json);
     let source_tab = settings_native_vv_source_tab(settings_json);
     let mut options = vec![SettingsNativeDropdownOption {
         raw_value: "0".to_string(),
@@ -4155,7 +4157,7 @@ where
     );
     let selected_index = options
         .iter()
-        .position(|option| option.raw_value == display.value || option.label == display.value)
+        .position(|option| display.as_ref().is_some_and(|display|option.raw_value == display.value || option.label == display.value))
         .unwrap_or_default();
     Some(SettingsNativeDropdownOptions {
         control_key: control.key,
@@ -5817,6 +5819,34 @@ mod tests {
                 scroll_bar_visible: false,
             })
         );
+    }
+
+    #[test]
+    fn native_dropdowns_have_real_options_with_an_empty_or_default_profile() {
+        let default_profile=crate::app_core::native_content_preferences::native_settings_profile(&serde_json::json!({}));
+        let controls=settings_native_control_summaries();
+        for profile in [serde_json::json!({}),default_profile] {
+            for control in controls.iter().filter(|control|control.kind==SettingsNativeControlKind::Dropdown) {
+                let options=settings_native_dropdown_options(control,&profile).or_else(||settings_native_vv_group_dropdown_options(control,&profile,std::iter::empty::<(i64,&str)>()))
+                    .unwrap_or_else(||panic!("{} has no native dropdown options",control.key));
+                assert!(!options.options.is_empty(),"{} has an empty native dropdown",control.key);
+                assert!(options.selected_index<options.options.len(),"{} has an invalid selected option",control.key);
+            }
+        }
+        let font=controls.iter().find(|control|control.key=="content_font_size").unwrap();
+        let options=settings_native_dropdown_options(font,&serde_json::json!({"content_font_size":18})).unwrap();
+        assert_eq!(options.options[options.selected_index].raw_value,"18");
+        assert_eq!(options.options.iter().map(|option|option.raw_value.as_str()).collect::<Vec<_>>(),vec!["0","12","14","16","18","20"]);
+    }
+
+    #[test]
+    fn custom_sound_file_path_is_collected_without_replacing_other_sound_preferences() {
+        let submission=settings_native_collect_submission(&[SettingsNativeSubmittedControlValue {control_key:"paste_sound_file".into(),raw_value:"/home/test/提示 音.wav".into()}]);
+        let result=settings_native_apply_submission_to_json(serde_json::json!({"copy_success_sound_enabled":false,"paste_success_sound_enabled":true}),&submission);
+        assert!(result.rejected_fields.is_empty());
+        assert_eq!(result.settings_json["paste_success_sound_path"],"/home/test/提示 音.wav");
+        assert_eq!(result.settings_json["copy_success_sound_enabled"],false);
+        assert_eq!(result.settings_json["paste_success_sound_enabled"],true);
     }
 
     #[test]

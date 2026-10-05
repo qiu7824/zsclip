@@ -33,10 +33,16 @@ echo "==> macOS AppKit build"
 cargo build -q --bin zsclip
 
 echo "==> Launching ZSClip AppKit host"
-ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &
+initial_profile="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-native-scenes-$$/baseline"
+mkdir -p "$initial_profile"
+ZSCLIP_DATA_DIR="$initial_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$initial_profile/settings.json" ZSCLIP_NATIVE_HOST_AUTO_SMOKE="$AUTO_SMOKE" ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" "$ROOT_DIR/target/debug/zsclip" >"$APP_LOG" 2>&1 &
 APP_PID=$!
 
 cleanup() {
+  if [[ -n "${RECEIVER_PID:-}" ]] && kill -0 "$RECEIVER_PID" >/dev/null 2>&1; then
+    kill "$RECEIVER_PID" >/dev/null 2>&1 || true
+    wait "$RECEIVER_PID" >/dev/null 2>&1 || true
+  fi
   if kill -0 "$APP_PID" >/dev/null 2>&1; then
     kill "$APP_PID" >/dev/null 2>&1 || true
     wait "$APP_PID" >/dev/null 2>&1 || true
@@ -78,8 +84,7 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip AppKit row action row_text_translate" \
     "ZSClip AppKit settings control action settings_toggle_clipboard_capture -> zsclip.settings.toggle_control" \
     "ZSClip AppKit settings control action settings_toggle_lan_sync -> zsclip.settings.toggle_control" \
-    "ZSClip AppKit VV select 0 -> vv_select_requested" \
-    "ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" \
+    "ZSClip AppKit auto smoke VV self-target rejected=true" \
     "ZSClip AppKit status menu action status_toggle_lan_sync -> zsclip.tray.toggle_lan_sync" \
     "ZSClip AppKit auto smoke finished"
   do
@@ -125,5 +130,65 @@ for scene in main settings-general settings-appearance settings-clipboard settin
   test -s "$scene_image"
   cleanup
 done
+
+# Clipboard publication and posting Command-V are not evidence of delivery.
+# This separate AppKit process reports only the text actually received by its editor.
+echo "==> Verifying VV delivery into an independent AppKit editor"
+vv_artifacts="$(mktemp -d "$ARTIFACT_DIR/vv-receiver.XXXXXX")"
+vv_profile="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-mac-vv-profile.XXXXXX")"
+receiver_binary="$vv_profile/native-vv-receiver"
+vv_payload="VV-DELIVERY-$(date +%s)-$$"
+xcrun swiftc "$ROOT_DIR/scripts/native-vv-receiver-macos.swift" -o "$receiver_binary" \
+  >"$vv_artifacts/receiver-build.log" 2>&1
+ZSCLIP_VV_RECEIVER_PAYLOAD="$vv_payload" ZSCLIP_VV_PUBLISH_AFTER=4 \
+  "$receiver_binary" "$vv_artifacts/receiver-state.json" >"$vv_artifacts/receiver.log" 2>&1 &
+RECEIVER_PID=$!
+for attempt in $(seq 1 50); do
+  [[ -s "$vv_artifacts/receiver-state.json" ]] && break
+  kill -0 "$RECEIVER_PID" >/dev/null 2>&1 || break
+  sleep 0.1
+done
+test -s "$vv_artifacts/receiver-state.json"
+receiver_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$vv_artifacts/receiver-state.json")"
+cat > "$vv_profile/settings.json" <<'JSON'
+{"clipboard_capture_enabled":true,"vv_mode_enabled":true,"vv_source_tab":0,"vv_group_id":0,"lan_sync_enabled":false,"cloud_sync_enabled":false,"auto_start":false}
+JSON
+ZSCLIP_DATA_DIR="$vv_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$vv_profile/settings.json" \
+  ZSCLIP_NATIVE_HOST_AUTO_SMOKE=0 ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN=1 \
+  ZSCLIP_NATIVE_VV_RECEIVER_PID="$receiver_pid" ZSCLIP_NATIVE_VV_DELIVERY_SMOKE=1 \
+  ZSCLIP_VV_RECEIVER_PAYLOAD="$vv_payload" \
+  "$ROOT_DIR/target/debug/zsclip" >"$vv_artifacts/application.log" 2>&1 &
+APP_PID=$!
+set +e
+python3 - "$vv_artifacts" "$vv_payload" <<'PY'
+import json,sys,time
+from pathlib import Path
+folder=Path(sys.argv[1])
+expected="LEFT-"+sys.argv[2]+"RIGHT"
+deadline=time.monotonic()+30
+state=None
+while time.monotonic()<deadline:
+    try:
+        state=json.loads((folder/"receiver-state.json").read_text())
+        if state.get("text")==expected:
+            (folder/"verification.json").write_text(json.dumps({"delivered":True,"draft_preserved":True,"state":state},indent=2))
+            break
+    except (OSError,json.JSONDecodeError):
+        pass
+    time.sleep(0.1)
+else:
+    (folder/"verification.json").write_text(json.dumps({"delivered":False,"expected":expected,"state":state},indent=2))
+    raise SystemExit("The independent AppKit editor did not receive the selected VV payload")
+PY
+vv_status=$?
+set -e
+screencapture -x "$vv_artifacts/received.png"
+if [[ "$vv_status" != 0 ]]; then
+  cat "$vv_artifacts/application.log" >&2
+  cat "$vv_artifacts/verification.json" >&2
+  exit "$vv_status"
+fi
+cleanup
+RECEIVER_PID=""
 
 echo "OK: macOS AppKit native host smoke artifacts in $ARTIFACT_DIR"

@@ -514,7 +514,7 @@ pub(crate) fn text_is_protected(text: &str) -> bool {
     #[cfg(windows)]
     { crate::secret_vault::is_protected(text) }
     #[cfg(not(windows))]
-    { let _ = text; false }
+    { crate::native_protection::text_is_protected(text) }
 }
 
 thread_local! {
@@ -536,7 +536,7 @@ pub(crate) fn search_protection_revision() -> rusqlite::Result<String> {
     #[cfg(windows)]
     { crate::secret_vault::query_protection_revision().map_err(|_| rusqlite::Error::InvalidQuery) }
     #[cfg(not(windows))]
-    { Ok(String::new()) }
+    { crate::native_protection::revision().map_err(native_protection_sql_error) }
 }
 
 /// A query must observe one verified exclusion set, without per-row disk I/O.
@@ -682,7 +682,7 @@ pub(crate) fn protected_sync_revision() -> Result<String, String> {
     #[cfg(windows)]
     { crate::secret_vault::exclusion_revision() }
     #[cfg(not(windows))]
-    { Ok(String::new()) }
+    { crate::native_protection::revision().map_err(|error| error.to_string()) }
 }
 
 pub(crate) fn ensure_protected_sync_revision(expected: &str) -> Result<(), String> {
@@ -707,7 +707,15 @@ fn protected_exclusion_matcher() -> rusqlite::Result<Box<dyn Fn(&str) -> bool>> 
         Ok(Box::new(move |text| snapshot.matches(text)))
     }
     #[cfg(not(windows))]
-    { Ok(Box::new(|_| false)) }
+    {
+        let snapshot = crate::native_protection::snapshot().map_err(native_protection_sql_error)?;
+        Ok(Box::new(move |text| snapshot.matches(text)))
+    }
+}
+
+#[cfg(not(windows))]
+fn native_protection_sql_error(error: crate::native_protection::ProtectionError) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_AUTH), Some(error.to_string()))
 }
 
 /// Sanitize the private staging database, including free pages, before archiving.
@@ -1315,12 +1323,24 @@ pub(crate) fn insert_native_clipboard_text(
         preview: &preview,
         signature: &signature,
         text_data: Some(&normalized),
+        rich_text_html: None,
         source_app,
         file_paths: None,
         image_data: None,
         image_width: 0,
         image_height: 0,
     })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn insert_native_clipboard_rich_text(category:i64,text:&str,html:&str,source_app:&str)->rusqlite::Result<NativeClipboardInsertOutcome> {
+    let normalized=normalize_native_captured_text(text);
+    let Some(html)=sanitize_rich_text_html(html) else {return insert_native_clipboard_text(category,text,source_app);};
+    if normalized.is_empty() {return insert_native_clipboard_text(category,text,source_app);}
+    let preview=native_clip_preview(&normalized);
+    let signature=format!("native:html:{:x}",md5::compute(format!("{normalized}\0{html}")));
+    insert_native_clipboard_item(NativeClipboardInsert {category,kind:"text",preview:&preview,signature:&signature,
+        text_data:Some(&normalized),rich_text_html:Some(&html),source_app,file_paths:None,image_data:None,image_width:0,image_height:0})
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -1351,6 +1371,7 @@ pub(crate) fn insert_native_clipboard_file_paths(
         preview: &preview,
         signature: &signature,
         text_data: Some(&joined),
+        rich_text_html: None,
         source_app,
         file_paths: Some(&joined),
         image_data: None,
@@ -1382,6 +1403,7 @@ pub(crate) fn insert_native_clipboard_image(
         preview: &preview,
         signature: &signature,
         text_data: None,
+        rich_text_html: None,
         source_app,
         file_paths: None,
         image_data: Some(bytes),
@@ -1430,6 +1452,7 @@ struct NativeClipboardInsert<'a> {
     preview: &'a str,
     signature: &'a str,
     text_data: Option<&'a str>,
+    rich_text_html: Option<&'a str>,
     source_app: &'a str,
     file_paths: Option<&'a str>,
     image_data: Option<&'a [u8]>,
@@ -1461,9 +1484,9 @@ fn insert_native_clipboard_item(
         }
 
         let inserted = conn.execute(
-            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_width, image_height, pinned, group_id)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0
-             WHERE ?2 NOT IN ('text','phrase') OR NOT zsclip_is_protected(COALESCE(NULLIF(?5,''),?3,''))",
+            "INSERT INTO items(category, kind, preview, signature, text_data, source_app, file_paths, image_data, image_width, image_height, pinned, group_id,rich_text_html)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, 0, ?11
+             WHERE ?2 NOT IN ('text','phrase') OR (NOT zsclip_is_protected(COALESCE(NULLIF(?5,''),?3,'')) AND NOT zsclip_is_protected_html(?11))",
             rusqlite::params![
                 item.category,
                 item.kind,
@@ -1475,6 +1498,7 @@ fn insert_native_clipboard_item(
                 item.image_data,
                 item.image_width,
                 item.image_height,
+                item.rich_text_html,
             ],
         )?;
         if inserted == 0 { return Ok(NativeClipboardInsertOutcome { item_id: None, inserted: false, reason: "protected" }); }
@@ -1534,7 +1558,13 @@ pub(crate) fn update_item_text(item_id: i64, new_text: &str) -> rusqlite::Result
     let preview: String = new_text.chars().take(120).collect();
     with_db_mut(|conn| {
         let affected = conn.execute(
-            "UPDATE items SET text_data=?1, preview=?2, rich_text_html=NULL, signature='', lan_origin_message_id='', lan_origin_device_id='', lan_origin_seq=0, lan_origin_hash='' WHERE id=?3 AND NOT zsclip_is_protected(?1)",
+            "UPDATE items SET rich_text_html=CASE WHEN COALESCE(text_data,'')=?1 THEN rich_text_html ELSE NULL END,
+             signature=CASE WHEN COALESCE(text_data,'')=?1 THEN signature ELSE '' END,
+             lan_origin_message_id=CASE WHEN COALESCE(text_data,'')=?1 THEN lan_origin_message_id ELSE '' END,
+             lan_origin_device_id=CASE WHEN COALESCE(text_data,'')=?1 THEN lan_origin_device_id ELSE '' END,
+             lan_origin_seq=CASE WHEN COALESCE(text_data,'')=?1 THEN lan_origin_seq ELSE 0 END,
+             lan_origin_hash=CASE WHEN COALESCE(text_data,'')=?1 THEN lan_origin_hash ELSE '' END,
+             text_data=?1, preview=?2 WHERE id=?3 AND NOT zsclip_is_protected(?1)",
             rusqlite::params![new_text, preview, item_id],
         )?;
         Ok(affected > 0)
@@ -1861,6 +1891,55 @@ fn native_clip_list_items_for_query_internal(
         })?;
         rows.collect()
     }))
+}
+
+#[cfg(test)]
+mod native_rich_edit_generation_tests {
+    use super::*;
+
+    #[test]
+    fn unchanged_plain_editor_save_preserves_format_and_changed_body_clears_it() {
+        with_test_protected_texts(&[], || with_test_db(|| {
+            let inserted = insert_native_clipboard_rich_text(0, "two cells\nnext row", "<table><tr><td>two cells</td></tr><tr><td>next row</td></tr></table>", "office")?;
+            let id = inserted.item_id.unwrap();
+            let before = native_clip_item(id)?.unwrap();
+            let signature_before: String = with_db(|conn| conn.query_row("SELECT signature FROM items WHERE id=?1", [id], |row| row.get(0)))?;
+            assert!(update_item_text(id, "two cells\nnext row")?);
+            let unchanged = native_clip_item(id)?.unwrap();
+            assert_eq!(unchanged.rich_text_html, before.rich_text_html);
+            let signature_after: String = with_db(|conn| conn.query_row("SELECT signature FROM items WHERE id=?1", [id], |row| row.get(0)))?;
+            assert_eq!(signature_after, signature_before);
+            assert!(update_item_text(id, "edited body")?);
+            let edited = native_clip_item(id)?.unwrap();
+            assert_eq!(edited.text.as_deref(), Some("edited body"));
+            assert!(edited.rich_text_html.is_none());
+            Ok(())
+        })).unwrap();
+    }
+
+    #[test]
+    fn stale_open_generation_rejects_record_reads_and_saves_before_access() {
+        with_test_protected_texts(&[], || with_test_db(|| {
+            let id = insert_native_clipboard_text(0, "current record", "editor")?.item_id.unwrap();
+            let stale_generation = current_app_data_generation().wrapping_add(2);
+            let mut read_executed = false;
+            let read = with_shared_app_data_generation(stale_generation, || {
+                read_executed = true;
+                native_clip_item(id)
+            });
+            assert!(read.is_none());
+            assert!(!read_executed);
+            let mut save_executed = false;
+            let save = with_shared_app_data_generation(stale_generation, || {
+                save_executed = true;
+                update_item_text(id, "wrong historical editor body")
+            });
+            assert!(save.is_none());
+            assert!(!save_executed);
+            assert_eq!(item_text(id)?.as_deref(), Some("current record"));
+            Ok(())
+        })).unwrap();
+    }
 }
 
 #[cfg(test)]

@@ -27,8 +27,16 @@ mod linux_native_host;
 mod native_search;
 #[cfg(any(not(target_os = "windows"), test))]
 mod native_paths;
+#[cfg(any(not(target_os = "windows"), test))]
+mod native_protection;
+#[cfg(any(target_os = "macos", test))]
+mod native_vv;
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod native_image_export;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod native_feedback;
+#[cfg(any(target_os = "linux", test))]
+mod native_x11_vv;
 #[cfg(any(target_os = "macos", test))]
 mod macos_app;
 #[cfg(test)]
@@ -348,7 +356,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("zsclipSearchTextChanged:"));
         assert!(macos_native_host_rs.contains("update_clip_list_visibility"));
         assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items"));
-        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_category_group_kind_filter_search("));
+        assert!(macos_native_host_rs.contains("service.submit_page(self.active_source_category()"));
         assert!(macos_rs.contains("crate::db_runtime::native_clip_list_items_for_query("));
         assert!(macos_native_host_rs.contains("dispatch_appkit_search_text_action"));
         assert!(macos_native_host_rs.contains("setHidden"));
@@ -403,7 +411,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("zsclipVvSelect:"));
         assert!(macos_native_host_rs.contains("dispatch_appkit_vv_select_event"));
         assert!(macos_native_host_rs.contains("dispatch_appkit_vv_paste"));
-        assert!(macos_native_host_rs.contains("ZSClip AppKit VV paste"));
+        assert!(macos_native_host_rs.contains("session.snapshot.load_item(index)"));
         assert!(macos_native_host_rs.contains("ZSClip AppKit VV native paste shortcut posted="));
         assert!(macos_native_host_rs.contains("native_host_vv_popup_render_plan"));
         assert!(macos_native_host_rs.contains("ZSClip VV Popup"));
@@ -450,7 +458,7 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("refresh_native_clip_rows"));
         assert!(macos_native_host_rs.contains("NSButton::buttonWithTitle_target_action"));
         assert!(macos_native_host_rs.contains("NSTableView::initWithFrame"));
-        assert!(macos_native_host_rs.contains("macos_native_host_projected_clip_items_for_category_group("));
+        assert!(macos_native_host_rs.contains("NativeVvSnapshot::capture(source_category, current_group_id)"));
         assert!(macos_native_host_rs.contains("reload_native_clip_items"));
         assert!(macos_native_host_rs.contains("native_host_edit_text_button_specs()"));
         assert!(!macos_native_host_rs.contains("native_host_main_action_button_specs()"));
@@ -465,7 +473,8 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("apply_native_settings_control_action"));
         assert!(macos_native_host_rs.contains("action.binding_control_key()"));
         assert!(macos_native_host_rs.contains("present_native_dialog_action"));
-        assert!(macos_native_host_rs.contains("native_host_vv_select_specs(&plan"));
+        assert!(macos_native_host_rs.contains("session.snapshot.load_item(index)"));
+        assert!(macos_native_host_rs.contains("NSWindowStyleMask::NonactivatingPanel"));
         assert!(!macos_native_host_rs.contains("appkit_host_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("appkit_main_tool_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("NativeHostRowAction::from_menu_id"));

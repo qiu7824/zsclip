@@ -2175,7 +2175,11 @@ pub(crate) fn dispatch_linux_native_row_action_for_item(
                 };
             };
             let accepted =
-                crate::app_core::native_host_write_clipboard_payload_with_html::<LinuxClipboardHost>(&write,LinuxClipboardHost::write_rich_text);
+                crate::app_core::native_host_write_clipboard_payload_with_html::<LinuxClipboardHost>(&write,LinuxClipboardHost::write_rich_text_with_settings);
+            if accepted { LinuxClipboardHost::mark_binary_write_ignored(&write); }
+            if accepted && matches!(action, NativeHostRowAction::Copy) {
+                crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Copy, &linux_native_settings_json_snapshot());
+            }
             ProductAdapterCommandResult {
                 accepted,
                 result_name: if accepted {
@@ -2537,6 +2541,10 @@ fn linux_native_vv_trigger_state() -> &'static Mutex<NativeHostVvTriggerState> {
     STATE.get_or_init(|| Mutex::new(NativeHostVvTriggerState::default()))
 }
 
+pub(crate) fn cancel_linux_native_vv_trigger() {
+    if let Ok(mut state) = linux_native_vv_trigger_state().lock() { *state = NativeHostVvTriggerState::default(); }
+}
+
 #[allow(dead_code)]
 pub(crate) fn dispatch_linux_native_vv_trigger_key(
     input: NativeHostVvTriggerInput,
@@ -2581,6 +2589,58 @@ fn linux_native_host_vv_clip_items_for_group(group_id: i64) -> Vec<ClipItem> {
 
 pub(crate) fn dispatch_linux_native_vv_paste(index: usize) -> NativeHostVvPasteExecution {
     dispatch_linux_native_vv_paste_for_group(index, 0)
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LinuxNativeVvTarget { window: u64, focus: u64, pid: u32 }
+
+pub(crate) fn capture_linux_native_vv_target() -> Option<LinuxNativeVvTarget> {
+    let window = linux_command_line("xdotool", &["getactivewindow"]).and_then(|value| linux_parse_window_id(&value))?;
+    let pid = linux_window_pid(window)?;
+    if pid == std::process::id() { return None; }
+    let focus = linux_foreground_window_handle().filter(|focus| linux_window_pid(*focus) == Some(pid)).unwrap_or(window);
+    Some(LinuxNativeVvTarget { window: window.0, focus: focus.0, pid })
+}
+
+fn linux_native_vv_payload_for_item(item_id: i64, expected_generation: u64) -> Option<crate::app_core::NativeHostVvPasteItem> {
+    crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        let item = crate::db_runtime::native_clip_item(item_id).ok().flatten()?;
+        Some(crate::app_core::NativeHostVvPasteItem {
+            item_id, clipboard_write: crate::app_core::native_host_clipboard_write_for_item(&item)?, backspaces: 0,
+        })
+    }).flatten()
+}
+
+pub(crate) fn dispatch_linux_native_vv_paste_item(
+    item_id: i64, expected_generation: u64, target: Option<LinuxNativeVvTarget>,
+) -> NativeHostVvPasteExecution {
+    let Some(target) = target else { return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.no_external_target"); };
+    crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
+        let window = LinuxWindowIdentityHandle(target.window);
+        if target.pid == std::process::id() || linux_window_pid(window) != Some(target.pid) || !linux_window_exists(window) {
+            return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.target_changed");
+        }
+        let Some(item) = linux_native_vv_payload_for_item(item_id, expected_generation) else {
+            return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.item_unavailable");
+        };
+        if !linux_activate_window(window) { return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.focus_failed"); }
+        let focus = LinuxWindowIdentityHandle(target.focus);
+        if linux_window_pid(focus) != Some(target.pid)
+            || linux_command_line("xdotool", &["windowfocus", "--sync", &target.focus.to_string()]).is_none()
+            || linux_foreground_window_handle() != Some(focus) {
+            return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.focus_changed");
+        }
+        if !crate::app_core::native_host_write_clipboard_payload_with_html::<LinuxClipboardHost>(&item.clipboard_write, LinuxClipboardHost::write_rich_text_with_settings) {
+            return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.clipboard_failed");
+        }
+        LinuxClipboardHost::mark_binary_write_ignored(&item.clipboard_write);
+        let posted = linux_foreground_window_handle() == Some(focus)
+            && linux_window_pid(window) == Some(target.pid)
+            && linux_send_ctrl_v(focus).unwrap_or(false);
+        if !posted { return NativeHostVvPasteExecution::rejected("zsclip.vv_paste.shortcut_failed"); }
+        crate::native_feedback::notify_success(crate::native_feedback::NativeFeedbackKind::Paste, &linux_native_settings_json_snapshot());
+        NativeHostVvPasteExecution::pasted(&item, true, false, posted)
+    }).unwrap_or_else(|| NativeHostVvPasteExecution::rejected("zsclip.vv_paste.stale_data_generation"))
 }
 
 pub(crate) fn dispatch_linux_native_vv_paste_for_group(
@@ -2814,7 +2874,7 @@ impl LinuxApplicationModel {
         };
 
         let wrote_clipboard = match &item.clipboard_write {
-            NativeHostClipboardWrite::RichText {text,html}=>LinuxClipboardHost::write_rich_text(text,html),
+            NativeHostClipboardWrite::RichText {text,html}=>LinuxClipboardHost::write_rich_text_with_settings(text,html),
             NativeHostClipboardWrite::Text(text) => {
                 LinuxClipboardHost::write_text_ignored_by_monitors(text)
             }
@@ -3169,6 +3229,27 @@ impl LinuxImeHost {
 }
 
 impl LinuxClipboardHost {
+    fn files_payload_fingerprint(paths: &[String]) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher=DefaultHasher::new(); "files".hash(&mut hasher); paths.hash(&mut hasher); hasher.finish()
+    }
+
+    fn image_payload_fingerprint(bytes: &[u8], width: usize, height: usize) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher=DefaultHasher::new(); "image".hash(&mut hasher); width.hash(&mut hasher); height.hash(&mut hasher); bytes.hash(&mut hasher); hasher.finish()
+    }
+
+    fn mark_binary_write_ignored(write: &NativeHostClipboardWrite) {
+        let fingerprint=match write {
+            NativeHostClipboardWrite::FilePaths(paths)=>Self::files_payload_fingerprint(paths),
+            NativeHostClipboardWrite::ImageRgba {bytes,width,height}=>Self::image_payload_fingerprint(bytes,*width,*height),
+            _=>return,
+        };
+        Self::mutate_state(|state| {state.ignore_next_capture=true;state.ignored_capture_fingerprint=Some(fingerprint);});
+    }
+
     fn text_payload_fingerprint(text: &str, html: Option<&str>) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -3208,11 +3289,20 @@ impl LinuxClipboardHost {
         html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html)
     }
 
+    pub(crate) fn write_rich_text_with_settings(text: &str, html: &str) -> bool {
+        if linux_native_settings_json_snapshot().get("rich_text_clipboard_enabled").and_then(serde_json::Value::as_bool) == Some(false) {
+            return Self::write_text_ignored_by_monitors(text);
+        }
+        Self::write_rich_text(text, html)
+    }
+
     pub(crate) fn write_rich_text(text: &str, html: &str) -> bool {
         if crate::db_runtime::text_is_protected(text) { return false; }
         let Some(html) = crate::db_runtime::sanitize_rich_text_html(html) else { return false; };
+        let Some(document) = crate::app_core::clipboard_html::native_document(&html) else { return false; };
+        let Some(html) = crate::db_runtime::sanitize_rich_text_html(&document) else { return false; };
         #[cfg(all(target_os = "linux", not(test)))]
-        let written = Self::with_system_clipboard(|clipboard| clipboard.set_html(html.as_str(), Some(text)).is_ok()).unwrap_or(false);
+        let written = Self::with_system_clipboard(|clipboard| clipboard.set_html(document.as_str(), Some(text)).is_ok()).unwrap_or(false);
         #[cfg(not(all(target_os = "linux", not(test))))]
         let written = true;
         if !written { return false; }
@@ -3738,7 +3828,11 @@ impl ClipboardHost for LinuxClipboardHost {
         #[cfg(all(target_os = "linux", not(test)))]
         let observed = Self::system_clipboard_fingerprint();
         #[cfg(not(all(target_os = "linux", not(test))))]
-        let observed = Self::mutate_state(|state| state.text.as_deref().map(|text| Self::text_payload_fingerprint(text, state.html.as_deref())));
+        let observed = Self::mutate_state(|state| {
+            if let Some(paths)=state.file_paths.as_ref() {Some(Self::files_payload_fingerprint(paths))}
+            else if let Some(text)=state.text.as_deref() {Some(Self::text_payload_fingerprint(text,state.html.as_deref()))}
+            else {state.image.as_ref().map(|(bytes,width,height)|Self::image_payload_fingerprint(bytes,*width,*height))}
+        });
         Self::mutate_state(|state| {
             let ignore = state.ignore_next_capture && observed.is_some() && observed == state.ignored_capture_fingerprint;
             state.ignore_next_capture = false;
@@ -5730,7 +5824,10 @@ mod tests {
         assert!(host_source.contains("handle_vv_trigger_transition"));
         assert!(host_source.contains("perform_gtk_vv_paste"));
         assert!(host_source.contains("let vv_paste = perform_gtk_vv_paste(0, 0);"));
-        assert!(host_source.contains("dispatch_linux_native_vv_paste_for_group"));
+        assert!(host_source.contains("dispatch_linux_native_vv_paste_item"));
+        assert!(host_source.contains("GTK_VV_PASTE_SESSION"));
+        assert!(host_source.contains("session.ids.get(index)"));
+        assert!(host_source.contains("capture_linux_native_vv_target()"));
         assert!(host_source.contains("gtk_post_native_paste_shortcut"));
         assert!(host_source.contains("gtk_post_native_delete_backspaces"));
         assert!(host_source.contains("gtk_try_ydotool_paste_shortcut"));
@@ -5739,7 +5836,7 @@ mod tests {
         assert!(host_source.contains("ydotool"));
         assert!(host_source.contains("xdotool"));
         assert!(host_source.contains("ZSClip GTK VV native paste shortcut posted="));
-        assert!(host_source.contains("ZSClip GTK VV delete backspaces requested="));
+        assert!(host_source.contains("session.data_generation"));
         assert!(host_source.contains("NativeHostVvTriggerAction::Show"));
         assert!(host_source.contains("NativeHostVvTriggerAction::Select"));
         assert!(host_source.contains("linux_native_host_projected_clip_items()"));
@@ -5803,7 +5900,8 @@ mod tests {
         assert!(host_source.contains("background: @theme_bg_color"));
         assert!(host_source.contains("alpha(@theme_fg_color, 0.05)"));
         assert!(host_source.contains(".clip-list row:selected"));
-        assert!(host_source.contains("background: alpha(@accent_color, 0.22)"));
+        assert!(host_source.contains("background: #2563eb"));
+        assert!(host_source.contains("color: #ffffff"));
         assert!(host_source.contains("let header = HeaderBar::new()"));
         assert!(host_source.contains("header.set_show_title_buttons(true)"));
         assert!(host_source.contains("header.set_title_widget(Some(&header_title))"));
@@ -5826,9 +5924,12 @@ mod tests {
         assert!(host_source.contains("fn apply_always_on_top("));
         assert!(host_source.contains("fn position_near_cursor("));
         assert!(host_source.contains("gtk_window_command_success(\"wmctrl\""));
-        assert!(
-            host_source.contains("gtk_window_command_output(\"xdotool\", &[\"getactivewindow\"]")
-        );
+        assert!(host_source.contains("fn gtk_x11_window_id(window: &ApplicationWindow)"));
+        assert!(host_source.contains("fn gtk_fit_window_near_cursor(window: &ApplicationWindow)"));
+        assert!(host_source.contains("getwindowgeometry"));
+        assert!(host_source.contains("_NET_WORKAREA"));
+        assert!(host_source.contains("clamp_window_pos_to_rect"));
+        assert!(host_source.contains("install_gtk_window_fit(&window)"));
         assert!(host_source.contains(
             "gtk_window_command_output(\"xdotool\", &[\"getmouselocation\", \"--shell\"]"
         ));
@@ -6013,6 +6114,30 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn linux_real_vv_payload_stays_bound_to_phrase_id_after_history_reorders() {
+        let _guard = linux_clipboard_test_guard();
+        crate::db_runtime::with_test_protected_texts(&[], || crate::db_runtime::with_test_db(|| {
+            let phrase_id = crate::db_runtime::with_db_mut(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data,phrase_title) VALUES(1,'phrase','summary','stable phrase body','Saved title')", [])?;
+                let id = conn.last_insert_rowid();
+                conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','newer history','wrong target text')", [])?;
+                Ok(id)
+            })?;
+            let generation = crate::db_runtime::current_app_data_generation();
+            let payload = linux_native_vv_payload_for_item(phrase_id, generation).unwrap();
+            assert_eq!(payload.item_id, phrase_id);
+            assert_eq!(payload.clipboard_write.direct_text(), Some("stable phrase body"));
+            assert!(linux_native_vv_payload_for_item(phrase_id, generation.wrapping_add(2)).is_none());
+            assert!(LinuxClipboardHost::write_text("keep original"));
+            let rejected = dispatch_linux_native_vv_paste_item(phrase_id, generation, None);
+            assert!(!rejected.accepted);
+            assert!(!rejected.paste_shortcut_sent);
+            assert_eq!(LinuxClipboardHost::read_text().as_deref(), Some("keep original"));
+            Ok(())
+        })).unwrap();
     }
 
     #[test]

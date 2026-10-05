@@ -99,10 +99,12 @@ pub(crate) struct MacosClipboardHost;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MacosClipboardState {
     text: Option<String>,
+    html: Option<String>,
     image: Option<(Vec<u8>, usize, usize)>,
     file_paths: Option<Vec<String>>,
     sequence: u32,
     ignore_next_capture: bool,
+    ignored_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -6540,6 +6542,9 @@ impl MacosClipboardHost {
 
 impl ClipboardHost for MacosClipboardHost {
     fn read_text() -> Option<String> {
+        #[cfg(all(target_os="macos",not(test)))]
+        {return Self::system_read_text();}
+        #[cfg(not(all(target_os="macos",not(test))))]
         Self::system_read_text().or_else(|| Self::mutate_state(|state| state.text.clone()))
     }
 
@@ -6548,6 +6553,7 @@ impl ClipboardHost for MacosClipboardHost {
         if written {
             Self::mutate_state(|state| {
                 state.text = Some(text.to_string());
+                state.html=None;state.ignore_next_capture=false;state.ignored_fingerprint=None;
                 state.image = None;
                 state.file_paths = None;
                 state.sequence = state.sequence.saturating_add(1);
@@ -6557,6 +6563,9 @@ impl ClipboardHost for MacosClipboardHost {
     }
 
     fn read_image_rgba() -> Option<(Vec<u8>, usize, usize)> {
+        #[cfg(all(target_os="macos",not(test)))]
+        {return Self::system_read_image_rgba();}
+        #[cfg(not(all(target_os="macos",not(test))))]
         Self::system_read_image_rgba().or_else(|| Self::mutate_state(|state| state.image.clone()))
     }
 
@@ -6571,6 +6580,7 @@ impl ClipboardHost for MacosClipboardHost {
         if written {
             Self::mutate_state(|state| {
                 state.text = None;
+                state.html=None;state.ignore_next_capture=false;state.ignored_fingerprint=None;
                 state.image = Some((bytes.to_vec(), width, height));
                 state.file_paths = None;
                 state.sequence = state.sequence.saturating_add(1);
@@ -6580,6 +6590,9 @@ impl ClipboardHost for MacosClipboardHost {
     }
 
     fn read_file_paths() -> Option<Vec<String>> {
+        #[cfg(all(target_os="macos",not(test)))]
+        {return Self::system_read_file_paths();}
+        #[cfg(not(all(target_os="macos",not(test))))]
         Self::system_read_file_paths()
             .or_else(|| Self::mutate_state(|state| state.file_paths.clone()))
     }
@@ -6589,6 +6602,7 @@ impl ClipboardHost for MacosClipboardHost {
         if system_written {
             Self::mutate_state(|state| {
                 state.text = None;
+                state.html=None;state.ignore_next_capture=false;state.ignored_fingerprint=None;
                 state.image = None;
                 state.file_paths = Some(paths.to_vec());
                 state.sequence = state.sequence.saturating_add(1);
@@ -6605,38 +6619,51 @@ impl ClipboardHost for MacosClipboardHost {
         if !Self::write_text(text) {
             return false;
         }
+        let fingerprint=Self::current_text_fingerprint();
         Self::mutate_state(|state| {
             state.ignore_next_capture = true;
+            state.ignored_fingerprint=Some(fingerprint);
         });
         true
     }
 
     fn should_ignore_capture_by_named_format() -> bool {
-        Self::mutate_state(|state| {
-            let ignore = state.ignore_next_capture;
+        let expected=Self::mutate_state(|state| {
+            let expected=if state.ignore_next_capture {state.ignored_fingerprint.take()}else{None};
             state.ignore_next_capture = false;
-            ignore
-        })
+            expected
+        });
+        expected.is_some_and(|expected|expected==Self::current_text_fingerprint())
     }
 }
 
 impl MacosClipboardHost {
+    fn current_text_fingerprint()->String {
+        format!("{:x}",md5::compute(format!("{:?}\0{:?}\0{:?}",Self::read_text(),Self::read_html(),Self::read_file_paths())))
+    }
     pub(crate) fn read_html()->Option<String> {
         #[cfg(all(target_os="macos",not(test)))]
         {let mut clipboard=Clipboard::new().ok()?;clipboard.get().html().ok().as_deref().and_then(crate::db_runtime::sanitize_rich_text_html)}
         #[cfg(not(all(target_os="macos",not(test))))]
-        {None}
+        {Self::mutate_state(|state|state.html.clone())}
     }
 
     pub(crate) fn write_rich_text(text:&str,html:&str)->bool {
         if crate::db_runtime::text_is_protected(text) {return false;}
+        if !macos_native_settings_json_snapshot().get("rich_text_clipboard_enabled").and_then(serde_json::Value::as_bool).unwrap_or(true) {
+            return Self::write_text_ignored_by_monitors(text);
+        }
         let Some(safe)=crate::db_runtime::sanitize_rich_text_html(html) else {return false;};
         let Some(document)=crate::app_core::clipboard_html::native_document(&safe) else {return false;};
         #[cfg(all(target_os="macos",not(test)))]
-        let written=Clipboard::new().ok().is_some_and(|mut clipboard|clipboard.set_html(document,Some(text)).is_ok());
+        let written=Clipboard::new().ok().is_some_and(|mut clipboard|clipboard.set_html(document.as_str(),Some(text)).is_ok());
         #[cfg(not(all(target_os="macos",not(test))))]
         let written={let _=document;true};
-        if written {Self::mutate_state(|state|{state.text=Some(text.into());state.image=None;state.file_paths=None;state.sequence=state.sequence.saturating_add(1);state.ignore_next_capture=true;});}
+        if written {
+            Self::mutate_state(|state|{state.text=Some(text.into());state.html=Some(safe);state.image=None;state.file_paths=None;state.sequence=state.sequence.saturating_add(1);state.ignore_next_capture=false;state.ignored_fingerprint=None;});
+            let fingerprint=Self::current_text_fingerprint();
+            Self::mutate_state(|state|{state.ignore_next_capture=true;state.ignored_fingerprint=Some(fingerprint);});
+        }
         written
     }
 }
@@ -9516,6 +9543,12 @@ fn macos_native_vv_trigger_state() -> &'static Mutex<NativeHostVvTriggerState> {
     STATE.get_or_init(|| Mutex::new(NativeHostVvTriggerState::default()))
 }
 
+pub(crate) fn reset_macos_native_vv_trigger() {
+    if let Ok(mut state) = macos_native_vv_trigger_state().lock() {
+        *state = NativeHostVvTriggerState::default();
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn dispatch_macos_native_vv_trigger_key(
     input: NativeHostVvTriggerInput,
@@ -10866,19 +10899,20 @@ mod tests {
         assert!(host_source.contains("appkit_vv_trigger_key_from_cg_event"));
         assert!(host_source.contains("appkit_post_native_key_event"));
         assert!(host_source.contains("appkit_post_native_paste_shortcut"));
-        assert!(host_source.contains("appkit_post_native_delete_backspaces"));
+        assert!(host_source.contains("appkit_vv_owned_key"));
         assert!(host_source.contains("CGEvent::new_keyboard_event"));
         assert!(host_source.contains("CGEvent::set_flags"));
-        assert!(host_source.contains("CGEvent::post(CGEventTapLocation::HIDEventTap"));
+        assert!(host_source.contains("CGEvent::post_to_pid(target_pid"));
         assert!(host_source.contains("CGEventFlags::MaskCommand"));
-        assert!(host_source.contains("paste.paste_shortcut_sent"));
+        assert!(host_source.contains("CGPreflightPostEventAccess()"));
         assert!(host_source.contains("ZSClip AppKit VV native paste shortcut posted="));
-        assert!(host_source.contains("ZSClip AppKit VV delete backspaces requested="));
+        assert!(host_source.contains("backspaces=0 delivery_unverified=true"));
         assert!(host_source.contains("appkit_vv_target_token_for_event"));
         assert!(host_source.contains("appkit_vv_target_token_for_cg_event"));
         assert!(host_source.contains("appkit_vv_has_command_modifier"));
         assert!(host_source.contains("appkit_vv_has_cg_command_modifier"));
-        assert!(host_source.contains("VV global monitor cannot consume external key"));
+        assert!(host_source.contains("CGEventType::KeyUp"));
+        assert!(host_source.contains("crate::app_core::vv_session::VvInputSession"));
         assert!(host_source.contains("transition.consume_key"));
         assert!(host_source.contains("ptr::null_mut()"));
         assert!(host_source.contains("perform_native_vv_trigger_demo"));
@@ -10890,6 +10924,40 @@ mod tests {
         assert!(host_source.contains("NativeHostVvTriggerAction::Select"));
         assert!(host_source.contains("macos_native_host_projected_clip_items()"));
         assert!(host_source.contains("native_host_vv_popup_render_plan_for_projection"));
+    }
+
+    #[test]
+    fn macos_vv_native_surface_binds_preview_and_delivery_without_activation_or_mock_targets() {
+        let source=include_str!("macos_native_host.rs").replace("\r\n","\n");
+        let popup=source.split_once("fn present_native_vv_popup(&self)").unwrap().1.split_once("fn appkit_frontmost_pid()").unwrap().0;
+        assert!(popup.contains("NSWindowStyleMask::NonactivatingPanel"));
+        assert!(popup.contains("window.orderFrontRegardless()"));
+        assert!(!popup.contains("makeKeyAndOrderFront"));
+        assert!(popup.contains("NativeVvSnapshot::capture(source_category, current_group_id)"));
+        assert!(popup.contains("body.setEditable(false)"));
+        assert!(popup.contains("body.setSelectable(false)"));
+        assert!(popup.contains("preferences.content_font_size"));
+        assert!(popup.contains("preferences.apply_projection(snapshot.items.clone())"));
+        assert!(popup.contains("item.kind == crate::app_core::ClipKind::Phrase && !item.title.trim().is_empty()"));
+        assert!(popup.contains("item.preview.as_str()"));
+        assert!(popup.contains("appkit_tr(\"置顶\", \"Pinned\")"));
+        assert!(popup.contains("appkit_set_accessibility_label::<NSButton>(button.as_ref(), &title)"));
+        assert!(!popup.contains("native_host_projected_clip_row_title(item)"));
+        let selection=source.split_once("fn perform_native_vv_select(&self, index: usize)").unwrap().1.split_once("fn update_clip_list_visibility").unwrap().0;
+        assert!(selection.contains("session.snapshot.load_item(index)"));
+        assert!(selection.contains("with_shared_app_data_generation(session.snapshot.data_generation"));
+        assert!(selection.contains("Self::appkit_frontmost_pid()!=Some(session.target_pid)"));
+        assert!(selection.contains("native_host_write_clipboard_payload_with_html"));
+        assert!(selection.contains("appkit_post_native_paste_shortcut_to_pid(session.target_pid)"));
+        assert!(!selection.contains("dispatch_appkit_vv_paste_for_group"));
+        assert!(!selection.contains("MacosPasteTargetHandle(7)"));
+        assert!(!selection.contains("appkit_post_native_delete_backspaces"));
+        assert!(source.contains("result.serial!=session.serial"));
+        assert!(source.contains("result.request!=self.ivars().vv_preview_request.get()"));
+        assert!(source.contains("view.scrollRangeToVisible"));
+        assert!(source.contains("ZSCLIP_NATIVE_VV_RECEIVER_PID"));
+        assert!(source.contains("button.performClick(None)"));
+        assert!(source.contains("delivery_unverified=true"));
     }
 
     #[test]
@@ -10920,7 +10988,7 @@ mod tests {
             "window.setContentMinSize(NSSize::new(min_width as f64, min_height as f64))"
         ));
         assert!(host_source.contains("window.setHasShadow(true)"));
-        assert!(host_source.contains("NSColor::clearColor()"));
+        assert!(host_source.contains("NSColor::windowBackgroundColor()"));
         assert!(host_source.contains("NSWindowStyleMask::FullSizeContentView"));
         assert!(host_source.contains("window.setTitleVisibility(NSWindowTitleVisibility::Hidden)"));
         assert!(host_source.contains("window.setTitlebarAppearsTransparent(true)"));
@@ -10993,8 +11061,8 @@ mod tests {
         assert!(host_source.contains("NSEventMask::OtherMouseDown"));
         assert!(host_source.contains("dismiss_native_vv_popup(\"global_mouse_down\")"));
         assert!(host_source.contains("native_host_group_filter_label_for_groups"));
-        assert!(host_source.contains("macos_native_host_projected_clip_items_for_category_group("));
-        assert!(host_source.contains("dispatch_appkit_vv_paste_for_group"));
+        assert!(host_source.contains("crate::native_vv::NativeVvSnapshot::capture(source_category, current_group_id)"));
+        assert!(host_source.contains("session.snapshot.load_item(index)"));
         assert!(host_source.contains("clip_scroll_view: OnceCell<Retained<NSScrollView>>"));
         assert!(host_source.contains("clip_table_view: OnceCell<Retained<NSTableView>>"));
         assert!(host_source.contains("clip_table_column: OnceCell<Retained<NSTableColumn>>"));
@@ -11227,11 +11295,11 @@ mod tests {
     #[test]
     fn macos_native_search_reload_uses_database_query_path() {
         let host_source = include_str!("macos_native_host.rs");
-        assert!(host_source.contains(
-            "macos_native_host_projected_clip_items_for_category_group_kind_filter_search"
-        ));
+        assert!(host_source.contains("NativeSearchService::new"));
+        assert!(host_source.contains("service.submit_page("));
+        assert!(host_source.contains("service.try_latest_result()"));
         assert!(host_source.contains("fn native_search_text(&self) -> String"));
-        assert!(host_source.contains("&self.native_search_text()"));
+        assert!(host_source.contains("self.native_search_text()"));
     }
 
     #[test]
@@ -11426,6 +11494,19 @@ mod tests {
 
         assert!(MacosClipboardHost::write_text_ignored_by_monitors("self"));
         assert!(MacosClipboardHost::should_ignore_capture_by_named_format());
+        assert!(!MacosClipboardHost::should_ignore_capture_by_named_format());
+    }
+
+    #[test]
+    fn macos_self_write_marker_does_not_discard_a_new_external_copy() {
+        let _guard=macos_clipboard_test_guard();
+        MacosClipboardHost::reset_for_tests();
+        assert!(MacosClipboardHost::write_text_ignored_by_monitors("self write"));
+        MacosClipboardHost::mutate_state(|state| {state.text=Some("new external copy".into());state.sequence+=1;});
+        assert!(!MacosClipboardHost::should_ignore_capture_by_named_format());
+        assert_eq!(MacosClipboardHost::read_text().as_deref(),Some("new external copy"));
+        assert!(MacosClipboardHost::write_text_ignored_by_monitors("same text"));
+        MacosClipboardHost::mutate_state(|state| {state.html=crate::app_core::clipboard_html::normalize("<b>same text</b>");state.sequence+=1;});
         assert!(!MacosClipboardHost::should_ignore_capture_by_named_format());
     }
 

@@ -35,6 +35,33 @@ establish AppKit or GTK support for the Windows preview surface.
 This document is the target-OS evidence path for the macOS AppKit and Linux GTK native hosts.
 Windows-side Rust tests prove that the dispatch bridges compile and route to the product adapter, but they do not prove that AppKit or GTK windows render and respond on the real platforms.
 
+## macOS VV target delivery
+
+The AppKit VV surface uses a non-activating `NSPanel` that cannot become the key
+or main window. Candidate selection retains the displayed record IDs, category,
+data generation and protection revision. Its full-text preview reads the body
+asynchronously and rejects results from an old request or session. The external
+frontmost process must remain the captured target before clipboard write and
+before the single targeted Command-V event pair. Without a verified literal
+trigger, the host sends no Backspace.
+
+Use `scripts/native-vv-receiver-macos.swift` to verify delivery to a separate
+AppKit editor. Launch ZSClip with an isolated `ZSCLIP_DATA_DIR`,
+`ZSCLIP_NATIVE_VV_DELIVERY_SMOKE=1`, the receiver's actual PID in
+`ZSCLIP_NATIVE_VV_RECEIVER_PID`, and the same unique synthetic value in
+`ZSCLIP_VV_RECEIVER_PAYLOAD` for both processes. The host waits up to 20 seconds
+for the receiver's real clipboard value, captures it through the native service,
+opens VV without activating the panel and clicks the bound native candidate.
+The receiver JSON must show `LEFT-` plus that exact payload plus `RIGHT` and keep
+its editor window key. `posted=true` reports event submission only; it is not
+delivery proof. Missing Accessibility or Input Monitoring permission is reported
+as blocked and must be resolved through macOS settings.
+
+The `vv` screenshot scene reports ready only after its asynchronous full-text
+preview is applied (or the candidate list is empty). Screenshot readiness does
+not prove keyboard triggering or paste delivery. Verify external typing, held
+keys, Escape, focus changes, scrolling and candidate switching separately.
+
 ## What Counts As Verified
 
 AppKit settings use eight shared pages: General, Appearance, Clipboard, Hotkeys & VV,
