@@ -37,15 +37,29 @@ def serve(artifact_dir, timeout):
     editor.focus_set()
     paste_events = 0
     key_events = []
+    case_id = "paste"
     started = time.monotonic()
 
     def snapshot():
+        nonlocal paste_events, case_id
+        try:
+            request = json.loads((artifact_dir / "receiver-control.json").read_text(encoding="utf-8"))
+            if request.get("case_id") and request["case_id"] != case_id:
+                case_id = request["case_id"]
+                editor.delete("1.0", "end")
+                editor.insert("1.0", PREFIX + SUFFIX)
+                editor.mark_set("insert", "2.0")
+                paste_events = 0
+                key_events.clear()
+        except (OSError, json.JSONDecodeError):
+            pass
         value = {
             "pid": os.getpid(),
             "window_title": TITLE,
             "text": editor.get("1.0", "end-1c"),
             "paste_events": paste_events,
-            "key_events": key_events[-40:],
+            "key_events": key_events[-64:],
+            "case_id": case_id,
             "cursor": editor.index("insert"),
             "elapsed_seconds": round(time.monotonic() - started, 3),
         }
@@ -57,10 +71,19 @@ def serve(artifact_dir, timeout):
         paste_events += 1
 
     def key_pressed(event):
-        key_events.append({"key": event.keysym, "state": event.state})
+        key_events.append({"key": event.keysym, "state": event.state, "phase": "down"})
+
+    def key_released(event):
+        key_events.append({"key": event.keysym, "state": event.state, "phase": "up"})
+
+    def control_digit(event):
+        key_pressed(event)
+        return "break"
 
     editor.bind("<<Paste>>", pasted, add="+")
     editor.bind("<KeyPress>", key_pressed, add="+")
+    editor.bind("<KeyRelease>", key_released, add="+")
+    editor.bind("<Control-Key-1>", control_digit)
     root.update()
     root.clipboard_clear()
     root.clipboard_append(PAYLOAD)
@@ -121,6 +144,34 @@ def assert_received(result, output):
     raise SystemExit("The independent receiver did not receive exactly the expected paste with its draft intact")
 
 
+def reset_case(artifact_dir, case_id):
+    artifact_dir = Path(artifact_dir)
+    write_json(artifact_dir / "receiver-control.json", {"case_id": case_id})
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            observed = json.loads((artifact_dir / "receiver-result.json").read_text(encoding="utf-8"))
+            if observed.get("case_id") == case_id and observed.get("text") == PREFIX + SUFFIX:
+                return
+        except (OSError, json.JSONDecodeError):
+            pass
+        time.sleep(0.1)
+    raise SystemExit("Recipient did not reset its synthetic draft before the next case")
+
+
+def assert_cancelled(result, output, case_id, middle, forbidden_key, require_control_digit):
+    expected = PREFIX + middle + SUFFIX
+    observed = json.loads(Path(result).read_text(encoding="utf-8"))
+    keys = observed.get("key_events", [])
+    forbidden_leaked = forbidden_key and any(event.get("key") == forbidden_key for event in keys)
+    modifier_delivered = not require_control_digit or any(event.get("key") == "1" and event.get("phase") == "down" and event.get("state", 0) & 4 for event in keys)
+    passed = observed.get("case_id") == case_id and observed.get("text") == expected and observed.get("paste_events") == 0 and not forbidden_leaked and modifier_delivered
+    write_json(output, {"passed": bool(passed), "case_id": case_id, "expected": expected, "observed": observed,
+                       "forbidden_key_leaked": bool(forbidden_leaked), "modified_digit_delivered": modifier_delivered})
+    if not passed:
+        raise SystemExit("Cancellation or key ownership changed the recipient draft unexpectedly")
+
+
 def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -133,13 +184,27 @@ def main():
     received = commands.add_parser("assert-received")
     received.add_argument("--result", required=True)
     received.add_argument("--output", required=True)
+    reset = commands.add_parser("reset")
+    reset.add_argument("--artifact-dir", required=True)
+    reset.add_argument("--case-id", required=True)
+    cancelled = commands.add_parser("assert-cancelled")
+    cancelled.add_argument("--result", required=True)
+    cancelled.add_argument("--output", required=True)
+    cancelled.add_argument("--case-id", required=True)
+    cancelled.add_argument("--middle", default="vv")
+    cancelled.add_argument("--forbidden-key", default="")
+    cancelled.add_argument("--require-control-digit", action="store_true")
     args = parser.parse_args()
     if args.command == "serve":
         serve(args.artifact_dir, args.timeout)
     elif args.command == "assert-captured":
         assert_captured(args.database, args.output)
-    else:
+    elif args.command == "assert-received":
         assert_received(args.result, args.output)
+    elif args.command == "reset":
+        reset_case(args.artifact_dir, args.case_id)
+    else:
+        assert_cancelled(args.result, args.output, args.case_id, args.middle, args.forbidden_key, args.require_control_digit)
 
 
 if __name__ == "__main__":

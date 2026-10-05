@@ -384,13 +384,18 @@ mod platform {
                         if let Some(&action) = self.bindings.get(&event.detail) {
                             let held = self.cycles.borrow().held.contains(&event.detail);
                             let modifiers = u16::from(event.state) & 0xff & !self.lock_mask;
-                            if held || (!self.cancelled.get() && modifiers == 0) {
+                            // A KeyPress can already be queued when cancellation
+                            // removes the passive grabs. Retain its full cycle so
+                            // closing the connection cannot leak its keyup.
+                            if held || modifiers == 0 {
                                 let next = self.cycles.borrow_mut().press(
                                     event.detail,
                                     action,
                                     event.time,
                                 );
-                                if !self.cancelled.get() {
+                                if self.cancelled.get() {
+                                    self.cycles.borrow_mut().cancel();
+                                } else {
                                     actions.extend(next);
                                 }
                             }

@@ -3263,7 +3263,7 @@ searchentry {
         });
         window.set_child(Some(&root));
         window.set_focusable(false);
-        window.realize();
+        gtk::prelude::WidgetExt::realize(&window);
         if let Some(display) = gdk::Display::default() {
             display.flush();
         }
@@ -3484,6 +3484,22 @@ searchentry {
                 if app.windows().iter().any(|window| window.is_active()) {
                     continue;
                 }
+                let owned = GTK_VV_PASTE_SESSION.with(|slot| {
+                    slot.borrow()
+                        .as_ref()
+                        .is_some_and(|session| session.key_lease.is_some())
+                });
+                if owned
+                    && (event.modifiers & (1 | 4 | 8 | 64) != 0
+                        || matches!(event.keysym, 0xffe1..=0xffe4 | 0xffe7..=0xffee))
+                {
+                    for window in app.windows() {
+                        if window.title().as_deref() == Some("ZSClip VV Popup") {
+                            window.close();
+                        }
+                    }
+                    continue;
+                }
                 let key = match event.keysym {
                     0x76 | 0x56 => NativeHostVvTriggerKey::TriggerV,
                     0xff1b => NativeHostVvTriggerKey::Escape,
@@ -3494,11 +3510,6 @@ searchentry {
                     0xff52 | 0xff54 | 0xff55 | 0xff56 => continue,
                     _ => NativeHostVvTriggerKey::Other,
                 };
-                let owned = GTK_VV_PASTE_SESSION.with(|slot| {
-                    slot.borrow()
-                        .as_ref()
-                        .is_some_and(|session| session.key_lease.is_some())
-                });
                 if owned
                     && matches!(
                         key,

@@ -68,7 +68,7 @@ mod appkit {
         native_host_settings_toggle_specs, native_host_source_tab_for_category,
         native_host_status_menu_item_specs, native_host_vv_popup_render_plan_for_projection,
         native_popup_menu_command_macos_key_equivalent,
-        native_popup_menu_command_macos_symbol_name, ClipKindFilter, HostComponent,
+        native_popup_menu_command_macos_symbol_name, ClipKind, ClipKindFilter, HostComponent,
         MainGroupFilterSelection, MainRowGroupSelection, MainVvPopupTextRole,
         NativeButtonStyleRole, NativeClipRowSpec, NativeComponentAction,
         NativeComponentInstanceSpec, NativeComponentSpec, NativeDialogResponse, NativeDropdownSpec,
@@ -1212,6 +1212,7 @@ mod appkit {
 
         if let Some(pin_badge) = presentation.pin_badge {
             let localized_pin_badge = appkit_localized_label(pin_badge);
+            let pin_color = if selected { NSColor::selectedControlTextColor() } else { NSColor::controlAccentColor() };
             let pin_label = appkit_clip_table_label(
                 mtm,
                 &localized_pin_badge,
@@ -1220,7 +1221,7 @@ mod appkit {
                     NSSize::new(pin_width, 18.0),
                 ),
                 11.0,
-                &if selected {NSColor::selectedControlTextColor()}else{NSColor::controlAccentColor()},
+                &pin_color,
             );
             pin_label.setAlignment(NSTextAlignment::Center);
             pin_label.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
@@ -1686,7 +1687,8 @@ mod appkit {
     fn appkit_settings_text_label(mtm: MainThreadMarker, text: &str, frame: NSRect, size: f64, heading: bool) -> Retained<NSTextField> {
         let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
         label.setFrame(frame);
-        label.setFont(Some(&if heading { NSFont::boldSystemFontOfSize(size) } else { NSFont::systemFontOfSize(size) }));
+        let font = if heading { NSFont::boldSystemFontOfSize(size) } else { NSFont::systemFontOfSize(size) };
+        label.setFont(Some(&font));
         label.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
         label.setMaximumNumberOfLines(2);
         appkit_set_accessibility_label::<NSTextField>(label.as_ref(), text);
@@ -2468,7 +2470,7 @@ mod appkit {
                     self.ivars().vv_delivery_smoke_phase.set(3);
                     let selected=session.snapshot.items.iter().position(|item|item.id==self.ivars().vv_delivery_smoke_item_id.get());
                     let button=selected.and_then(|index|self.ivars().vv_candidate_buttons.borrow().get(index).cloned());
-                    if let Some(button)=button {button.performClick(None);}
+                    if let Some(button)=button {unsafe {button.performClick(None);}}
                 }
             } else if session.snapshot.items.is_empty() && self.ivars().vv_screenshot_waiting.replace(false) {
                 eprintln!("ZSClip AppKit screenshot scene ready=vv");
@@ -3435,7 +3437,7 @@ mod appkit {
                 if self.ivars().search_pending.get() || !self.ivars().content_preferences.get().phrase_titles_enabled {return;}
                 self.ivars().edit_save_as_phrase.set(false);
                 self.present_native_edit_window(false);
-                if let (Some(window),Some(field))=(self.ivars().edit_window.get(),self.ivars().edit_title_field.get()) {window.makeFirstResponder(Some(field));field.selectText(None);}
+                if let (Some(window),Some(field))=(self.ivars().edit_window.get(),self.ivars().edit_title_field.get()) {window.makeFirstResponder(Some(field));unsafe {field.selectText(None);}}
                 return;
             }
             let result = super::dispatch_appkit_menu_command_id(menu_id);

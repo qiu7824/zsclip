@@ -66,6 +66,7 @@ objc2-app-kit = { version = "0.3", features = ["NSAccessibilityProtocols", "NSAp
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "libc", "CGEvent", "CGEventTypes", "CGRemoteOperation"] }
 objc2-foundation = "0.3"
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer", "objc2-core-foundation", "objc2-core-graphics"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk4 = "0.11"
