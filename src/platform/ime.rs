@@ -42,6 +42,21 @@ pub(crate) enum WindowsImeInputMode {
     Unknown,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_IME_OBSERVATION: std::cell::Cell<Option<(WindowsImeInputMode, bool)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_ime_observation<T>(mode: WindowsImeInputMode, cancelled: bool, action: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(WindowsImeInputMode, bool)>);
+    impl Drop for Restore {
+        fn drop(&mut self) { TEST_IME_OBSERVATION.with(|value| value.set(self.0)); }
+    }
+    let _restore = Restore(TEST_IME_OBSERVATION.with(|value| value.replace(Some((mode, cancelled)))));
+    action()
+}
+
 #[repr(C)]
 struct CandidateForm {
     dwIndex: u32,
@@ -67,6 +82,10 @@ impl WindowsImeHost {
 
     /// Cancel only the exact composition owned by VV, never a generic editor Escape.
     pub(crate) fn cancel_exact_vv_composition(self, focus: HWND) -> bool {
+        #[cfg(test)]
+        if let Some((_, cancelled)) = TEST_IME_OBSERVATION.with(|value| value.get()) {
+            return cancelled;
+        }
         let context = unsafe { ImmGetContext(focus) };
         if context == 0 { return false; }
         let length = unsafe { ImmGetCompositionStringW(context, 8, core::ptr::null_mut(), 0) };
@@ -80,6 +99,10 @@ impl WindowsImeHost {
     }
 
     pub(crate) fn input_mode(self, focus: HWND) -> WindowsImeInputMode {
+        #[cfg(test)]
+        if let Some((mode, _)) = TEST_IME_OBSERVATION.with(|value| value.get()) {
+            return mode;
+        }
         if !platform_window::exists(focus) {
             return WindowsImeInputMode::Unknown;
         }

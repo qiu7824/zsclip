@@ -806,6 +806,7 @@ impl NativeHostVvTriggerState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeHostClipboardWrite {
     Text(String),
+    RichText {text:String, html:String},
     FilePaths(Vec<String>),
     ImageRgba {
         bytes: Vec<u8>,
@@ -817,7 +818,7 @@ pub(crate) enum NativeHostClipboardWrite {
 impl NativeHostClipboardWrite {
     pub(crate) const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Text(_) => "text",
+            Self::Text(_) | Self::RichText {..} => "text",
             Self::FilePaths(_) => "files",
             Self::ImageRgba { .. } => "image",
         }
@@ -825,7 +826,7 @@ impl NativeHostClipboardWrite {
 
     pub(crate) fn direct_text(&self) -> Option<&str> {
         match self {
-            Self::Text(text) => Some(text),
+            Self::Text(text) | Self::RichText {text,..} => Some(text),
             Self::FilePaths(_) | Self::ImageRgba { .. } => None,
         }
     }
@@ -898,7 +899,11 @@ pub(crate) fn native_host_clipboard_write_for_item(
             .as_ref()
             .filter(|text| !text.is_empty())
             .cloned()
-            .map(NativeHostClipboardWrite::Text),
+            .map(|text| {
+                if let Some(html)=item.rich_text_html.as_deref().and_then(super::clipboard_html::normalize) {
+                    NativeHostClipboardWrite::RichText {text,html}
+                } else {NativeHostClipboardWrite::Text(text)}
+            }),
         ClipKind::Files => item
             .file_paths
             .as_ref()
@@ -938,8 +943,15 @@ pub(crate) fn native_host_reconciled_selected_item_id(
 pub(crate) fn native_host_write_clipboard_payload<Host: ClipboardHost>(
     write: &NativeHostClipboardWrite,
 ) -> bool {
+    native_host_write_clipboard_payload_with_html::<Host>(write,|text,_|Host::write_text_ignored_by_monitors(text))
+}
+
+pub(crate) fn native_host_write_clipboard_payload_with_html<Host:ClipboardHost>(
+    write:&NativeHostClipboardWrite, write_html:impl FnOnce(&str,&str)->bool,
+)->bool {
     match write {
         NativeHostClipboardWrite::Text(text) => Host::write_text_ignored_by_monitors(text),
+        NativeHostClipboardWrite::RichText {text,html}=>write_html(text,html),
         NativeHostClipboardWrite::FilePaths(paths) => Host::write_file_paths(paths),
         NativeHostClipboardWrite::ImageRgba {
             bytes,
@@ -1110,7 +1122,9 @@ pub(crate) fn native_host_clip_list_item_label(item: &NativeHostClipListItem) ->
 pub(crate) fn native_host_projected_clip_list_item_label(
     item: &NativeHostClipListItemProjection,
 ) -> String {
-    format!("{} - {}", item.title, item.preview)
+    if item.title.trim().is_empty() {item.preview.clone()}
+    else if item.preview.trim().is_empty() {item.title.clone()}
+    else {format!("{} - {}", item.title, item.preview)}
 }
 
 pub(crate) fn native_host_projected_clip_row_title(

@@ -9,6 +9,7 @@ use crate::macos_app::MacosHostContractSummary;
 
 #[cfg(target_os = "macos")]
 mod appkit {
+    use crate::app_core::native_content_preferences::{NativeContentPreferences,NATIVE_RENAME_PHRASE_COMMAND_ID};
     use std::{
         cell::{Cell, OnceCell, RefCell},
         ffi::c_void,
@@ -130,6 +131,17 @@ mod appkit {
 
     #[derive(Default)]
     struct AppDelegateIvars {
+        content_preferences: Cell<NativeContentPreferences>,
+        search_service: OnceCell<crate::native_search::NativeSearchService>,
+        search_due: Cell<Option<std::time::Instant>>,
+        search_pending: Cell<bool>,
+        search_generation: Cell<u64>,
+        search_page: Cell<usize>,
+        search_has_more: Cell<bool>,
+        previous_page_button: OnceCell<Retained<NSButton>>,
+        next_page_button: OnceCell<Retained<NSButton>>,
+        page_label: OnceCell<Retained<NSTextField>>,
+        screenshot_scene: RefCell<Option<String>>,
         window: OnceCell<Retained<NSWindow>>,
         settings_window: OnceCell<Retained<NSWindow>>,
         status_item: OnceCell<Retained<NSStatusItem>>,
@@ -148,6 +160,10 @@ mod appkit {
         vv_popup_window: OnceCell<Retained<NSWindow>>,
         edit_window: OnceCell<Retained<NSWindow>>,
         edit_text_view: OnceCell<Retained<NSTextView>>,
+        edit_title_field: OnceCell<Retained<NSTextField>>,
+        edit_initial_title: RefCell<String>,
+        edit_is_phrase: Cell<bool>,
+        edit_save_as_phrase: Cell<bool>,
         edit_initial_text: RefCell<String>,
         edit_item_id: Cell<i64>,
         selected_item_id: Cell<i64>,
@@ -159,12 +175,17 @@ mod appkit {
         selected_settings_group_id: Cell<i64>,
         search_field: OnceCell<Retained<NSSearchField>>,
         settings_route_label: OnceCell<Retained<NSTextField>>,
+        settings_tabs: OnceCell<Retained<NSTabView>>,
+        settings_page_scrollers: OnceCell<Vec<Retained<NSScrollView>>>,
+        settings_save_button: OnceCell<Retained<NSButton>>,
+        settings_group_list_view: OnceCell<Retained<NSView>>,
+        settings_group_list_scroll: OnceCell<Retained<NSScrollView>>,
         settings_group_name_field: OnceCell<Retained<NSTextField>>,
         settings_native_text_fields: RefCell<Vec<NativeSettingsTextFieldBinding>>,
         settings_native_toggle_buttons: RefCell<Vec<NativeSettingsToggleButtonBinding>>,
         settings_native_dropdown_buttons: RefCell<Vec<NativeSettingsDropdownButtonBinding>>,
         settings_native_route_buttons: RefCell<Vec<NativeSettingsRouteButtonBinding>>,
-        settings_group_rows: OnceCell<Vec<Retained<NSButton>>>,
+        settings_group_rows: RefCell<Vec<Retained<NSButton>>>,
         clip_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         clip_table_items: RefCell<Vec<NativeHostClipListItemProjection>>,
         group_filter_button: OnceCell<Retained<NSButton>>,
@@ -402,6 +423,14 @@ mod appkit {
                 self.perform_native_settings_route_action(tag);
             }
 
+            #[unsafe(method(zsclipSettingsDraftChanged:))]
+            fn zsclip_settings_draft_changed(&self, _sender: &AnyObject) {
+                self.refresh_settings_dependencies();
+                if let Some(label) = self.ivars().settings_route_label.get() {
+                    label.setStringValue(&NSString::from_str(appkit_tr("有未保存的更改", "Unsaved changes")));
+                }
+            }
+
             #[unsafe(method(zsclipToggleClipboardCapture:))]
             fn zsclip_toggle_clipboard_capture(&self, _sender: &AnyObject) {
                 self.perform_native_settings_control_action(
@@ -596,6 +625,19 @@ mod appkit {
             fn zsclip_clipboard_poll(&self, _sender: &AnyObject) {
                 self.poll_native_clipboard_capture();
             }
+
+            #[unsafe(method(zsclipSearchPoll:))]
+            fn zsclip_search_poll(&self, _sender: &AnyObject) {self.poll_native_search();}
+
+            #[unsafe(method(zsclipPreviousPage:))]
+            fn zsclip_previous_page(&self,_sender:&AnyObject) {
+                if !self.ivars().search_pending.get() && self.ivars().search_page.get()>0 {self.request_native_search_page(self.ivars().search_page.get()-1);}
+            }
+
+            #[unsafe(method(zsclipNextPage:))]
+            fn zsclip_next_page(&self,_sender:&AnyObject) {
+                if !self.ivars().search_pending.get() && self.ivars().search_has_more.get() {self.request_native_search_page(self.ivars().search_page.get()+1);}
+            }
         }
 
         unsafe impl NSObjectProtocol for Delegate {}
@@ -657,7 +699,10 @@ mod appkit {
                     search_spec.label(),
                 );
                 let clip_items = crate::macos_app::macos_native_host_projected_clip_items();
-                let clip_row_height = 44.0_f64;
+                let preferences=NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot());
+                self.ivars().content_preferences.set(preferences);
+                search_field.setFont(Some(&NSFont::systemFontOfSize(preferences.content_font_size as f64)));
+                let clip_row_height = preferences.row_height();
                 let clip_list_width = 608.0_f64;
                 let clip_list_height = 300.0_f64;
                 let clip_list_document_view = NSView::initWithFrame(
@@ -681,8 +726,8 @@ mod appkit {
                 clip_table_view.addTableColumn(&clip_table_column);
                 clip_table_view.setHeaderView(None);
                 clip_table_view.setRowHeight(clip_row_height);
-                clip_table_view.setIntercellSpacing(NSSize::new(0.0, 1.0));
-                clip_table_view.setUsesAlternatingRowBackgroundColors(true);
+                clip_table_view.setIntercellSpacing(NSSize::new(0.0, if preferences.card_view_enabled {4.0}else{1.0}));
+                clip_table_view.setUsesAlternatingRowBackgroundColors(!preferences.card_view_enabled);
                 clip_table_view.setAllowsMultipleSelection(false);
                 clip_table_view.setAllowsEmptySelection(false);
                 clip_table_view
@@ -701,8 +746,8 @@ mod appkit {
                 let clip_scroll_view = NSScrollView::initWithFrame(
                     NSScrollView::alloc(mtm),
                     NSRect::new(
-                        NSPoint::new(16.0, 20.0),
-                        NSSize::new(clip_list_width, 300.0),
+                        NSPoint::new(16.0, 38.0),
+                        NSSize::new(clip_list_width, 282.0),
                     ),
                 );
                 clip_scroll_view.setHasVerticalScroller(true);
@@ -880,10 +925,22 @@ mod appkit {
                     .set(source_tab_buttons)
                     .unwrap();
                 self.refresh_native_clip_rows();
+                if let Some(view)=self.ivars().window.get().and_then(|window|window.contentView()) {
+                    let previous=unsafe {NSButton::buttonWithTitle_target_action(&NSString::from_str(appkit_tr("上一页","Previous")),Some(target),Some(sel!(zsclipPreviousPage:)),mtm)};
+                    let next=unsafe {NSButton::buttonWithTitle_target_action(&NSString::from_str(appkit_tr("下一页","Next")),Some(target),Some(sel!(zsclipNextPage:)),mtm)};
+                    previous.setFrame(NSRect::new(NSPoint::new(16.0,6.0),NSSize::new(90.0,26.0)));
+                    next.setFrame(NSRect::new(NSPoint::new(116.0,6.0),NSSize::new(90.0,26.0)));
+                    previous.setEnabled(false);next.setEnabled(false);
+                    let page=NSTextField::labelWithString(&NSString::from_str(appkit_tr("第 1 页","Page 1")),mtm);
+                    page.setFrame(NSRect::new(NSPoint::new(220.0,8.0),NSSize::new(190.0,22.0)));
+                    unsafe {view.addSubview(&previous);view.addSubview(&next);view.addSubview(&page);}
+                    self.ivars().previous_page_button.set(previous).unwrap();self.ivars().next_page_button.set(next).unwrap();self.ivars().page_label.set(page).unwrap();
+                }
 
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
                 self.install_status_item();
                 self.install_clipboard_capture_timer();
+                self.install_native_search_timer();
                 self.install_vv_local_event_monitor();
                 self.install_vv_global_event_monitor();
                 self.install_vv_cg_event_tap_monitor();
@@ -891,6 +948,7 @@ mod appkit {
                 #[allow(deprecated)]
                 app.activateIgnoringOtherApps(true);
                 self.run_auto_smoke_if_requested();
+                self.prepare_native_screenshot_scene();
             }
         }
 
@@ -907,6 +965,7 @@ mod appkit {
                     })
                     .unwrap_or(false)
                 {
+                    self.cancel_native_search();
                     sender.orderOut(None);
                     return false.into();
                 }
@@ -979,6 +1038,8 @@ mod appkit {
                     self.mtm(),
                     &presentation,
                     width,
+                    self.ivars().content_preferences.get(),
+                    table_view.selectedRow()==row,
                 ))
             }
 
@@ -1000,7 +1061,8 @@ mod appkit {
                 else {
                     return;
                 };
-                self.ivars().selected_item_id.set(item.id);
+                let previous=self.ivars().selected_item_id.replace(item.id);
+                if previous!=item.id && self.ivars().content_preferences.get().card_view_enabled {table_view.reloadData();}
                 self.refresh_native_clip_row_selection();
             }
         }
@@ -1032,19 +1094,44 @@ mod appkit {
         mtm: MainThreadMarker,
         presentation: &NativeHostClipRowPresentation,
         width: f64,
+        preferences:NativeContentPreferences,
+        selected:bool,
     ) -> Retained<NSView> {
-        let row_height = 44.0_f64;
+        let row_height = preferences.row_height();
         let cell = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, row_height)),
         );
         cell.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         appkit_set_accessibility_label::<NSView>(cell.as_ref(), &presentation.accessibility_label);
+        if preferences.card_view_enabled {
+            let card=NSView::initWithFrame(NSView::alloc(mtm),NSRect::new(NSPoint::new(3.0,3.0),NSSize::new((width-6.0).max(1.0),row_height-6.0)));
+            card.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+            unsafe {
+                let _:()=msg_send![&card,setWantsLayer:true];
+                let layer:*mut AnyObject=msg_send![&card,layer];
+                if !layer.is_null() {
+                    let color=if selected {NSColor::selectedControlColor()}else{NSColor::controlBackgroundColor()};
+                    let fill:*mut c_void=msg_send![&color,CGColor];
+                    let border:*mut c_void=msg_send![&NSColor::separatorColor(),CGColor];
+                    let shadow:*mut c_void=msg_send![&NSColor::blackColor(),CGColor];
+                    let _:()=msg_send![layer,setBackgroundColor:fill];
+                    let _:()=msg_send![layer,setCornerRadius:7.0_f64];
+                    let _:()=msg_send![layer,setBorderColor:border];
+                    let _:()=msg_send![layer,setBorderWidth:if preferences.card_border_enabled {1.0_f64}else{0.0_f64}];
+                    let _:()=msg_send![layer,setShadowColor:shadow];
+                    let _:()=msg_send![layer,setShadowOpacity:if preferences.card_shadow_enabled {0.15_f32}else{0.0_f32}];
+                    let _:()=msg_send![layer,setShadowRadius:2.0_f64];
+                    let _:()=msg_send![layer,setShadowOffset:NSSize::new(0.0,-1.0)];
+                }
+                cell.addSubview(&card);
+            }
+        }
 
         let kind_icon = appkit_clip_table_icon_view(
             mtm,
             presentation.kind_icon.zsui_icon(),
-            NSRect::new(NSPoint::new(20.0, 10.0), NSSize::new(24.0, 24.0)),
+            NSRect::new(NSPoint::new(20.0, (row_height-24.0)/2.0), NSSize::new(24.0, 24.0)),
         );
 
         let pin_width = 36.0_f64;
@@ -1056,11 +1143,12 @@ mod appkit {
                 0.0
             };
         let text_width = (width - text_left - text_right_padding).max(160.0);
+        let content=if presentation.kind_icon==crate::app_core::NativeHostClipKindIcon::Phrase && !presentation.title.is_empty() {&presentation.title}else{&presentation.preview};
         let title_label = appkit_clip_table_label(
             mtm,
-            &presentation.preview,
-            NSRect::new(NSPoint::new(text_left, 13.0), NSSize::new(text_width, 18.0)),
-            13.0,
+            content,
+            NSRect::new(NSPoint::new(text_left, (row_height-preferences.content_font_size as f64-6.0)/2.0), NSSize::new(text_width, preferences.content_font_size as f64+6.0)),
+            preferences.content_font_size as f64,
             &NSColor::labelColor(),
         );
 
@@ -1453,36 +1541,135 @@ mod appkit {
         )
     }
 
+    fn appkit_settings_page_label(page: crate::settings_model::SettingsPage) -> &'static str {
+        use crate::settings_model::SettingsPage::*;
+        match page {
+            General => appkit_tr("常规", "General"),
+            Appearance => appkit_tr("外观", "Appearance"),
+            Clipboard => appkit_tr("剪贴板", "Clipboard"),
+            Hotkey => appkit_tr("快捷键与 VV", "Hotkeys & VV"),
+            Group => appkit_tr("分组", "Groups"),
+            Plugin => appkit_tr("插件", "Plugins"),
+            Cloud => appkit_tr("多端同步", "Sync"),
+            About => appkit_tr("关于", "About"),
+        }
+    }
+
+    fn appkit_settings_section_label(page: crate::settings_model::SettingsPage, index: usize, source: &'static str) -> &'static str {
+        use crate::settings_model::SettingsPage::*;
+        let english = match (page, index) {
+            (General, 0) => "Startup & menu bar", (General, _) => "Configuration",
+            (Appearance, 0) => "Text & cards", (Appearance, 1) => "History list & previews",
+            (Appearance, 2) => "Window behavior", (Appearance, _) => "Window position",
+            (Clipboard, 0) => "History & formatting", (Clipboard, 1) => "Paste behavior", (Clipboard, _) => "Sounds",
+            (Hotkey, 0) => "Keyboard shortcuts", (Hotkey, 1) => "Mouse buttons", (Hotkey, 3) => "Using shortcuts", (Hotkey, _) => "VV quick paste",
+            (Group, 0) => "Grouping", (Group, 1) => "Manage groups", (Group, _) => "Phrases",
+            (Plugin, 0) => "Search", (Plugin, 1) => "Text recognition", (Plugin, 2) => "Translation",
+            (Plugin, 3) => "Text cleanup", (Plugin, 4) => "Mail merge", (Plugin, 5) => "WPS task pane", (Plugin, _) => "QR codes",
+            (Cloud, 0) => "Sync method", (Cloud, 1) => "WebDAV connection", (Cloud, 2) => "Cloud backup",
+            (Cloud, 3) => "LAN connection", (Cloud, 4) => "Pair devices", (Cloud, _) => "Trusted devices",
+            (About, 0) => "ZSClip", (About, 1) => "Updates", (About, _) => "Storage",
+        };
+        appkit_tr(source, english)
+    }
+
+    fn appkit_settings_control_label(control: &crate::settings_model::SettingsNativeControlSummary) -> String {
+        let english = match control.key {
+            "auto_start" => "Start at login", "silent_start" => "Start without opening the window",
+            "tray_icon" => "Show menu bar icon", "app_icon" => "Show application icon", "close_to_tray" => "Keep running when the window closes",
+            "dark_mode" => "Dark appearance", "content_font_size" => "Content font size", "card_view" => "Card view",
+            "card_border" => "Card borders", "card_shadow" => "Subtle card shadows", "image_preview" => "Image thumbnails",
+            "hover_preview" => "Preview on hover", "quick_delete" => "Quick delete button", "show_pin" => "Pin button",
+            "image_row_height" => "Image row height", "text_row_height" => "Text row height", "file_row_height" => "File row height",
+            "auto_hide_on_blur" => "Hide when focus leaves", "edge_auto_hide" => "Hide at the screen edge", "click_hide" => "Hide after pasting",
+            "persistent_search" => "Keep search visible", "position_mode" => "Open window at", "mouse_offset" => "Pointer offset x / y",
+            "fixed_position" => "Fixed position x / y", "capture_enable" => "Capture clipboard history", "max_items" => "Maximum saved items",
+            "rich_text" => "Preserve text and table formatting", "dedupe_filter" => "Move duplicate content to the top",
+            "paste_move_top" => "Move pasted items to the top", "context_menu_copy" => "Show Copy in the context menu", "skip_window" => "Skip selected paste targets",
+            "skip_window_classes" => "Excluded window classes", "capture_skip_window" => "Capture current target",
+            "copy_sound" => "Sound after copying", "paste_sound" => "Sound after pasting", "paste_sound_kind" => "Sound", "paste_sound_file" => "Choose sound file",
+            "hotkey_enable" => "Enable global shortcut", "hotkey_modifier" => "Modifier", "hotkey_key" => "Key", "hotkey_record" => "Record shortcut",
+            "plain_hotkey_enable" => "Enable plain-text paste shortcut", "plain_hotkey_modifier" => "Plain-text modifier", "plain_hotkey_key" => "Plain-text key",
+            "mouse_side_button_enable" => "Enable mouse side buttons", "mouse_side_button_1" => "Side button 1", "mouse_side_button_2" => "Side button 2",
+            "vv_mode" => "VV quick paste", "vv_source" => "VV source", "vv_group" => "Default VV group",
+            "group_enable" => "Enable grouping", "group_type_filter" => "Show content type filters", "phrase_titles" => "Use separate phrase titles",
+            "plugin_search" => "Enable web search", "search_engine" => "Search engine", "search_engine_reset" => "Restore preset",
+            "ocr_provider" => "OCR provider", "ocr_cloud_url" => "OCR service address", "ocr_cloud_token" => "OCR access token",
+            "translate_provider" => "Translation provider", "translate_app_id" => "Translation application ID", "translate_secret" => "Translation key", "translate_target" => "Target language",
+            "plugin_ai_clean" => "Clean up text", "plugin_super_mail_merge" => "Super Mail Merge", "plugin_mail_merge" => "Open mail merge",
+            "plugin_wps_taskpane" => "WPS task pane", "wps_taskpane_docs" => "WPS connection guide", "plugin_qr_quick" => "Convert text to QR code",
+            "multi_sync_mode" => "Sync method", "cloud_sync_interval" => "Sync interval", "cloud_webdav_url" => "WebDAV address",
+            "cloud_webdav_user" => "Username", "cloud_webdav_pass" => "Password", "cloud_remote_dir" => "Remote folder",
+            "cloud_sync_now" => "Sync now", "cloud_upload_config" => "Upload configuration", "cloud_apply_config" => "Apply cloud configuration", "cloud_restore_backup" => "Restore cloud backup",
+            "lan_device_name" => "Device name", "lan_tcp_port" => "TCP port", "lan_receive_mode" => "Received content", "lan_sync_mode" => "Automatic sync direction",
+            "lan_manual_host" => "Desktop IP address", "lan_pair" => "Pair selected device", "lan_refresh" => "Refresh devices", "lan_accept_pair" => "Allow pairing", "lan_reject_pair" => "Reject pairing",
+            "open_config" => "Open configuration file", "open_source" => "Source repository", "check_updates" => "Check for updates",
+            _ => return appkit_localized_label(control.label),
+        };
+        appkit_tr(control.label, english).to_string()
+    }
+
+    fn appkit_settings_profile() -> serde_json::Value {
+        let mut profile = serde_json::json!({
+            "auto_start": false, "silent_start": false, "tray_icon_enabled": true, "app_icon_visible": true,
+            "close_without_exit": true, "clipboard_capture_enabled": true, "vv_mode_enabled": true,
+            "grouping_enabled": true, "group_type_filter_enabled": false, "phrase_titles_enabled": true,
+            "content_font_size": 0, "card_view_enabled": false, "card_border_enabled": true, "card_shadow_enabled": true,
+            "image_preview_enabled": true, "hover_preview": false, "quick_delete_button": true, "show_pin_button": false,
+            "image_row_height": 132, "text_row_height": 44, "file_row_height": 44, "max_items": 200,
+            "show_pos_mode": "mouse", "show_mouse_dx": 12, "show_mouse_dy": 12, "show_fixed_x": 120, "show_fixed_y": 120,
+            "paste_success_sound_kind": "default", "hotkey_mod": "Win", "hotkey_key": "V",
+            "plain_paste_hotkey_mod": "Ctrl+Shift", "plain_paste_hotkey_key": "V",
+            "mouse_side_button_1_action": "quick_window", "mouse_side_button_2_action": "vv_mode",
+            "vv_source_tab": 0, "vv_group_id": 0, "search_engine": "jzxx", "image_ocr_provider": "off",
+            "text_translate_provider": "off", "text_translate_target_lang": "zh",
+            "cloud_sync_enabled": false, "lan_sync_enabled": false, "cloud_sync_interval": "1小时",
+            "cloud_remote_dir": "ZSClip", "lan_tcp_port": 38473, "lan_receive_mode": "records_only", "lan_sync_mode": "manual"
+        });
+        if let Some(saved) = crate::macos_app::macos_native_settings_json_snapshot().as_object() {
+            profile.as_object_mut().unwrap().extend(saved.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
+        profile
+    }
+
+    fn appkit_settings_control_visible(control: &crate::settings_model::SettingsNativeControlSummary) -> bool {
+        !matches!(control.key, "clipboard_history_disable" | "clipboard_history_enable" | "restart_shell" | "cloud_enable" | "lan_enable")
+    }
+
+    fn appkit_settings_text_label(mtm: MainThreadMarker, text: &str, frame: NSRect, size: f64, heading: bool) -> Retained<NSTextField> {
+        let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
+        label.setFrame(frame);
+        label.setFont(Some(&if heading { NSFont::boldSystemFontOfSize(size) } else { NSFont::systemFontOfSize(size) }));
+        label.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+        label.setMaximumNumberOfLines(2);
+        appkit_set_accessibility_label::<NSTextField>(label.as_ref(), text);
+        label
+    }
+
     fn appkit_settings_scroll_tab_item(
         mtm: MainThreadMarker,
         label: &str,
-    ) -> (Retained<NSTabViewItem>, Retained<NSView>) {
-        let content = unsafe {
-            NSView::initWithFrame(
-                NSView::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1088.0, 660.0)),
-            )
-        };
-        let scroller = unsafe {
-            NSScrollView::initWithFrame(
-                NSScrollView::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1088.0, 584.0)),
-            )
-        };
+        document_height: f64,
+    ) -> (Retained<NSTabViewItem>, Retained<NSView>, Retained<NSScrollView>) {
+        let content = NSView::initWithFrame(NSView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(860.0, document_height)));
+        let scroller = NSScrollView::initWithFrame(NSScrollView::alloc(mtm),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(900.0, 500.0)));
         scroller.setHasVerticalScroller(true);
         scroller.setHasHorizontalScroller(false);
         scroller.setAutohidesScrollers(true);
+        scroller.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
         scroller.setDocumentView(Some(&content));
         let content_label = format!("{label} settings page");
         let scroller_label = format!("{label} settings scroll area");
         appkit_set_accessibility_label::<NSView>(content.as_ref(), &content_label);
         appkit_set_accessibility_label::<NSScrollView>(scroller.as_ref(), &scroller_label);
         let item = unsafe { NSTabViewItem::initWithIdentifier(NSTabViewItem::alloc(), None) };
-        let title = NSString::from_str(label);
-        item.setLabel(&title);
+        item.setLabel(&NSString::from_str(label));
         item.setView(Some(&scroller));
-        (item, content)
+        (item, content, scroller)
     }
+
 
     impl Delegate {
         fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -1512,6 +1699,7 @@ mod appkit {
         }
 
         fn hide_main_window(&self) {
+            self.cancel_native_search();
             if let Some(window) = self.ivars().window.get() {
                 window.orderOut(None);
             }
@@ -1522,10 +1710,12 @@ mod appkit {
                 return;
             };
             if window.isVisible() {
+                self.cancel_native_search();
                 window.orderOut(None);
                 return;
             }
             window.makeKeyAndOrderFront(None);
+            self.reload_native_clip_items();
             unsafe {
                 NSApplication::sharedApplication(self.mtm()).activateIgnoringOtherApps(true);
             }
@@ -1988,17 +2178,15 @@ mod appkit {
             let items = self.ivars().clip_items.borrow();
             let grouping_enabled = crate::macos_app::macos_native_grouping_enabled();
             let row_actions_title = NSString::from_str(appkit_tr("行操作", "Row Actions"));
+            let mut entries=native_host_full_row_popup_menu_entries_for_groups(
+                &groups,native_host_row_popup_menu_input_for_projection(&items,self.ivars().selected_item_id.get(),grouping_enabled),
+                |label|crate::i18n::translate(label).into_owned());
+            let kind=items.iter().find(|item|item.id==self.ivars().selected_item_id.get()).map(|item|item.kind).unwrap_or(ClipKind::Text);
+            if let Some(entry)=self.ivars().content_preferences.get().rename_phrase_menu_entry(kind,appkit_tr("重命名短语","Rename Phrase")) {entries.insert(0,entry);}
+            drop(items);
             let menu = self.build_popup_menu(
                 &row_actions_title,
-                &native_host_full_row_popup_menu_entries_for_groups(
-                    &groups,
-                    native_host_row_popup_menu_input_for_projection(
-                        &items,
-                        self.ivars().selected_item_id.get(),
-                        grouping_enabled,
-                    ),
-                    |label| crate::i18n::translate(label).into_owned(),
-                ),
+                &entries,
                 target,
             );
             let shown =
@@ -2265,521 +2453,315 @@ mod appkit {
         fn present_settings_window(&self, _route_name: &str) {
             if let Some(window) = self.ivars().settings_window.get() {
                 window.makeKeyAndOrderFront(None);
+                self.refresh_settings_dependencies();
                 return;
             }
-
+            use crate::settings_model::SettingsPage;
             let mtm = self.mtm();
-            let window = unsafe {
-                NSWindow::initWithContentRect_styleMask_backing_defer(
-                    NSWindow::alloc(mtm),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1160.0, 760.0)),
-                    NSWindowStyleMask::Titled
-                        | NSWindowStyleMask::Closable
-                        | NSWindowStyleMask::Miniaturizable
-                        | NSWindowStyleMask::Resizable
-                        | NSWindowStyleMask::FullSizeContentView,
-                    NSBackingStoreType::Buffered,
-                    false,
-                )
-            };
-            unsafe { window.setReleasedWhenClosed(false) };
-            window.setTitle(ns_string!("ZSClip Settings"));
-            window.setTitleVisibility(NSWindowTitleVisibility::Hidden);
-            window.setTitlebarAppearsTransparent(true);
-            unsafe {
-                let _: () = msg_send![&*window, setMovableByWindowBackground: true];
-            }
-
-            let title = unsafe {
-                let label = NSTextField::labelWithString(ns_string!("Settings"), mtm);
-                label.setFrame(NSRect::new(
-                    NSPoint::new(24.0, 692.0),
-                    NSSize::new(1100.0, 32.0),
-                ));
-                label.setFont(Some(&NSFont::systemFontOfSize(24.0)));
-                label
-            };
-            let route = unsafe {
-                let label =
-                    NSTextField::labelWithString(ns_string!("zsclip.window.open_settings"), mtm);
-                label.setFrame(NSRect::new(
-                    NSPoint::new(24.0, 656.0),
-                    NSSize::new(1100.0, 24.0),
-                ));
-                label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                label
-            };
-            let view = NSVisualEffectView::initWithFrame(
-                NSVisualEffectView::alloc(mtm),
-                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1160.0, 760.0)),
-            );
+            let window = unsafe { NSWindow::initWithContentRect_styleMask_backing_defer(
+                NSWindow::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(960.0, 680.0)),
+                NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable | NSWindowStyleMask::Resizable,
+                NSBackingStoreType::Buffered, false) };
+            unsafe { window.setReleasedWhenClosed(false); }
+            window.setTitle(&NSString::from_str(appkit_tr("ZSClip 设置", "ZSClip Settings")));
+            window.setContentMinSize(NSSize::new(900.0, 560.0));
+            let view = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm),
+                NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(960.0, 680.0)));
             view.setMaterial(NSVisualEffectMaterial::WindowBackground);
             view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
             view.setState(NSVisualEffectState::FollowsWindowActiveState);
-            view.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewWidthSizable
-                    | NSAutoresizingMaskOptions::ViewHeightSizable,
-            );
-            appkit_enable_rounded_layer(view.as_ref(), 12.0);
+            view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
             window.setContentView(Some(&view));
-            unsafe { view.addSubview(&title) };
-            unsafe { view.addSubview(&route) };
-            let _ = self.ivars().settings_route_label.set(route.clone());
-            let target: &AnyObject = self.as_ref();
-            let settings_tab_view = unsafe {
-                NSTabView::initWithFrame(
-                    NSTabView::alloc(mtm),
-                    NSRect::new(NSPoint::new(20.0, 20.0), NSSize::new(1120.0, 620.0)),
-                )
-            };
+            let title = appkit_settings_text_label(mtm, appkit_tr("设置", "Settings"),
+                NSRect::new(NSPoint::new(28.0, 628.0), NSSize::new(860.0, 32.0)), 23.0, true);
+            title.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin);
+            view.addSubview(&title);
+            let status = appkit_settings_text_label(mtm, appkit_tr("更改将在保存后应用", "Changes apply when saved"),
+                NSRect::new(NSPoint::new(28.0, 26.0), NSSize::new(600.0, 22.0)), 12.0, false);
+            status.setTextColor(Some(&NSColor::secondaryLabelColor()));
+            status.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+            view.addSubview(&status);
+            self.ivars().settings_route_label.set(status).ok();
+
+            let settings_tab_view = NSTabView::initWithFrame(NSTabView::alloc(mtm),
+                NSRect::new(NSPoint::new(20.0, 70.0), NSSize::new(920.0, 540.0)));
             settings_tab_view.setTabViewType(NSTabViewType::TopTabsBezelBorder);
-            let mut general_content = None;
-            let mut groups_content = None;
-            let mut actions_content = None;
-            for spec in native_host_settings_page_tab_specs() {
-                let (tab_item, tab_content) = appkit_settings_scroll_tab_item(mtm, spec.label);
+            settings_tab_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable);
+            appkit_set_accessibility_label::<NSTabView>(settings_tab_view.as_ref(), appkit_tr("设置分类", "Settings categories"));
+            view.addSubview(&settings_tab_view);
+            self.ivars().settings_native_text_fields.borrow_mut().clear();
+            self.ivars().settings_native_toggle_buttons.borrow_mut().clear();
+            self.ivars().settings_native_dropdown_buttons.borrow_mut().clear();
+            self.ivars().settings_native_route_buttons.borrow_mut().clear();
+            let settings_json = appkit_settings_profile();
+            let pages = crate::settings_model::settings_native_page_summaries();
+            let sections = crate::settings_model::settings_native_section_summaries();
+            let controls = crate::settings_model::settings_native_control_summaries();
+            let mut page_scrollers = Vec::new();
+            for page in pages {
+                let page_sections = sections.iter().filter(|section| section.page == page.page)
+                    .filter(|section| (page.page == SettingsPage::Group && section.section_index == 1)
+                        || controls.iter().any(|control| control.page == page.page && control.section_index == section.section_index && appkit_settings_control_visible(control)))
+                    .collect::<Vec<_>>();
+                let section_rows = |section_index| controls.iter().filter(|control| control.page == page.page
+                    && control.section_index == section_index && appkit_settings_control_visible(control)).count();
+                let document_height = (40.0 + page_sections.iter().map(|section| {
+                    58.0 + if page.page == SettingsPage::Group && section.section_index == 1 { 338.0 }
+                    else { section_rows(section.section_index) as f64 * 44.0 }
+                }).sum::<f64>()).max(500.0);
+                let label = appkit_settings_page_label(page.page);
+                let (tab_item, content, scroller) = appkit_settings_scroll_tab_item(mtm, label, document_height);
                 settings_tab_view.addTabViewItem(&tab_item);
-                match spec.kind {
-                    NativeSettingsPageTabKind::General => general_content = Some(tab_content),
-                    NativeSettingsPageTabKind::Groups => groups_content = Some(tab_content),
-                    NativeSettingsPageTabKind::Actions => actions_content = Some(tab_content),
-                }
-            }
-            unsafe { view.addSubview(&settings_tab_view) };
-            let general_content = general_content.expect("settings general tab spec");
-            let groups_content = groups_content.expect("settings groups tab spec");
-            let actions_content = actions_content.expect("settings actions tab spec");
-            let view = general_content;
-
-            let page_summaries = crate::settings_model::settings_native_page_summaries();
-            let section_summaries = crate::settings_model::settings_native_section_summaries();
-            let control_summaries = crate::settings_model::settings_native_control_summaries();
-            let settings_json = crate::macos_app::macos_native_settings_json_snapshot();
-            eprintln!(
-                "ZSClip AppKit settings native page summaries count={} section summaries count={} control summaries count={}",
-                page_summaries.len(),
-                section_summaries.len(),
-                control_summaries.len()
-            );
-            for (index, summary) in page_summaries.into_iter().enumerate() {
-                let control_rows = section_summaries
-                    .iter()
-                    .filter(|section| section.page == summary.page)
-                    .map(|section| section.control_rows)
-                    .sum::<i32>();
-                let control_count = control_summaries
-                    .iter()
-                    .filter(|control| control.page == summary.page)
-                    .count();
-                let page_name = NSString::from_str(&format!(
-                    "{} ({}/{}/{})",
-                    summary.label,
-                    summary.section_titles.len(),
-                    control_rows,
-                    control_count
-                ));
-                let row = unsafe {
-                    let label = NSTextField::labelWithString(&page_name, mtm);
-                    label.setFrame(NSRect::new(
-                        NSPoint::new(24.0, 608.0 - index as f64 * 32.0),
-                        NSSize::new(172.0, 28.0),
-                    ));
-                    label
-                };
-                unsafe { view.addSubview(&row) };
-            }
-            let control_title = unsafe {
-                let title = NSString::from_str(
-                    native_host_settings_section_label("settings_controls")
-                        .unwrap_or("Shared Controls"),
-                );
-                let label = NSTextField::labelWithString(&title, mtm);
-                label.setFrame(NSRect::new(
-                    NSPoint::new(24.0, 440.0),
-                    NSSize::new(360.0, 20.0),
-                ));
-                label.setFont(Some(&NSFont::systemFontOfSize(12.0)));
-                label
-            };
-            unsafe { view.addSubview(&control_title) };
-            self.ivars()
-                .settings_native_text_fields
-                .borrow_mut()
-                .clear();
-            self.ivars()
-                .settings_native_toggle_buttons
-                .borrow_mut()
-                .clear();
-            self.ivars()
-                .settings_native_dropdown_buttons
-                .borrow_mut()
-                .clear();
-            self.ivars()
-                .settings_native_route_buttons
-                .borrow_mut()
-                .clear();
-            let mut toggle_controls = control_summaries
-                .iter()
-                .filter(|control| {
-                    control.kind == crate::settings_model::SettingsNativeControlKind::Toggle
-                })
-                .collect::<Vec<_>>();
-            toggle_controls.sort_by_key(|control| match control.key {
-                "capture_enable" => 0,
-                "lan_enable" => 1,
-                "cloud_enable" => 2,
-                _ => 10,
-            });
-            for (index, control) in toggle_controls.into_iter().take(8).enumerate() {
-                let display = crate::settings_model::settings_native_control_display_value(
-                    control,
-                    &settings_json,
-                )
-                .unwrap_or_else(|| {
-                    crate::settings_model::SettingsNativeControlDisplayValue {
-                        control_key: control.key,
-                        value: "false".to_string(),
-                        sensitive: false,
+                let mut offset = 24.0;
+                for section in page_sections {
+                    let section_label = appkit_settings_section_label(page.page, section.section_index, section.section_title);
+                    let heading = appkit_settings_text_label(mtm, section_label,
+                        NSRect::new(NSPoint::new(28.0, document_height - offset - 28.0), NSSize::new(780.0, 28.0)), 16.0, true);
+                    content.addSubview(&heading);
+                    offset += 38.0;
+                    if page.page == SettingsPage::Group && section.section_index == 1 {
+                        self.build_settings_group_controls(&content, document_height - offset);
+                        offset += 338.0;
+                    } else {
+                        for control in controls.iter().filter(|control| control.page == page.page
+                            && control.section_index == section.section_index && appkit_settings_control_visible(control)) {
+                            self.build_settings_control(&content, control, &settings_json, document_height - offset - 32.0);
+                            offset += 44.0;
+                        }
                     }
-                });
-                let button_title =
-                    NSString::from_str(&format!("{}: {}", control.section_title, control.label));
-                let button = unsafe {
-                    NSButton::buttonWithTitle_target_action(&button_title, None, None, mtm)
-                };
-                button.setButtonType(NSButtonType::Switch);
-                let initial_value = display.value.eq_ignore_ascii_case("true");
-                button.setState(if initial_value {
-                    NSControlStateValueOn
-                } else {
-                    NSControlStateValueOff
-                });
-                button.setFrame(NSRect::new(
-                    NSPoint::new(220.0, 608.0 - index as f64 * 26.0),
-                    NSSize::new(176.0, 22.0),
-                ));
-                self.ivars()
-                    .settings_native_toggle_buttons
-                    .borrow_mut()
-                    .push(NativeSettingsToggleButtonBinding {
-                        control_key: display.control_key,
-                        initial_value,
-                        button: button.clone(),
-                    });
-                unsafe { view.addSubview(&button) };
-            }
-            for (index, control) in control_summaries
-                .iter()
-                .filter(|control| {
-                    control.kind == crate::settings_model::SettingsNativeControlKind::TextInput
-                })
-                .take(12)
-                .enumerate()
-            {
-                let display = crate::settings_model::settings_native_control_display_value(
-                    control,
-                    &settings_json,
-                )
-                .unwrap_or_else(|| {
-                    crate::settings_model::SettingsNativeControlDisplayValue {
-                        control_key: control.key,
-                        value: String::new(),
-                        sensitive: false,
-                    }
-                });
-                let row_label_text =
-                    NSString::from_str(&format!("{}: {}", control.section_title, control.label));
-                let row_label = unsafe {
-                    let label = NSTextField::labelWithString(&row_label_text, mtm);
-                    label.setFrame(NSRect::new(
-                        NSPoint::new(24.0, 414.0 - index as f64 * 26.0),
-                        NSSize::new(156.0, 20.0),
-                    ));
-                    label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-                    label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                    label
-                };
-                unsafe { view.addSubview(&row_label) };
-                if display.sensitive {
-                    let secure_label = unsafe {
-                        let label = NSTextField::labelWithString(ns_string!("secure"), mtm);
-                        label.setFrame(NSRect::new(
-                            NSPoint::new(188.0, 414.0 - index as f64 * 26.0),
-                            NSSize::new(156.0, 20.0),
-                        ));
-                        label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-                        label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                        label
-                    };
-                    unsafe { view.addSubview(&secure_label) };
-                    continue;
+                    offset += 20.0;
                 }
-                let field = unsafe { NSTextField::labelWithString(ns_string!(""), mtm) };
-                field.setFrame(NSRect::new(
-                    NSPoint::new(188.0, 410.0 - index as f64 * 26.0),
-                    NSSize::new(176.0, 24.0),
-                ));
-                field.setEditable(true);
-                field.setBezeled(true);
-                if !display.value.is_empty() {
-                    let value = NSString::from_str(&display.value);
-                    field.setStringValue(&value);
-                }
-                self.ivars().settings_native_text_fields.borrow_mut().push(
-                    NativeSettingsTextFieldBinding {
-                        control_key: display.control_key,
-                        initial_value: display.value,
-                        field: field.clone(),
-                    },
-                );
-                unsafe { view.addSubview(&field) };
+                page_scrollers.push((scroller, document_height));
             }
-            for (index, (control, options)) in control_summaries
-                .iter()
-                .filter(|control| {
-                    control.kind == crate::settings_model::SettingsNativeControlKind::Dropdown
-                })
-                .filter_map(|control| {
-                    native_settings_dropdown_options_for_host(control, &settings_json)
-                        .map(|options| (control, options))
-                })
-                .take(8)
-                .enumerate()
-            {
-                let selected_label = options
-                    .options
-                    .get(options.selected_index)
-                    .map(|option| option.label.as_str())
-                    .unwrap_or("");
-                let label_text =
-                    NSString::from_str(&format!("{}: {}", control.section_title, selected_label));
-                let row_label = unsafe {
-                    let label = NSTextField::labelWithString(&label_text, mtm);
-                    label.setFrame(NSRect::new(
-                        NSPoint::new(430.0, 344.0 - index as f64 * 30.0),
-                        NSSize::new(170.0, 20.0),
-                    ));
-                    label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
-                    label.setTextColor(Some(&NSColor::secondaryLabelColor()));
-                    label
-                };
-                let popup = unsafe {
-                    NSPopUpButton::initWithFrame_pullsDown(
-                        NSPopUpButton::alloc(mtm),
-                        NSRect::new(
-                            NSPoint::new(610.0, 340.0 - index as f64 * 30.0),
-                            NSSize::new(220.0, 24.0),
-                        ),
-                        false,
-                    )
-                };
-                let mut option_values = Vec::new();
-                for option in &options.options {
-                    let title = NSString::from_str(&option.label);
-                    popup.addItemWithTitle(&title);
-                    option_values.push(option.raw_value.clone());
-                }
-                popup.selectItemAtIndex(options.selected_index as _);
-                let initial_value = option_values
-                    .get(options.selected_index)
-                    .cloned()
-                    .unwrap_or_default();
-                self.ivars()
-                    .settings_native_dropdown_buttons
-                    .borrow_mut()
-                    .push(NativeSettingsDropdownButtonBinding {
-                        control_key: options.control_key,
-                        initial_value,
-                        option_values,
-                        button: popup.clone(),
-                    });
-                unsafe { view.addSubview(&row_label) };
-                unsafe { view.addSubview(&popup) };
+            self.ivars().settings_tabs.set(settings_tab_view).ok();
+            let target: &AnyObject = self.as_ref();
+            for (action, x, width) in [(NativeHostSettingsAction::Close, 700.0, 100.0), (NativeHostSettingsAction::Save, 814.0, 118.0)] {
+                let button = unsafe { NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(&appkit_localized_label(action.button_label())), Some(target), Some(appkit_settings_action_selector(action)), mtm) };
+                button.setFrame(NSRect::new(NSPoint::new(x, 20.0), NSSize::new(width, 32.0)));
+                button.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinXMargin);
+                appkit_set_accessibility_label::<NSButton>(button.as_ref(), &appkit_localized_label(action.button_label()));
+                view.addSubview(&button);
+                if action == NativeHostSettingsAction::Save { self.ivars().settings_save_button.set(button).ok(); }
             }
-            for (index, (control, route_name, action_name)) in control_summaries
-                .iter()
-                .filter(|control| {
-                    control.kind == crate::settings_model::SettingsNativeControlKind::Button
-                })
-                .filter_map(|control| {
-                    let route = control.route?;
-                    if route.kind != crate::settings_model::SettingsNativeControlRouteKind::Action {
-                        return None;
-                    }
-                    route
-                        .action_name
-                        .map(|action_name| (control, route.route_name, action_name))
-                })
-                .take(10)
-                .enumerate()
-            {
-                let tag = 10_000 + index as isize;
-                let title =
-                    NSString::from_str(&format!("{}: {}", control.section_title, control.label));
-                let button = unsafe {
-                    NSButton::buttonWithTitle_target_action(
-                        &title,
-                        Some(target),
-                        Some(sel!(zsclipSettingsNativeRouteAction:)),
-                        mtm,
-                    )
-                };
-                button.setFrame(NSRect::new(
-                    NSPoint::new(900.0, 608.0 - index as f64 * 26.0),
-                    NSSize::new(220.0, 22.0),
-                ));
-                button.setTag(tag);
-                self.ivars()
-                    .settings_native_route_buttons
-                    .borrow_mut()
-                    .push(NativeSettingsRouteButtonBinding {
-                        tag,
-                        route_name,
-                        action_name,
-                    });
-                unsafe { view.addSubview(&button) };
-            }
-
-            let view = groups_content;
-            let group_title = unsafe {
-                let title = NSString::from_str(
-                    native_host_settings_section_label("group_selector")
-                        .unwrap_or("Group Management"),
-                );
-                let label = NSTextField::labelWithString(&title, mtm);
-                label.setFrame(NSRect::new(
-                    NSPoint::new(430.0, 608.0),
-                    NSSize::new(420.0, 24.0),
-                ));
-                label.setFont(Some(&NSFont::systemFontOfSize(15.0)));
-                label
-            };
-            let name_field = unsafe { NSTextField::labelWithString(ns_string!("新分组"), mtm) };
-            name_field.setFrame(NSRect::new(
-                NSPoint::new(430.0, 574.0),
-                NSSize::new(220.0, 28.0),
-            ));
-            name_field.setEditable(true);
-            name_field.setBezeled(true);
-            let group_buttons: Vec<_> = native_host_settings_group_button_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_button_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_settings_group_action_selector(spec.action),
-                    )
-                })
-                .collect();
-
-            let group_rows: Vec<_> = (0..5)
-                .map(|index| {
-                    let row = unsafe {
-                        NSButton::buttonWithTitle_target_action(
-                            ns_string!(""),
-                            Some(target),
-                            Some(sel!(zsclipSelectSettingsGroup:)),
-                            mtm,
-                        )
-                    };
-                    row.setFrame(NSRect::new(
-                        NSPoint::new(430.0, 536.0 - index as f64 * 30.0),
-                        NSSize::new(424.0, 26.0),
-                    ));
-                    row.setTag(0);
-                    row.setHidden(true);
-                    row
-                })
-                .collect();
-            unsafe { view.addSubview(&group_title) };
-            unsafe { view.addSubview(&name_field) };
-            for row in &group_rows {
-                unsafe { view.addSubview(row) };
-            }
-            for button in &group_buttons {
-                unsafe { view.addSubview(button) };
-            }
-            self.ivars().settings_group_name_field.set(name_field).ok();
-            self.ivars().settings_group_rows.set(group_rows).ok();
-
-            let view = actions_content;
-            let settings_toggle_buttons: Vec<_> = native_host_settings_toggle_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_switch_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_settings_control_action_selector(spec.action),
-                    )
-                })
-                .collect();
-            let settings_dropdown_buttons: Vec<_> = native_host_settings_dropdown_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_dropdown_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_settings_control_action_selector(spec.action),
-                    )
-                })
-                .collect();
-            let platform_action_buttons: Vec<_> = native_host_settings_platform_button_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_button_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_settings_platform_action_selector(spec.action),
-                    )
-                })
-                .collect();
-            let dialog_buttons: Vec<_> = native_host_dialog_button_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_button_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_dialog_action_selector(spec.action),
-                    )
-                })
-                .collect();
-            let settings_action_buttons: Vec<_> = native_host_settings_action_button_specs()
-                .into_iter()
-                .map(|spec| {
-                    appkit_button_from_spec(
-                        mtm,
-                        target,
-                        spec,
-                        appkit_settings_action_selector(spec.action),
-                    )
-                })
-                .collect();
-            for button in &settings_toggle_buttons {
-                unsafe { view.addSubview(button) };
-            }
-            for button in &settings_dropdown_buttons {
-                unsafe { view.addSubview(button) };
-            }
-            for button in &platform_action_buttons {
-                unsafe { view.addSubview(button) };
-            }
-            for button in &dialog_buttons {
-                unsafe { view.addSubview(button) };
-            }
-            for button in &settings_action_buttons {
-                unsafe { view.addSubview(button) };
-            }
-
             window.center();
             window.makeKeyAndOrderFront(None);
-            self.ivars().settings_window.set(window).unwrap();
+            self.ivars().settings_window.set(window).ok();
+            self.ivars().settings_page_scrollers.set(page_scrollers.iter().map(|(scroller, _)| scroller.clone()).collect()).ok();
+            for (scroller, height) in page_scrollers {
+                let clip = scroller.contentView();
+                clip.scrollToPoint(NSPoint::new(0.0, (height - clip.bounds().size.height).max(0.0)));
+                scroller.reflectScrolledClipView(&clip);
+            }
             self.refresh_settings_group_rows();
+            self.refresh_settings_dependencies();
         }
+
+        fn build_settings_control(&self, view: &NSView, control: &crate::settings_model::SettingsNativeControlSummary,
+            settings_json: &serde_json::Value, y: f64) {
+            use crate::settings_model::{SettingsNativeControlKind as Kind, SettingsNativeControlRouteKind};
+            let mtm = self.mtm();
+            let title = appkit_settings_control_label(control);
+            let display = crate::settings_model::settings_native_control_display_value(control, settings_json);
+            let target: &AnyObject = self.as_ref();
+            match control.kind {
+                Kind::Toggle => {
+                    let button = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(&title),
+                        Some(target), Some(sel!(zsclipSettingsDraftChanged:)), mtm) };
+                    button.setButtonType(NSButtonType::Switch);
+                    let initial_value = display.as_ref().is_some_and(|display| display.value.eq_ignore_ascii_case("true"));
+                    button.setState(if initial_value { NSControlStateValueOn } else { NSControlStateValueOff });
+                    button.setFrame(NSRect::new(NSPoint::new(32.0, y), NSSize::new(770.0, 28.0)));
+                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &title);
+                    self.ivars().settings_native_toggle_buttons.borrow_mut().push(NativeSettingsToggleButtonBinding {
+                        control_key: control.key, initial_value, button: button.clone(),
+                    });
+                    view.addSubview(&button);
+                }
+                Kind::TextInput => {
+                    view.addSubview(&appkit_settings_text_label(mtm, &title,
+                        NSRect::new(NSPoint::new(32.0, y + 4.0), NSSize::new(264.0, 26.0)), 13.0, false));
+                    let field = NSTextField::labelWithString(ns_string!(""), mtm);
+                    field.setFrame(NSRect::new(NSPoint::new(310.0, y), NSSize::new(492.0, 30.0)));
+                    field.setBezeled(true);
+                    let sensitive = display.as_ref().is_some_and(|value| value.sensitive);
+                    field.setEditable(!sensitive);
+                    field.setSelectable(!sensitive);
+                    field.setEnabled(!sensitive);
+                    let initial_value = display.as_ref().map(|value| value.value.clone()).unwrap_or_default();
+                    field.setStringValue(&NSString::from_str(if sensitive { appkit_tr("凭据单独管理", "Credentials are managed separately") } else { &initial_value }));
+                    appkit_set_accessibility_label::<NSTextField>(field.as_ref(), &title);
+                    if !sensitive {
+                        self.ivars().settings_native_text_fields.borrow_mut().push(NativeSettingsTextFieldBinding {
+                            control_key: control.key, initial_value, field: field.clone(),
+                        });
+                    }
+                    view.addSubview(&field);
+                }
+                Kind::Dropdown => {
+                    view.addSubview(&appkit_settings_text_label(mtm, &title,
+                        NSRect::new(NSPoint::new(32.0, y + 4.0), NSSize::new(264.0, 26.0)), 13.0, false));
+                    let Some(options) = native_settings_dropdown_options_for_host(control, settings_json) else { return; };
+                    let popup = NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm),
+                        NSRect::new(NSPoint::new(310.0, y), NSSize::new(360.0, 30.0)), false);
+                    let mut option_values = Vec::new();
+                    for option in &options.options {
+                        popup.addItemWithTitle(&NSString::from_str(&appkit_localized_label(&option.label)));
+                        option_values.push(option.raw_value.clone());
+                    }
+                    popup.selectItemAtIndex(options.selected_index as _);
+                    unsafe { popup.setTarget(Some(target)); popup.setAction(Some(sel!(zsclipSettingsDraftChanged:))); }
+                    appkit_set_accessibility_label::<NSPopUpButton>(popup.as_ref(), &title);
+                    let initial_value = option_values.get(options.selected_index).cloned().unwrap_or_default();
+                    self.ivars().settings_native_dropdown_buttons.borrow_mut().push(NativeSettingsDropdownButtonBinding {
+                        control_key: control.key, initial_value, option_values, button: popup.clone(),
+                    });
+                    view.addSubview(&popup);
+                }
+                Kind::Button => {
+                    let selector = if control.key == "open_config" { Some(sel!(zsclipOpenSettingsConfig:)) }
+                        else if control.route.is_some_and(|route| route.kind == SettingsNativeControlRouteKind::Action) { Some(sel!(zsclipSettingsNativeRouteAction:)) }
+                        else { None };
+                    let button = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(&title), Some(target), selector, mtm) };
+                    button.setFrame(NSRect::new(NSPoint::new(32.0, y), NSSize::new(360.0, 30.0)));
+                    button.setEnabled(selector.is_some());
+                    appkit_set_accessibility_label::<NSButton>(button.as_ref(), &title);
+                    if control.key != "open_config" {
+                        if let Some(route) = control.route {
+                            if let Some(action_name) = route.action_name {
+                                let mut bindings = self.ivars().settings_native_route_buttons.borrow_mut();
+                                let tag = 10_000 + bindings.len() as isize;
+                                button.setTag(tag);
+                                bindings.push(NativeSettingsRouteButtonBinding { tag, route_name: route.route_name, action_name });
+                            }
+                        }
+                    }
+                    view.addSubview(&button);
+                }
+                Kind::Label | Kind::List => {
+                    let text = match control.key {
+                        "about_version" => format!("ZSClip {}", crate::app_version::APP_VERSION),
+                        "data_directory" => appkit_tr("配置与历史记录按当前用户保存。", "Configuration and history are saved for the current user.").to_string(),
+                        "phrase_titles_note" => appkit_tr("关闭后显示正文摘要，已保存的标题保留。", "Turning titles off keeps existing titles and shows a content preview.").to_string(),
+                        "hotkey_preview" => format!("{} + {}", settings_json["hotkey_mod"].as_str().unwrap_or(""), settings_json["hotkey_key"].as_str().unwrap_or("")),
+                        "plain_hotkey_preview" => format!("{} + {}", settings_json["plain_paste_hotkey_mod"].as_str().unwrap_or(""), settings_json["plain_paste_hotkey_key"].as_str().unwrap_or("")),
+                        "hotkey_note_main" => appkit_tr("全局快捷键与 VV 可分别开启。", "The global shortcut and VV can be enabled independently.").to_string(),
+                        "hotkey_note_plain" => appkit_tr("纯文本粘贴不保留格式。", "Plain-text paste removes formatting.").to_string(),
+                        "lan_discovered_list" => appkit_tr("发现的设备会在局域网连接中显示。", "Discovered devices are shown in the LAN connection list.").to_string(),
+                        _ => display.map(|value| if value.value.is_empty() { title.clone() } else { format!("{title}: {}", value.value) }).unwrap_or(title),
+                    };
+                    let label = appkit_settings_text_label(mtm, &text,
+                        NSRect::new(NSPoint::new(32.0, y), NSSize::new(770.0, 34.0)), 12.0, false);
+                    label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+                    view.addSubview(&label);
+                }
+            }
+        }
+
+        fn build_settings_group_controls(&self, view: &NSView, top: f64) {
+            let mtm = self.mtm();
+            let target: &AnyObject = self.as_ref();
+            let actions = [NativeHostSettingsGroupAction::ShowRecords, NativeHostSettingsGroupAction::ShowPhrases,
+                NativeHostSettingsGroupAction::Add, NativeHostSettingsGroupAction::Rename, NativeHostSettingsGroupAction::Delete,
+                NativeHostSettingsGroupAction::MoveUp, NativeHostSettingsGroupAction::MoveDown];
+            let labels = [appkit_tr("复制记录", "Clipboard Records"), appkit_tr("常用短语", "Phrases"), appkit_tr("新建分组", "Add group"),
+                appkit_tr("重命名", "Rename"), appkit_tr("删除", "Delete"), appkit_tr("上移", "Move up"), appkit_tr("下移", "Move down")];
+            for (index, action) in actions.into_iter().enumerate() {
+                let button = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(labels[index]), Some(target), Some(appkit_settings_group_action_selector(action)), mtm) };
+                let (x, y, width) = if index < 2 { (32.0 + index as f64 * 194.0, top - 32.0, 182.0) }
+                    else { (32.0 + (index - 2) as f64 * 156.0, top - 120.0, 144.0) };
+                button.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(width, 30.0)));
+                appkit_set_accessibility_label::<NSButton>(button.as_ref(), labels[index]);
+                view.addSubview(&button);
+            }
+            view.addSubview(&appkit_settings_text_label(mtm, appkit_tr("分组名称", "Group name"),
+                NSRect::new(NSPoint::new(32.0, top - 73.0), NSSize::new(148.0, 26.0)), 13.0, false));
+            let name_field = NSTextField::labelWithString(ns_string!(""), mtm);
+            name_field.setFrame(NSRect::new(NSPoint::new(190.0, top - 78.0), NSSize::new(610.0, 30.0)));
+            name_field.setEditable(true); name_field.setSelectable(true); name_field.setBezeled(true);
+            appkit_set_accessibility_label::<NSTextField>(name_field.as_ref(), appkit_tr("分组名称", "Group name"));
+            view.addSubview(&name_field);
+            self.ivars().settings_group_name_field.set(name_field).ok();
+            let list = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(748.0, 190.0)));
+            let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm),
+                NSRect::new(NSPoint::new(32.0, top - 324.0), NSSize::new(770.0, 190.0)));
+            scroll.setHasVerticalScroller(true); scroll.setAutohidesScrollers(true);
+            scroll.setDocumentView(Some(&list));
+            appkit_set_accessibility_label::<NSScrollView>(scroll.as_ref(), appkit_tr("分组列表", "Group list"));
+            view.addSubview(&scroll);
+            self.ivars().settings_group_list_view.set(list).ok();
+            self.ivars().settings_group_list_scroll.set(scroll).ok();
+        }
+
+        fn refresh_settings_dependencies(&self) {
+            let toggles = self.ivars().settings_native_toggle_buttons.borrow();
+            let cards = toggles.iter().find(|binding| binding.control_key == "card_view")
+                .is_some_and(|binding| binding.button.state() == NSControlStateValueOn);
+            for binding in toggles.iter().filter(|binding| matches!(binding.control_key, "card_border" | "card_shadow")) {
+                binding.button.setEnabled(cards);
+            }
+            drop(toggles);
+            let mut bindings = self.ivars().settings_native_dropdown_buttons.borrow_mut();
+            let source = bindings.iter().find(|binding| binding.control_key == "vv_source")
+                .and_then(|binding| binding.option_values.get(binding.button.indexOfSelectedItem().max(0) as usize))
+                .and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+            if let Some(binding) = bindings.iter_mut().find(|binding| binding.control_key == "vv_group") {
+                let selected = binding.option_values.get(binding.button.indexOfSelectedItem().max(0) as usize)
+                    .and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+                let controls = crate::settings_model::settings_native_control_summaries();
+                if let Some(control) = controls.iter().find(|control| control.key == "vv_group") {
+                    if let Some(options) = native_settings_dropdown_options_for_host(control, &serde_json::json!({"vv_source_tab":source,"vv_group_id":selected})) {
+                        binding.button.removeAllItems();
+                        binding.option_values.clear();
+                        for option in options.options {
+                            binding.button.addItemWithTitle(&NSString::from_str(&appkit_localized_label(&option.label)));
+                            binding.option_values.push(option.raw_value);
+                        }
+                        binding.button.selectItemAtIndex(options.selected_index as _);
+                    }
+                }
+            }
+        }
+
+        fn show_settings_screenshot_scene(&self, scene: &str) -> bool {
+            let index = match scene {
+                "settings-general" => 0, "settings-appearance" => 1, "settings-clipboard" => 2,
+                "settings-hotkey" => 3, "settings-group" => 4, "settings-plugin" => 5,
+                "settings-cloud" => 6, "settings-about" => 7, _ => return false,
+            };
+            self.present_settings_window("");
+            if let Some(tabs) = self.ivars().settings_tabs.get() { tabs.selectTabViewItemAtIndex(index); }
+            if std::env::var_os("ZSCLIP_DATA_DIR").is_some() && matches!(scene, "settings-appearance" | "settings-group") {
+                if scene == "settings-appearance" {
+                    let font = self.ivars().settings_native_dropdown_buttons.borrow().iter().find(|binding| binding.control_key == "content_font_size").cloned();
+                    if let Some(binding) = font {
+                        if let Some(index) = binding.option_values.iter().position(|value| value == "18") { binding.button.selectItemAtIndex(index as _); }
+                    }
+                }
+                let key = if scene == "settings-appearance" { "card_view" } else { "phrase_titles" };
+                let enabled = scene == "settings-appearance";
+                let toggle = self.ivars().settings_native_toggle_buttons.borrow().iter().find(|binding| binding.control_key == key).cloned();
+                if let Some(binding) = toggle {
+                    if (binding.button.state() == NSControlStateValueOn) != enabled { unsafe { binding.button.performClick(None); } }
+                }
+                if let Some(save) = self.ivars().settings_save_button.get() { unsafe { save.performClick(None); } }
+                let settings = crate::macos_app::macos_native_settings_json_snapshot();
+                let verified = if scene == "settings-appearance" { settings["content_font_size"] == 18 && settings["card_view_enabled"] == true }
+                    else { settings["phrase_titles_enabled"] == false };
+                eprintln!("ZSClip AppKit settings scene saved verification scene={} verified={}", scene, verified);
+            }
+            if scene == "settings-group" {
+                if let Some(scroll) = self.ivars().settings_page_scrollers.get().and_then(|scrolls| scrolls.get(4)) {
+                    let clip = scroll.contentView();
+                    clip.scrollToPoint(NSPoint::new(0.0, 0.0));
+                    scroll.reflectScrolledClipView(&clip);
+                }
+            }
+            if let Some(window) = self.ivars().settings_window.get() { window.makeKeyAndOrderFront(None); }
+            eprintln!("ZSClip AppKit screenshot scene ready={}", scene);
+            true
+        }
+
 
         fn settings_group_name_input(&self) -> String {
             self.ivars()
@@ -2814,7 +2796,7 @@ mod appkit {
         }
 
         fn refresh_settings_group_rows(&self) {
-            let Some(rows) = self.ivars().settings_group_rows.get() else {
+            let Some(list) = self.ivars().settings_group_list_view.get() else {
                 return;
             };
             let groups = self.settings_groups();
@@ -2823,18 +2805,32 @@ mod appkit {
                 selected_id = groups.first().map(|group| group.id).unwrap_or_default();
                 self.ivars().selected_settings_group_id.set(selected_id);
             }
-            for (index, row) in rows.iter().enumerate() {
-                if let Some(group) = groups.get(index) {
-                    let prefix = if group.id == selected_id { "> " } else { "  " };
-                    let label = NSString::from_str(&format!("{}{}", prefix, group.name));
-                    row.setTitle(&label);
-                    row.setTag(group.id as isize);
-                    row.setHidden(false);
-                } else {
-                    row.setTitle(ns_string!(""));
-                    row.setTag(0);
-                    row.setHidden(true);
-                }
+            let mut rows = self.ivars().settings_group_rows.borrow_mut();
+            for row in rows.drain(..) { row.removeFromSuperview(); }
+            let height = (groups.len().max(1) as f64 * 34.0 + 12.0).max(190.0);
+            list.setFrameSize(NSSize::new(748.0, height));
+            let target: &AnyObject = self.as_ref();
+            if groups.is_empty() {
+                let row = unsafe { NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(appkit_tr("暂无分组", "No groups yet")), None, None, self.mtm()) };
+                row.setFrame(NSRect::new(NSPoint::new(8.0, height - 36.0), NSSize::new(724.0, 28.0)));
+                row.setEnabled(false);
+                list.addSubview(&row); rows.push(row);
+            }
+            for (index, group) in groups.iter().enumerate() {
+                let row = unsafe { NSButton::buttonWithTitle_target_action(&NSString::from_str(&group.name),
+                    Some(target), Some(sel!(zsclipSelectSettingsGroup:)), self.mtm()) };
+                row.setButtonType(NSButtonType::Radio);
+                row.setState(if group.id == selected_id { NSControlStateValueOn } else { NSControlStateValueOff });
+                row.setFrame(NSRect::new(NSPoint::new(8.0, height - 36.0 - index as f64 * 34.0), NSSize::new(724.0, 28.0)));
+                row.setTag(group.id as isize);
+                appkit_set_accessibility_label::<NSButton>(row.as_ref(), &group.name);
+                list.addSubview(&row); rows.push(row);
+            }
+            if let Some(scroll) = self.ivars().settings_group_list_scroll.get() {
+                let clip = scroll.contentView();
+                clip.scrollToPoint(NSPoint::new(0.0, (height - clip.bounds().size.height).max(0.0)));
+                scroll.reflectScrolledClipView(&clip);
             }
         }
 
@@ -2906,6 +2902,14 @@ mod appkit {
         }
 
         fn refresh_main_state_after_settings_save(&self) {
+            let preferences=NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot());
+            self.ivars().content_preferences.set(preferences);
+            if let Some(table)=self.ivars().clip_table_view.get() {
+                table.setRowHeight(preferences.row_height());
+                table.setIntercellSpacing(NSSize::new(0.0,if preferences.card_view_enabled {4.0}else{1.0}));
+                table.setUsesAlternatingRowBackgroundColors(!preferences.card_view_enabled);
+            }
+            if let Some(search)=self.ivars().search_field.get() {search.setFont(Some(&NSFont::systemFontOfSize(preferences.content_font_size as f64)));}
             let groups = crate::db_runtime::native_clip_groups(self.active_source_category())
                 .unwrap_or_default();
             let current_group_id = self.ivars().current_group_filter.get();
@@ -2989,6 +2993,15 @@ mod appkit {
                 );
                 self.refresh_main_state_after_settings_save();
                 self.refresh_status_menu_state_from_settings();
+                self.refresh_settings_dependencies();
+                if let Some(label) = self.ivars().settings_route_label.get() {
+                    let text = if persist_result.accepted && json_apply.rejected_fields.is_empty() {
+                        appkit_tr("已保存", "Saved")
+                    } else {
+                        appkit_tr("部分设置未能保存，请检查输入。", "Some settings could not be saved. Check the entered values.")
+                    };
+                    label.setStringValue(&NSString::from_str(text));
+                }
             }
             let result = super::dispatch_appkit_settings_action(action);
             eprintln!(
@@ -3024,7 +3037,11 @@ mod appkit {
                 binding.route_name, binding.action_name, result.result_name
             );
             if let Some(label) = self.ivars().settings_route_label.get() {
-                label.setStringValue(&NSString::from_str(&result.result_name));
+                label.setStringValue(&NSString::from_str(if result.accepted {
+                    appkit_tr("操作完成", "Done")
+                } else {
+                    appkit_tr("操作未完成，请检查设置。", "Unable to complete this action. Check the settings.")
+                }));
             }
         }
 
@@ -3145,6 +3162,13 @@ mod appkit {
         }
 
         fn perform_native_row_action(&self, action: NativeHostRowAction) {
+            if self.ivars().search_pending.get() {return;}
+            if action==NativeHostRowAction::ToPhrase && self.ivars().content_preferences.get().phrase_titles_enabled {
+                self.ivars().edit_save_as_phrase.set(true);
+                self.present_native_edit_window(false);
+                return;
+            }
+            if action==NativeHostRowAction::Edit {self.ivars().edit_save_as_phrase.set(false);}
             let item_id = self.ivars().selected_item_id.get();
             let result =
                 crate::macos_app::dispatch_macos_native_row_action_for_item(action, item_id);
@@ -3172,6 +3196,13 @@ mod appkit {
         }
 
         fn perform_native_popup_menu_command(&self, menu_id: usize) {
+            if menu_id==NATIVE_RENAME_PHRASE_COMMAND_ID {
+                if self.ivars().search_pending.get() || !self.ivars().content_preferences.get().phrase_titles_enabled {return;}
+                self.ivars().edit_save_as_phrase.set(false);
+                self.present_native_edit_window(false);
+                if let (Some(window),Some(field))=(self.ivars().edit_window.get(),self.ivars().edit_title_field.get()) {window.makeFirstResponder(Some(field));field.selectText(None);}
+                return;
+            }
             let result = super::dispatch_appkit_menu_command_id(menu_id);
             eprintln!(
                 "ZSClip AppKit popup menu command {} -> {}",
@@ -3261,15 +3292,124 @@ mod appkit {
         }
 
         fn reload_native_clip_items(&self) {
-            let items =
-                crate::macos_app::macos_native_host_projected_clip_items_for_category_group_kind_filter_search(
-                    self.active_source_category(),
-                    self.ivars().current_group_filter.get(),
-                    self.ivars().current_kind_filter.get(),
-                    &self.native_search_text(),
-                );
-            *self.ivars().clip_items.borrow_mut() = items;
-            self.refresh_native_clip_rows();
+            self.request_native_search_page(0);
+        }
+
+        fn request_native_search_page(&self,page:usize) {
+            self.ivars().search_page.set(page);
+            let service=self.ivars().search_service.get_or_init(crate::native_search::NativeSearchService::new);
+            service.cancel();
+            self.ivars().search_due.set(Some(std::time::Instant::now()+std::time::Duration::from_millis(140)));
+            self.ivars().search_pending.set(true);
+            if let Some(table)=self.ivars().clip_table_view.get() {table.setEnabled(false);}
+            if let Some(button)=self.ivars().previous_page_button.get() {button.setEnabled(false);}
+            if let Some(button)=self.ivars().next_page_button.get() {button.setEnabled(false);}
+            if let Some(window)=self.ivars().window.get() {window.setTitle(&NSString::from_str(appkit_tr("ZSClip · 搜索中…","ZSClip · Searching…")));}
+        }
+
+        fn install_native_search_timer(&self) {
+            self.ivars().search_service.get_or_init(crate::native_search::NativeSearchService::new);
+            if let Some(timer_class)=AnyClass::get(c"NSTimer") {
+                unsafe {let _:*mut AnyObject=msg_send![timer_class,scheduledTimerWithTimeInterval:0.025_f64,
+                    target:self,selector:sel!(zsclipSearchPoll:),userInfo:ptr::null_mut::<AnyObject>(),repeats:true];}
+            }
+        }
+
+        fn prepare_native_screenshot_scene(&self) {
+            let Ok(scene)=std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE") else {self.reload_native_clip_items();return;};
+            if std::env::var_os("ZSCLIP_DATA_DIR").is_none() {eprintln!("ZSClip AppKit screenshot scene requires an isolated data directory");return;}
+            self.cancel_native_search();
+            let rows=[("项目交接清单","项目交接清单\n一、检查施工记录与设备状态。\n二、整理技术资料和待办事项。\n三、明确负责人和完成时间。".to_string()),
+                ("周报摘要","本周完成安装检查、资料整理和现场协调。\n下周安排：复核参数，完成验收与归档。".to_string()),
+                ("多行工作记录",(1..=40).map(|i|format!("第 {i:02} 项：检查记录完整，责任人确认后归档。\n")).collect::<String>())];
+            for (title,body) in rows {
+                if let Ok(outcome)=crate::db_runtime::insert_native_clipboard_text(0,&body,"项目资料") {
+                    if let Some(id)=outcome.item_id {
+                        if let Ok(Some(mut item))=crate::db_runtime::native_clip_item(id) {
+                            item.phrase_title=title.into();let _=crate::db_runtime::insert_native_phrase_from_item(&item,"项目资料");
+                        }
+                    }
+                }
+            }
+            let values=[("content_font_size","16"),("card_view","true"),("card_border","true"),("card_shadow","true"),("phrase_titles","true")]
+                .into_iter().map(|(key,value)|crate::settings_model::SettingsNativeSubmittedControlValue {control_key:key.into(),raw_value:value.into()}).collect::<Vec<_>>();
+            let submission=crate::settings_model::settings_native_collect_submission(&values);
+            let _=crate::macos_app::persist_macos_native_settings_submission(&submission);
+            self.ivars().content_preferences.set(NativeContentPreferences::from_json(&crate::macos_app::macos_native_settings_json_snapshot()));
+            self.ivars().current_source_category.set(1);self.ivars().current_group_filter.set(0);self.ivars().current_kind_filter.set(ClipKindFilter::All);
+            if let Some(search)=self.ivars().search_field.get() {search.setStringValue(ns_string!(""));}
+            for window in [self.ivars().settings_window.get(),self.ivars().edit_window.get(),self.ivars().vv_popup_window.get()].into_iter().flatten() {window.orderOut(None);}
+            *self.ivars().screenshot_scene.borrow_mut()=Some(scene);
+            self.refresh_main_state_after_settings_save();
+            self.refresh_native_source_tab_buttons();
+            self.reload_native_clip_items();
+        }
+
+        fn fit_native_scene_window(&self,window:&NSWindow,width:f64,height:f64) {
+            if let Some(screen)=window.screen() {
+                let frame=screen.visibleFrame();
+                let width=width.min((frame.size.width-24.0).max(320.0));
+                let height=height.min((frame.size.height-24.0).max(240.0));
+                unsafe {window.setFrame_display(NSRect::new(NSPoint::new(frame.origin.x+(frame.size.width-width)/2.0,frame.origin.y+(frame.size.height-height)/2.0),NSSize::new(width,height)),true);}
+            }
+            window.makeKeyAndOrderFront(None);
+        }
+
+        fn finish_native_screenshot_scene(&self) {
+            let Some(scene)=self.ivars().screenshot_scene.borrow_mut().take() else {return;};
+            if scene.starts_with("settings-") {
+                if self.show_settings_screenshot_scene(&scene) {
+                    if let Some(window)=self.ivars().settings_window.get() {self.fit_native_scene_window(window,980.0,708.0);}
+                }
+                return;
+            }
+            if let Some(window)=self.ivars().window.get() {self.fit_native_scene_window(window,660.0,460.0);}
+            match scene.as_str() {
+                "main"=>{},
+                "edit"=>{self.ivars().edit_save_as_phrase.set(false);self.present_native_edit_window(false);},
+                "vv"=>{self.present_native_vv_popup();},
+                _=>{eprintln!("ZSClip AppKit unknown screenshot scene={scene}");return;}
+            }
+            eprintln!("ZSClip AppKit screenshot scene ready={scene}");
+        }
+
+        fn cancel_native_search(&self) {
+            self.ivars().search_due.set(None);
+            if let Some(service)=self.ivars().search_service.get() {service.cancel();}
+            self.ivars().search_pending.set(false);
+            if let Some(table)=self.ivars().clip_table_view.get() {table.setEnabled(true);}
+        }
+
+        fn poll_native_search(&self) {
+            let Some(service)=self.ivars().search_service.get() else {return;};
+            if self.ivars().search_due.get().is_some_and(|due|std::time::Instant::now()>=due) {
+                self.ivars().search_due.set(None);
+                let generation=service.submit_page(self.active_source_category(),self.ivars().current_group_filter.get(),
+                    self.ivars().current_kind_filter.get(),self.native_search_text(),self.ivars().content_preferences.get().phrase_titles_enabled,self.ivars().search_page.get());
+                self.ivars().search_generation.set(generation);
+            }
+            let Some(result)=service.try_latest_result() else {return;};
+            if result.generation!=self.ivars().search_generation.get() {return;}
+            self.ivars().search_pending.set(false);
+            match result.items {
+                Ok(items)=>{
+                    self.ivars().search_page.set(result.page_index);self.ivars().search_has_more.set(result.has_more);
+                    *self.ivars().clip_items.borrow_mut()=items;
+                    self.refresh_native_clip_rows();
+                    if let Some(table)=self.ivars().clip_table_view.get() {table.setEnabled(true);}
+                    if let Some(window)=self.ivars().window.get() {window.setTitle(ns_string!("ZSClip"));}
+                    if let Some(button)=self.ivars().previous_page_button.get() {button.setEnabled(result.page_index>0);}
+                    if let Some(button)=self.ivars().next_page_button.get() {button.setEnabled(result.has_more);}
+                    if let Some(label)=self.ivars().page_label.get() {label.setStringValue(&NSString::from_str(&format!("{} {}",appkit_tr("第","Page"),result.page_index+1)));}
+                    self.finish_native_screenshot_scene();
+                }
+                Err(error)=>{
+                    // Old rows remain visible but cannot be acted on after a failed query.
+                    self.ivars().search_pending.set(true);
+                    if let Some(window)=self.ivars().window.get() {window.setTitle(&NSString::from_str(appkit_tr("ZSClip · 搜索失败，请重新搜索","ZSClip · Search failed; retry the query")));}
+                    eprintln!("ZSClip AppKit search failed: {error}");
+                }
+            }
         }
 
         fn native_search_text(&self) -> String {
@@ -3358,9 +3498,32 @@ mod appkit {
             Some(plan)
         }
 
+        fn prepare_native_edit_title(&self,item_id:i64) {
+            let item=crate::db_runtime::native_clip_item(item_id).ok().flatten();
+            self.ivars().edit_is_phrase.set(item.as_ref().is_some_and(|item|item.kind==ClipKind::Phrase));
+            let title=item.map(|item|item.phrase_title).unwrap_or_default();
+            *self.ivars().edit_initial_title.borrow_mut()=title.clone();
+            if let Some(field)=self.ivars().edit_title_field.get() {
+                field.setStringValue(&NSString::from_str(&title));
+                field.setHidden(!self.native_edit_title_enabled());
+            }
+        }
+
+        fn native_edit_title_enabled(&self)->bool {
+            self.ivars().content_preferences.get().phrase_titles_enabled
+                && (self.ivars().edit_is_phrase.get() || self.ivars().edit_save_as_phrase.get())
+        }
+
+        fn native_edit_title(&self)->String {
+            if self.native_edit_title_enabled() {
+                self.ivars().edit_title_field.get().map(|field|field.stringValue().to_string()).unwrap_or_default()
+            } else {self.ivars().edit_initial_title.borrow().clone()}
+        }
+
         fn present_native_edit_window(&self, auto_save: bool) {
             if let Some(window) = self.ivars().edit_window.get() {
                 if let Some(plan) = self.native_edit_plan() {
+                    self.prepare_native_edit_title(plan.item_id);
                     self.ivars().edit_item_id.set(plan.item_id);
                     *self.ivars().edit_initial_text.borrow_mut() = plan.initial_text.clone();
                     if let Some(edit_text_view) = self.ivars().edit_text_view.get() {
@@ -3388,6 +3551,7 @@ mod appkit {
             let Some(plan) = self.native_edit_plan() else {
                 return;
             };
+            self.prepare_native_edit_title(plan.item_id);
             let mtm = self.mtm();
             let target: &AnyObject = self.as_ref();
             let window = unsafe {
@@ -3418,10 +3582,16 @@ mod appkit {
                 label
             };
             let initial_text = NSString::from_str(&plan.initial_text);
+            let phrase_title=NSTextField::new(mtm);
+            phrase_title.setFrame(NSRect::new(NSPoint::new(20.0,242.0),NSSize::new(520.0,26.0)));
+            phrase_title.setStringValue(&NSString::from_str(&self.ivars().edit_initial_title.borrow()));
+            phrase_title.setPlaceholderString(Some(&NSString::from_str(appkit_tr("短语标题（可空，最多60个字符）","Phrase title (optional, up to 60 characters)"))));
+            phrase_title.setHidden(!self.native_edit_title_enabled());
+            appkit_set_accessibility_label::<NSTextField>(phrase_title.as_ref(),appkit_tr("短语标题","Phrase title"));
             let edit_text_view = unsafe {
                 NSTextView::initWithFrame(
                     NSTextView::alloc(mtm),
-                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(520.0, 198.0)),
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(520.0, 164.0)),
                 )
             };
             edit_text_view.setString(&initial_text);
@@ -3429,7 +3599,7 @@ mod appkit {
             edit_text_view.setSelectable(true);
             edit_text_view.setRichText(false);
             edit_text_view.setAllowsUndo(true);
-            edit_text_view.setFont(Some(&NSFont::systemFontOfSize(13.0)));
+            edit_text_view.setFont(Some(&NSFont::systemFontOfSize(self.ivars().content_preferences.get().content_font_size as f64)));
             appkit_set_accessibility_label::<NSTextView>(
                 edit_text_view.as_ref(),
                 appkit_tr("剪贴板内容编辑器", "Clipboard text editor"),
@@ -3437,7 +3607,7 @@ mod appkit {
             let edit_text_scroller = unsafe {
                 NSScrollView::initWithFrame(
                     NSScrollView::alloc(mtm),
-                    NSRect::new(NSPoint::new(20.0, 70.0), NSSize::new(520.0, 198.0)),
+                    NSRect::new(NSPoint::new(20.0, 70.0), NSSize::new(520.0, 164.0)),
                 )
             };
             edit_text_scroller.setBorderType(NSBorderType::BezelBorder);
@@ -3461,6 +3631,7 @@ mod appkit {
                 })
                 .collect();
             unsafe { view.addSubview(&title) };
+            unsafe { view.addSubview(&phrase_title) };
             unsafe { view.addSubview(&edit_text_scroller) };
             for button in &save_buttons {
                 unsafe { view.addSubview(button) };
@@ -3476,6 +3647,7 @@ mod appkit {
             self.ivars().edit_item_id.set(plan.item_id);
             *self.ivars().edit_initial_text.borrow_mut() = plan.initial_text.clone();
             self.ivars().edit_text_view.set(edit_text_view).unwrap();
+            self.ivars().edit_title_field.set(phrase_title).unwrap();
             self.ivars().edit_window.set(window).unwrap();
             eprintln!("ZSClip AppKit edit window shown");
 
@@ -3492,7 +3664,20 @@ mod appkit {
                 .map(|edit_text_view| edit_text_view.string().to_string())
                 .unwrap_or_default();
             let item_id = self.ivars().edit_item_id.get();
-            let result = super::dispatch_appkit_edit_text_save(item_id, &text);
+            let title=self.native_edit_title();
+            let result = if self.ivars().edit_save_as_phrase.get() {
+                let saved=crate::db_runtime::native_clip_item(item_id).and_then(|item| {
+                    let Some(mut item)=item else {return Ok(false);};
+                    if !matches!(item.kind,ClipKind::Text|ClipKind::Phrase) {return Ok(false);}
+                    item.phrase_title=crate::app_core::normalize_phrase_title(&title).map_err(|_|rusqlite::Error::InvalidQuery)?;
+                    if item.text.as_deref()!=Some(text.as_str()) {item.rich_text_html=None;}
+                    item.text=Some(text.clone());item.preview=text.chars().take(120).collect();
+                    crate::db_runtime::insert_native_phrase_from_item(&item,"ZSClip").map(|outcome|outcome.item_id.is_some())
+                }).unwrap_or(false);
+                ProductAdapterCommandResult {accepted:saved,result_name:"zsclip.row.to_phrase_save".into()}
+            } else if self.ivars().edit_is_phrase.get() {
+                ProductAdapterCommandResult {accepted:crate::db_runtime::save_native_phrase(item_id,&title,&text).unwrap_or(false),result_name:"zsclip.row.phrase_save".into()}
+            } else {super::dispatch_appkit_edit_text_save(item_id, &text)};
             eprintln!(
                 "ZSClip AppKit edit save item_id={} text_len={} -> {}",
                 item_id,
@@ -3500,6 +3685,7 @@ mod appkit {
                 result.result_name
             );
             if result.accepted {
+                self.ivars().edit_save_as_phrase.set(false);
                 self.reload_native_clip_items();
                 if let Some(window) = self.ivars().edit_window.get() {
                     if let Some(parent) = self.ivars().window.get() {
@@ -3509,6 +3695,11 @@ mod appkit {
                     }
                     window.orderOut(None);
                 }
+            } else {
+                let alert=NSAlert::new(self.mtm());
+                alert.setMessageText(&NSString::from_str(appkit_tr("无法保存","Unable to save")));
+                alert.setInformativeText(&NSString::from_str(appkit_tr("请检查标题长度与内容，记录可能已被删除或受到保护。","Check the title length and content. The record may have been removed or protected.")));
+                alert.runModal();
             }
         }
 
@@ -3540,7 +3731,7 @@ mod appkit {
             let initial_text = self.ivars().edit_initial_text.borrow().clone();
             let current_text = self.native_edit_current_text();
             let close_plan = native_host_edit_text_close_plan(&initial_text, &current_text);
-            if !close_plan.requires_unsaved_confirmation {
+            if !close_plan.requires_unsaved_confirmation && self.native_edit_title()==*self.ivars().edit_initial_title.borrow() {
                 self.perform_native_edit_close_without_prompt();
                 return false;
             }

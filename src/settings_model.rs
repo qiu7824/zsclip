@@ -3749,6 +3749,7 @@ fn settings_native_json_updates_for_applied_field(
         | "super_mail_merge_enabled"
         | "wps_taskpane_enabled"
         | "grouping_enabled"
+        | "group_type_filter_enabled"
         | "cloud_sync_enabled"
         | "lan_sync_enabled"
         | "qq_cloud_menu_enabled" => settings_native_json_bool_value(value)

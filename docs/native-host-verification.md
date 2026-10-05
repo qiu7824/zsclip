@@ -37,6 +37,18 @@ Windows-side Rust tests prove that the dispatch bridges compile and route to the
 
 ## What Counts As Verified
 
+AppKit settings use eight shared pages: General, Appearance, Clipboard, Hotkeys & VV,
+Groups, Plugins, Sync and About. Each page has its own scroll view; Save and Close
+remain outside the scrolling content. Group management uses a separate scrollable
+list and the native create, rename, delete and reorder actions.
+
+Capture the eight `settings-*` scenes through `ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE`.
+The Appearance scene must change the native font dropdown and card switch, click
+Save, and verify `content_font_size` and `card_view_enabled` in the isolated profile.
+The Groups scene must toggle phrase titles, click Save, and verify
+`phrase_titles_enabled`. A scene-ready message proves only presentation; successful
+settings verification requires the saved-value check and inspection of the rendered page.
+
 A platform is verified only when the target OS produces these artifacts:
 
 - Cargo target tests pass for that platform's native host launch plan and product-command bridges.

@@ -162,7 +162,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 let state = &mut *ptr;
                 if !vv_paste_target_is_current(state) {
                     cancel_queued_paste_attempt(hwnd, state);
-                    state.vv_paste_guard = None;
+                    vv_finish_paste(state);
                     return;
                 }
                 let target = state.paste_target_override;
@@ -176,6 +176,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 }
                 if platform_input::paste_command_modifiers_down() {
                     cancel_queued_paste_attempt(hwnd, state);
+                    vv_finish_paste(state);
                     return;
                 }
                 if !target.is_null() {
@@ -223,7 +224,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             if should_send_paste {
                 if !ptr.is_null() && !vv_paste_target_is_current(&*ptr) {
                     cancel_queued_paste_attempt(hwnd, &mut *ptr);
-                    (*ptr).vv_paste_guard = None;
+                    vv_finish_paste(&mut *ptr);
                     return;
                 }
                 let input_sent = if paste_backspaces == 0 {
@@ -497,20 +498,21 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 return;
             }
             let state = &mut *ptr;
-            if payload.context == ImagePasteRequestContext::VvPopup && !vv_paste_target_is_current(state) {
-                cancel_queued_paste_attempt(hwnd,state);
-                state.vv_paste_guard = None;
-                return;
-            }
             if !consume_image_paste_generation(
                 &mut state.pending_image_paste_generation,
                 payload.generation,
             ) {
                 return;
             }
+            if payload.context == ImagePasteRequestContext::VvPopup && !vv_paste_target_is_current(state) {
+                cancel_queued_paste_attempt(hwnd,state);
+                vv_finish_paste(state);
+                return;
+            }
             if payload.app_data_generation != state.app_data_generation
                 || state.app_data_generation != crate::db_runtime::current_app_data_generation()
             {
+                vv_finish_paste(state);
                 clear_hotkey_passthrough_state(state);
                 return;
             }
@@ -548,6 +550,7 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 foreground_context_is_current,
                 current_item_id,
             ) {
+                vv_finish_paste(state);
                 clear_hotkey_passthrough_state(state);
                 return;
             }
@@ -576,6 +579,9 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 clipboard_written,
                 target_available,
             );
+            if !disposition.executes_completion() {
+                vv_finish_paste(state);
+            }
             match disposition {
                 ImagePasteResultDisposition::ImageUnavailable => {
                     clear_hotkey_passthrough_state(state);

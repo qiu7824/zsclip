@@ -18,7 +18,8 @@
 ## 下载
 
 - GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/latest>
-- [1.0.9.1 更新说明](docs/releases/1.0.9.1.md)
+- QQ 输入法桥接包在同一发布页提供；手机桥接版本为 `8.7.15-zsclip.8`，附件名中的 ZSClip 版本表示配套桌面版本。[连接说明](docs/q-input-sync.md)
+- [1.0.9.2 更新说明](docs/releases/1.0.9.2.md)
 - 包管理器分发规划: [docs/package-managers.md](docs/package-managers.md)
 
 ## 项目定位
@@ -105,14 +106,14 @@
 
 - `设置 -> 多端同步` 通过 `同步方案` 在 `关闭 / WebDAV / 局域网` 之间单选；WebDAV 与局域网不会同时开启
 - WebDAV 同步会先读取云端 `zsSyncClipboard.json`，把新的文本或图片清单导入本地记录；图片按 `dataName` 从云端 `file/` 目录下载
-- Android 客户端可按当前选择的同步方案手动检查、拉取最新文本、用选中文本菜单/通知栏快捷开关推送文本，并在 App 内查看图片和文件历史；WebDAV 方案写入云端 `zsSyncClipboard.json`，局域网方案直连已配对 Windows
+- QQ 输入法桥接版可在原有剪贴板页面配对电脑、手动发送或拉取文本，并选择同步方向；连接与使用说明见 [docs/q-input-sync.md](docs/q-input-sync.md)
 - 局域网传输默认关闭，并作为多端同步里的一个可选方案；选择局域网后才启动 UDP 发现和 TCP API，关闭或选择 WebDAV 后释放后台线程与 socket
 - 开启后才启动 UDP 发现和 TCP API，关闭后释放后台线程与 socket
 - Windows 多设备可自动发现，也可手动输入 IP 配对
 - 配对在 `设置 -> 多端同步` 内完成：发现设备后点配对，另一端在同一个列表选中 `[待允许]` 后点允许
-- `设置 -> 多端同步 -> 打开扫码绑定页` 会生成 Android 配对二维码和 iOS/浏览器入口二维码
+- 手机在 QQ 输入法桥接页面发现电脑或填写电脑地址，电脑核对配对码后允许连接
 - 文本、小于 10MB 的图片和小文件可自动同步；远端内容可选择只进入记录或直接覆盖系统剪贴板
-- iOS 快捷指令和 Android 最小客户端说明见 `docs/lan-sync.md` 与 `docs/ios-shortcuts.md`
+- 局域网协议与 iOS 快捷指令说明见 `docs/lan-sync.md` 与 `docs/ios-shortcuts.md`
 
 ### 多语言
 

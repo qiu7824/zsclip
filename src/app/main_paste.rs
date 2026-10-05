@@ -227,9 +227,13 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
         return false;
     }
     if context != ImagePasteRequestContext::VvPopup { state.vv_paste_guard = None; }
-    if !vv_paste_target_is_current(state) { return true; }
+    if !vv_paste_target_is_current(state) {
+        vv_finish_paste(state);
+        return true;
+    }
     cancel_queued_paste_attempt(hwnd, state);
     if !WindowsWindowIdentityHost::new().exists(target) {
+        vv_finish_paste(state);
         post_paste_failure_help(
             hwnd,
             state,
@@ -257,6 +261,7 @@ pub(super) unsafe fn queue_async_image_paste_if_needed(
         completion,
     ) {
         state.pending_image_paste_generation = None;
+        vv_finish_paste(state);
         post_paste_failure_help(
             hwnd,
             state,
@@ -894,7 +899,7 @@ unsafe fn queue_paste_after_clipboard_ready_to_target(
 ) {
     if !vv_paste_target_is_current(state) {
         cancel_queued_paste_attempt(hwnd, state);
-        state.vv_paste_guard = None;
+        vv_finish_paste(state);
         return;
     }
     state.paste_target_override = target;

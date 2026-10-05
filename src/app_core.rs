@@ -22,6 +22,7 @@ pub(crate) mod main_window;
 pub(crate) mod main_window_protocol;
 pub(crate) mod native_adapter_manifest;
 pub(crate) mod native_component_protocol;
+pub(crate) mod native_content_preferences;
 pub(crate) mod native_host_actions;
 pub(crate) mod native_host_launch;
 pub(crate) mod native_hosts;

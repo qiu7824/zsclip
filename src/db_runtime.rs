@@ -1134,11 +1134,7 @@ fn runtime_db_file() -> std::path::PathBuf {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let data_dir = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.parent().map(|dir| dir.join("data")))
-            .unwrap_or_else(|| std::path::PathBuf::from("data"));
-        data_dir.join("clipboard.db")
+        crate::native_paths::data_directory().join("clipboard.db")
     }
 }
 
@@ -1545,6 +1541,22 @@ pub(crate) fn update_item_text(item_id: i64, new_text: &str) -> rusqlite::Result
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn save_native_phrase(item_id:i64,title:&str,body:&str)->rusqlite::Result<bool> {
+    let title=crate::app_core::normalize_phrase_title(title).map_err(|_|rusqlite::Error::InvalidQuery)?;
+    if text_is_protected(&title) || text_is_protected(body) {return Ok(false);}
+    with_db_mut(|conn| {
+        let changed=conn.execute("UPDATE items SET phrase_title=?1, preview=substr(?2,1,120),
+            rich_text_html=CASE WHEN COALESCE(text_data,'')=?2 THEN rich_text_html ELSE NULL END,
+            signature=CASE WHEN COALESCE(text_data,'')=?2 THEN signature ELSE '' END,
+            text_data=?2 WHERE id=?3 AND category=1 AND kind='phrase'
+            AND NOT zsclip_is_protected(?1) AND NOT zsclip_is_protected(?2)
+            AND NOT zsclip_is_protected(phrase_title) AND NOT zsclip_is_protected(COALESCE(text_data,''))
+            AND NOT zsclip_is_protected_html(rich_text_html)",rusqlite::params![title,body,item_id])?;
+        Ok(changed>0)
+    })
+}
+
 fn normalized_native_item_ids(ids: &[i64]) -> Vec<i64> {
     let mut ids = ids.iter().copied().filter(|id| *id > 0).collect::<Vec<_>>();
     ids.sort_unstable();
@@ -1714,7 +1726,7 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
             let source_app: String = row.get(3)?;
             let pinned = row.get::<_, i64>(4)? == 1;
             let phrase_title: String = row.get(5)?;
-            let title = if kind == "phrase" && !phrase_title.is_empty() { phrase_title } else { native_clip_list_title(&kind, &source_app) };
+            let title = if kind == "phrase" { phrase_title } else { native_clip_list_title(&kind, &source_app) };
             Ok(
                 crate::app_core::NativeHostClipListItemProjection::with_metadata(
                     id,
@@ -1736,10 +1748,53 @@ pub(crate) fn native_clip_list_items_for_query(
     search_text: &str,
     limit: usize,
 ) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    native_clip_list_items_for_query_internal(category, group_id, kind_filter, search_text, limit, 0, None)
+}
+
+pub(crate) fn native_clip_list_items_for_query_cancellable(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str,
+    limit: usize,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    request_generation: u64,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    native_clip_list_items_for_query_internal(category, group_id, kind_filter, search_text, limit, 0, Some((generation, request_generation)))
+}
+
+pub(crate) fn native_clip_list_items_for_query_page_cancellable(
+    category: i64, group_id: i64, kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str, limit: usize, offset: usize,
+    generation: std::sync::Arc<std::sync::atomic::AtomicU64>, request_generation: u64,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
+    native_clip_list_items_for_query_internal(category, group_id, kind_filter, search_text, limit, offset, Some((generation, request_generation)))
+}
+
+fn native_clip_list_items_for_query_internal(
+    category: i64,
+    group_id: i64,
+    kind_filter: crate::app_core::ClipKindFilter,
+    search_text: &str,
+    limit: usize,
+    offset: usize,
+    cancellation: Option<(std::sync::Arc<std::sync::atomic::AtomicU64>, u64)>,
+) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
     let date_context = current_native_search_date_context();
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(search_text.trim(), date_context);
     with_db(|conn| with_search_protection(|| {
+        struct ClearProgressHandler<'a>(&'a Connection);
+        impl Drop for ClearProgressHandler<'_> {
+            fn drop(&mut self) { self.0.progress_handler(0, None::<fn() -> bool>); }
+        }
+        let _clear_progress = cancellation.as_ref().map(|_| ClearProgressHandler(conn));
+        if let Some((generation, expected)) = cancellation {
+            if generation.load(Ordering::Acquire) != expected {
+                return Err(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT), None));
+            }
+            conn.progress_handler(500, Some(move || generation.load(Ordering::Acquire) != expected));
+        }
         let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at, phrase_title";
         let mut sql = if near_query.is_some() {
             format!(
@@ -1781,8 +1836,9 @@ pub(crate) fn native_clip_list_items_for_query(
             values.push(rusqlite::types::Value::from(like));
         }
 
-        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ?");
+        sql.push_str(" ORDER BY pinned DESC, id DESC LIMIT ? OFFSET ?");
         values.push(rusqlite::types::Value::from(limit.max(1) as i64));
+        values.push(rusqlite::types::Value::from(offset.min(i64::MAX as usize) as i64));
 
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
@@ -1792,7 +1848,7 @@ pub(crate) fn native_clip_list_items_for_query(
             let source_app: String = row.get(3)?;
             let pinned = row.get::<_, i64>(4)? == 1;
             let phrase_title: String = row.get(7)?;
-            let title = if kind == "phrase" && !phrase_title.is_empty() { phrase_title } else { native_clip_list_title(&kind, &source_app) };
+            let title = if kind == "phrase" { phrase_title } else { native_clip_list_title(&kind, &source_app) };
             Ok(
                 crate::app_core::NativeHostClipListItemProjection::with_metadata(
                     id,
@@ -2744,7 +2800,7 @@ mod tests {
 
             let phrases = native_clip_list_items(1, 10)?;
             assert_eq!(phrases.len(), 1);
-            assert_eq!(phrases[0].title, "Phrase");
+            assert!(phrases[0].title.is_empty());
             assert_eq!(phrases[0].kind, crate::app_core::ClipKind::Phrase);
             Ok(())
         })
@@ -2798,6 +2854,21 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn cancelled_native_query_does_not_poison_following_database_queries() {
+        with_test_protected_texts(&[], || with_test_db(|| {
+            with_db_mut(|conn| {
+                conn.execute("INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','needle','needle')", [])?;
+                Ok(())
+            })?;
+            let generation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(2));
+            let cancelled = native_clip_list_items_for_query_cancellable(0, 0, crate::app_core::ClipKindFilter::All, "needle", 10, generation, 1);
+            assert!(matches!(cancelled, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::OperationInterrupted));
+            assert_eq!(native_clip_list_items_for_query(0, 0, crate::app_core::ClipKindFilter::All, "needle", 10)?.len(), 1);
+            Ok(())
+        })).unwrap();
     }
 
     #[test]

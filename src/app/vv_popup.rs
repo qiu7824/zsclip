@@ -603,19 +603,36 @@ pub(super) unsafe fn vv_prepare_selection(state: &AppState) -> Option<u8> {
     {
         return None;
     }
-    if !hook.session.triggered_by_text {
-        return Some(0);
-    }
+    let triggered_by_text = hook.session.triggered_by_text;
     drop(hook);
-    if state.vv_popup_trigger_text_visible
+    let literal_trigger_confirmed = state.vv_popup_trigger_text_visible
         && WindowsImeHost::new().input_mode(state.vv_popup_focus)
-            == WindowsImeInputMode::Alphanumeric
-    {
-        return Some(2);
+            == WindowsImeInputMode::Alphanumeric;
+    let cleanup = crate::app_core::vv_session::vv_selection_cleanup(
+        triggered_by_text,
+        literal_trigger_confirmed,
+        || WindowsImeHost::new().cancel_exact_vv_composition(state.vv_popup_focus),
+    );
+    Some(cleanup.backspaces())
+}
+
+/// An aborted selection is terminal, unlike hiding the popup before a valid deferred paste.
+pub(super) fn vv_cancel_failed_selection(state: &mut AppState) {
+    let id = state.vv_popup_session_id;
+    if let Ok(mut hook) = vv_hook_state().lock() {
+        if hook.session.cancel_selection(id) {
+            hook.popup_active = false;
+            hook.popup_target = 0;
+            hook.last_was_v = false;
+            hook.last_v_at = None;
+        }
     }
-    WindowsImeHost::new()
-        .cancel_exact_vv_composition(state.vv_popup_focus)
-        .then_some(0)
+    if state
+        .vv_paste_guard
+        .is_some_and(|(guard_id, _, _)| guard_id == id)
+    {
+        state.vv_paste_guard = None;
+    }
 }
 
 pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWND) -> bool {

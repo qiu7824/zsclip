@@ -1674,6 +1674,7 @@ impl MacosApplicationModel {
         };
 
         let wrote_clipboard = match &item.clipboard_write {
+            NativeHostClipboardWrite::RichText {text,html}=>MacosClipboardHost::write_rich_text(text,html),
             NativeHostClipboardWrite::Text(text) => {
                 MacosClipboardHost::write_text_ignored_by_monitors(text)
             }
@@ -6619,6 +6620,27 @@ impl ClipboardHost for MacosClipboardHost {
     }
 }
 
+impl MacosClipboardHost {
+    pub(crate) fn read_html()->Option<String> {
+        #[cfg(all(target_os="macos",not(test)))]
+        {let mut clipboard=Clipboard::new().ok()?;clipboard.get().html().ok().as_deref().and_then(crate::db_runtime::sanitize_rich_text_html)}
+        #[cfg(not(all(target_os="macos",not(test))))]
+        {None}
+    }
+
+    pub(crate) fn write_rich_text(text:&str,html:&str)->bool {
+        if crate::db_runtime::text_is_protected(text) {return false;}
+        let Some(safe)=crate::db_runtime::sanitize_rich_text_html(html) else {return false;};
+        let Some(document)=crate::app_core::clipboard_html::native_document(&safe) else {return false;};
+        #[cfg(all(target_os="macos",not(test)))]
+        let written=Clipboard::new().ok().is_some_and(|mut clipboard|clipboard.set_html(document,Some(text)).is_ok());
+        #[cfg(not(all(target_os="macos",not(test))))]
+        let written={let _=document;true};
+        if written {Self::mutate_state(|state|{state.text=Some(text.into());state.image=None;state.file_paths=None;state.sequence=state.sequence.saturating_add(1);state.ignore_next_capture=true;});}
+        written
+    }
+}
+
 impl StatusItemHost for MacosStatusItemHost {
     fn install(&mut self, tooltip: &str) -> bool {
         self.installed = true;
@@ -8117,6 +8139,8 @@ impl MacosSettingsDropdownHost {
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn run() -> Result<(), String> {
+    #[cfg(target_os="macos")]
+    crate::native_paths::prepare_data_directory()?;
     #[cfg(target_os = "macos")]
     {
         return crate::macos_native_host::run_real_appkit_host(MacosUiHost::contract_summary());
@@ -8179,11 +8203,7 @@ fn macos_native_settings_file() -> std::path::PathBuf {
             return std::path::PathBuf::from(trimmed);
         }
     }
-    let data_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("data")))
-        .unwrap_or_else(|| std::path::PathBuf::from("data"));
-    data_dir.join("settings.json")
+    crate::native_paths::data_directory().join("settings.json")
 }
 
 #[cfg(test)]
@@ -8201,10 +8221,11 @@ fn set_macos_native_settings_file_for_tests(path: Option<std::path::PathBuf>) {
 
 #[allow(dead_code)]
 fn macos_native_data_dir() -> std::path::PathBuf {
-    macos_native_settings_file()
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("data"))
+    #[cfg(test)]
+    if let Some(path)=macos_native_settings_file_override().lock().unwrap().as_ref() {
+        return path.parent().unwrap_or_else(||std::path::Path::new("data")).to_path_buf();
+    }
+    crate::native_paths::data_directory()
 }
 
 #[allow(dead_code)]
@@ -9146,7 +9167,7 @@ pub(crate) fn dispatch_macos_native_row_action_for_item(
                 };
             };
             let accepted =
-                crate::app_core::native_host_write_clipboard_payload::<MacosClipboardHost>(&write);
+                crate::app_core::native_host_write_clipboard_payload_with_html::<MacosClipboardHost>(&write,MacosClipboardHost::write_rich_text);
             ProductAdapterCommandResult {
                 accepted,
                 result_name: if accepted {
@@ -9890,7 +9911,9 @@ pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_fil
         kind_filter,
         64,
     ) {
-        return items;
+        return crate::app_core::native_content_preferences::NativeContentPreferences::from_json(
+            &macos_native_settings_json_snapshot(),
+        ).apply_projection(items);
     }
     Vec::new()
 }
@@ -9908,7 +9931,9 @@ pub(crate) fn macos_native_host_projected_clip_items_for_category_group_kind_fil
         search_text,
         64,
     ) {
-        return items;
+        return crate::app_core::native_content_preferences::NativeContentPreferences::from_json(
+            &macos_native_settings_json_snapshot(),
+        ).apply_projection(items);
     }
     Vec::new()
 }
@@ -10161,7 +10186,7 @@ mod tests {
         assert!(source.contains("NativeSettingsToggleButtonBinding"));
         assert!(source.contains("NativeSettingsDropdownButtonBinding"));
         assert!(source.contains("initial_value"));
-        assert!(source.contains("NSSize::new(1160.0, 760.0)"));
+        assert!(source.contains("NSSize::new(960.0, 680.0)"));
         assert!(source.contains("NSButtonType::Switch"));
         assert!(source.contains("NSPopUpButton"));
         assert!(source.contains("settings_native_dropdown_options"));
@@ -10170,9 +10195,19 @@ mod tests {
         assert!(source.contains("crate::db_runtime::native_clip_groups(category)"));
         assert!(source.contains("popup.addItemWithTitle(&title)"));
         assert!(source.contains("popup.selectItemAtIndex(options.selected_index as _)"));
-        assert!(source.contains(".take(8)"));
-        assert!(source.contains(".take(12)"));
-        assert!(source.contains("NSPoint::new(430.0, 608.0)"));
+        let settings_surface = source.split("fn present_settings_window(").nth(1).unwrap()
+            .split("fn settings_group_name_input(").next().unwrap();
+        assert!(settings_surface.contains("settings_native_page_summaries()"));
+        assert!(settings_surface.contains("control.page == page.page"));
+        assert!(settings_surface.contains("appkit_settings_scroll_tab_item(mtm, label, document_height)"));
+        assert!(!settings_surface.contains(".take(8)"));
+        assert!(!settings_surface.contains(".take(12)"));
+        assert!(!settings_surface.contains("zsclip.window.open_settings"));
+        assert!(!settings_surface.contains("control_rows"));
+        assert!(settings_surface.contains("self.build_settings_group_controls"));
+        assert!(settings_surface.contains("settings_save_button.set(button)"));
+        assert!(settings_surface.contains("binding.button.performClick(None)"));
+        assert!(settings_surface.contains("settings[\"phrase_titles_enabled\"] == false"));
         assert!(source.contains("binding.button.state() == NSControlStateValueOn"));
         assert!(source.contains("binding.button.indexOfSelectedItem()"));
         assert!(source.contains("binding.field.stringValue().to_string()"));
@@ -10972,7 +11007,7 @@ mod tests {
         assert!(host_source.contains("clip_table_view.addTableColumn(&clip_table_column)"));
         assert!(host_source.contains("clip_table_view.setHeaderView(None)"));
         assert!(host_source.contains("clip_table_view.setRowHeight(clip_row_height)"));
-        assert!(host_source.contains("clip_table_view.setUsesAlternatingRowBackgroundColors(true)"));
+        assert!(host_source.contains("clip_table_view.setUsesAlternatingRowBackgroundColors(!preferences.card_view_enabled)"));
         assert!(host_source.contains("clip_table_view.setAllowsMultipleSelection(false)"));
         assert!(host_source.contains("clip_table_view.setAllowsEmptySelection(false)"));
         assert!(host_source.contains("NSTableViewSelectionHighlightStyle::Regular"));
@@ -11014,15 +11049,14 @@ mod tests {
         assert!(host_source.contains("NSTabView::initWithFrame"));
         assert!(host_source.contains("settings_tab_view.setTabViewType"));
         assert!(host_source.contains("NSTabViewType::TopTabsBezelBorder"));
-        assert!(host_source.contains("for spec in native_host_settings_page_tab_specs()"));
-        assert!(host_source.contains("appkit_settings_scroll_tab_item(mtm, spec.label)"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::General"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::Groups"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::Actions"));
-        assert!(host_source.contains("native_host_settings_section_label(\"settings_controls\")"));
-        assert!(host_source.contains("native_host_settings_section_label(\"group_selector\")"));
-        assert!(host_source.contains("native_host_settings_toggle_specs()"));
-        assert!(host_source.contains("native_host_settings_dropdown_specs()"));
+        assert!(host_source.contains("for page in pages"));
+        assert!(host_source.contains("settings_native_page_summaries()"));
+        assert!(host_source.contains("appkit_settings_scroll_tab_item(mtm, label, document_height)"));
+        assert!(host_source.contains("fn appkit_settings_page_label("));
+        assert!(host_source.contains("fn appkit_settings_section_label("));
+        assert!(host_source.contains("fn build_settings_control("));
+        assert!(host_source.contains("fn build_settings_group_controls("));
+        assert!(host_source.contains("control_key: control.key"));
         assert!(host_source.contains("fn appkit_switch_from_spec<Spec>"));
         assert!(host_source.contains("button.setButtonType(NSButtonType::Switch)"));
         assert!(host_source.contains("fn appkit_dropdown_from_spec("));
@@ -11038,8 +11072,8 @@ mod tests {
             host_source.contains("let scroller_label = format!(\"{label} settings scroll area\")")
         );
         assert!(host_source.contains("appkit_set_accessibility_label::<NSScrollView>"));
-        assert!(host_source.contains("let view = groups_content"));
-        assert!(host_source.contains("let view = actions_content"));
+        assert!(host_source.contains("settings_group_list_view"));
+        assert!(host_source.contains("for (index, group) in groups.iter().enumerate()"));
         assert!(host_source.contains("unsafe impl NSTableViewDataSource for Delegate"));
         assert!(host_source
             .contains("fn numberOfRowsInTableView(&self, _table_view: &NSTableView) -> NSInteger"));
@@ -11072,7 +11106,8 @@ mod tests {
         assert!(host_source
             .contains("table_view.selectRowIndexes_byExtendingSelection(&indexes, false)"));
         assert!(host_source.contains("view.addSubview(&clip_scroll_view)"));
-        assert!(host_source.contains("let clip_row_height = 44.0_f64"));
+        assert!(host_source.contains("let clip_row_height = preferences.row_height()"));
+        assert!(host_source.contains("preferences.content_font_size as f64"));
         assert!(host_source.contains("let clip_list_height = 300.0_f64"));
         assert!(!host_source.contains("row.setButtonType(NSButtonType::Toggle)"));
         assert!(host_source.contains("fn refresh_native_clip_row_selection(&self)"));

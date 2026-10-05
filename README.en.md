@@ -18,6 +18,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 ## Download
 
 - GitHub release: <https://github.com/qiu7824/zsclip/releases/latest>
+- The QQ Input Method bridge APK is included on the same release page. Its internal bridge version is `8.7.15-zsclip.8`; the ZSClip version in the asset name identifies the accompanying desktop release. [Connection guide](docs/q-input-sync.md)
 
 
 ## What It Is
@@ -111,15 +112,15 @@ Typical use cases:
 
 - `Settings -> Multi-device Sync` uses one `Sync Method` choice: `Off`, `WebDAV`, or `LAN`. WebDAV and LAN are not enabled at the same time.
 - WebDAV sync reads the remote `zsSyncClipboard.json` before snapshot upload and imports new remote text or image clips into local history; images are downloaded by `dataName` from the cloud `file/` directory.
-- The Android client follows the chosen sync method: WebDAV reads/writes the cloud `zsSyncClipboard.json`; LAN connects to the paired Windows device, with selected-text and quick-settings push entrypoints plus in-app image/file history.
+- The QQ Input Method bridge pairs with the desktop from its existing clipboard page, supports manual text transfer, and offers selectable sync directions. See [docs/q-input-sync.md](docs/q-input-sync.md).
 - LAN transport is disabled by default and is configured inside `Settings -> Multi-device Sync`; selecting LAN starts discovery and TCP APIs, while selecting WebDAV or Off stops them.
 - UDP discovery and TCP API start only after LAN sync is enabled
 - Windows devices can be discovered automatically, or paired by manually entering an IP
 - Pairing is handled in `Settings -> Multi-device Sync`: request pairing on one device, then approve the `[Pending]` request on the other device
-- `Settings -> Multi-device Sync -> Open Pairing QR Page` opens a page with an Android pairing QR code and an iOS/browser entry QR code
+- Discover the desktop or enter its address in the QQ Input Method bridge, then approve the matching pairing code on the desktop.
 - Text, images under 10 MB, and small files can sync automatically
 - Remote content can be configured to enter history only or also overwrite the local system clipboard
-- iOS Shortcuts and the minimal Android client use the same protocol; see `docs/lan-sync.md` and `docs/ios-shortcuts.md`
+- LAN protocol and iOS Shortcuts documentation: `docs/lan-sync.md` and `docs/ios-shortcuts.md`.
 
 ### Translations
 

@@ -50,13 +50,14 @@ mod gtk_host {
     use gtk::{gdk, gio, glib};
     use gtk::{
         Application, ApplicationWindow, Box as GtkBox, Button, ButtonsType, DropDown, Entry,
-        EventControllerKey, GestureClick, HeaderBar, Image, Label, ListBox, ListBoxRow, MenuButton,
-        MessageDialog, MessageType, Notebook, Orientation, PolicyType, PopoverMenu, Revealer,
-        RevealerTransitionType, ScrolledWindow, SearchEntry, SelectionMode, Switch, TextView,
-        ToggleButton,
+        EventControllerKey, EventControllerMotion, GestureClick, HeaderBar, Image, Label, ListBox,
+        ListBoxRow, MenuButton, MessageDialog, MessageType, Notebook, Orientation, PolicyType,
+        PopoverMenu, Revealer, RevealerTransitionType, ScrolledWindow, SearchEntry, SelectionMode,
+        Switch, TextView, ToggleButton,
     };
     use ksni::blocking::TrayMethods;
 
+    use crate::app_core::native_content_preferences::NativeContentPreferences;
     use crate::linux_app::LinuxHostContractSummary;
     use crate::zsui::{HostCapabilities, Window};
 
@@ -67,6 +68,20 @@ mod gtk_host {
 
 .clip-row-content {
     padding: 6px 8px;
+}
+
+.clip-card {
+    margin: 5px 8px;
+    border-radius: 8px;
+    background: @theme_base_color;
+}
+
+.clip-card-border {
+    border: 1px solid alpha(@theme_fg_color, 0.20);
+}
+
+.clip-card-shadow {
+    box-shadow: 0 2px 5px alpha(black, 0.18);
 }
 
 .clip-list {
@@ -114,6 +129,10 @@ mod gtk_host {
 
 .vv-preview {
     font-family: monospace;
+}
+
+.vv-preview-selected {
+    background: alpha(@accent_color, 0.22);
 }
 
 searchentry {
@@ -229,6 +248,124 @@ searchentry {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+        refresh_gtk_content_preferences();
+    }
+
+    thread_local! {
+        static GTK_CONTENT_STYLE: RefCell<Option<(NativeContentPreferences, gtk::CssProvider)>> = const { RefCell::new(None) };
+        static GTK_SEARCH_GENERATION: Cell<u64> = const { Cell::new(0) };
+        static GTK_SEARCH_SERVICE: RefCell<Option<Rc<crate::native_search::NativeSearchService>>> = const { RefCell::new(None) };
+        static GTK_MAIN_SEARCH_VIEW: RefCell<Option<GtkMainSearchView>> = const { RefCell::new(None) };
+    }
+
+    #[derive(Clone)]
+    struct GtkMainSearchView {
+        window: glib::WeakRef<ApplicationWindow>,
+        entry: SearchEntry,
+        list: ListBox,
+        rows: Vec<ListBoxRow>,
+        items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        selected: Rc<Cell<i64>>,
+        category: Rc<Cell<i64>>,
+        group: Rc<Cell<i64>>,
+        kind: Rc<Cell<ClipKindFilter>>,
+        paging: GtkSearchPaging,
+    }
+
+    #[derive(Clone)]
+    struct GtkSearchPaging {
+        page: Rc<Cell<usize>>,
+        previous: Button,
+        next: Button,
+        label: Label,
+    }
+
+    fn queue_gtk_search_page(page_index: usize) {
+        let view = GTK_MAIN_SEARCH_VIEW.with(|slot| slot.borrow().clone());
+        if let Some(view) = view {
+            view.paging.page.set(page_index);
+            start_gtk_background_search(
+                view.window,
+                view.entry,
+                view.list,
+                view.rows,
+                view.items,
+                view.selected,
+                view.category,
+                view.group,
+                view.kind,
+                view.paging,
+            );
+        }
+    }
+
+    fn queue_registered_gtk_search(
+        items: &Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+    ) -> bool {
+        let view = GTK_MAIN_SEARCH_VIEW.with(|slot| slot.borrow().clone());
+        let Some(view) = view.filter(|view| Rc::ptr_eq(&view.items, items)) else {
+            return false;
+        };
+        view.paging.page.set(0);
+        start_gtk_background_search(
+            view.window,
+            view.entry,
+            view.list,
+            view.rows,
+            view.items,
+            view.selected,
+            view.category,
+            view.group,
+            view.kind,
+            view.paging,
+        );
+        true
+    }
+
+    fn refresh_gtk_content_preferences() -> NativeContentPreferences {
+        let preferences = NativeContentPreferences::from_json(
+            &crate::linux_app::linux_native_settings_json_snapshot(),
+        );
+        GTK_CONTENT_STYLE.with(|slot| {
+            let mut current = slot.borrow_mut();
+            if current
+                .as_ref()
+                .is_some_and(|(value, _)| *value == preferences)
+            {
+                return;
+            }
+            let Some(display) = gdk::Display::default() else {
+                return;
+            };
+            if let Some((_, provider)) = current.take() {
+                gtk::style_context_remove_provider_for_display(&display, &provider);
+            }
+            let provider = gtk::CssProvider::new();
+            provider.load_from_data(&format!(
+                ".clip-row-content label, .vv-preview, textview.vv-body text {{ font-size: {}pt; }}",
+                preferences.content_font_size,
+            ));
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
+            );
+            *current = Some((preferences, provider));
+        });
+        preferences
+    }
+
+    fn invalidate_gtk_search() -> u64 {
+        GTK_SEARCH_SERVICE.with(|slot| {
+            if let Some(service) = slot.borrow().as_ref() {
+                service.cancel();
+            }
+        });
+        GTK_SEARCH_GENERATION.with(|generation| {
+            let next = generation.get().wrapping_add(1);
+            generation.set(next);
+            next
+        })
     }
 
     fn apply_gtk_button_style_role(button: &Button, style_role: NativeButtonStyleRole) {
@@ -494,10 +631,8 @@ searchentry {
             title.add_css_class("title-1");
             title.set_xalign(0.0);
 
-            let status = Label::new(Some(&format!(
-                "GTK native host running app_core {}.{} with {} shared surfaces",
-                summary.api_major, summary.api_minor, summary.surfaces
-            )));
+            eprintln!("ZSClip GTK app_core {}.{} surfaces={}", summary.api_major, summary.api_minor, summary.surfaces);
+            let status = Label::new(None);
             status.set_xalign(0.0);
             status.add_css_class("dim-label");
 
@@ -618,9 +753,12 @@ searchentry {
                 .build();
             let clip_list = ListBox::new();
             clip_list.set_selection_mode(SelectionMode::Single);
-            clip_list.set_show_separators(true);
+            let content_preferences = refresh_gtk_content_preferences();
+            clip_list.set_show_separators(!content_preferences.card_view_enabled);
             clip_list.set_focusable(true);
-            clip_list.add_css_class("boxed-list");
+            if !content_preferences.card_view_enabled {
+                clip_list.add_css_class("boxed-list");
+            }
             clip_list.add_css_class("clip-list");
             for row in &clip_rows {
                 clip_list.append(row);
@@ -825,6 +963,27 @@ searchentry {
             main_toolbar.append(&row_actions);
             root.append(&main_toolbar);
             root.append(&clip_scroller);
+            let page_bar = GtkBox::new(Orientation::Horizontal, 10);
+            page_bar.set_halign(gtk::Align::End);
+            let paging = GtkSearchPaging {
+                page: Rc::new(Cell::new(0)),
+                previous: Button::with_label(crate::i18n::tr("上一页", "Previous")),
+                next: Button::with_label(crate::i18n::tr("下一页", "Next")),
+                label: Label::new(Some(crate::i18n::tr("第 1 页", "Page 1"))),
+            };
+            paging.previous.set_widget_name("history-previous-page"); paging.next.set_widget_name("history-next-page");
+            paging.previous.set_sensitive(false); paging.next.set_sensitive(false);
+            let previous_page = paging.page.clone();
+            paging.previous.connect_clicked(move |_| queue_gtk_search_page(previous_page.get().saturating_sub(1)));
+            let next_page = paging.page.clone();
+            paging.next.connect_clicked(move |_| queue_gtk_search_page(next_page.get().saturating_add(1)));
+            page_bar.append(&paging.previous); page_bar.append(&paging.label); page_bar.append(&paging.next);
+            root.append(&page_bar);
+            GTK_MAIN_SEARCH_VIEW.with(|slot| *slot.borrow_mut() = Some(GtkMainSearchView {
+                window: window.downgrade(), entry: search_entry.clone(), list: clip_list.clone(), rows: clip_rows.clone(),
+                items: clip_items.clone(), selected: selected_item_id.clone(), category: current_source_category.clone(),
+                group: current_group_filter.clone(), kind: current_kind_filter.clone(), paging: paging.clone(),
+            }));
             let search_rows = clip_rows.clone();
             let search_items = clip_items.clone();
             let search_selected_item_id = selected_item_id.clone();
@@ -832,23 +991,24 @@ searchentry {
             let search_source_category = current_source_category.clone();
             let search_group_filter = current_group_filter.clone();
             let search_kind_filter = current_kind_filter.clone();
+            let search_window = window.downgrade();
+            let search_paging = paging.clone();
             search_entry.connect_search_changed(move |entry| {
-                let action = NativeHostSearchTextAction::new(entry.text().to_string());
-                let _ = crate::linux_app::dispatch_linux_native_search_text_action(action);
-                reload_clip_items_for_group_search_with_selection(
-                    &search_source_category,
-                    &search_group_filter,
-                    &search_kind_filter,
-                    &search_rows,
+                search_paging.page.set(0);
+                start_gtk_background_search(
+                    search_window.clone(), entry.clone(), search_clip_list.clone(), search_rows.clone(),
                     search_items.clone(),
-                    &search_selected_item_id,
-                    entry.text().as_str(),
+                    search_selected_item_id.clone(), search_source_category.clone(),
+                    search_group_filter.clone(), search_kind_filter.clone(), search_paging.clone(),
                 );
-                sync_clip_list_selection(
-                    &search_clip_list,
-                    &search_rows,
-                    search_selected_item_id.get(),
-                );
+            });
+            let search_entry_for_visibility = search_entry.clone();
+            window.connect_notify_local(Some("visible"), move |window, _| {
+                if window.is_visible() {
+                    search_entry_for_visibility.emit_by_name::<()>("search-changed", &[]);
+                } else {
+                    invalidate_gtk_search();
+                }
             });
             install_main_window_keyboard_controller(
                 &window,
@@ -882,8 +1042,25 @@ searchentry {
                 search_entry.clone(),
             );
             run_auto_smoke_if_requested(app, &status);
+            reload_clip_items_for_group_search_with_selection(
+                &current_source_category, &current_group_filter, &current_kind_filter,
+                &clip_rows, clip_items.clone(), &selected_item_id, search_entry.text().as_str(),
+            );
             window.set_child(Some(&root));
             window.present();
+            let scene_app = app.clone();
+            let scene_window = window.clone();
+            let scene_items = clip_items.clone();
+            let scene_source_buttons = source_tab_buttons.clone();
+            glib::timeout_add_local_once(Duration::from_millis(400), move || {
+                if std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").as_deref() == Ok("main") {
+                    if let Some(button) = scene_source_buttons.iter().find(|button| button.widget_name().as_str() == "phrases") {
+                        button.emit_clicked();
+                        refresh_gtk_source_tab_buttons(&scene_source_buttons, 1);
+                    }
+                }
+                apply_gtk_screenshot_scene(&scene_app, &scene_window, &scene_items.borrow());
+            });
             let window_backend = gtk_select_window_system_backend();
             let window_traits =
                 gtk_native_window_traits(&window, &window_backend, window_spec.always_on_top);
@@ -897,6 +1074,9 @@ searchentry {
             );
         });
         let _exit_code = app.run();
+        GTK_MAIN_SEARCH_VIEW.with(|slot| *slot.borrow_mut() = None);
+        GTK_SEARCH_SERVICE.with(|slot| *slot.borrow_mut() = None);
+        crate::linux_app::LinuxClipboardHost::release_system_clipboard();
         Ok(())
     }
 
@@ -1137,7 +1317,7 @@ searchentry {
                     result.accepted
                 );
             }
-            let edited_text = "zsclip gtk auto smoke edited text";
+            let edited_text = "项目周会纪要\n一、进度安排\n完成本周资料归档，确认下周工作计划。\n\n二、协作事项\n保留原有段落与换行，便于快速粘贴。";
             let edit = crate::linux_app::dispatch_linux_native_edit_text_save(item_id, edited_text);
             let edit_read_back = crate::db_runtime::item_text(item_id)
                 .ok()
@@ -1148,6 +1328,19 @@ searchentry {
                 "ZSClip GTK auto smoke edit save item_id={} -> {} accepted={} read_back={}",
                 item_id, edit.result_name, edit.accepted, edit_read_back
             );
+            if std::env::var_os("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").is_some() {
+                if let Ok(Some(item)) = crate::db_runtime::native_clip_item(item_id) {
+                    for (title, body) in [
+                        ("会议纪要", edited_text.to_string()),
+                        ("常用项目说明", "项目资料按日期和专业分类归档。\n\n负责人核对内容、签章和附件，完成后统一提交。".to_string()),
+                        ("长文本工作清单", (1..=32).map(|index| format!("第 {index} 项：核对项目计划、资料目录与交付内容，记录处理结果。\n")).collect::<String>()),
+                    ] {
+                        if let Ok(inserted) = crate::db_runtime::insert_native_phrase_from_item(&item, "常用短语") {
+                            if let Some(phrase_id) = inserted.item_id { let _ = crate::db_runtime::save_native_phrase(phrase_id, title, &body); }
+                        }
+                    }
+                }
+            }
             let image_seed = crate::db_runtime::insert_native_clipboard_image(
                 0,
                 &[255, 0, 0, 255, 0, 128, 255, 255],
@@ -1170,7 +1363,7 @@ searchentry {
                     image_item_id, image_copy.result_name, image_copy.accepted, image_read
                 );
             }
-            if let Ok(group) = crate::db_runtime::create_native_clip_group(0, "GTK Auto Smoke") {
+            if let Ok(group) = crate::db_runtime::create_native_clip_group(0, "项目资料") {
                 let assign =
                     crate::linux_app::dispatch_linux_native_assign_group(item_id, group.id);
                 eprintln!(
@@ -1254,7 +1447,7 @@ searchentry {
             );
         }
 
-        status.set_text("GTK auto smoke complete");
+        status.set_text("");
         eprintln!("ZSClip GTK auto smoke finished");
     }
 
@@ -1308,11 +1501,7 @@ searchentry {
                 {
                     simple_action.set_state(&enabled.to_variant());
                 }
-                status.set_text(&format!(
-                    "{} -> {}",
-                    action.action_name(),
-                    result.result_name
-                ));
+                status.set_text(gtk_action_status(&result));
                 if action.toggles_main_window_surface() {
                     toggle_gtk_main_window(&window);
                 }
@@ -1362,11 +1551,7 @@ searchentry {
                     action.action_name(),
                     result.result_name
                 );
-                status_for_tray.set_text(&format!(
-                    "{} -> {}",
-                    action.action_name(),
-                    result.result_name
-                ));
+                status_for_tray.set_text(gtk_action_status(&result));
                 if action.toggles_main_window_surface() {
                     toggle_gtk_main_window(&window_for_tray);
                 }
@@ -1424,14 +1609,18 @@ searchentry {
             let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
             replace_popup_menu_entries(
                 &row_menu,
-                &native_host_full_row_popup_menu_entries_for_groups(
-                    &groups,
-                    native_host_row_popup_menu_input_for_projection(
-                        &clip_items.borrow(),
-                        item_id,
-                        crate::linux_app::linux_native_grouping_enabled(),
+                &with_gtk_phrase_rename_entry(
+                    native_host_full_row_popup_menu_entries_for_groups(
+                        &groups,
+                        native_host_row_popup_menu_input_for_projection(
+                            &clip_items.borrow(),
+                            item_id,
+                            crate::linux_app::linux_native_grouping_enabled(),
+                        ),
+                        |label| label.to_string(),
                     ),
-                    |label| label.to_string(),
+                    &clip_items.borrow(),
+                    item_id,
                 ),
             );
             popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
@@ -1600,14 +1789,18 @@ searchentry {
         let category = native_host_source_tab_for_category(current_source_category.get()).category;
         let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         let grouping_enabled = crate::linux_app::linux_native_grouping_enabled();
-        let entries = native_host_full_row_popup_menu_entries_for_groups(
-            &groups,
-            native_host_row_popup_menu_input_for_projection(
-                &clip_items.borrow(),
-                selected_item_id.get(),
-                grouping_enabled,
+        let entries = with_gtk_phrase_rename_entry(
+            native_host_full_row_popup_menu_entries_for_groups(
+                &groups,
+                native_host_row_popup_menu_input_for_projection(
+                    &clip_items.borrow(),
+                    selected_item_id.get(),
+                    grouping_enabled,
+                ),
+                |label| label.to_string(),
             ),
-            |label| label.to_string(),
+            &clip_items.borrow(),
+            selected_item_id.get(),
         );
         install_popup_menu(
             app,
@@ -1700,6 +1893,18 @@ searchentry {
         register_popup_command_action(
             app,
             status,
+            crate::app_core::native_content_preferences::NATIVE_RENAME_PHRASE_COMMAND_ID,
+            selected_item_id.clone(),
+            current_source_category.clone(),
+            current_group_filter.clone(),
+            current_kind_filter.clone(),
+            clip_rows.clone(),
+            clip_items.clone(),
+            search_entry.clone(),
+        );
+        register_popup_command_action(
+            app,
+            status,
             menu_ids::GROUP_FILTER_ALL,
             selected_item_id.clone(),
             current_source_category.clone(),
@@ -1771,15 +1976,43 @@ searchentry {
         let status = status.clone();
         let action_app = app.clone();
         simple_action.connect_activate(move |_, _| {
+            if menu_id == menu_ids::ROW_SAVE_IMAGE {
+                present_gtk_save_image(&action_app, selected_item_id.get(), &status);
+                return;
+            }
+            if menu_id
+                == crate::app_core::native_content_preferences::NATIVE_RENAME_PHRASE_COMMAND_ID
+            {
+                let item_id = selected_item_id.get();
+                let can_rename = refresh_gtk_content_preferences().phrase_titles_enabled
+                    && clip_items.borrow().iter().any(|item| {
+                        item.id == item_id && item.kind == crate::app_core::ClipKind::Phrase
+                    });
+                if can_rename {
+                    if let Some(plan) = native_edit_plan(&clip_items.borrow(), item_id) {
+                        present_edit_text_window(
+                            &action_app,
+                            plan,
+                            false,
+                            Some(EditRefreshTarget {
+                                rows: clip_rows.clone(),
+                                items: clip_items.clone(),
+                                current_source_category: current_source_category.clone(),
+                                current_group_filter: current_group_filter.clone(),
+                                current_kind_filter: current_kind_filter.clone(),
+                                search_entry: search_entry.clone(),
+                            }),
+                        );
+                    }
+                }
+                return;
+            }
             let result = crate::linux_app::dispatch_linux_native_menu_command_id(menu_id);
             eprintln!(
                 "ZSClip GTK popup menu command {} -> {}",
                 menu_id, result.result_name
             );
-            status.set_text(&format!(
-                "popup_command_{} -> {}",
-                menu_id, result.result_name
-            ));
+            status.set_text(gtk_action_status(&result));
             if perform_group_menu_command(
                 menu_id,
                 selected_item_id.clone(),
@@ -1818,12 +2051,69 @@ searchentry {
                             current_source_category: current_source_category.clone(),
                             current_group_filter: current_group_filter.clone(),
                             current_kind_filter: current_kind_filter.clone(),
+                            search_entry: search_entry.clone(),
                         }),
                     );
                 }
             }
         });
         app.add_action(&simple_action);
+    }
+
+    fn present_gtk_save_image(app: &Application, item_id: i64, status: &Label) {
+        let expected_generation = crate::db_runtime::current_app_data_generation();
+        let parent = app.active_window();
+        let chooser = gtk::FileChooserNative::new(
+            Some(crate::i18n::tr("图片另存为", "Save Image")),
+            parent.as_ref(),
+            gtk::FileChooserAction::Save,
+            Some(crate::i18n::tr("保存", "Save")),
+            Some(crate::i18n::tr("取消", "Cancel")),
+        );
+        chooser.set_current_name(&format!("ZSClip-{}.png", item_id));
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("PNG"));
+        filter.add_mime_type("image/png");
+        filter.add_pattern("*.png");
+        chooser.add_filter(&filter);
+        let status = status.clone();
+        chooser.connect_response(move |chooser, response| {
+            if response == gtk::ResponseType::Accept {
+                if let Some(path) = chooser.file().and_then(|file| file.path()) {
+                    let (sender, receiver) = mpsc::channel();
+                    thread::spawn(move || {
+                        let result = crate::native_image_export::save_native_item_png(
+                            item_id,
+                            &path,
+                            expected_generation,
+                        );
+                        let _ = sender.send(result);
+                    });
+                    let status = status.clone();
+                    glib::timeout_add_local(Duration::from_millis(25), move || {
+                        match receiver.try_recv() {
+                            Ok(result) => {
+                                status.set_text(if result.is_ok() {
+                                    crate::i18n::tr("图片已保存", "Image saved")
+                                } else {
+                                    crate::i18n::tr("图片保存失败", "Unable to save image")
+                                });
+                                eprintln!(
+                                    "ZSClip GTK image export item_id={} saved={}",
+                                    item_id,
+                                    result.is_ok()
+                                );
+                                glib::ControlFlow::Break
+                            }
+                            Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                            Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+                        }
+                    });
+                }
+            }
+            chooser.hide();
+        });
+        chooser.show();
     }
 
     fn perform_gtk_item_row_action(
@@ -1845,12 +2135,7 @@ searchentry {
             item_id,
             result.result_name
         );
-        status.set_text(&format!(
-            "{} item_id={} -> {}",
-            action.action_name(),
-            item_id,
-            result.result_name
-        ));
+        status.set_text(gtk_action_status(&result));
         if result.accepted && matches!(action, NativeHostRowAction::Paste) {
             let posted = gtk_post_native_paste_shortcut();
             eprintln!("ZSClip GTK row paste shortcut posted={}", posted);
@@ -1986,6 +2271,108 @@ searchentry {
         }
     }
 
+    fn start_gtk_background_search(
+        window: glib::WeakRef<ApplicationWindow>,
+        entry: SearchEntry,
+        list: ListBox,
+        rows: Vec<ListBoxRow>,
+        items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
+        selected_item_id: Rc<Cell<i64>>,
+        source_category: Rc<Cell<i64>>,
+        group_filter: Rc<Cell<i64>>,
+        kind_filter: Rc<Cell<ClipKindFilter>>,
+        paging: GtkSearchPaging,
+    ) {
+        let previous_selection = selected_item_id.get();
+        selected_item_id.set(0);
+        items.borrow_mut().clear();
+        refresh_clip_rows(&rows, &[]);
+        if let Some(row) = rows.first() {
+            row.set_child(Some(&gtk_clip_row_content(None, "Searching…")));
+        }
+        let request = invalidate_gtk_search();
+        let query = entry.text().to_string();
+        let category = source_category.get();
+        let group = group_filter.get();
+        let kind = kind_filter.get();
+        let page_index = paging.page.get();
+        paging.previous.set_sensitive(false);
+        paging.next.set_sensitive(false);
+        glib::timeout_add_local_once(Duration::from_millis(140), move || {
+            if GTK_SEARCH_GENERATION.with(Cell::get) != request
+                || !window.upgrade().is_some_and(|window| window.is_visible())
+            {
+                return;
+            }
+            let service = GTK_SEARCH_SERVICE.with(|slot| {
+                slot.borrow_mut()
+                    .get_or_insert_with(
+                        || Rc::new(crate::native_search::NativeSearchService::new()),
+                    )
+                    .clone()
+            });
+            let action = NativeHostSearchTextAction::new(query.clone());
+            let _ = crate::linux_app::dispatch_linux_native_search_text_action(action);
+            let search_generation = service.submit_page(
+                category,
+                group,
+                kind,
+                query.clone(),
+                refresh_gtk_content_preferences().phrase_titles_enabled,
+                page_index,
+            );
+            glib::timeout_add_local(Duration::from_millis(25), move || {
+                if GTK_SEARCH_GENERATION.with(Cell::get) != request
+                    || entry.text().as_str() != query
+                    || source_category.get() != category
+                    || group_filter.get() != group
+                    || kind_filter.get() != kind
+                    || paging.page.get() != page_index
+                    || !window.upgrade().is_some_and(|window| window.is_visible())
+                {
+                    if GTK_SEARCH_GENERATION.with(Cell::get) == request {
+                        service.cancel();
+                    }
+                    return glib::ControlFlow::Break;
+                }
+                match service.try_latest_result() {
+                    Some(result) => {
+                        if result.generation != search_generation {
+                            return glib::ControlFlow::Break;
+                        }
+                        paging.previous.set_sensitive(page_index > 0);
+                        paging.next.set_sensitive(result.has_more);
+                        paging.label.set_text(&format!(
+                            "{} {}",
+                            crate::i18n::tr("页码", "Page"),
+                            result.page_index + 1
+                        ));
+                        let result = match result.items {
+                            Ok(items) => items,
+                            Err(_) => {
+                                refresh_clip_rows(&rows, &[]);
+                                if let Some(row) = rows.first() {
+                                    row.set_child(Some(&gtk_clip_row_content(
+                                        None,
+                                        "Search unavailable; try again",
+                                    )));
+                                }
+                                return glib::ControlFlow::Break;
+                            }
+                        };
+                        *items.borrow_mut() = result;
+                        selected_item_id.set(previous_selection);
+                        reconcile_selected_item_id(&selected_item_id, &items.borrow());
+                        refresh_clip_rows(&rows, &items.borrow());
+                        sync_clip_list_selection(&list, &rows, selected_item_id.get());
+                        glib::ControlFlow::Break
+                    }
+                    None => glib::ControlFlow::Continue,
+                }
+            });
+        });
+    }
+
     fn reload_clip_items_for_group(
         current_source_category: &Cell<i64>,
         current_group_filter: &Cell<i64>,
@@ -1993,6 +2380,10 @@ searchentry {
         rows: &[ListBoxRow],
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
     ) {
+        if queue_registered_gtk_search(&clip_items) {
+            return;
+        }
+        invalidate_gtk_search();
         *clip_items.borrow_mut() =
             crate::linux_app::linux_native_host_projected_clip_items_for_category_group_kind_filter(
                 native_host_source_tab_for_category(current_source_category.get()).category,
@@ -2010,6 +2401,10 @@ searchentry {
         clip_items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
         search_text: &str,
     ) {
+        if queue_registered_gtk_search(&clip_items) {
+            return;
+        }
+        invalidate_gtk_search();
         *clip_items.borrow_mut() =
             crate::linux_app::linux_native_host_projected_clip_items_for_category_group_kind_filter_search(
                 native_host_source_tab_for_category(current_source_category.get()).category,
@@ -2136,14 +2531,18 @@ searchentry {
         }
         replace_popup_menu_entries(
             &menus.row_menu,
-            &native_host_full_row_popup_menu_entries_for_groups(
-                &groups,
-                native_host_row_popup_menu_input_for_projection(
-                    &menus.clip_items.borrow(),
-                    menus.selected_item_id.get(),
-                    crate::linux_app::linux_native_grouping_enabled(),
+            &with_gtk_phrase_rename_entry(
+                native_host_full_row_popup_menu_entries_for_groups(
+                    &groups,
+                    native_host_row_popup_menu_input_for_projection(
+                        &menus.clip_items.borrow(),
+                        menus.selected_item_id.get(),
+                        crate::linux_app::linux_native_grouping_enabled(),
+                    ),
+                    |label| label.to_string(),
                 ),
-                |label| label.to_string(),
+                &menus.clip_items.borrow(),
+                menus.selected_item_id.get(),
             ),
         );
         replace_popup_menu_entries(
@@ -2182,6 +2581,21 @@ searchentry {
         let menu = gio::Menu::new();
         append_popup_menu_entries(&menu, entries);
         menu
+    }
+
+    fn with_gtk_phrase_rename_entry(
+        mut entries: Vec<NativePopupMenuEntry>,
+        items: &[NativeHostClipListItemProjection],
+        selected_item_id: i64,
+    ) -> Vec<NativePopupMenuEntry> {
+        if let Some(item) = items.iter().find(|item| item.id == selected_item_id) {
+            if let Some(entry) = refresh_gtk_content_preferences()
+                .rename_phrase_menu_entry(item.kind, "Rename Phrase")
+            {
+                entries.push(entry);
+            }
+        }
+        entries
     }
 
     fn replace_popup_menu_entries(menu: &gio::Menu, entries: &[NativePopupMenuEntry]) {
@@ -2227,6 +2641,91 @@ searchentry {
         }
     }
 
+    #[derive(Clone)]
+    struct GtkVvFullPreview {
+        window: glib::WeakRef<ApplicationWindow>,
+        ids: Rc<Vec<i64>>,
+        selected: Rc<Cell<usize>>,
+        generation: Rc<Cell<u64>>,
+        protection_revision: Rc<RefCell<Option<String>>>,
+        body: TextView,
+        scroller: ScrolledWindow,
+        candidate_rows: Rc<RefCell<Vec<glib::WeakRef<Button>>>>,
+    }
+
+    fn queue_gtk_vv_full_preview(preview: &GtkVvFullPreview, index: usize, delay_ms: u64) {
+        let Some(&item_id) = preview.ids.get(index) else {
+            return;
+        };
+        preview.selected.set(index);
+        for (candidate, row) in preview.candidate_rows.borrow().iter().enumerate() {
+            if let Some(row) = row.upgrade() {
+                if candidate == index {
+                    row.add_css_class("vv-preview-selected");
+                } else {
+                    row.remove_css_class("vv-preview-selected");
+                }
+            }
+        }
+        let generation = preview.generation.get().wrapping_add(1);
+        preview.generation.set(generation);
+        preview.body.buffer().set_text("");
+        *preview.protection_revision.borrow_mut() = None;
+        let preview = preview.clone();
+        glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+            if preview.generation.get() != generation
+                || !preview
+                    .window
+                    .upgrade()
+                    .is_some_and(|window| window.is_visible())
+            {
+                return;
+            }
+            let (sender, receiver) = mpsc::channel();
+            thread::spawn(move || {
+                let data_generation = crate::db_runtime::current_app_data_generation();
+                let revision = crate::db_runtime::search_protection_revision().ok();
+                let body = crate::db_runtime::native_clip_item(item_id)
+                    .ok()
+                    .flatten()
+                    .map(|item| item.text.unwrap_or(item.preview));
+                let stable = revision.is_some()
+                    && revision == crate::db_runtime::search_protection_revision().ok()
+                    && data_generation == crate::db_runtime::current_app_data_generation();
+                let _ = sender.send((body, revision, data_generation, stable));
+            });
+            glib::timeout_add_local(Duration::from_millis(25), move || {
+                if preview.generation.get() != generation
+                    || preview.ids.get(preview.selected.get()) != Some(&item_id)
+                    || !preview
+                        .window
+                        .upgrade()
+                        .is_some_and(|window| window.is_visible())
+                {
+                    return glib::ControlFlow::Break;
+                }
+                match receiver.try_recv() {
+                    Ok((body, revision, data_generation, stable)) => {
+                        if stable
+                            && revision == crate::db_runtime::search_protection_revision().ok()
+                            && data_generation == crate::db_runtime::current_app_data_generation()
+                        {
+                            preview
+                                .body
+                                .buffer()
+                                .set_text(body.as_deref().unwrap_or(""));
+                            *preview.protection_revision.borrow_mut() = revision;
+                            preview.scroller.vadjustment().set_value(0.0);
+                        }
+                        glib::ControlFlow::Break
+                    }
+                    Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                    Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+                }
+            });
+        });
+    }
+
     fn present_vv_popup_window(
         app: &Application,
         current_source_category: i64,
@@ -2240,21 +2739,8 @@ searchentry {
             current_group_id,
         );
         let plan = native_host_vv_popup_render_plan_for_projection(&items, &group_label);
-        let width = plan
-            .text_commands
-            .iter()
-            .map(|command| command.rect.right)
-            .max()
-            .unwrap_or(360)
-            .max(360);
-        let height = plan
-            .text_commands
-            .iter()
-            .map(|command| command.rect.bottom)
-            .max()
-            .unwrap_or(168)
-            .max(168)
-            + 12;
+        let width = 780;
+        let height = 460;
         let window = ApplicationWindow::builder()
             .application(app)
             .default_width(width)
@@ -2266,40 +2752,141 @@ searchentry {
             window.set_transient_for(Some(&parent));
         }
         window.add_css_class("vv-popup");
-        window.connect_notify_local(Some("is-active"), |window, _| {
-            if !window.is_active() {
-                window.close();
-            }
-        });
-
-        let root = GtkBox::new(Orientation::Vertical, 4);
+        let root = GtkBox::new(Orientation::Vertical, 8);
         root.set_margin_top(12);
         root.set_margin_bottom(12);
         root.set_margin_start(14);
         root.set_margin_end(14);
-        for (index, command) in plan.text_commands.iter().enumerate() {
+        let heading = Label::new(Some(&group_label));
+        heading.set_xalign(0.0);
+        heading.add_css_class("heading");
+        root.append(&heading);
+        let columns = GtkBox::new(Orientation::Horizontal, 14);
+        columns.set_vexpand(true);
+        let candidates = GtkBox::new(Orientation::Vertical, 4);
+        candidates.set_size_request(290, -1);
+        let body = TextView::new();
+        body.set_editable(false);
+        body.set_cursor_visible(false);
+        body.set_focusable(false);
+        body.set_wrap_mode(gtk::WrapMode::WordChar);
+        body.set_left_margin(12);
+        body.set_right_margin(12);
+        body.set_top_margin(8);
+        body.set_bottom_margin(8);
+        body.set_widget_name("vv-full-text-preview");
+        body.add_css_class("vv-body");
+        let scroller = ScrolledWindow::builder()
+            .hexpand(true)
+            .vexpand(true)
+            .hscrollbar_policy(PolicyType::Never)
+            .vscrollbar_policy(PolicyType::Automatic)
+            .build();
+        scroller.set_child(Some(&body));
+        scroller.set_focusable(false);
+        let preview = GtkVvFullPreview {
+            window: window.downgrade(),
+            ids: Rc::new(items.iter().take(9).map(|item| item.id).collect()),
+            selected: Rc::new(Cell::new(0)),
+            generation: Rc::new(Cell::new(0)),
+            protection_revision: Rc::new(RefCell::new(None)),
+            body,
+            scroller: scroller.clone(),
+            candidate_rows: Rc::new(RefCell::new(Vec::new())),
+        };
+        for (index, item) in items.iter().take(9).enumerate() {
             let row = GtkBox::new(Orientation::Horizontal, 8);
             let number = Label::new(Some(&(index + 1).to_string()));
             number.set_width_chars(2);
-            number.add_css_class("heading");
             number.add_css_class("vv-index");
-            let label = Label::new(Some(&command.text));
+            let label = Label::new(Some(
+                &crate::app_core::native_host_projected_clip_row_title(item),
+            ));
             label.set_xalign(0.0);
             label.set_hexpand(true);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.add_css_class("monospace");
+            label.set_max_width_chars(28);
             label.add_css_class("vv-preview");
             row.append(&number);
             row.append(&label);
-            root.append(&row);
+            let button = Button::new();
+            preview.candidate_rows.borrow_mut().push(button.downgrade());
+            button.set_child(Some(&row));
+            button.set_focusable(false);
+            button.set_widget_name(&format!("vv-select-{}", index + 1));
+            let motion = EventControllerMotion::new();
+            let hover_preview = preview.clone();
+            motion.connect_enter(move |_, _, _| {
+                queue_gtk_vv_full_preview(&hover_preview, index, 200)
+            });
+            let leave_preview = preview.clone();
+            motion.connect_leave(move |_| {
+                leave_preview
+                    .generation
+                    .set(leave_preview.generation.get().wrapping_add(1))
+            });
+            button.add_controller(motion);
+            #[cfg(feature = "vv-paste")]
+            {
+                let _ = crate::app_core::native_host_vv_select_specs(&plan, width, height);
+                let window_for_select = window.clone();
+                button.connect_clicked(move |_| {
+                    let result = crate::linux_app::dispatch_linux_native_vv_select_event(index);
+                    let paste = perform_gtk_vv_paste(index, current_group_id);
+                    eprintln!("ZSClip GTK VV select {} -> {}", index, result.event_name);
+                    eprintln!(
+                        "ZSClip GTK VV paste {} -> {} accepted={} kind={}",
+                        index,
+                        paste.result_name,
+                        paste.accepted,
+                        paste.clipboard_kind.unwrap_or("none")
+                    );
+                    window_for_select.close();
+                });
+            }
+            candidates.append(&button);
         }
-        let status = Label::new(Some("vv_select_requested"));
-        status.set_xalign(0.0);
-        status.add_css_class("dim-label");
+        columns.append(&candidates);
+        columns.append(&scroller);
+        root.append(&columns);
+        let hint = Label::new(Some(crate::i18n::tr(
+            "1–9 粘贴 · ↑↓ 预览 · PgUp/PgDn 翻页 · Esc 关闭",
+            "1–9 paste · ↑↓ preview · PgUp/PgDn scroll · Esc close",
+        )));
+        hint.add_css_class("dim-label");
+        root.append(&hint);
         let popup_key_controller = EventControllerKey::new();
         let window_for_keys = window.clone();
-        let status_for_keys = status.clone();
-        popup_key_controller.connect_key_pressed(move |_, key, _keycode, _state| {
+        let key_preview = preview.clone();
+        popup_key_controller.connect_key_pressed(move |_, key, _, modifiers| {
+            if modifiers.intersects(
+                gdk::ModifierType::CONTROL_MASK
+                    | gdk::ModifierType::ALT_MASK
+                    | gdk::ModifierType::SUPER_MASK
+                    | gdk::ModifierType::SHIFT_MASK,
+            ) {
+                return glib::Propagation::Proceed;
+            }
+            if key == gdk::Key::Up || key == gdk::Key::Down {
+                let next = if key == gdk::Key::Up {
+                    key_preview.selected.get().saturating_sub(1)
+                } else {
+                    (key_preview.selected.get() + 1).min(key_preview.ids.len().saturating_sub(1))
+                };
+                queue_gtk_vv_full_preview(&key_preview, next, 0);
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::Page_Up || key == gdk::Key::Page_Down {
+                let adjustment = key_preview.scroller.vadjustment();
+                let direction = if key == gdk::Key::Page_Up { -1.0 } else { 1.0 };
+                adjustment.set_value(
+                    (adjustment.value() + direction * adjustment.page_increment()).clamp(
+                        adjustment.lower(),
+                        (adjustment.upper() - adjustment.page_size()).max(adjustment.lower()),
+                    ),
+                );
+                return glib::Propagation::Stop;
+            }
             let Some(trigger_key) = gtk_vv_trigger_key_from_gdk(key) else {
                 return glib::Propagation::Proceed;
             };
@@ -2308,25 +2895,17 @@ searchentry {
                     window_for_keys.close();
                     glib::Propagation::Stop
                 }
-                NativeHostVvTriggerKey::Digit1To9(selected_index) => {
-                    let result =
-                        crate::linux_app::dispatch_linux_native_vv_select_event(selected_index);
-                    let paste = perform_gtk_vv_paste(selected_index, current_group_id);
+                NativeHostVvTriggerKey::Digit1To9(index) if index < key_preview.ids.len() => {
+                    let result = crate::linux_app::dispatch_linux_native_vv_select_event(index);
+                    let paste = perform_gtk_vv_paste(index, current_group_id);
                     eprintln!(
                         "ZSClip GTK VV popup key select {} -> {}",
-                        selected_index, result.event_name
+                        index, result.event_name
                     );
                     eprintln!(
-                        "ZSClip GTK VV popup key paste {} -> {} accepted={} kind={}",
-                        selected_index,
-                        paste.result_name,
-                        paste.accepted,
-                        paste.clipboard_kind.unwrap_or("none")
+                        "ZSClip GTK VV popup key paste {} -> {} accepted={}",
+                        index, paste.result_name, paste.accepted
                     );
-                    status_for_keys.set_text(&format!(
-                        "{}: {} / {}",
-                        selected_index, result.event_name, paste.result_name
-                    ));
                     window_for_keys.close();
                     glib::Propagation::Stop
                 }
@@ -2334,40 +2913,49 @@ searchentry {
             }
         });
         window.add_controller(popup_key_controller);
-        #[cfg(feature = "vv-paste")]
-        {
-            for spec in crate::app_core::native_host_vv_select_specs(&plan, width, height) {
-                let action = spec.action;
-                let selected_index = action.index;
-                let button = Button::with_label(&spec.label);
-                button.set_widget_name(&spec.id);
-                let status = status.clone();
-                button.connect_clicked(move |_| {
-                    let result =
-                        crate::linux_app::dispatch_linux_native_vv_select_event(selected_index);
-                    let paste = perform_gtk_vv_paste(selected_index, current_group_id);
-                    eprintln!(
-                        "ZSClip GTK VV select {} -> {}",
-                        selected_index, result.event_name
-                    );
-                    eprintln!(
-                        "ZSClip GTK VV paste {} -> {} accepted={} kind={}",
-                        selected_index,
-                        paste.result_name,
-                        paste.accepted,
-                        paste.clipboard_kind.unwrap_or("none")
-                    );
-                    status.set_text(&format!(
-                        "{}: {} / {}",
-                        selected_index, result.event_name, paste.result_name
-                    ));
-                });
-                root.append(&button);
+        let closing_preview = preview.clone();
+        window.connect_notify_local(Some("is-active"), move |window, _| {
+            if !window.is_active() {
+                closing_preview
+                    .generation
+                    .set(closing_preview.generation.get().wrapping_add(1));
+                closing_preview.body.buffer().set_text("");
+                window.close();
             }
-        }
-        root.append(&status);
+        });
+        let hidden_preview = preview.clone();
+        window.connect_notify_local(Some("visible"), move |window, _| {
+            if !window.is_visible() {
+                hidden_preview
+                    .generation
+                    .set(hidden_preview.generation.get().wrapping_add(1));
+                hidden_preview.body.buffer().set_text("");
+            }
+        });
+        let protected_preview = preview.clone();
+        glib::timeout_add_local(Duration::from_millis(150), move || {
+            if !protected_preview
+                .window
+                .upgrade()
+                .is_some_and(|window| window.is_visible())
+            {
+                return glib::ControlFlow::Break;
+            }
+            let displayed = protected_preview.protection_revision.borrow().clone();
+            if displayed.is_some()
+                && displayed != crate::db_runtime::search_protection_revision().ok()
+            {
+                protected_preview
+                    .generation
+                    .set(protected_preview.generation.get().wrapping_add(1));
+                protected_preview.body.buffer().set_text("");
+                *protected_preview.protection_revision.borrow_mut() = None;
+            }
+            glib::ControlFlow::Continue
+        });
         window.set_child(Some(&root));
         window.present();
+        queue_gtk_vv_full_preview(&preview, 0, 0);
     }
 
     fn perform_vv_trigger_demo(
@@ -2655,13 +3243,15 @@ searchentry {
     fn native_edit_plan(
         items: &[NativeHostClipListItemProjection],
         selected_item_id: i64,
-    ) -> Option<NativeHostEditTextPlan> {
-        let selected_item_id = (selected_item_id > 0).then_some(selected_item_id);
-        let mut plan = native_host_edit_text_plan_for_item(items, selected_item_id)?;
-        if let Ok(Some(text)) = crate::db_runtime::item_text(plan.item_id) {
-            plan.initial_text = text;
-        }
-        Some(plan)
+    ) -> Option<(NativeHostEditTextPlan, u64)> {
+        let generation = crate::db_runtime::current_app_data_generation();
+        crate::db_runtime::with_shared_app_data_generation(generation, || {
+            let selected_item_id = (selected_item_id > 0).then_some(selected_item_id);
+            let mut plan = native_host_edit_text_plan_for_item(items, selected_item_id)?;
+            plan.initial_text = crate::db_runtime::item_text(plan.item_id).ok().flatten()?;
+            Some((plan, generation))
+        })
+        .flatten()
     }
 
     fn gtk_edit_text_view_text(text_view: &TextView) -> String {
@@ -2673,13 +3263,18 @@ searchentry {
 
     fn refresh_edit_target(refresh_target: &Option<EditRefreshTarget>) {
         if let Some(target) = refresh_target.as_ref() {
+            if queue_registered_gtk_search(&target.items) {
+                return;
+            }
+            invalidate_gtk_search();
             let category =
                 native_host_source_tab_for_category(target.current_source_category.get()).category;
             let refreshed =
-                crate::linux_app::linux_native_host_projected_clip_items_for_category_group_kind_filter(
+                crate::linux_app::linux_native_host_projected_clip_items_for_category_group_kind_filter_search(
                     category,
                     target.current_group_filter.get(),
                     target.current_kind_filter.get(),
+                    target.search_entry.text().as_str(),
                 );
             *target.items.borrow_mut() = refreshed;
             refresh_clip_rows(&target.rows, &target.items.borrow());
@@ -2688,19 +3283,39 @@ searchentry {
 
     fn save_gtk_edit_text(
         item_id: i64,
+        data_generation: u64,
         text_view: &TextView,
+        phrase_title: Option<&GtkPhraseTitleEditor>,
         status: &Label,
         refresh_target: &Option<EditRefreshTarget>,
     ) -> bool {
         let text = gtk_edit_text_view_text(text_view);
-        let result = crate::linux_app::dispatch_linux_native_edit_text_save(item_id, &text);
+        let result = crate::db_runtime::with_shared_app_data_generation(data_generation, || {
+            if let Some(title) = phrase_title {
+                crate::linux_app::dispatch_linux_native_phrase_save(
+                    item_id,
+                    title.entry.text().as_str(),
+                    &text,
+                )
+            } else {
+                crate::linux_app::dispatch_linux_native_edit_text_save(item_id, &text)
+            }
+        })
+        .unwrap_or(ProductAdapterCommandResult {
+            accepted: false,
+            result_name: "zsclip.row.edit.stale_data_generation".to_string(),
+        });
         eprintln!(
             "ZSClip GTK edit save item_id={} text_len={} -> {}",
             item_id,
             text.chars().count(),
             result.result_name
         );
-        status.set_text(&format!("saved -> {}", result.result_name));
+        status.set_text(if result.accepted {
+            "Saved"
+        } else {
+            "Unable to save this record"
+        });
         if result.accepted {
             refresh_edit_target(refresh_target);
         }
@@ -2710,7 +3325,9 @@ searchentry {
     fn present_gtk_edit_unsaved_changes_dialog(
         window: &ApplicationWindow,
         item_id: i64,
+        data_generation: u64,
         text_view: &TextView,
+        phrase_title: Option<&GtkPhraseTitleEditor>,
         status: &Label,
         refresh_target: &Option<EditRefreshTarget>,
         close_without_prompt: &Rc<Cell<bool>>,
@@ -2730,6 +3347,7 @@ searchentry {
 
         let window_for_response = window.clone();
         let text_view_for_response = text_view.clone();
+        let phrase_title_for_response = phrase_title.cloned();
         let status_for_response = status.clone();
         let refresh_target_for_response = refresh_target.clone();
         let close_without_prompt_for_response = Rc::clone(close_without_prompt);
@@ -2738,7 +3356,9 @@ searchentry {
                 gtk::ResponseType::Yes => {
                     if save_gtk_edit_text(
                         item_id,
+                        data_generation,
                         &text_view_for_response,
+                        phrase_title_for_response.as_ref(),
                         &status_for_response,
                         &refresh_target_for_response,
                     ) {
@@ -2761,7 +3381,9 @@ searchentry {
         window: &ApplicationWindow,
         initial_text: &str,
         item_id: i64,
+        data_generation: u64,
         text_view: &TextView,
+        phrase_title: Option<&GtkPhraseTitleEditor>,
         status: &Label,
         refresh_target: &Option<EditRefreshTarget>,
         close_without_prompt: &Rc<Cell<bool>>,
@@ -2771,14 +3393,18 @@ searchentry {
         }
         let current_text = gtk_edit_text_view_text(text_view);
         let close_plan = native_host_edit_text_close_plan(initial_text, &current_text);
-        if !close_plan.requires_unsaved_confirmation {
+        let title_changed =
+            phrase_title.is_some_and(|title| title.entry.text().as_str() != title.initial_title);
+        if !close_plan.requires_unsaved_confirmation && !title_changed {
             close_without_prompt.set(true);
             return true;
         }
         present_gtk_edit_unsaved_changes_dialog(
             window,
             item_id,
+            data_generation,
             text_view,
+            phrase_title,
             status,
             refresh_target,
             close_without_prompt,
@@ -2788,10 +3414,34 @@ searchentry {
 
     fn present_edit_text_window(
         app: &Application,
-        plan: NativeHostEditTextPlan,
+        plan: (NativeHostEditTextPlan, u64),
         auto_save: bool,
         refresh_target: Option<EditRefreshTarget>,
     ) {
+        let (plan, data_generation) = plan;
+        let Some(item) =
+            crate::db_runtime::with_shared_app_data_generation(data_generation, || {
+                crate::db_runtime::native_clip_item(plan.item_id)
+                    .ok()
+                    .flatten()
+            })
+            .flatten()
+        else {
+            return;
+        };
+        let phrase_title = Some(item)
+            .filter(|item| item.kind == crate::app_core::ClipKind::Phrase)
+            .filter(|_| refresh_gtk_content_preferences().phrase_titles_enabled)
+            .map(|item| {
+                let entry = Entry::new();
+                entry.set_widget_name("phrase-title");
+                entry.set_placeholder_text(Some("Phrase title"));
+                entry.set_text(&item.phrase_title);
+                GtkPhraseTitleEditor {
+                    entry,
+                    initial_title: item.phrase_title,
+                }
+            });
         let window = ApplicationWindow::builder()
             .application(app)
             .default_width(560)
@@ -2834,6 +3484,7 @@ searchentry {
                 button.set_widget_name(spec.id);
                 apply_gtk_button_style_role(&button, spec.style_role);
                 let text_view_for_save = text_view.clone();
+                let phrase_title_for_save = phrase_title.clone();
                 let status_for_save = status.clone();
                 let refresh_target = refresh_target.clone();
                 let item_id = plan.item_id;
@@ -2844,7 +3495,9 @@ searchentry {
                     NativeHostEditTextAction::Save => {
                         if save_gtk_edit_text(
                             item_id,
+                            data_generation,
                             &text_view_for_save,
+                            phrase_title_for_save.as_ref(),
                             &status_for_save,
                             &refresh_target,
                         ) {
@@ -2857,7 +3510,9 @@ searchentry {
                             &window_for_cancel,
                             &initial_text_for_cancel,
                             item_id,
+                            data_generation,
                             &text_view_for_save,
+                            phrase_title_for_save.as_ref(),
                             &status_for_save,
                             &refresh_target,
                             &close_without_prompt_for_cancel,
@@ -2872,6 +3527,7 @@ searchentry {
 
         let window_for_close = window.clone();
         let text_view_for_close = text_view.clone();
+        let phrase_title_for_close = phrase_title.clone();
         let status_for_close = status.clone();
         let refresh_target_for_close = refresh_target.clone();
         let initial_text_for_close = Rc::clone(&initial_text);
@@ -2882,7 +3538,9 @@ searchentry {
                 &window_for_close,
                 &initial_text_for_close,
                 item_id_for_close,
+                data_generation,
                 &text_view_for_close,
+                phrase_title_for_close.as_ref(),
                 &status_for_close,
                 &refresh_target_for_close,
                 &close_without_prompt_for_close,
@@ -2894,6 +3552,9 @@ searchentry {
         });
 
         root.append(&title);
+        if let Some(phrase_title) = phrase_title.as_ref() {
+            root.append(&phrase_title.entry);
+        }
         root.append(&editor_scroller);
         for button in &save_buttons {
             root.append(button);
@@ -2901,6 +3562,9 @@ searchentry {
         root.append(&status);
         window.set_child(Some(&root));
         window.present();
+        if let Some(phrase_title) = phrase_title.as_ref() {
+            phrase_title.entry.grab_focus();
+        }
         eprintln!("ZSClip GTK edit window shown");
 
         if auto_save {
@@ -2924,12 +3588,19 @@ searchentry {
     }
 
     #[derive(Clone)]
+    struct GtkPhraseTitleEditor {
+        entry: Entry,
+        initial_title: String,
+    }
+
+    #[derive(Clone)]
     struct EditRefreshTarget {
         rows: Vec<ListBoxRow>,
         items: Rc<RefCell<Vec<NativeHostClipListItemProjection>>>,
         current_source_category: Rc<Cell<i64>>,
         current_group_filter: Rc<Cell<i64>>,
         current_kind_filter: Rc<Cell<ClipKindFilter>>,
+        search_entry: SearchEntry,
     }
 
     fn gtk_clip_row_content(
@@ -2952,14 +3623,16 @@ searchentry {
         let text_box = GtkBox::new(Orientation::Vertical, 2);
         text_box.set_hexpand(true);
 
-        let title = presentation
-            .map(|presentation| presentation.title.as_str())
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or(fallback_label);
         let preview = presentation
             .map(|presentation| presentation.preview.as_str())
             .filter(|preview| !preview.trim().is_empty())
             .unwrap_or("");
+        let phrase =
+            presentation.is_some_and(|row| row.kind_icon == NativeHostClipKindIcon::Phrase);
+        let title = presentation
+            .map(|presentation| presentation.title.as_str())
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or(if phrase { preview } else { fallback_label });
 
         let title_label = Label::new(Some(title));
         title_label.set_xalign(0.0);
@@ -2973,6 +3646,7 @@ searchentry {
         preview_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         preview_label.set_lines(1);
         preview_label.add_css_class("dim-label");
+        preview_label.set_visible(!preview.is_empty() && preview != title);
 
         text_box.append(&title_label);
         text_box.append(&preview_label);
@@ -2999,8 +3673,40 @@ searchentry {
     }
 
     fn refresh_clip_rows(rows: &[ListBoxRow], items: &[NativeHostClipListItemProjection]) {
+        invalidate_gtk_search();
+        let preferences = refresh_gtk_content_preferences();
+        if let Some(list) = rows
+            .first()
+            .and_then(|row| row.parent())
+            .and_then(|parent| parent.downcast::<ListBox>().ok())
+        {
+            list.set_show_separators(!preferences.card_view_enabled);
+            if preferences.card_view_enabled {
+                list.remove_css_class("boxed-list");
+            } else {
+                list.add_css_class("boxed-list");
+            }
+        }
         let specs = native_host_clip_row_specs(items, rows.len());
         for (index, (row, spec)) in rows.iter().zip(specs.iter()).enumerate() {
+            for (class, enabled) in [
+                ("clip-card", preferences.card_view_enabled),
+                (
+                    "clip-card-border",
+                    preferences.card_view_enabled && preferences.card_border_enabled,
+                ),
+                (
+                    "clip-card-shadow",
+                    preferences.card_view_enabled && preferences.card_shadow_enabled,
+                ),
+            ] {
+                if enabled {
+                    row.add_css_class(class);
+                } else {
+                    row.remove_css_class(class);
+                }
+            }
+            row.set_size_request(-1, preferences.row_height().ceil() as i32);
             let action = spec.action;
             if items.is_empty() && index == 0 {
                 row.set_child(Some(&gtk_clip_row_content(None, "No clipboard records")));
@@ -3078,20 +3784,18 @@ searchentry {
         controls: &[crate::settings_model::SettingsNativeControlSummary],
         settings_json: &serde_json::Value,
     ) -> NativeSettingsControlBindings {
-        let title = Label::new(native_host_settings_section_label("settings_controls"));
-        title.set_xalign(0.0);
-        root.append(&title);
-
         let mut bindings = NativeSettingsControlBindings::default();
+        let mut previous_section = None;
         for control in controls {
-            let text = format!(
-                "{} / {}: {} -> {} / {}",
-                control.page_label,
-                control.section_title,
-                control.label,
-                control.route_label(),
-                control.binding_label()
-            );
+            if previous_section != Some(control.section_index) {
+                let heading = Label::new(Some(control.section_title));
+                heading.set_xalign(0.0);
+                heading.add_css_class("heading");
+                heading.set_margin_top(10);
+                root.append(&heading);
+                previous_section = Some(control.section_index);
+            }
+            let text = control.label;
             match control.kind {
                 crate::settings_model::SettingsNativeControlKind::Toggle => {
                     let row = GtkBox::new(Orientation::Horizontal, 8);
@@ -3099,14 +3803,18 @@ searchentry {
                     let label = Label::new(Some(&text));
                     label.set_xalign(0.0);
                     label.set_hexpand(true);
+                    label.set_wrap(true);
                     let switch = Switch::new();
-                    if let Some(display) =
+                    switch.set_widget_name(control.key);
+                    switch.set_valign(gtk::Align::Center);
+                    let initial_value =
                         crate::settings_model::settings_native_control_display_value(
                             control,
                             settings_json,
                         )
-                    {
-                        let initial_value = display.value.eq_ignore_ascii_case("true");
+                        .map(|display| display.value.eq_ignore_ascii_case("true"))
+                        .unwrap_or_else(|| gtk_default_settings_toggle(control.key, settings_json));
+                    if control.binding.is_some() {
                         switch.set_active(initial_value);
                         bindings.toggles.push(NativeSettingsToggleBinding {
                             control_key: control.key,
@@ -3124,7 +3832,8 @@ searchentry {
                     let label = Label::new(Some(&text));
                     label.set_xalign(0.0);
                     let entry = Entry::new();
-                    entry.set_placeholder_text(Some(control.key));
+                    entry.set_widget_name(control.key);
+                    entry.set_hexpand(true);
                     let mut initial_value = String::new();
                     if let Some(display) =
                         crate::settings_model::settings_native_control_display_value(
@@ -3133,6 +3842,7 @@ searchentry {
                         )
                     {
                         if display.sensitive {
+                            entry.set_visibility(false);
                             entry.set_placeholder_text(Some("stored securely"));
                         } else {
                             entry.set_text(&display.value);
@@ -3162,6 +3872,7 @@ searchentry {
                             .map(|option| option.label.as_str())
                             .collect::<Vec<_>>();
                         let dropdown = DropDown::from_strings(&labels);
+                        dropdown.set_widget_name(control.key);
                         let initial_value = options
                             .options
                             .get(options.selected_index)
@@ -3183,16 +3894,15 @@ searchentry {
                         row.append(&dropdown);
                         root.append(&row);
                     } else {
-                        let row =
-                            Button::with_label(&format!("{} [{}]", text, control.kind.role_name()));
+                        let row = Label::new(Some(text));
                         row.set_halign(gtk::Align::Start);
                         row.add_css_class("settings-row");
                         root.append(&row);
                     }
                 }
                 crate::settings_model::SettingsNativeControlKind::Button => {
-                    let row =
-                        Button::with_label(&format!("{} [{}]", text, control.kind.role_name()));
+                    let row = Button::with_label(text);
+                    row.set_widget_name(control.key);
                     row.set_halign(gtk::Align::Start);
                     row.add_css_class("settings-row");
                     if let Some(control_route) = control.route {
@@ -3213,29 +3923,70 @@ searchentry {
                                         "ZSClip GTK settings route action {}/{} -> {}",
                                         route_name, action_name, result.result_name
                                     );
-                                    route_status.set_text(&result.result_name);
+                                    route_status.set_text(gtk_action_status(&result));
                                 });
                             }
+                        } else if control.key == "open_config" {
+                            let route_status = route_status.clone();
+                            row.connect_clicked(move |_| {
+                                let result =
+                                    crate::linux_app::dispatch_linux_native_settings_action(
+                                        NativeHostSettingsAction::OpenConfig,
+                                    );
+                                route_status.set_text(gtk_action_status(&result));
+                            });
                         }
                     }
                     root.append(&row);
                 }
                 crate::settings_model::SettingsNativeControlKind::List => {
-                    let row =
-                        Button::with_label(&format!("{} [{}]", text, control.kind.role_name()));
+                    let row = Label::new(Some(crate::i18n::tr("暂无设备", "No devices")));
                     row.set_halign(gtk::Align::Start);
                     row.add_css_class("settings-row");
                     root.append(&row);
                 }
                 crate::settings_model::SettingsNativeControlKind::Label => {
-                    let row = Label::new(Some(&format!("{} [{}]", text, control.kind.role_name())));
+                    let display = crate::settings_model::settings_native_control_display_value(
+                        control,
+                        settings_json,
+                    );
+                    let label = display
+                        .filter(|value| !value.value.is_empty() && !value.sensitive)
+                        .map(|value| format!("{}: {}", text, value.value))
+                        .unwrap_or_else(|| text.to_string());
+                    let row = Label::new(Some(&label));
                     row.set_xalign(0.0);
+                    row.set_wrap(true);
                     row.add_css_class("settings-row");
                     root.append(&row);
                 }
             }
         }
         bindings
+    }
+
+    fn gtk_action_status(result: &ProductAdapterCommandResult) -> &'static str {
+        if result.accepted {
+            crate::i18n::tr("操作完成", "Done")
+        } else {
+            crate::i18n::tr(
+                "操作未完成，请检查设置",
+                "Unable to complete; check the settings",
+            )
+        }
+    }
+
+    fn gtk_default_settings_toggle(key: &str, settings: &serde_json::Value) -> bool {
+        let preferences = NativeContentPreferences::from_json(settings);
+        match key {
+            "phrase_titles" => preferences.phrase_titles_enabled,
+            "card_view" => preferences.card_view_enabled,
+            "card_border" => preferences.card_border_enabled,
+            "card_shadow" => preferences.card_shadow_enabled,
+            "capture_enable" | "group_enable" | "group_type_filter" | "tray_icon" | "app_icon"
+            | "close_to_tray" => true,
+            _ => false,
+        }
     }
 
     fn apply_gtk_settings_control_action(
@@ -3281,8 +4032,8 @@ searchentry {
     ) {
         let window = ApplicationWindow::builder()
             .application(app)
-            .default_width(720)
-            .default_height(520)
+            .default_width(860)
+            .default_height(640)
             .title("ZSClip Settings")
             .build();
 
@@ -3296,7 +4047,8 @@ searchentry {
         title.add_css_class("title-2");
         title.set_xalign(0.0);
 
-        let route = Label::new(Some(route_name));
+        eprintln!("ZSClip GTK settings opened -> {}", route_name);
+        let route = Label::new(None);
         route.add_css_class("dim-label");
         route.set_xalign(0.0);
 
@@ -3305,11 +4057,15 @@ searchentry {
         let notebook = Notebook::new();
         notebook.set_hexpand(true);
         notebook.set_vexpand(true);
+        notebook.set_widget_name("native-settings-pages");
+        notebook.set_tab_pos(gtk::PositionType::Left);
 
-        let mut settings_page = None;
-        let mut group_page = None;
-        let mut actions_page = None;
-        for spec in native_host_settings_page_tab_specs() {
+        let page_summaries = crate::settings_model::settings_native_page_summaries();
+        let control_summaries = crate::settings_model::settings_native_control_summaries();
+        let settings_json = crate::linux_app::linux_native_settings_json_snapshot();
+        let mut settings_pages = Vec::new();
+        let mut native_control_bindings = NativeSettingsControlBindings::default();
+        for spec in &page_summaries {
             let page = GtkBox::new(Orientation::Vertical, 10);
             page.set_margin_top(12);
             page.set_margin_bottom(12);
@@ -3323,53 +4079,33 @@ searchentry {
                 .build();
             scroller.set_child(Some(&page));
             notebook.append_page(&scroller, Some(&Label::new(Some(spec.label))));
-            match spec.kind {
-                NativeSettingsPageTabKind::General => settings_page = Some(page),
-                NativeSettingsPageTabKind::Groups => group_page = Some(page),
-                NativeSettingsPageTabKind::Actions => actions_page = Some(page),
-            }
+            let controls = control_summaries
+                .iter()
+                .copied()
+                .filter(|control| control.page == spec.page)
+                .filter(|control| {
+                    !(control.page == crate::settings_model::SettingsPage::Group
+                        && control.section_index == 1)
+                })
+                .collect::<Vec<_>>();
+            let bindings =
+                append_settings_control_blueprint(&page, &route, &controls, &settings_json);
+            native_control_bindings.entries.extend(bindings.entries);
+            native_control_bindings.toggles.extend(bindings.toggles);
+            native_control_bindings.dropdowns.extend(bindings.dropdowns);
+            settings_pages.push(page);
         }
-        let settings_page = settings_page.expect("settings general tab spec");
-        let group_page = group_page.expect("settings groups tab spec");
-        let actions_page = actions_page.expect("settings actions tab spec");
+        let group_page = &settings_pages[crate::settings_model::SettingsPage::Group.index()];
+        let actions_page = &settings_pages[crate::settings_model::SettingsPage::About.index()];
         root.append(&notebook);
-
-        let page_summaries = crate::settings_model::settings_native_page_summaries();
-        let section_summaries = crate::settings_model::settings_native_section_summaries();
-        let control_summaries = crate::settings_model::settings_native_control_summaries();
-        let settings_json = crate::linux_app::linux_native_settings_json_snapshot();
         eprintln!(
-            "ZSClip GTK settings native page summaries count={} section summaries count={} control summaries count={}",
+            "ZSClip GTK settings pages count={} controls={}",
             page_summaries.len(),
-            section_summaries.len(),
             control_summaries.len()
         );
-        for summary in page_summaries {
-            let control_rows = section_summaries
-                .iter()
-                .filter(|section| section.page == summary.page)
-                .map(|section| section.control_rows)
-                .sum::<i32>();
-            let control_count = control_summaries
-                .iter()
-                .filter(|control| control.page == summary.page)
-                .count();
-            let row = Label::new(Some(&format!(
-                "{}: {} sections, {} control rows, {} native controls",
-                summary.label,
-                summary.section_titles.len(),
-                control_rows,
-                control_count
-            )));
-            row.set_xalign(0.0);
-            settings_page.append(&row);
+        if let Some(index) = gtk_screenshot_settings_page() {
+            notebook.set_current_page(Some(index));
         }
-        let native_control_bindings = append_settings_control_blueprint(
-            &settings_page,
-            &route,
-            &control_summaries,
-            &settings_json,
-        );
 
         let group_category = Rc::new(Cell::new(0_i64));
         let selected_group_id = Rc::new(Cell::new(0_i64));
@@ -3452,7 +4188,7 @@ searchentry {
                         "settings group category actions are handled before operation actions"
                     ),
                 };
-                route.set_text(&result.result_name);
+                route.set_text(gtk_action_status(&result));
                 refresh_settings_group_rows(category.get(), &selected, &rows);
                 refresh_group_popup_menus_for_category(category.get(), menus.as_ref());
             });
@@ -3502,7 +4238,7 @@ searchentry {
                     result.result_name,
                     applied
                 );
-                route.set_text(&format!("{} | applied={}", result.result_name, applied));
+                route.set_text(gtk_action_status(&result));
             });
             row.append(&label);
             row.append(&switch);
@@ -3557,16 +4293,20 @@ searchentry {
                     result.result_name,
                     applied
                 );
-                route.set_text(&format!("{} | applied={}", result.result_name, applied));
+                route.set_text(gtk_action_status(&result));
             });
             controls.append(&dropdown);
         }
-        settings_page.append(&controls);
+        controls.set_visible(false);
 
         let actions = GtkBox::new(Orientation::Horizontal, 8);
+        let mut screenshot_save_button = None;
         for spec in native_host_settings_action_button_specs() {
             let action = spec.action;
             let button = Button::with_label(spec.label);
+            if matches!(action, NativeHostSettingsAction::Save) {
+                screenshot_save_button = Some(button.clone());
+            }
             button.set_widget_name(spec.id);
             apply_gtk_button_style_role(&button, spec.style_role);
             let route = route.clone();
@@ -3631,7 +4371,7 @@ searchentry {
                         refresh_group_popup_menus(menus);
                     }
                     refresh_gtk_status_action_states(&app);
-                    Some(label)
+                    Some(persist_result.accepted)
                 } else {
                     None
                 };
@@ -3641,10 +4381,14 @@ searchentry {
                     action.action_name(),
                     result.result_name
                 );
-                if let Some(plan) = plan {
-                    route.set_text(&format!("{} | {}", result.result_name, plan));
+                if let Some(saved) = plan {
+                    route.set_text(if saved {
+                        crate::i18n::tr("设置已保存", "Settings saved")
+                    } else {
+                        crate::i18n::tr("设置保存失败", "Unable to save settings")
+                    });
                 } else {
-                    route.set_text(&result.result_name);
+                    route.set_text(gtk_action_status(&result));
                 }
                 if action.should_close_settings_surface() {
                     window.close();
@@ -3652,7 +4396,8 @@ searchentry {
             });
             actions.append(&button);
         }
-        actions_page.append(&actions);
+        actions.set_halign(gtk::Align::End);
+        root.append(&actions);
 
         let platform_actions = GtkBox::new(Orientation::Horizontal, 8);
         for spec in native_host_settings_platform_button_specs() {
@@ -3668,7 +4413,7 @@ searchentry {
                     action.action_name(),
                     result.result_name
                 );
-                route.set_text(&result.result_name);
+                route.set_text(gtk_action_status(&result));
             });
             platform_actions.append(&button);
         }
@@ -3688,14 +4433,110 @@ searchentry {
                     action.action_name(),
                     result.result_name
                 );
-                route.set_text(&result.result_name);
+                route.set_text(gtk_action_status(&result));
             });
             dialog_actions.append(&button);
         }
-        actions_page.append(&dialog_actions);
+        dialog_actions.set_visible(false);
 
         window.set_child(Some(&root));
         window.present();
+        if std::env::var_os("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").is_some()
+            && std::env::var("ZSCLIP_NATIVE_HOST_AUTO_SMOKE").as_deref() == Ok("1")
+        {
+            for binding in &native_control_bindings.toggles {
+                if matches!(
+                    binding.control_key,
+                    "card_view" | "card_border" | "card_shadow" | "phrase_titles"
+                ) {
+                    binding.switch.set_active(true);
+                }
+            }
+            for binding in &native_control_bindings.dropdowns {
+                if binding.control_key == "content_font_size" {
+                    if let Some(index) = binding.raw_values.iter().position(|value| value == "16") {
+                        binding.dropdown.set_selected(index as u32);
+                    }
+                }
+            }
+            if let Some(save) = screenshot_save_button {
+                save.emit_clicked();
+            }
+            let saved = NativeContentPreferences::from_json(
+                &crate::linux_app::linux_native_settings_json_snapshot(),
+            );
+            eprintln!("ZSClip GTK settings value smoke font={} card={} border={} shadow={} titles={} read_back={}",
+                saved.content_font_size, saved.card_view_enabled, saved.card_border_enabled, saved.card_shadow_enabled, saved.phrase_titles_enabled,
+                saved.content_font_size == 16 && saved.card_view_enabled && saved.card_border_enabled && saved.card_shadow_enabled && saved.phrase_titles_enabled);
+        }
+    }
+
+    fn gtk_screenshot_settings_page() -> Option<u32> {
+        match std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE")
+            .ok()?
+            .as_str()
+        {
+            "settings-general" => Some(0),
+            "settings-appearance" => Some(1),
+            "settings-clipboard" => Some(2),
+            "settings-hotkey" => Some(3),
+            "settings-group" => Some(4),
+            "settings-plugin" => Some(5),
+            "settings-cloud" => Some(6),
+            "settings-about" => Some(7),
+            _ => None,
+        }
+    }
+
+    fn apply_gtk_screenshot_scene(
+        app: &Application,
+        main_window: &ApplicationWindow,
+        items: &[NativeHostClipListItemProjection],
+    ) {
+        let Ok(scene) = std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE") else {
+            return;
+        };
+        for window in app.windows() {
+            if window.as_ptr() != main_window.as_ptr().cast() {
+                window.set_visible(false);
+            }
+        }
+        if gtk_screenshot_settings_page().is_some() {
+            main_window.set_visible(false);
+            if let Some(settings) = app
+                .windows()
+                .into_iter()
+                .find(|window| window.title().as_deref() == Some("ZSClip Settings"))
+            {
+                settings.present();
+            } else {
+                present_settings_window(app, "zsclip.window.open_settings", None);
+            }
+        } else if scene == "edit" {
+            let phrases =
+                crate::linux_app::linux_native_host_projected_clip_items_for_category_group(1, 0);
+            let edit_items = if phrases.is_empty() { items } else { &phrases };
+            if let Some(plan) = native_edit_plan(
+                edit_items,
+                edit_items
+                    .iter()
+                    .find(|item| {
+                        matches!(
+                            item.kind,
+                            crate::app_core::ClipKind::Text | crate::app_core::ClipKind::Phrase
+                        )
+                    })
+                    .map(|item| item.id)
+                    .unwrap_or(0),
+            ) {
+                present_edit_text_window(app, plan, false, None);
+            }
+        } else if scene == "vv" {
+            present_vv_popup_window(app, 1, 0);
+        } else {
+            main_window.present();
+        }
+        eprintln!("ZSClip GTK screenshot scene ready={}", scene);
     }
 
     fn select_settings_group(

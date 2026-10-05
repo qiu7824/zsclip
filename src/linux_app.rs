@@ -294,9 +294,11 @@ pub(crate) struct LinuxClipboardState {
     text: Option<String>,
     image: Option<(Vec<u8>, usize, usize)>,
     file_paths: Option<Vec<String>>,
+    html: Option<String>,
     sequence: u32,
     last_system_fingerprint: Option<u64>,
     ignore_next_capture: bool,
+    ignored_capture_fingerprint: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -843,6 +845,8 @@ impl Default for LinuxSettingsDropdownHost {
 }
 
 pub(crate) fn run() -> Result<(), String> {
+    #[cfg(target_os="linux")]
+    crate::native_paths::prepare_data_directory()?;
     #[cfg(target_os = "linux")]
     {
         return crate::linux_native_host::run_real_gtk_host(linux_host_contract_summary());
@@ -877,6 +881,19 @@ pub(crate) fn dispatch_linux_native_host_action(
 pub(crate) fn dispatch_linux_native_settings_action(
     action: NativeHostSettingsAction,
 ) -> ProductAdapterCommandResult {
+    #[cfg(not(test))]
+    if matches!(action, NativeHostSettingsAction::OpenConfig) {
+        let path = linux_native_settings_file();
+        let created = if path.exists() { true } else {
+            path.parent().is_some_and(|parent| std::fs::create_dir_all(parent).is_ok())
+                && std::fs::write(&path, b"{}\n").is_ok()
+        };
+        let accepted = created && LinuxShellOpenHost::system_open_path(&path.to_string_lossy());
+        return ProductAdapterCommandResult {
+            accepted,
+            result_name: if accepted { "zsclip.settings.open_config" } else { "zsclip.settings.open_config_failed" }.to_string(),
+        };
+    }
     let mut application = LinuxApplicationModel::default();
     application.dispatch_ui_command(action.command());
     application
@@ -904,11 +921,7 @@ fn linux_native_settings_file() -> std::path::PathBuf {
             return std::path::PathBuf::from(trimmed);
         }
     }
-    let data_dir = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("data")))
-        .unwrap_or_else(|| std::path::PathBuf::from("data"));
-    data_dir.join("settings.json")
+    crate::native_paths::data_directory().join("settings.json")
 }
 
 #[cfg(test)]
@@ -925,10 +938,11 @@ fn set_linux_native_settings_file_for_tests(path: Option<std::path::PathBuf>) {
 }
 
 fn linux_native_data_dir() -> std::path::PathBuf {
-    linux_native_settings_file()
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_else(|| std::path::PathBuf::from("data"))
+    #[cfg(test)]
+    if let Some(path)=linux_native_settings_file_override().lock().unwrap().as_ref() {
+        return path.parent().unwrap_or_else(||std::path::Path::new("data")).to_path_buf();
+    }
+    crate::native_paths::data_directory()
 }
 
 fn read_linux_native_settings_json(path: &std::path::Path) -> serde_json::Value {
@@ -2161,7 +2175,7 @@ pub(crate) fn dispatch_linux_native_row_action_for_item(
                 };
             };
             let accepted =
-                crate::app_core::native_host_write_clipboard_payload::<LinuxClipboardHost>(&write);
+                crate::app_core::native_host_write_clipboard_payload_with_html::<LinuxClipboardHost>(&write,LinuxClipboardHost::write_rich_text);
             ProductAdapterCommandResult {
                 accepted,
                 result_name: if accepted {
@@ -2334,6 +2348,27 @@ pub(crate) fn dispatch_linux_native_edit_text_save(
         Err(_) => ProductAdapterCommandResult {
             accepted: false,
             result_name: "zsclip.row.edit.save_failed".to_string(),
+        },
+    }
+}
+
+pub(crate) fn dispatch_linux_native_phrase_save(
+    item_id: i64,
+    title: &str,
+    body: &str,
+) -> ProductAdapterCommandResult {
+    match crate::db_runtime::save_native_phrase(item_id, title, body) {
+        Ok(true) => ProductAdapterCommandResult {
+            accepted: true,
+            result_name: "zsclip.row.phrase.save_db".to_string(),
+        },
+        Ok(false) => ProductAdapterCommandResult {
+            accepted: false,
+            result_name: "zsclip.row.phrase.save_missing".to_string(),
+        },
+        Err(_) => ProductAdapterCommandResult {
+            accepted: false,
+            result_name: "zsclip.row.phrase.save_failed".to_string(),
         },
     }
 }
@@ -2629,7 +2664,9 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_fil
         kind_filter,
         64,
     ) {
-        return items;
+        return crate::app_core::native_content_preferences::NativeContentPreferences::from_json(
+            &linux_native_settings_json_snapshot(),
+        ).apply_projection(items);
     }
     Vec::new()
 }
@@ -2647,7 +2684,9 @@ pub(crate) fn linux_native_host_projected_clip_items_for_category_group_kind_fil
         search_text,
         64,
     ) {
-        return items;
+        return crate::app_core::native_content_preferences::NativeContentPreferences::from_json(
+            &linux_native_settings_json_snapshot(),
+        ).apply_projection(items);
     }
     Vec::new()
 }
@@ -2775,6 +2814,7 @@ impl LinuxApplicationModel {
         };
 
         let wrote_clipboard = match &item.clipboard_write {
+            NativeHostClipboardWrite::RichText {text,html}=>LinuxClipboardHost::write_rich_text(text,html),
             NativeHostClipboardWrite::Text(text) => {
                 LinuxClipboardHost::write_text_ignored_by_monitors(text)
             }
@@ -3129,6 +3169,63 @@ impl LinuxImeHost {
 }
 
 impl LinuxClipboardHost {
+    fn text_payload_fingerprint(text: &str, html: Option<&str>) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        "text".hash(&mut hasher); text.hash(&mut hasher); html.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn mark_ignored_text_write(text: &str, html: Option<&str>) {
+        let fingerprint = Self::text_payload_fingerprint(text, html);
+        Self::mutate_state(|state| { state.ignore_next_capture = true; state.ignored_capture_fingerprint = Some(fingerprint); });
+    }
+
+    #[cfg(all(target_os = "linux", not(test)))]
+    fn system_clipboard() -> &'static Mutex<Option<arboard::Clipboard>> {
+        static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
+        CLIPBOARD.get_or_init(|| Mutex::new(None))
+    }
+
+    #[cfg(all(target_os = "linux", not(test)))]
+    fn with_system_clipboard<T>(action: impl FnOnce(&mut arboard::Clipboard) -> T) -> Option<T> {
+        let mut clipboard = Self::system_clipboard().lock().ok()?;
+        if clipboard.is_none() { *clipboard = arboard::Clipboard::new().ok(); }
+        clipboard.as_mut().map(action)
+    }
+
+    pub(crate) fn release_system_clipboard() {
+        #[cfg(all(target_os = "linux", not(test)))]
+        if let Ok(mut clipboard) = Self::system_clipboard().lock() { *clipboard = None; }
+    }
+
+    pub(crate) fn read_html() -> Option<String> {
+        #[cfg(all(target_os = "linux", not(test)))]
+        let html = Self::with_system_clipboard(|clipboard| clipboard.get().html().ok()).flatten();
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        let html = Self::mutate_state(|state| state.html.clone());
+        html.as_deref().and_then(crate::db_runtime::sanitize_rich_text_html)
+    }
+
+    pub(crate) fn write_rich_text(text: &str, html: &str) -> bool {
+        if crate::db_runtime::text_is_protected(text) { return false; }
+        let Some(html) = crate::db_runtime::sanitize_rich_text_html(html) else { return false; };
+        #[cfg(all(target_os = "linux", not(test)))]
+        let written = Self::with_system_clipboard(|clipboard| clipboard.set_html(html.as_str(), Some(text)).is_ok()).unwrap_or(false);
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        let written = true;
+        if !written { return false; }
+        let fingerprint = Self::text_payload_fingerprint(text, Some(&html));
+        Self::mutate_state(|state| {
+            state.text = Some(text.to_string()); state.html = Some(html); state.image = None; state.file_paths = None;
+            state.sequence = state.sequence.saturating_add(1);
+            state.ignore_next_capture = true;
+            state.ignored_capture_fingerprint = Some(fingerprint);
+        });
+        true
+    }
+
     fn file_paths_from_uri_list(text: &str) -> Option<Vec<String>> {
         let paths = text
             .lines()
@@ -3148,60 +3245,53 @@ impl LinuxClipboardHost {
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_read_text() -> Option<String> {
-        let mut clipboard = arboard::Clipboard::new().ok()?;
-        clipboard.get_text().ok()
+        Self::with_system_clipboard(|clipboard| clipboard.get_text().ok()).flatten()
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_write_text(text: &str) -> bool {
-        let Ok(mut clipboard) = arboard::Clipboard::new() else {
-            return false;
-        };
-        clipboard.set_text(text.to_string()).is_ok()
+        Self::with_system_clipboard(|clipboard| clipboard.set_text(text).is_ok()).unwrap_or(false)
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_read_image_rgba() -> Option<(Vec<u8>, usize, usize)> {
-        let mut clipboard = arboard::Clipboard::new().ok()?;
-        let image = clipboard.get_image().ok()?;
-        Some((image.bytes.into_owned(), image.width, image.height))
+        Self::with_system_clipboard(|clipboard| clipboard.get_image().ok().map(|image| (image.bytes.into_owned(), image.width, image.height))).flatten()
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_read_file_paths() -> Option<Vec<String>> {
-        Self::system_read_text().and_then(|text| Self::file_paths_from_uri_list(&text))
+        Self::with_system_clipboard(|clipboard| clipboard.get().file_list().ok())
+            .flatten().map(|paths| paths.into_iter().map(|path| path.to_string_lossy().into_owned()).collect())
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_write_file_paths(paths: &[String]) -> bool {
-        let Some(uri_list) = file_paths_to_uri_list(paths) else {
-            return false;
-        };
-        Self::system_write_text(&uri_list)
+        if paths.is_empty() { return false; }
+        Self::with_system_clipboard(|clipboard| clipboard.set().file_list(paths).is_ok()).unwrap_or(false)
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_write_image_rgba(bytes: &[u8], width: usize, height: usize) -> bool {
-        let Ok(mut clipboard) = arboard::Clipboard::new() else {
-            return false;
-        };
-        clipboard
+        Self::with_system_clipboard(|clipboard| clipboard
             .set_image(arboard::ImageData {
                 width,
                 height,
                 bytes: std::borrow::Cow::Owned(bytes.to_vec()),
             })
-            .is_ok()
+            .is_ok()).unwrap_or(false)
     }
 
     #[cfg(all(target_os = "linux", not(test)))]
     fn system_clipboard_fingerprint() -> Option<u64> {
         let mut hasher = DefaultHasher::new();
 
-        if let Some(text) = Self::system_read_text() {
-            "text".hash(&mut hasher);
-            text.hash(&mut hasher);
+        if let Some(paths) = Self::system_read_file_paths().filter(|paths| !paths.is_empty()) {
+            "files".hash(&mut hasher); paths.hash(&mut hasher);
             return Some(hasher.finish());
+        }
+
+        if let Some(text) = Self::system_read_text() {
+            return Some(Self::text_payload_fingerprint(&text, Self::read_html().as_deref()));
         }
 
         if let Some((bytes, width, height)) = Self::system_read_image_rgba() {
@@ -3552,11 +3642,9 @@ impl LinuxSettingsDropdownHost {
 impl ClipboardHost for LinuxClipboardHost {
     fn read_text() -> Option<String> {
         #[cfg(all(target_os = "linux", not(test)))]
-        if let Some(text) = Self::system_read_text() {
-            return clipboard_text_without_uri_list(text);
-        }
-
-        Self::mutate_state(|state| state.text.clone())
+        { Self::system_read_text() }
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        { Self::mutate_state(|state| state.text.clone()) }
     }
 
     fn write_text(text: &str) -> bool {
@@ -3564,11 +3652,14 @@ impl ClipboardHost for LinuxClipboardHost {
         let system_written = Self::system_write_text(text);
         #[cfg(not(all(target_os = "linux", not(test))))]
         let system_written = true;
-
+        if !system_written { return false; }
         Self::mutate_state(|state| {
             state.text = Some(text.to_string());
             state.image = None;
             state.file_paths = None;
+            state.html = None;
+            state.ignore_next_capture = false;
+            state.ignored_capture_fingerprint = None;
             state.sequence = state.sequence.saturating_add(1);
         });
         system_written
@@ -3576,11 +3667,9 @@ impl ClipboardHost for LinuxClipboardHost {
 
     fn read_image_rgba() -> Option<(Vec<u8>, usize, usize)> {
         #[cfg(all(target_os = "linux", not(test)))]
-        if let Some(image) = Self::system_read_image_rgba() {
-            return Some(image);
-        }
-
-        Self::mutate_state(|state| state.image.clone())
+        { Self::system_read_image_rgba() }
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        { Self::mutate_state(|state| state.image.clone()) }
     }
 
     fn write_image_rgba(bytes: &[u8], width: usize, height: usize) -> bool {
@@ -3594,11 +3683,14 @@ impl ClipboardHost for LinuxClipboardHost {
         let system_written = Self::system_write_image_rgba(bytes, width, height);
         #[cfg(not(all(target_os = "linux", not(test))))]
         let system_written = true;
-
+        if !system_written { return false; }
         Self::mutate_state(|state| {
             state.text = None;
             state.image = Some((bytes.to_vec(), width, height));
             state.file_paths = None;
+            state.html = None;
+            state.ignore_next_capture = false;
+            state.ignored_capture_fingerprint = None;
             state.sequence = state.sequence.saturating_add(1);
         });
         system_written
@@ -3606,11 +3698,9 @@ impl ClipboardHost for LinuxClipboardHost {
 
     fn read_file_paths() -> Option<Vec<String>> {
         #[cfg(all(target_os = "linux", not(test)))]
-        if let Some(paths) = Self::system_read_file_paths() {
-            return Some(paths);
-        }
-
-        Self::mutate_state(|state| state.file_paths.clone())
+        { Self::system_read_file_paths() }
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        { Self::mutate_state(|state| state.file_paths.clone()) }
     }
 
     fn write_file_paths(paths: &[String]) -> bool {
@@ -3618,11 +3708,14 @@ impl ClipboardHost for LinuxClipboardHost {
         let system_written = Self::system_write_file_paths(paths);
         #[cfg(not(all(target_os = "linux", not(test))))]
         let system_written = !paths.is_empty();
-
+        if !system_written { return false; }
         Self::mutate_state(|state| {
             state.text = None;
             state.image = None;
             state.file_paths = Some(paths.to_vec());
+            state.html = None;
+            state.ignore_next_capture = false;
+            state.ignored_capture_fingerprint = None;
             state.sequence = state.sequence.saturating_add(1);
         });
         system_written
@@ -3637,16 +3730,19 @@ impl ClipboardHost for LinuxClipboardHost {
         if !Self::write_text(text) {
             return false;
         }
-        Self::mutate_state(|state| {
-            state.ignore_next_capture = true;
-            true
-        })
+        Self::mark_ignored_text_write(text, None);
+        true
     }
 
     fn should_ignore_capture_by_named_format() -> bool {
+        #[cfg(all(target_os = "linux", not(test)))]
+        let observed = Self::system_clipboard_fingerprint();
+        #[cfg(not(all(target_os = "linux", not(test))))]
+        let observed = Self::mutate_state(|state| state.text.as_deref().map(|text| Self::text_payload_fingerprint(text, state.html.as_deref())));
         Self::mutate_state(|state| {
-            let ignore = state.ignore_next_capture;
+            let ignore = state.ignore_next_capture && observed.is_some() && observed == state.ignored_capture_fingerprint;
             state.ignore_next_capture = false;
+            state.ignored_capture_fingerprint = None;
             ignore
         })
     }
@@ -4950,6 +5046,7 @@ mod tests {
 
     #[test]
     fn linux_gtk_settings_save_collects_all_native_bindings() {
+        // Source wiring checks do not establish target-OS runtime behavior.
         let source = include_str!("linux_native_host.rs").replace("\r\n", "\n");
 
         assert!(source.contains("NativeSettingsEntryBinding"));
@@ -4959,7 +5056,16 @@ mod tests {
         assert!(source.contains("Switch::new()"));
         assert!(source.contains("DropDown::from_strings(&labels)"));
         assert!(source.contains("Notebook::new()"));
-        assert!(source.contains("native_host_settings_page_tab_specs()"));
+        assert!(source.contains("settings_native_page_summaries()"));
+        assert!(source.contains("for spec in &page_summaries"));
+        assert!(source.contains("control.page == spec.page"));
+        assert!(source.contains("SettingsPage::Group.index()"));
+        assert!(source.contains("root.append(&actions)"));
+        assert!(source.contains("gtk_default_settings_toggle(control.key, settings_json)"));
+        assert!(source.contains("persist_linux_native_settings_submission(&submission)"));
+        assert!(source.contains("save.emit_clicked()"));
+        assert!(source.contains("settings value smoke font="));
+        assert!(!source.contains("sections, {} control rows, {} native controls"));
         assert!(source.contains("initial_value"));
         assert!(source.contains("switch.set_active(initial_value)"));
         assert!(source.contains("settings_native_dropdown_options"));
@@ -5675,9 +5781,15 @@ mod tests {
         assert!(host_source.contains("window.add_css_class(\"vv-popup\")"));
         assert!(host_source.contains("let popup_key_controller = EventControllerKey::new()"));
         assert!(host_source.contains("NativeHostVvTriggerKey::Escape =>"));
-        assert!(host_source.contains("NativeHostVvTriggerKey::Digit1To9(selected_index)"));
-        assert!(host_source.contains("dispatch_linux_native_vv_select_event(selected_index)"));
-        assert!(host_source.contains("perform_gtk_vv_paste(selected_index, current_group_id)"));
+        assert!(host_source.contains("NativeHostVvTriggerKey::Digit1To9(index) if index < key_preview.ids.len()"));
+        assert!(host_source.contains("dispatch_linux_native_vv_select_event(index)"));
+        assert!(host_source.contains("perform_gtk_vv_paste(index, current_group_id)"));
+        assert!(host_source.contains("queue_gtk_vv_full_preview(&hover_preview, index, 200)"));
+        assert!(host_source.contains("preview.generation.get() != generation"));
+        assert!(host_source.contains("native_clip_item(item_id)"));
+        assert!(host_source.contains("protected_preview.body.buffer().set_text(\"\")"));
+        assert!(host_source.contains("body.set_focusable(false)"));
+        assert!(host_source.contains("key == gdk::Key::Page_Up"));
         assert!(host_source.contains("window_for_keys.close()"));
         assert!(host_source.contains("window.add_controller(popup_key_controller)"));
         assert!(host_source.contains(".vv-index"));
@@ -5763,7 +5875,10 @@ mod tests {
         assert!(host_source.contains("clip_list.set_focusable(true)"));
         assert!(host_source.contains("sync_clip_list_selection(&clip_list, &clip_rows"));
         assert!(host_source.contains("clip_list.grab_focus()"));
-        assert!(host_source.contains("clip_list.set_show_separators(true)"));
+        assert!(host_source.contains("clip_list.set_show_separators(!content_preferences.card_view_enabled)"));
+        assert!(host_source.contains("preferences.card_border_enabled"));
+        assert!(host_source.contains("preferences.card_shadow_enabled"));
+        assert!(host_source.contains("preferences.content_font_size"));
         assert!(host_source.contains("clip_list.connect_row_selected"));
         assert!(host_source.contains("clip_list.connect_row_activated"));
         assert!(!host_source.contains("native_host_row_action_button_specs()"));
@@ -5845,12 +5960,14 @@ mod tests {
         assert!(host_source.contains("dialog.add_button(\"Discard\", gtk::ResponseType::No)"));
         assert!(host_source.contains("window.connect_close_request(move |_|"));
         assert!(host_source.contains("let notebook = Notebook::new()"));
-        assert!(host_source.contains("for spec in native_host_settings_page_tab_specs()"));
+        assert!(host_source.contains("for spec in &page_summaries"));
         assert!(host_source.contains("notebook.append_page(&scroller"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::General"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::Groups"));
-        assert!(host_source.contains("NativeSettingsPageTabKind::Actions"));
-        assert!(host_source.contains("native_host_settings_section_label(\"settings_controls\")"));
+        assert!(host_source.contains("settings_native_page_summaries()"));
+        assert!(host_source.contains("control.page == spec.page"));
+        assert!(host_source.contains("SettingsPage::Group.index()"));
+        assert!(host_source.contains("SettingsPage::About.index()"));
+        assert!(host_source.contains("previous_section != Some(control.section_index)"));
+        assert!(host_source.contains("let text = control.label"));
         assert!(host_source.contains("native_host_settings_section_label(\"group_selector\")"));
         assert!(host_source.contains("native_host_settings_toggle_specs()"));
         assert!(host_source.contains("native_host_settings_dropdown_specs()"));
@@ -5952,6 +6069,23 @@ mod tests {
             "linux_native_host_projected_clip_items_for_category_group_kind_filter_search"
         ));
         assert!(host_source.contains("reload_clip_items_for_group_search_with_selection"));
+        assert!(host_source.contains("start_gtk_background_search("));
+        assert!(host_source.contains("NativeSearchService::new()"));
+        assert!(host_source.contains("service.try_latest_result()"));
+        assert!(host_source.contains("invalidate_gtk_search()"));
+        assert!(host_source.contains("result.generation != search_generation"));
+        assert!(host_source.contains("source_category.get() != category"));
+        let worker_source = include_str!("native_search.rs");
+        assert!(worker_source.contains("native_clip_list_items_for_query_page_cancellable("));
+        assert!(host_source.contains("service.submit_page("));
+        assert!(host_source.contains("history-previous-page"));
+        assert!(host_source.contains("history-next-page"));
+        assert!(host_source.contains("paging.next.set_sensitive(result.has_more)"));
+        let compact_worker: String = worker_source.chars().filter(|character| !character.is_whitespace()).collect();
+        assert!(compact_worker.contains("request.page_index.saturating_mul(NATIVE_HOST_CLIP_ROW_CAPACITY)"));
+        assert!(worker_source.contains("queue.pending = Some(NativeSearchRequest"));
+        assert!(worker_source.contains("search_protection_revision()"));
+        assert!(worker_source.contains("current_app_data_generation()"));
         assert!(host_source.contains("search_entry.text().as_str()"));
     }
 
@@ -6484,6 +6618,49 @@ mod tests {
             LinuxClipboardHost::file_paths_from_uri_list("file:///tmp/bad%zz.txt"),
             None
         );
+    }
+
+    #[test]
+    fn linux_rich_text_preserves_plain_alternative_and_replaces_old_file_payload() {
+        let _guard = linux_clipboard_test_guard();
+        LinuxClipboardHost::reset_for_tests();
+        crate::db_runtime::with_test_protected_texts(&[], || {
+            assert!(LinuxClipboardHost::write_file_paths(&["/tmp/old-file.txt".into()]));
+            assert!(LinuxClipboardHost::write_rich_text("line one\nline two", "<p>line one</p><p>line two</p>"));
+            assert_eq!(LinuxClipboardHost::read_text().as_deref(), Some("line one\nline two"));
+            assert!(LinuxClipboardHost::read_html().unwrap().contains("line two"));
+            assert!(LinuxClipboardHost::read_file_paths().is_none());
+            assert!(LinuxClipboardHost::read_image_rgba().is_none());
+            assert!(LinuxClipboardHost::write_text("plain next"));
+            assert!(LinuxClipboardHost::read_html().is_none());
+        });
+    }
+
+    #[test]
+    fn linux_rich_text_rejects_protected_html_without_replacing_safe_clipboard() {
+        let _guard = linux_clipboard_test_guard();
+        LinuxClipboardHost::reset_for_tests();
+        assert!(LinuxClipboardHost::write_text("safe original"));
+        crate::db_runtime::with_test_protected_texts(&["protected-value"], || {
+            assert!(!LinuxClipboardHost::write_rich_text("safe", "<b>protected-value</b>"));
+            assert_eq!(LinuxClipboardHost::read_text().as_deref(), Some("safe original"));
+        });
+    }
+
+    #[test]
+    fn linux_self_write_ignore_does_not_discard_a_subsequent_external_copy() {
+        let _guard = linux_clipboard_test_guard();
+        LinuxClipboardHost::reset_for_tests();
+        assert!(LinuxClipboardHost::write_text_ignored_by_monitors("own paste"));
+        LinuxClipboardHost::mutate_state(|state| {
+            state.text = Some("new external copy".into()); state.html = None;
+            state.sequence = state.sequence.saturating_add(1);
+        });
+        assert!(!LinuxClipboardHost::should_ignore_capture_by_named_format());
+        assert_eq!(LinuxClipboardHost::read_text().as_deref(), Some("new external copy"));
+        assert!(LinuxClipboardHost::write_text_ignored_by_monitors("own paste"));
+        assert!(LinuxClipboardHost::should_ignore_capture_by_named_format());
+        assert!(!LinuxClipboardHost::should_ignore_capture_by_named_format());
     }
 
     #[test]

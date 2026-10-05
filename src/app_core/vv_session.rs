@@ -25,6 +25,41 @@ pub(crate) struct VvKeyResult {
     pub action: VvKeyAction,
 }
 
+/// Cleaning the trigger is best-effort after the session and paste target are authorized.
+/// An unavailable IME must not turn an explicitly selected candidate into a no-op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VvSelectionCleanup {
+    NoTextTrigger,
+    RemoveLiteralTrigger,
+    CompositionCancelled,
+    PreserveUnobservedInput,
+}
+
+impl VvSelectionCleanup {
+    pub(crate) const fn backspaces(self) -> u8 {
+        match self {
+            Self::RemoveLiteralTrigger => 2,
+            _ => 0,
+        }
+    }
+}
+
+pub(crate) fn vv_selection_cleanup(
+    triggered_by_text: bool,
+    literal_trigger_confirmed: bool,
+    cancel_exact_composition: impl FnOnce() -> bool,
+) -> VvSelectionCleanup {
+    if !triggered_by_text {
+        VvSelectionCleanup::NoTextTrigger
+    } else if literal_trigger_confirmed {
+        VvSelectionCleanup::RemoveLiteralTrigger
+    } else if cancel_exact_composition() {
+        VvSelectionCleanup::CompositionCancelled
+    } else {
+        VvSelectionCleanup::PreserveUnobservedInput
+    }
+}
+
 pub(crate) struct VvInputSession {
     pub id: u64,
     pub phase: VvPhase,
@@ -69,6 +104,14 @@ impl VvInputSession {
     pub fn cancel(&mut self) {
         self.phase = VvPhase::Cancelled;
         self.candidates = 0;
+    }
+
+    pub fn cancel_selection(&mut self, id: u64) -> bool {
+        if self.id != id || self.phase != VvPhase::Selected {
+            return false;
+        }
+        self.cancel();
+        true
     }
 
     pub fn matches(&self, id: u64, target: usize, focus: usize) -> bool {
@@ -171,6 +214,91 @@ mod tests {
         let mut s = VvInputSession::default();
         s.begin(10, 11, true);
         s
+    }
+
+    #[test]
+    fn confirmed_english_trigger_removes_two_characters_without_ime_calls() {
+        let plan =
+            vv_selection_cleanup(true, true, || panic!("literal trigger must not cancel IME"));
+        assert_eq!(plan, VvSelectionCleanup::RemoveLiteralTrigger);
+        assert_eq!(plan.backspaces(), 2);
+    }
+
+    #[test]
+    fn exact_native_composition_can_be_cancelled_without_backspacing() {
+        let mut calls = 0;
+        let plan = vv_selection_cleanup(true, false, || {
+            calls += 1;
+            true
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(plan, VvSelectionCleanup::CompositionCancelled);
+        assert_eq!(plan.backspaces(), 0);
+    }
+
+    #[test]
+    fn native_or_unknown_ime_cleanup_failure_still_produces_a_paste_plan() {
+        // Missing context, unavailable composition, non-exact composition and failed
+        // cancellation all use the same host result; none authorize destructive cleanup.
+        for failure in [
+            "native-unobservable",
+            "unknown-context",
+            "non-vv-composition",
+            "cancel-failed",
+        ] {
+            let mut calls = 0;
+            let plan = vv_selection_cleanup(true, false, || {
+                calls += 1;
+                false
+            });
+            assert_eq!(calls, 1, "{failure}");
+            assert_eq!(
+                plan,
+                VvSelectionCleanup::PreserveUnobservedInput,
+                "{failure}"
+            );
+            assert_eq!(plan.backspaces(), 0, "{failure}");
+        }
+    }
+
+    #[test]
+    fn non_text_invocation_preserves_input_without_ime_calls() {
+        let plan = vv_selection_cleanup(false, false, || {
+            panic!("no trigger belongs to this session")
+        });
+        assert_eq!(plan, VvSelectionCleanup::NoTextTrigger);
+        assert_eq!(plan.backspaces(), 0);
+    }
+
+    #[test]
+    fn failed_selection_releases_session_but_owns_the_selected_key_until_release() {
+        let mut s = session();
+        s.show(s.id, 1);
+        assert_eq!(
+            s.key(0x31, true, false, true).action,
+            VvKeyAction::Select(0)
+        );
+        assert!(s.cancel_selection(s.id));
+        assert_eq!(s.phase, VvPhase::Cancelled);
+        assert!(s.key(0x31, true, false, true).consume);
+        assert!(s.key(0x31, false, false, true).consume);
+        let first_v = s.key(0x56, true, false, true);
+        assert!(!first_v.consume);
+        assert_eq!(first_v.action, VvKeyAction::None);
+    }
+
+    #[test]
+    fn failed_selection_callback_cannot_cancel_a_newer_or_visible_session() {
+        let mut s = session();
+        let old = s.id;
+        s.show(old, 1);
+        s.select(old, 0);
+        let next = s.begin(10, 11, true);
+        assert!(!s.cancel_selection(old));
+        assert_eq!(s.phase, VvPhase::Pending);
+        s.show(next, 1);
+        assert!(!s.cancel_selection(next));
+        assert_eq!(s.phase, VvPhase::Visible);
     }
     #[test]
     fn escape_owns_down_repeat_up_then_releases_next_press() {

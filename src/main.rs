@@ -23,6 +23,12 @@ mod linux_app;
 mod linux_gtk_adapter;
 #[cfg(any(target_os = "linux", test))]
 mod linux_native_host;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod native_search;
+#[cfg(any(not(target_os = "windows"), test))]
+mod native_paths;
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+mod native_image_export;
 #[cfg(any(target_os = "macos", test))]
 mod macos_app;
 #[cfg(test)]
@@ -349,11 +355,11 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("ZSClip Settings"));
         assert!(macos_native_host_rs.contains("present_settings_window"));
         assert!(macos_native_host_rs.contains("NSTabView::initWithFrame"));
-        assert!(macos_native_host_rs.contains("native_host_settings_page_tab_specs()"));
-        assert!(macos_native_host_rs.contains("appkit_settings_scroll_tab_item(mtm, spec.label)"));
+        assert!(macos_native_host_rs.contains("settings_native_page_summaries()"));
+        assert!(macos_native_host_rs.contains("appkit_settings_scroll_tab_item(mtm, label, document_height)"));
         assert!(macos_native_host_rs.contains("scroller.setDocumentView(Some(&content))"));
         assert!(
-            macos_native_host_rs.contains("native_host_settings_section_label(\"group_selector\")")
+            macos_native_host_rs.contains("fn build_settings_group_controls(")
         );
         assert!(macos_native_host_rs.contains("zsclipAddSettingsGroup:"));
         assert!(macos_native_host_rs.contains("zsclipRenameSettingsGroup:"));
@@ -451,14 +457,14 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("native_host_main_tool_button_specs()"));
         assert!(macos_native_host_rs.contains("native_host_row_popup_menu_input_for_projection"));
         assert!(macos_native_host_rs.contains("perform_native_row_action"));
-        assert!(macos_native_host_rs.contains("native_host_settings_action_button_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_settings_toggle_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_settings_dropdown_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_settings_group_button_specs()"));
-        assert!(macos_native_host_rs.contains("native_host_settings_platform_button_specs()"));
+        assert!(macos_native_host_rs.contains("settings_save_button"));
+        assert!(macos_native_host_rs.contains("NativeSettingsToggleButtonBinding"));
+        assert!(macos_native_host_rs.contains("NativeSettingsDropdownButtonBinding"));
+        assert!(macos_native_host_rs.contains("appkit_settings_group_action_selector(action)"));
+        assert!(macos_native_host_rs.contains("NativeSettingsRouteButtonBinding"));
         assert!(macos_native_host_rs.contains("apply_native_settings_control_action"));
         assert!(macos_native_host_rs.contains("action.binding_control_key()"));
-        assert!(macos_native_host_rs.contains("native_host_dialog_button_specs()"));
+        assert!(macos_native_host_rs.contains("present_native_dialog_action"));
         assert!(macos_native_host_rs.contains("native_host_vv_select_specs(&plan"));
         assert!(!macos_native_host_rs.contains("appkit_host_action_selector(spec.action)"));
         assert!(macos_native_host_rs.contains("appkit_main_tool_action_selector(spec.action)"));
@@ -470,16 +476,16 @@ mod source_encoding_tests {
         assert!(macos_rs.contains("dispatch_macos_native_row_action_for_item"));
         assert!(macos_rs.contains("update_native_clip_items_pinned"));
         assert!(macos_rs.contains("delete_native_clip_items"));
-        assert!(macos_native_host_rs.contains("appkit_settings_action_selector(spec.action)"));
+        assert!(macos_native_host_rs.contains("appkit_settings_action_selector(action)"));
         assert!(
-            macos_native_host_rs.contains("appkit_settings_control_action_selector(spec.action)")
+            macos_native_host_rs.contains("Some(sel!(zsclipSettingsDraftChanged:))")
         );
-        assert!(macos_native_host_rs.contains("appkit_settings_group_action_selector(spec.action)"));
+        assert!(macos_native_host_rs.contains("appkit_settings_group_action_selector(action)"));
         assert!(
-            macos_native_host_rs.contains("appkit_settings_platform_action_selector(spec.action)")
+            macos_native_host_rs.contains("Some(sel!(zsclipSettingsNativeRouteAction:))")
         );
         assert!(macos_native_host_rs.contains("appkit_edit_text_action_selector(spec.action)"));
-        assert!(macos_native_host_rs.contains("appkit_dialog_action_selector(spec.action)"));
+        assert!(macos_native_host_rs.contains("self.present_native_dialog_action(action)"));
         assert!(macos_native_host_rs.contains("zsclipOpenSettings:"));
         assert!(macos_native_host_rs.contains("app.run()"));
         assert!(macos_native_host_rs.contains("dispatch_appkit_host_action"));

@@ -81,6 +81,11 @@ pub(crate) fn privacy_candidates(normalized: &str) -> Vec<String> {
     safety::candidates(&context)
 }
 
+pub(crate) fn native_document(raw:&str)->Option<String> {
+    let normalized=normalize(raw)?;
+    parts(&normalized).map(|(document,_,_)|document)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

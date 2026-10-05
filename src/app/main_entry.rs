@@ -447,6 +447,7 @@ pub(super) unsafe fn handle_vv_select(hwnd: HWND, state: &mut AppState, index: u
     })
     .is_none()
     {
+        vv_cancel_failed_selection(state);
         vv_popup_hide(hwnd, state);
         apply_loaded_settings(hwnd, state);
     }
@@ -458,7 +459,9 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
     let focus = state.vv_popup_focus;
     let session_id = state.vv_popup_session_id;
     let Some(backspaces) = vv_prepare_selection(state) else {
-        vv_popup_hide(hwnd, state); return;
+        vv_cancel_failed_selection(state);
+        vv_popup_hide(hwnd, state);
+        return;
     };
     cancel_queued_paste_attempt(hwnd,state);
     let items = if popup_visible {
@@ -471,10 +474,13 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
         Vec::new()
     };
     let Some(plan) = main_vv_select_plan(popup_visible, index, &items, backspaces) else {
+        vv_cancel_failed_selection(state);
+        vv_popup_hide(hwnd, state);
         return;
     };
     let (item, backspaces) = match plan {
         MainVvSelectPlan::HidePopup => {
+            vv_cancel_failed_selection(state);
             vv_popup_hide(hwnd, state);
             return;
         }
@@ -501,8 +507,12 @@ unsafe fn handle_vv_select_locked(hwnd: HWND, state: &mut AppState, index: usize
     ) {
         return;
     }
-    if !vv_paste_target_is_current(state) { state.vv_paste_guard=None; return; }
+    if !vv_paste_target_is_current(state) {
+        vv_finish_paste(state);
+        return;
+    }
     if !apply_item_to_clipboard(state, &item) {
+        vv_finish_paste(state);
         show_clipboard_write_failure_message(hwnd);
         return;
     }

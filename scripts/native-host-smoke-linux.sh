@@ -14,7 +14,6 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT_DIR="${ARTIFACT_DIR:-"$ROOT_DIR/target/native-host-smoke/linux"}"
 AUTO_SMOKE="${ZSCLIP_NATIVE_HOST_AUTO_SMOKE:-1}"
-CLICK_SMOKE="${NATIVE_HOST_SMOKE_CLICK:-0}"
 SHELL_OPEN_DRY_RUN="${ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN:-1}"
 if [[ "$SHELL_OPEN_DRY_RUN" == "1" ]]; then
   SHELL_OPEN_DRY_RUN_LOG=true
@@ -23,7 +22,6 @@ else
 fi
 APP_LOG="$ARTIFACT_DIR/zsclip-gtk.log"
 SCREENSHOT="$ARTIFACT_DIR/zsclip-gtk-main.png"
-CLICK_SCREENSHOT="$ARTIFACT_DIR/zsclip-gtk-after-clicks.png"
 
 mkdir -p "$ARTIFACT_DIR"
 cd "$ROOT_DIR"
@@ -132,88 +130,38 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
   fi
 fi
 
-if [[ "$CLICK_SMOKE" == "1" ]]; then
-  if ! command -v xdotool >/dev/null 2>&1; then
-    echo "Install xdotool to run optional GTK click smoke." >&2
-    exit 1
-  fi
-  echo "==> Running optional GTK button click smoke"
-  WINDOW_ID="$(xdotool search --name '^ZSClip$' | head -n 1 || true)"
-  if [[ -z "$WINDOW_ID" ]]; then
-    echo "Could not find a ZSClip window for click smoke." >&2
-    exit 1
-  fi
-  xdotool windowactivate "$WINDOW_ID"
-  sleep 0.2
-  xdotool mousemove --window "$WINDOW_ID" 70 90 click 1
-  sleep 0.2
-  xdotool key Escape
-  sleep 0.2
-  xdotool mousemove --window "$WINDOW_ID" 150 260 click 1
-  sleep 0.2
-  xdotool mousemove --window "$WINDOW_ID" 260 260 click 1
-  sleep 0.2
-  SETTINGS_WINDOW_ID="$(xdotool search --name '^ZSClip Settings$' | head -n 1 || true)"
-  if [[ -n "$SETTINGS_WINDOW_ID" ]]; then
-    xdotool windowactivate "$SETTINGS_WINDOW_ID"
-    sleep 0.2
-    xdotool mousemove --window "$SETTINGS_WINDOW_ID" 90 420 click 1
-    sleep 0.2
-    xdotool mousemove --window "$SETTINGS_WINDOW_ID" 230 420 click 1
-    sleep 0.2
-    xdotool mousemove --window "$SETTINGS_WINDOW_ID" 510 420 click 1
-    sleep 0.2
-    xdotool windowactivate "$WINDOW_ID"
-    sleep 0.2
-  fi
-  xdotool mousemove --window "$WINDOW_ID" 150 330 click 1
-  sleep 0.2
-  xdotool mousemove --window "$WINDOW_ID" 600 330 click 1
-  sleep 0.5
-  VV_WINDOW_ID="$(xdotool search --name '^ZSClip VV Popup$' | head -n 1 || true)"
-  if [[ -n "$VV_WINDOW_ID" ]]; then
-    xdotool windowactivate "$VV_WINDOW_ID"
-    sleep 0.2
-    xdotool mousemove --window "$VV_WINDOW_ID" 320 136 click 1
-    sleep 0.2
-    xdotool windowactivate "$WINDOW_ID"
-    sleep 0.2
-  fi
-  for expected in \
-    "ZSClip GTK row action row_copy -> zsclip.row.copy" \
-    "ZSClip GTK row action row_text_translate -> zsclip.row.text_translate" \
-    "ZSClip GTK settings control action settings_toggle_clipboard_capture -> zsclip.settings.toggle_control" \
-    "ZSClip GTK settings control action settings_toggle_lan_sync -> zsclip.settings.toggle_control"
-  do
-    if ! grep -Fq "$expected" "$APP_LOG"; then
-      echo "Missing expected GTK route log: $expected" >&2
-      echo "GTK app log:" >&2
-      cat "$APP_LOG" >&2 || true
-      exit 1
+# Each scene owns a fresh process and data directory. Readiness comes from the
+# actual target UI after its selected page/window has been presented.
+# Route smoke and rendered UI evidence are intentionally reported separately.
+cleanup
+for scene in main settings-general settings-appearance settings-clipboard settings-hotkey settings-group settings-plugin settings-cloud settings-about vv edit; do
+  scene_log="$ARTIFACT_DIR/scene-${scene}.log"
+  scene_image="$ARTIFACT_DIR/scene-${scene}.png"
+  scene_profile="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/zsclip-native-scenes-$$/${scene}"
+  mkdir -p "$scene_profile"
+  ZSCLIP_DATA_DIR="$scene_profile" ZSCLIP_NATIVE_SETTINGS_FILE="$scene_profile/settings.json" ZSCLIP_NATIVE_HOST_AUTO_SMOKE=1 \
+    ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE="$scene" \
+    ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN="$SHELL_OPEN_DRY_RUN" \
+    "$ROOT_DIR/target/debug/zsclip" >"$scene_log" 2>&1 &
+  APP_PID=$!
+  ready=0
+  for attempt in $(seq 1 100); do
+    if grep -Fq "ZSClip GTK screenshot scene ready=$scene" "$scene_log"; then
+      ready=1
+      break
     fi
+    if ! kill -0 "$APP_PID" >/dev/null 2>&1; then break; fi
+    sleep 0.2
   done
-  if grep -Fq "ZSClip GTK VV trigger requested" "$APP_LOG" \
-    && ! grep -Fq "ZSClip GTK VV select 0 -> vv_select_requested" "$APP_LOG"; then
-    echo "GTK VV popup opened, but Select 1 did not bridge vv_select_requested." >&2
-    cat "$APP_LOG" >&2 || true
+  if [[ "$ready" != "1" ]]; then
+    echo "Native screenshot scene did not become ready: $scene" >&2
+    cat "$scene_log" >&2
     exit 1
   fi
-  if grep -Fq "ZSClip GTK VV trigger requested" "$APP_LOG" \
-    && ! grep -Fq "ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" "$APP_LOG"; then
-    echo "GTK VV popup opened, but Select 1 did not execute the native VV paste bridge." >&2
-    cat "$APP_LOG" >&2 || true
-    exit 1
-  fi
-  if grep -Fq "ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true" "$APP_LOG" \
-    && ! grep -Fq "ZSClip GTK VV native paste shortcut posted=" "$APP_LOG"; then
-    echo "GTK VV paste bridge ran, but the native paste shortcut path was not attempted." >&2
-    cat "$APP_LOG" >&2 || true
-    exit 1
-  fi
-  capture_screenshot "$CLICK_SCREENSHOT"
-  echo "OK: GTK click screenshot: $CLICK_SCREENSHOT"
-else
-  echo "Skipped GTK button clicks. Set NATIVE_HOST_SMOKE_CLICK=1 and install xdotool to run them."
-fi
+  sleep 0.5
+  capture_screenshot "$scene_image"
+  test -s "$scene_image"
+  cleanup
+done
 
 echo "OK: Linux GTK native host smoke artifacts in $ARTIFACT_DIR"
