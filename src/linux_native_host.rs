@@ -570,6 +570,29 @@ searchentry {
         window: &ApplicationWindow,
         visible: bool,
     ) -> Option<String> {
+        let surface = window.surface()?;
+        if !surface.type_().name().contains("X11") || (visible && !window.is_visible()) {
+            return None;
+        }
+        // Resolve the optional backend entry point rather than guessing an XID
+        // from another toplevel's name/PID. Wayland-only GTK builds need not
+        // export this symbol, and are rejected above without changing focus.
+        #[link(name = "dl")]
+        unsafe extern "C" {
+            fn dlsym(
+                handle: *mut std::ffi::c_void,
+                symbol: *const std::ffi::c_char,
+            ) -> *mut std::ffi::c_void;
+        }
+        type GetXid = unsafe extern "C" fn(*mut gdk::ffi::GdkSurface) -> std::os::raw::c_ulong;
+        let symbol = unsafe { dlsym(std::ptr::null_mut(), c"gdk_x11_surface_get_xid".as_ptr()) };
+        if !symbol.is_null() {
+            let get_xid: GetXid = unsafe { std::mem::transmute(symbol) };
+            let xid = unsafe { get_xid(surface.as_ptr()) };
+            if xid != 0 {
+                return Some(xid.to_string());
+            }
+        }
         let title = window.title()?;
         let mut pattern = String::from("^");
         for character in title.chars() {
@@ -580,15 +603,23 @@ searchentry {
         }
         pattern.push('$');
         let pid = std::process::id().to_string();
-        let mut arguments = vec!["search"];
+        let mut arguments = vec!["search", "--all"];
         if visible {
             arguments.push("--onlyvisible");
         }
         arguments.extend(["--pid", pid.as_str(), "--name", pattern.as_str()]);
-        gtk_window_command_output("xdotool", &arguments)?
+        let id = gtk_window_command_output("xdotool", &arguments)?
             .lines()
             .last()
-            .map(ToOwned::to_owned)
+            .map(ToOwned::to_owned)?;
+        if gtk_window_command_output("xdotool", &["getwindowpid", &id]).as_deref()
+            != Some(pid.as_str())
+            || gtk_window_command_output("xdotool", &["getwindowname", &id]).as_deref()
+                != Some(title.as_str())
+        {
+            return None;
+        }
+        Some(id)
     }
 
     fn gtk_fit_window_near_cursor(window: &ApplicationWindow) -> bool {
@@ -1495,7 +1526,7 @@ searchentry {
         let seeded = crate::db_runtime::insert_native_clipboard_text(
             0,
             "zsclip gtk auto smoke editable record",
-            "GTK Smoke",
+            "项目资料",
         )
         .ok()
         .and_then(|outcome| outcome.item_id);
@@ -1586,7 +1617,7 @@ searchentry {
                 &[255, 0, 0, 255, 0, 128, 255, 255],
                 2,
                 1,
-                "GTK Smoke",
+                "项目资料",
             )
             .ok()
             .and_then(|outcome| outcome.item_id);
@@ -1624,7 +1655,7 @@ searchentry {
             let delete_seed = crate::db_runtime::insert_native_clipboard_text(
                 0,
                 "zsclip gtk auto smoke delete record",
-                "GTK Smoke",
+                "项目资料",
             )
             .ok()
             .and_then(|outcome| outcome.item_id);
@@ -1776,7 +1807,9 @@ searchentry {
                 continue;
             };
             if let Some(action) = app.lookup_action(spec.action.action_name()) {
-                action.change_state(&enabled.to_variant());
+                if action.state_type().is_some() {
+                    action.change_state(&enabled.to_variant());
+                }
             }
         }
     }
@@ -3008,6 +3041,12 @@ searchentry {
     ) {
         let data_generation = crate::db_runtime::current_app_data_generation();
         let paste_target = crate::linux_app::capture_linux_native_vv_target();
+        let render_only = std::env::var("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").as_deref()
+            == Ok("vv")
+            && paste_target.is_none();
+        let Ok(open_protection_revision) = crate::db_runtime::search_protection_revision() else {
+            return;
+        };
         let category = native_host_source_tab_for_category(current_source_category).category;
         let groups = crate::db_runtime::native_clip_groups(category).unwrap_or_default();
         let group_label = native_host_group_filter_label_for_groups(&groups, current_group_id);
@@ -3021,6 +3060,13 @@ searchentry {
         else {
             return;
         };
+        if crate::db_runtime::search_protection_revision()
+            .ok()
+            .as_ref()
+            != Some(&open_protection_revision)
+        {
+            return;
+        }
         let plan = native_host_vv_popup_render_plan_for_projection(&items, &group_label);
         let width = 780;
         let height = 460;
@@ -3250,6 +3296,10 @@ searchentry {
             }
             let displayed = protected_preview.protection_revision.borrow().clone();
             if crate::db_runtime::current_app_data_generation() != protected_preview.data_generation
+                || crate::db_runtime::search_protection_revision()
+                    .ok()
+                    .as_ref()
+                    != Some(&open_protection_revision)
                 || (displayed.is_some()
                     && displayed != crate::db_runtime::search_protection_revision().ok())
             {
@@ -3258,6 +3308,10 @@ searchentry {
                     .set(protected_preview.generation.get().wrapping_add(1));
                 protected_preview.body.buffer().set_text("");
                 *protected_preview.protection_revision.borrow_mut() = None;
+                if let Some(window) = protected_preview.window.upgrade() {
+                    window.close();
+                }
+                return glib::ControlFlow::Break;
             }
             glib::ControlFlow::Continue
         });
@@ -3312,7 +3366,7 @@ searchentry {
                 };
             }
             let window = window.unwrap();
-            if !lease.focus_is_current()
+            if (!render_only && !lease.focus_is_current())
                 || crate::db_runtime::current_app_data_generation() != data_generation
             {
                 lease.cancel();
@@ -3365,6 +3419,9 @@ searchentry {
             glib::ControlFlow::Continue
         });
         window.set_visible(true);
+        if render_only {
+            eprintln!("ZSClip GTK VV render-only scene; no external paste target");
+        }
         eprintln!("ZSClip GTK X11 VV nonactivating popup ownership installed");
         queue_gtk_vv_full_preview(&preview, 0, 0);
     }
@@ -4473,13 +4530,50 @@ searchentry {
                         control,
                         settings_json,
                     );
-                    let label = display
-                        .filter(|value| !value.value.is_empty() && !value.sensitive)
-                        .map(|value| format!("{}: {}", text, value.value))
+                    let derived = match control.key {
+                        "about_version" => {
+                            Some(format!("{}: {}", text, crate::app_version::APP_VERSION))
+                        }
+                        "data_directory" => Some(format!(
+                            "{}: {}",
+                            text,
+                            crate::native_paths::data_directory().display()
+                        )),
+                        "hotkey_preview" => Some(crate::settings_model::hotkey_preview_text(
+                            settings_json
+                                .get("hotkey_mod")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Win"),
+                            settings_json
+                                .get("hotkey_key")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("V"),
+                        )),
+                        "plain_hotkey_preview" => Some(crate::settings_model::hotkey_preview_text(
+                            settings_json
+                                .get("plain_paste_hotkey_mod")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Ctrl+Shift"),
+                            settings_json
+                                .get("plain_paste_hotkey_key")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("V"),
+                        )),
+                        _ => None,
+                    };
+                    let label = derived
+                        .or_else(|| {
+                            display
+                                .filter(|value| !value.value.is_empty() && !value.sensitive)
+                                .map(|value| format!("{}: {}", text, value.value))
+                        })
                         .unwrap_or_else(|| text.to_string());
                     let row = Label::new(Some(&label));
                     row.set_xalign(0.0);
                     row.set_wrap(true);
+                    if control.key == "data_directory" {
+                        row.set_selectable(true);
+                    }
                     row.add_css_class("settings-row");
                     root.append(&row);
                 }
@@ -4989,12 +5083,24 @@ searchentry {
                     let mut submitted_values = native_control_bindings
                         .entries
                         .iter()
-                        .map(|binding| {
+                        .filter_map(|binding| {
                             let raw_value = binding.entry.text().to_string();
-                            crate::settings_model::SettingsNativeSubmittedControlValue {
+                            if raw_value.is_empty()
+                                && matches!(
+                                    binding.control_key,
+                                    "cloud_webdav_pass"
+                                        | "ocr_cloud_url"
+                                        | "ocr_cloud_token"
+                                        | "translate_app_id"
+                                        | "translate_secret"
+                                )
+                            {
+                                return None;
+                            }
+                            Some(crate::settings_model::SettingsNativeSubmittedControlValue {
                                 control_key: binding.control_key.to_string(),
                                 raw_value,
-                            }
+                            })
                         })
                         .collect::<Vec<_>>();
                     submitted_values.extend(native_control_bindings.toggles.iter().map(
@@ -5041,7 +5147,7 @@ searchentry {
                         refresh_group_popup_menus(menus);
                     }
                     refresh_gtk_status_action_states(&app);
-                    Some(persist_result.accepted)
+                    Some(persist_result.accepted && json_apply.rejected_fields.is_empty())
                 } else {
                     None
                 };
@@ -5087,7 +5193,7 @@ searchentry {
             });
             platform_actions.append(&button);
         }
-        actions_page.append(&platform_actions);
+        platform_actions.set_visible(false);
 
         let dialog_actions = GtkBox::new(Orientation::Horizontal, 8);
         for spec in native_host_dialog_button_specs() {
@@ -5124,7 +5230,7 @@ searchentry {
             }
             for binding in &native_control_bindings.dropdowns {
                 if binding.control_key == "content_font_size" {
-                    if let Some(index) = binding.raw_values.iter().position(|value| value == "16") {
+                    if let Some(index) = binding.raw_values.iter().position(|value| value == "18") {
                         binding.dropdown.set_selected(index as u32);
                     }
                 }
@@ -5137,7 +5243,7 @@ searchentry {
             );
             eprintln!("ZSClip GTK settings value smoke font={} card={} border={} shadow={} titles={} read_back={}",
                 saved.content_font_size, saved.card_view_enabled, saved.card_border_enabled, saved.card_shadow_enabled, saved.phrase_titles_enabled,
-                saved.content_font_size == 16 && saved.card_view_enabled && saved.card_border_enabled && saved.card_shadow_enabled && saved.phrase_titles_enabled);
+                saved.content_font_size == 18 && saved.card_view_enabled && saved.card_border_enabled && saved.card_shadow_enabled && saved.phrase_titles_enabled);
         }
     }
 

@@ -81,6 +81,7 @@ if [[ "$AUTO_SMOKE" == "1" ]]; then
     "ZSClip AppKit row action row_edit" \
     "ZSClip AppKit edit window shown" \
     "ZSClip AppKit edit save item_id=" \
+    "ZSClip AppKit auto smoke native rows copy_verified=true edit_verified=true" \
     "ZSClip AppKit row action row_text_translate" \
     "ZSClip AppKit settings control action settings_toggle_clipboard_capture -> zsclip.settings.toggle_control" \
     "ZSClip AppKit settings control action settings_toggle_lan_sync -> zsclip.settings.toggle_control" \

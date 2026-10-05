@@ -431,9 +431,10 @@ mod source_encoding_tests {
         assert!(macos_native_host_rs.contains("ZSClip AppKit identity smoke queried=true"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_rs.contains("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"));
-        assert!(macos_smoke_script.contains(
-            "ZSClip AppKit VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"
-        ));
+        assert!(macos_smoke_script.contains("ZSClip AppKit auto smoke VV self-target rejected=true"));
+        assert!(macos_smoke_script.contains("ZSCLIP_NATIVE_VV_DELIVERY_SMOKE=1"));
+        assert!(macos_smoke_script.contains("state.get(\"text\")==expected"));
+        assert!(!macos_smoke_script.contains("zsclip.vv_paste.clipboard_target accepted=true"));
         assert!(macos_smoke_script.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(macos_smoke_script.contains("SHELL_OPEN_DRY_RUN_LOG=true"));
         assert!(macos_smoke_script.contains(
@@ -699,8 +700,9 @@ mod source_encoding_tests {
         assert!(linux_native_host_rs.contains("ZSClip GTK identity smoke queried=true"));
         assert!(linux_rs.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));
         assert!(linux_rs.contains("ZSCLIP_NATIVE_HOST_FILE_PICKER_SMOKE_PATH"));
-        assert!(linux_smoke_script
-            .contains("ZSClip GTK VV paste 0 -> zsclip.vv_paste.clipboard_target accepted=true"));
+        assert!(linux_smoke_script.contains("tests/native_vv_receiver.py\" assert-received"));
+        assert!(linux_smoke_script.contains("xdotool key --clearmodifiers 1"));
+        assert!(!linux_smoke_script.contains("zsclip.vv_paste.clipboard_target accepted=true"));
         assert!(linux_smoke_script.contains("ZSClip GTK StatusNotifierItem installed"));
         assert!(linux_smoke_script.contains("ZSClip GTK StatusNotifierItem unavailable:"));
         assert!(linux_smoke_script.contains("ZSCLIP_NATIVE_HOST_SHELL_OPEN_DRY_RUN"));

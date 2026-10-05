@@ -992,7 +992,7 @@ pub(crate) fn linux_native_status_menu_action_state(
                 linux_native_settings_json_snapshot()
                     .get("lan_enable")
                     .and_then(serde_json::Value::as_bool)
-            }),
+            }).or(Some(false)),
         _ => None,
     }
 }

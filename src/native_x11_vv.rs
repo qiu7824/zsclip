@@ -344,11 +344,19 @@ mod platform {
         }
 
         pub(crate) fn focus_is_current(&self) -> bool {
-            self.connection
+            let current = self
+                .connection
                 .get_input_focus()
                 .ok()
                 .and_then(|cookie| cookie.reply().ok())
-                .is_some_and(|reply| reply.focus == self.original_focus)
+                .map(|reply| reply.focus);
+            if current != Some(self.original_focus) {
+                eprintln!(
+                    "ZSClip X11 VV focus changed expected={} actual={:?}",
+                    self.original_focus, current
+                );
+            }
+            current == Some(self.original_focus)
         }
 
         fn forward_ordinary_key(

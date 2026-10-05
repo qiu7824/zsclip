@@ -26,8 +26,25 @@ jobs:
       release_version: ${{ steps.version.outputs.release_version }}
       mac_short_version: ${{ steps.version.outputs.mac_short_version }}
       mac_bundle_version: ${{ steps.version.outputs.mac_bundle_version }}
+      build_macos: ${{ steps.platforms.outputs.build_macos }}
+      build_linux: ${{ steps.platforms.outputs.build_linux }}
     steps:
       - uses: actions/checkout@v5
+      - name: Resolve release platforms
+        id: platforms
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          platforms = json.loads(Path("release-platforms.json").read_text(encoding="utf-8"))
+          if (not isinstance(platforms, list) or not all(isinstance(value, str) for value in platforms)
+                  or len(platforms) != len(set(platforms)) or "windows" not in platforms
+                  or not set(platforms) <= {"windows", "macos", "linux"}):
+              raise SystemExit("Invalid release platforms")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for platform in ("macos", "linux"):
+                  output.write(f"build_{platform}={str(platform in platforms).lower()}\n")
+          PY
       - name: Resolve and validate release version
         id: version
         shell: bash
@@ -643,6 +660,7 @@ jobs:
           if-no-files-found: error
 
   macos:
+    if: needs.prepare.outputs.build_macos == 'true'
     name: macOS release package (${{ matrix.asset_arch }})
     needs: prepare
     runs-on: ${{ matrix.runner }}
@@ -776,6 +794,7 @@ jobs:
           if-no-files-found: error
 
   linux:
+    if: needs.prepare.outputs.build_linux == 'true'
     name: Linux release package
     needs: prepare
     runs-on: ubuntu-latest
@@ -946,7 +965,11 @@ jobs:
 
   publish:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: >-
+      ${{ always() && startsWith(github.ref, 'refs/tags/') && needs.prepare.result == 'success'
+          && needs.windows.result == 'success' && needs['qq-ime'].result == 'success'
+          && (needs.macos.result == 'success' || needs.macos.result == 'skipped')
+          && (needs.linux.result == 'success' || needs.linux.result == 'skipped') }}
     needs:
       - prepare
       - windows
@@ -956,6 +979,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+      BUILD_MACOS: ${{ needs.prepare.outputs.build_macos }}
+      BUILD_LINUX: ${{ needs.prepare.outputs.build_linux }}
     permissions:
       contents: write
     steps:
@@ -986,11 +1011,13 @@ jobs:
             zsclip-windows-x86_64-no-lan-portable.zip
             "$resource_asset"
             "$qq_ime_asset"
-            zsclip-macos-arm64.dmg
-            zsclip-macos-x86_64.dmg
-            zsclip-linux-x86_64.deb
-            zsclip-linux-x86_64.tar.gz
           )
+          if [ "$BUILD_MACOS" = "true" ]; then
+            required_assets+=(zsclip-macos-arm64.dmg zsclip-macos-x86_64.dmg)
+          fi
+          if [ "$BUILD_LINUX" = "true" ]; then
+            required_assets+=(zsclip-linux-x86_64.deb zsclip-linux-x86_64.tar.gz)
+          fi
           set -euo pipefail
           python3 - "${required_assets[@]}" <<'PY'
           import hashlib

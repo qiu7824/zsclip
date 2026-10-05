@@ -126,6 +126,7 @@ jobs:
             scrot \
             wmctrl \
             xdotool \
+            x11-utils \
             xvfb
       - name: Check GTK host
         env:

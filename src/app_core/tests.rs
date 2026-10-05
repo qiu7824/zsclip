@@ -1478,6 +1478,16 @@ fn native_host_consumes_protocol_builder(source:&str,builder:&str)->bool {
         "native_host_row_action_button_specs" => source.contains("native_host_full_row_popup_menu_entries_for_groups(")
             && source.contains("dispatch_gtk_menu_command_id")
             && source.contains("menu_id == menu_ids::ROW_GROUP_REMOVE"),
+        // The nonactivating AppKit panel binds native buttons directly to a
+        // captured candidate snapshot, replacing the render-plan button strip.
+        // Require the complete index binding and validated lookup boundary.
+        "native_host_vv_select_specs" => source.contains("NativeVvSnapshot::capture(source_category, current_group_id)")
+            && source.contains("preferences.apply_projection(snapshot.items.clone())")
+            && source.contains("for (index, item) in items.iter().enumerate()")
+            && source.contains("button.setTag(index as _)")
+            && source.contains("self.perform_native_vv_select(sender.tag() as usize)")
+            && source.contains("with_shared_app_data_generation(session.snapshot.data_generation,")
+            && source.contains("session.snapshot.load_item(index)?"),
         _=>false,
     }
 }

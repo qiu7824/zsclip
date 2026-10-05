@@ -142,6 +142,7 @@ mod appkit {
         next_page_button: OnceCell<Retained<NSButton>>,
         page_label: OnceCell<Retained<NSTextField>>,
         screenshot_scene: RefCell<Option<String>>,
+        auto_smoke_row_item_id: Cell<Option<i64>>,
         image_export_result: RefCell<Option<std::sync::mpsc::Receiver<Result<(),String>>>>,
         last_external_pid: Cell<i32>,
         pending_row_paste: RefCell<Option<(i32,u64,u32,String,std::time::Instant)>>,
@@ -2202,11 +2203,9 @@ mod appkit {
                 }
                 self.reload_native_clip_items();
             }
-            self.perform_native_row_action(NativeHostRowAction::Copy);
-            self.perform_native_row_action(NativeHostRowAction::Edit);
-            self.present_native_edit_window(true);
-            #[cfg(feature = "ai-actions")]
-            self.perform_native_row_action(NativeHostRowAction::TextTranslate);
+            if std::env::var_os("ZSCLIP_NATIVE_HOST_SCREENSHOT_SCENE").is_none() {
+                self.ivars().auto_smoke_row_item_id.set(seeded_item_id);
+            }
             let self_target = std::process::id() as u64;
             let first = self.perform_native_vv_key_text("v", false, self_target, 1);
             let second = self.perform_native_vv_key_text("v", false, self_target, 2);
@@ -2217,6 +2216,33 @@ mod appkit {
             #[cfg(feature = "lan-sync")]
             self.perform_native_status_menu_action(NativeHostStatusMenuAction::ToggleLanSync);
 
+            if self.ivars().auto_smoke_row_item_id.get().is_none() {
+                eprintln!("ZSClip AppKit auto smoke finished");
+            }
+        }
+
+        fn finish_auto_smoke_rows_after_search(&self) {
+            let Some(item_id) = self.ivars().auto_smoke_row_item_id.take() else { return; };
+            if !self.ivars().clip_table_items.borrow().iter().any(|item| item.id == item_id) {
+                eprintln!("ZSClip AppKit auto smoke row verification blocked=seed_not_visible");
+                return;
+            }
+            self.ivars().selected_item_id.set(item_id);
+            self.refresh_native_clip_row_selection();
+            let expected = crate::db_runtime::item_text(item_id).ok().flatten();
+            self.perform_native_row_action(NativeHostRowAction::Copy);
+            let copied = expected.is_some() &&
+                <crate::macos_app::MacosClipboardHost as crate::app_core::ClipboardHost>::read_text() == expected;
+            self.perform_native_row_action(NativeHostRowAction::Edit);
+            #[cfg(feature = "ai-actions")]
+            self.perform_native_row_action(NativeHostRowAction::TextTranslate);
+            let edited_text = "zsclip appkit native editor saved text";
+            if let Some(editor) = self.ivars().edit_text_view.get() {
+                editor.setString(&NSString::from_str(edited_text));
+                self.perform_native_edit_save();
+            }
+            let edit_verified = crate::db_runtime::item_text(item_id).ok().flatten().as_deref() == Some(edited_text);
+            eprintln!("ZSClip AppKit auto smoke native rows copy_verified={copied} edit_verified={edit_verified}");
             eprintln!("ZSClip AppKit auto smoke finished");
         }
 
@@ -3642,6 +3668,7 @@ mod appkit {
                     if let Some(button)=self.ivars().previous_page_button.get() {button.setEnabled(result.page_index>0);}
                     if let Some(button)=self.ivars().next_page_button.get() {button.setEnabled(result.has_more);}
                     if let Some(label)=self.ivars().page_label.get() {label.setStringValue(&NSString::from_str(&format!("{} {}",appkit_tr("第","Page"),result.page_index+1)));}
+                    self.finish_auto_smoke_rows_after_search();
                     self.finish_native_screenshot_scene();
                 }
                 Err(error)=>{
