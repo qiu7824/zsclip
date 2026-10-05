@@ -239,9 +239,23 @@ pub(super) fn vv_finish_paste(state: &mut AppState) {
             }
         }
     }
+    // VV can start and finish while both list windows stay hidden in the tray.
+    // Remaining target/image/completion state keeps reclamation blocked.
+    unsafe { schedule_hidden_memory_reclaim_after_activity(); }
 }
 
 pub(super) unsafe fn vv_cancel_for_pointer(point: POINT) {
+    {
+        let Ok(mut hook) = vv_hook_state().try_lock() else { return; };
+        if !hook.session.active()
+            && hook.session.phase != crate::app_core::vv_session::VvPhase::Selected
+        {
+            // A click separates two literal V keys even without a popup.
+            // Idle input needs no window-class or popup hit-test allocations.
+            vv_reset_trigger(&mut hook);
+            return;
+        }
+    }
     let under_pointer = platform_window::window_from_point(point);
     let menu_window = platform_window::class_name(under_pointer) == "#32768"
         || platform_window::class_name(platform_window::root_ancestor(under_pointer)) == "#32768";

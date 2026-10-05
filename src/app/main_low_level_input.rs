@@ -263,6 +263,9 @@ pub(super) unsafe extern "system" fn outside_click_mouse_hook_proc(
         return platform_hook::call_next(code, wparam, lparam);
     }
     if !event.is_injected_or_lower_integrity() { vv_cancel_for_pointer(event.point); }
+    if !hosts.iter().copied().any(|hwnd| window_needs_outside_hide_timer(hwnd)) {
+        return platform_hook::call_next(code, wparam, lparam);
+    }
     if should_ignore_outside_click_for_point_in_hosts(event.point, hosts) {
         return platform_hook::call_next(code, wparam, lparam);
     }

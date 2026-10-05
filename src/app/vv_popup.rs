@@ -464,6 +464,7 @@ pub(super) unsafe fn vv_popup_hide(hwnd: HWND, state: &mut AppState) {
         timer::stop(popup, VV_PREVIEW_HOVER_TIMER);
         hide_vv_popup_window(popup);
     }
+    schedule_hidden_reclaim_after_activity(hwnd, state);
 }
 
 unsafe fn vv_abort_popup(hwnd: HWND, state: &mut AppState) {

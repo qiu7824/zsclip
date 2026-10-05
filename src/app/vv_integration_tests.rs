@@ -640,3 +640,55 @@ fn vv_shift_mode_switch_cancels_pending_visible_and_queued_paste_without_editing
         Ok(())
     })).unwrap();
 }
+
+#[test]
+#[ignore = "Requires an isolated profile and interactive desktop; verifies real pointer cancellation against an external receiver"]
+fn vv_pointer_activity_separates_triggers_and_cancels_queued_paste_without_editing_draft() {
+    let profile=std::env::var_os("ZSCLIP_DATA_DIR").expect("Set an isolated test profile");
+    assert!(std::path::Path::new(&profile).is_absolute());
+    assert!(window_host_hwnds().iter().all(|hwnd|hwnd.is_null()));
+    assert!(!platform_window::exists(current_vv_popup_hwnd()));
+    crate::db_runtime::with_test_protected_texts(&[],||crate::db_runtime::with_test_db(|| {
+        let item=ClipItem {id:0,kind:ClipKind::Text,preview:PAYLOAD.into(),phrase_title:String::new(),text:Some(PAYLOAD.into()),
+            rich_text_html:None,source_app:"VV pointer fixture".into(),file_paths:None,image_bytes:None,image_path:None,
+            image_width:0,image_height:0,pinned:false,group_id:0,created_at:String::new()};
+        assert!(db_insert_item(0,&item,None)?>0);
+        unsafe {
+            let mut fixture=DesktopFixture::new();
+            fixture.set_receiver_draft();
+            let before=fixture.receiver_input_counts();
+            let rect=platform_window::window_rect(fixture.target).unwrap();
+            let point=POINT {x:rect.left+8,y:rect.top+8};
+            let click=|| {
+                let event=MSLLHOOKSTRUCT {pt:point,mouseData:0,flags:0,time:0,dwExtraInfo:0};
+                super::main_low_level_input::outside_click_mouse_hook_proc(
+                    0,WM_LBUTTONDOWN as WPARAM,&event as *const _ as LPARAM);
+            };
+            with_test_ime_observation(WindowsImeInputMode::Alphanumeric,false,|| {
+                fixture.key_callback(0x56,true); fixture.key_callback(0x56,false);
+                assert!(vv_hook_state().lock().unwrap().last_was_v);
+                click();
+                assert!(!vv_hook_state().lock().unwrap().last_was_v);
+                fixture.key_callback(0x56,true); fixture.key_callback(0x56,false);
+                assert!(!vv_hook_state().lock().unwrap().session.active());
+                pump_for(Duration::from_millis(100));
+                assert!(!fixture.app.vv_popup_visible,"V-click-V must not form a trigger");
+                fixture.key_callback(0x41,true); fixture.key_callback(0x41,false);
+                fixture.trigger_popup();
+                assert_eq!(fixture.key_callback(0x31,true),1);
+                assert_eq!(fixture.key_callback(0x31,false),1);
+                pump_vv_requests_without_timers(fixture.owner);
+                assert!(fixture.app.vv_paste_guard.is_some());
+                assert_eq!(vv_hook_state().lock().unwrap().session.phase,VvPhase::Selected);
+                click();
+                pump_for(Duration::from_millis(700));
+                assert!(fixture.app.vv_paste_guard.is_none());
+                assert!(fixture.app.pending_paste_completion.is_none());
+                assert_eq!(vv_hook_state().lock().unwrap().session.phase,VvPhase::Cancelled);
+                assert_eq!(fixture.receiver_input_counts(),before);
+                assert_eq!(fixture.receiver_text(),"LEFTvvRIGHT");
+            });
+        }
+        Ok(())
+    })).unwrap();
+}

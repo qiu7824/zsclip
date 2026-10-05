@@ -9,6 +9,7 @@ pub(super) enum HiddenWorkingSetTrimResult {
     Failed,
     AppWindowVisible,
     TransientWindowVisible,
+    PastePending,
 }
 
 unsafe fn reclaim_window_state_memory(hwnd: HWND, state: &mut AppState) {
@@ -41,7 +42,8 @@ unsafe fn reclaim_hidden_peer_window_memory(current_hwnd: HWND) {
 pub(super) unsafe fn reclaim_hidden_window_memory(hwnd: HWND, state: &mut AppState) {
     // This entry point is also called directly on minimization, before the
     // deferred timer. Shared preview/cache resources belong to every host.
-    if main_or_settings_window_blocks_hidden_reclaim() || transient_window_blocks_hidden_reclaim() {return;}
+    if main_or_settings_window_blocks_hidden_reclaim() || transient_window_blocks_hidden_reclaim()
+        || pending_paste_blocks_hidden_reclaim() {return;}
     reclaim_window_state_memory(hwnd, state);
     reclaim_hidden_peer_window_memory(hwnd);
 }
@@ -65,12 +67,28 @@ pub(super) fn transient_window_blocks_hidden_reclaim() -> bool {
         || platform_window::current_process_has_visible_window()
 }
 
+pub(super) unsafe fn pending_paste_blocks_hidden_reclaim() -> bool {
+    window_host_hwnds().into_iter().any(|hwnd| {
+        let ptr = get_state_ptr(hwnd);
+        !ptr.is_null() && {
+            let state = &*ptr;
+            state.vv_paste_guard.is_some()
+                || !state.paste_target_override.is_null()
+                || state.pending_image_paste_generation.is_some()
+                || state.pending_paste_completion.is_some()
+                || !state.vv_popup_pending_target.is_null()
+        }
+    })
+}
+
 /// Rearm once after hidden background work or a settings window is closed.
 /// Visible hosts resume reclamation through their own hide/close lifecycle.
 pub(super) unsafe fn schedule_hidden_reclaim_after_activity(hwnd: HWND, state: &mut AppState) {
     if platform_window::exists(hwnd)
         && (!platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd))
         && !main_or_settings_window_blocks_hidden_reclaim()
+        && !window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
+        && !pending_paste_blocks_hidden_reclaim()
     {
         schedule_hidden_memory_reclaim(hwnd,state);
     }
@@ -79,7 +97,8 @@ pub(super) unsafe fn schedule_hidden_reclaim_after_activity(hwnd: HWND, state: &
 /// Crate-level preview windows can notify the owning UI after dropping a late
 /// payload. One hidden host owns the deferred process-wide reclamation attempt.
 pub(crate) unsafe fn schedule_hidden_memory_reclaim_after_activity() {
-    if main_or_settings_window_blocks_hidden_reclaim() {return;}
+    if main_or_settings_window_blocks_hidden_reclaim() || pending_paste_blocks_hidden_reclaim()
+        || window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd()) {return;}
     for hwnd in window_host_hwnds() {
         if !platform_window::exists(hwnd) || window_counts_as_visible_for_memory_reclaim(hwnd) {continue;}
         let state=get_state_ptr(hwnd);
@@ -91,6 +110,9 @@ pub(crate) unsafe fn schedule_hidden_memory_reclaim_after_activity() {
 }
 
 pub(super) unsafe fn trim_hidden_process_working_set() -> HiddenWorkingSetTrimResult {
+    if pending_paste_blocks_hidden_reclaim() {
+        return HiddenWorkingSetTrimResult::PastePending;
+    }
     for hwnd in window_host_hwnds() {
         if window_counts_as_visible_for_memory_reclaim(hwnd) {
             return HiddenWorkingSetTrimResult::AppWindowVisible;

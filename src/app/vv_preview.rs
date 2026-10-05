@@ -96,6 +96,16 @@ fn ticket_current(ticket: Ticket, session: u64, item: i64, generation: u64, requ
         && ticket.request == request
 }
 
+#[cfg(test)]
+pub(super) unsafe fn post_stale_vv_preview_for_reclaim_test(main: HWND) -> bool {
+    let hwnd = ensure_window(main);
+    post_boxed_message(hwnd as isize, READY, 0, Box::new(Ready {
+        ticket: Ticket { request: 0, session: 0, item: 91001, generation: 0 },
+        text: Some("synthetic late VV preview\n".repeat(8192)),
+        protection: None,
+    }))
+}
+
 fn preview_request_reusable(ticket: Option<Ticket>, visible: bool, session: u64, item: i64, generation: u64, request: u64) -> bool {
     visible && ticket.is_some_and(|ticket| ticket_current(ticket, session, item, generation, request))
 }
@@ -328,7 +338,7 @@ unsafe extern "system" fn preview_proc(
             0
         }
         READY => {
-            let result = Box::from_raw(lparam as *mut Ready);
+            let mut result = Box::from_raw(lparam as *mut Ready);
             let ptr = data(hwnd);
             if !ptr.is_null()
                 && (*ptr).ticket == Some(result.ticket)
@@ -340,12 +350,14 @@ unsafe extern "system" fn preview_proc(
                 {
                     hide_vv_preview();
                 } else {
-                    (*ptr).text = result.text.unwrap();
+                    (*ptr).text = result.text.take().unwrap();
                     (*ptr).wide = (*ptr).text.encode_utf16().collect();
-                    (*ptr).protection = result.protection.unwrap();
+                    (*ptr).protection = result.protection.take().unwrap();
                     platform_gdi::invalidate_rect(hwnd, null(), 1);
                 }
             }
+            drop(result);
+            schedule_hidden_memory_reclaim_after_activity();
             0
         }
         CHECKED => {
@@ -357,6 +369,8 @@ unsafe extern "system" fn preview_proc(
                     hide_vv_preview();
                 }
             }
+            drop(result);
+            schedule_hidden_memory_reclaim_after_activity();
             0
         }
         WM_PAINT => {

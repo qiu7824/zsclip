@@ -143,6 +143,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                         timer::start(hwnd, ID_TIMER_VV_SHOW, VV_SHOW_RETRY_DELAY_MS);
                     } else {
                         state.vv_popup_pending_target = null_mut();
+                        schedule_hidden_reclaim_after_activity(hwnd, state);
                     }
                 } else {
                     vv_popup_hide(hwnd, state);
@@ -274,7 +275,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
                 if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
                     // Do not clear the shared hover preview while another host
                     // is visible. Its hide/close event will rearm reclamation.
-                    if main_or_settings_window_blocks_hidden_reclaim() {return;}
+                    if main_or_settings_window_blocks_hidden_reclaim() || pending_paste_blocks_hidden_reclaim() {return;}
                     if transient_window_blocks_hidden_reclaim() {
                         retry_hidden_memory_reclaim(hwnd,state);
                         return;
@@ -442,6 +443,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
             } else {
                 state.vv_popup_pending_target = null_mut();
                 state.vv_popup_pending_retries = 0;
+                schedule_hidden_reclaim_after_activity(hwnd, state);
             }
         }
         ApplicationEvent::VvHideRequested => {
@@ -508,6 +510,9 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
             if !ptr.is_null() {schedule_hidden_reclaim_after_activity(hwnd,&mut *ptr);}
         }
         MainAsyncEvent::ImagePaste(payload) => {
+            // The closure owns the payload, so all early-return paths drop its
+            // image bytes before rearming the quiet-period reclaim below.
+            (move || {
             let ptr = get_state_ptr(hwnd);
             if ptr.is_null() {
                 return;
@@ -642,6 +647,8 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                     );
                 }
             }
+            })();
+            schedule_hidden_memory_reclaim_after_activity();
         }
         MainAsyncEvent::ImageOcr(payload) => {
             if payload.app_data_generation != crate::db_runtime::current_app_data_generation() {

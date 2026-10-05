@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, PM_REMOVE};
 
 unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    if matches!(msg, WM_TIMER | WM_IMAGE_THUMB_READY) {
+    if matches!(msg, WM_TIMER | WM_IMAGE_THUMB_READY | WM_IMAGE_PASTE_READY | WM_VV_SHOW | WM_VV_HIDE) {
         return super::main_entry::wnd_proc(hwnd, msg, wp, lp);
     }
     platform_window::default_window_proc(hwnd, msg, wp, lp)
@@ -175,6 +175,12 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         unsafe {
+            cancel_queued_paste_attempt(self.main, &mut self.main_state);
+            cancel_queued_paste_attempt(self.quick, &mut self._quick_state);
+            vv_finish_paste(&mut self.main_state);
+            vv_finish_paste(&mut self._quick_state);
+            vv_popup_hide(self.main, &mut self.main_state);
+            super::vv_preview::destroy_vv_preview();
             hide_hover_preview();
             release_hover_preview_memory();
             if platform_window::exists(self.settings) {
@@ -317,4 +323,155 @@ fn hidden_reclaim_preserves_visible_surfaces_and_rearms_after_settings_and_late_
         })
     })
     .unwrap();
+}
+
+struct ControlledTarget {
+    hwnd: HWND,
+    previous_foreground: HWND,
+}
+
+impl ControlledTarget {
+    unsafe fn new() -> Self {
+        let previous_foreground = platform_window::foreground();
+        let hwnd = platform_window::create_window_ex(
+            WS_EX_TOOLWINDOW,
+            to_wide("EDIT").as_ptr(),
+            to_wide("Synthetic memory target").as_ptr(),
+            WS_OVERLAPPEDWINDOW | ES_MULTILINE as u32,
+            120, 120, 320, 180,
+            null_mut(), null_mut(), platform_window::module_handle(), null(),
+        );
+        assert!(!hwnd.is_null());
+        let target = Self { hwnd, previous_foreground };
+        platform_window::show(hwnd);
+        assert!(platform_window::try_set_foreground(hwnd), "Controlled target must receive foreground without injected input");
+        platform_input::set_focus(hwnd);
+        pump_for(Duration::from_millis(30));
+        assert_eq!(platform_window::foreground(), hwnd);
+        target
+    }
+}
+
+impl Drop for ControlledTarget {
+    fn drop(&mut self) {
+        platform_window::destroy(self.hwnd);
+        if platform_window::exists(self.previous_foreground) {
+            platform_window::set_foreground(self.previous_foreground);
+        }
+    }
+}
+
+#[test]
+#[ignore = "Requires a fresh isolated profile and desktop; shows an owned synthetic receiver and VV popup without clipboard reads, writes or paste injection"]
+fn tray_vv_lifecycle_reclaims_only_after_paste_and_late_results_finish() {
+    let profile = std::env::var_os("ZSCLIP_DATA_DIR").expect("Set an isolated ZSCLIP_DATA_DIR");
+    assert!(std::path::Path::new(&profile).is_absolute());
+    assert!(window_host_hwnds().iter().all(|hwnd| hwnd.is_null()), "Run alone in a fresh process");
+    crate::db_runtime::with_test_protected_texts(&[], || crate::db_runtime::with_test_db(|| {
+        crate::platform::ime::with_test_ime_observation(
+            WindowsImeInputMode::Unknown, false, || unsafe {
+                crate::db_runtime::insert_native_clipboard_text(0, "Synthetic tray VV item", "Memory fixture").unwrap();
+                let mut fixture = Fixture::new();
+                let target = ControlledTarget::new();
+                fixture.main_state.settings.vv_mode_enabled = true;
+                fixture.main_state.settings.click_hide = false;
+                fixture.main_state.settings.vv_source_tab = 0;
+                fixture.main_state.settings.vv_group_id = 0;
+
+                // Use the real non-text WM_VV_SHOW entry and Show timer while
+                // Main/Quick remain hidden, as for a tray-launched candidate list.
+                platform_window::post_hwnd_message(fixture.main, WM_VV_SHOW, target.hwnd as usize, 0);
+                let show_deadline = Instant::now() + Duration::from_secs(2);
+                while !fixture.main_state.vv_popup_visible && Instant::now() < show_deadline {
+                    pump_for(Duration::from_millis(10));
+                }
+                assert!(fixture.main_state.vv_popup_visible);
+                assert!(platform_window::is_visible(current_vv_popup_hwnd()));
+                assert!(!platform_window::is_visible(fixture.main));
+                assert!(!platform_window::is_visible(fixture.quick));
+                fixture.seed_cache();
+                cancel_hidden_memory_reclaim(fixture.main, &mut fixture.main_state);
+                platform_window::post_hwnd_message(fixture.main, WM_VV_HIDE, 0,
+                    fixture.main_state.vv_popup_session_id as isize);
+                pump_for(Duration::from_millis(30));
+                assert!(!fixture.main_state.vv_popup_visible);
+                assert!(!platform_window::is_visible(current_vv_popup_hwnd()));
+                assert!(fixture.main_state.hidden_reclaim_timer, "Closing VV from the tray must rearm reclamation");
+                platform_window::hide(target.hwnd);
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+                assert!(fixture.main_state.payload_cache.get(91001).is_none());
+
+                // A queued paste outlives the reclaim deadline. The deliberately
+                // stale target guard makes the real Paste timer take its failure
+                // exit before reading the clipboard or injecting any input.
+                fixture.seed_cache();
+                fixture.main_state.vv_paste_guard = Some((fixture.main_state.vv_popup_session_id, 0, 0));
+                fixture.main_state.paste_target_override = target.hwnd;
+                timer::start(fixture.main, ID_TIMER_PASTE, 2_000);
+                schedule_hidden_memory_reclaim(fixture.main, &mut fixture.main_state);
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer, "Pending paste waits for completion rather than polling trim");
+                fixture.assert_cache_present();
+                assert_eq!(trim_hidden_process_working_set(), HiddenWorkingSetTrimResult::PastePending);
+                vv_finish_paste(&mut fixture.main_state);
+                assert!(!fixture.main_state.hidden_reclaim_timer, "The queued target still blocks reclaim after the VV guard finishes");
+                assert_eq!(trim_hidden_process_working_set(), HiddenWorkingSetTrimResult::PastePending);
+                // Restore the stale guard before dispatching the failure timer;
+                // this fixture never authorizes a real paste into any window.
+                fixture.main_state.vv_paste_guard = Some((fixture.main_state.vv_popup_session_id, 0, 0));
+                timer::start(fixture.main, ID_TIMER_PASTE, 20);
+                pump_for(Duration::from_millis(60));
+                assert!(fixture.main_state.vv_paste_guard.is_none());
+                assert!(fixture.main_state.paste_target_override.is_null());
+                assert!(fixture.main_state.hidden_reclaim_timer, "The real paste failure exit must rearm reclamation");
+                fixture.assert_cache_present();
+                pump_for(Duration::from_millis(950));
+                assert!(fixture.main_state.payload_cache.get(91001).is_none());
+
+                // A pending image on the peer host also protects Main's shared
+                // resources until the actual posted completion has been dropped.
+                fixture.seed_cache();
+                fixture._quick_state.pending_image_paste_generation = Some(77);
+                schedule_hidden_memory_reclaim(fixture.main, &mut fixture.main_state);
+                pump_for(Duration::from_millis(950));
+                fixture.assert_cache_present();
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+                vv_finish_paste(&mut fixture._quick_state);
+                assert!(!fixture.main_state.hidden_reclaim_timer, "A completion notification cannot bypass a pending image");
+                let payload = Box::new(ImagePasteReadyResult {
+                    image: Some((vec![255, 0, 0, 255], 1, 1)),
+                    generation: 77,
+                    app_data_generation: fixture._quick_state.app_data_generation.wrapping_add(1),
+                    item_id: 91003,
+                    context: ImagePasteRequestContext::VvPopup,
+                    target: NativeWindowToken(target.hwnd as usize),
+                    hide_main: false,
+                    backspaces: 0,
+                    completion: MainPasteCompletionPlan {
+                        promote_item_id: None, reset_plain_text_paste_mode: false,
+                        clear_selection: false, clear_hover: false, hide_main_now: false,
+                        play_success_sound: false, send_paste_after_clipboard: false,
+                        paste_hide_main: false, paste_backspaces: 0,
+                    },
+                });
+                assert!(post_boxed_message(fixture.quick as isize, WM_IMAGE_PASTE_READY, 0, payload));
+                pump_for(Duration::from_millis(30));
+                assert!(fixture._quick_state.pending_image_paste_generation.is_none());
+                assert!(fixture.main_state.hidden_reclaim_timer);
+                fixture.assert_cache_present();
+                pump_for(Duration::from_millis(950));
+                assert!(fixture.main_state.image_thumb_cache.get(91001).is_none());
+
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+                assert!(super::vv_preview::post_stale_vv_preview_for_reclaim_test(fixture.main));
+                pump_for(Duration::from_millis(30));
+                assert!(fixture.main_state.hidden_reclaim_timer, "Dropping a late VV preview must restart the quiet period");
+                assert!(!fixture.main_state.vv_popup_visible);
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+            },
+        );
+        Ok(())
+    })).unwrap();
 }
