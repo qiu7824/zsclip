@@ -563,7 +563,7 @@ mod platform {
         use std::process::Command;
         use std::thread;
         use std::time::Duration;
-        use x11rb::protocol::xproto::{CreateWindowAux, InputFocus, WindowClass};
+        use x11rb::protocol::xproto::{CreateWindowAux, InputFocus, MapState, WindowClass};
 
         fn inject(arguments: &[&str]) {
             let output = Command::new("xdotool").args(arguments).output().unwrap();
@@ -600,6 +600,41 @@ mod platform {
             result
         }
 
+        fn wait_for_receiver_and_focus(connection: &RustConnection, window: u32) {
+            connection.flush().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut mapped = false;
+            loop {
+                while let Some(event) = connection.poll_for_event().unwrap() {
+                    if matches!(event, Event::MapNotify(event) if event.window == window) {
+                        mapped = true;
+                    }
+                }
+                let attributes = connection.get_window_attributes(window).unwrap().reply().unwrap();
+                // MapWindow can return while the WM's MapRequest is pending.
+                // VIEWABLE also requires its reparented ancestors to be mapped.
+                if mapped && attributes.map_state == MapState::VIEWABLE {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "X11 receiver did not become viewable within 5 seconds: MapNotify={mapped}, map_state={:?}",
+                    attributes.map_state
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            connection
+                .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
+                .unwrap()
+                .check()
+                .unwrap();
+            assert_eq!(
+                connection.get_input_focus().unwrap().reply().unwrap().focus,
+                window,
+                "X11 receiver must own input focus before shortcut injection"
+            );
+        }
+
         /// Requires a real X11 test server and xdotool; default unit test runs
         /// deliberately do not treat this as a headless behavioral proof.
         #[test]
@@ -621,19 +656,13 @@ mod platform {
                     WindowClass::INPUT_OUTPUT,
                     0,
                     &CreateWindowAux::new()
-                        .event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE),
+                        .event_mask(EventMask::KEY_PRESS | EventMask::KEY_RELEASE | EventMask::STRUCTURE_NOTIFY),
                 )
                 .unwrap()
                 .check()
                 .unwrap();
             receiver.map_window(window).unwrap().check().unwrap();
-            receiver
-                .set_input_focus(InputFocus::PARENT, window, x11rb::CURRENT_TIME)
-                .unwrap()
-                .check()
-                .unwrap();
-            receiver.flush().unwrap();
-            inject(&["windowfocus", "--sync", &window.to_string()]);
+            wait_for_receiver_and_focus(&receiver, window);
             let mut registry = X11HotkeyRegistry::connect().unwrap();
             let initial = NativeHotkeyBindings::from_settings(
                 &serde_json::json!({"hotkey_mod":"Ctrl+Alt","hotkey_key":"V"}),

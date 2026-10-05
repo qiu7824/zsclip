@@ -11,30 +11,52 @@ if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--activate" 
           let state = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
           let pid = (state["pid"] as? NSNumber)?.int32Value,
           let windowNumber = (state["window_number"] as? NSNumber)?.intValue,
-          let coordinates = state["activation_point"] as? [String: NSNumber],
-          let x = coordinates["x"]?.doubleValue, let y = coordinates["y"]?.doubleValue,
+          let titleBarHeight = (state["titlebar_height"] as? NSNumber)?.doubleValue, titleBarHeight >= 8,
           let app = NSRunningApplication(processIdentifier: pid), !app.isTerminated,
           let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
     else { fputs("Receiver activation metadata or event access unavailable\n", stderr); exit(2) }
-    let point = CGPoint(x: x, y: y)
-    let topWindow = windows.first { info in
-        guard ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 0) > 0,
-              let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
+    func windowBounds(_ info: [String: Any]) -> CGRect? {
+        guard let bounds = info[kCGWindowBounds as String] as? [String: NSNumber],
               let bx = bounds["X"]?.doubleValue, let by = bounds["Y"]?.doubleValue,
               let width = bounds["Width"]?.doubleValue, let height = bounds["Height"]?.doubleValue
-        else { return false }
-        return CGRect(x: bx, y: by, width: width, height: height).contains(point)
+        else { return nil }
+        return CGRect(x: bx, y: by, width: width, height: height)
     }
-    guard (topWindow?[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
-          (topWindow?[kCGWindowNumber as String] as? NSNumber)?.intValue == windowNumber
-    else { fputs("Receiver title bar is occluded; refusing to click another window\n", stderr); exit(3) }
+    guard let receiverWindow = windows.first(where: {
+        ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid &&
+        ($0[kCGWindowNumber as String] as? NSNumber)?.intValue == windowNumber
+    }), let frame = windowBounds(receiverWindow), frame.width > 120 else {
+        fputs("Receiver window is absent from the on-screen window list\n", stderr); exit(3)
+    }
+    func topWindow(at point: CGPoint) -> [String: Any]? {
+        windows.first { info in
+            ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0 &&
+            (windowBounds(info)?.contains(point) ?? false)
+        }
+    }
+    var exposedPoint: CGPoint?
+    let titleY = frame.minY + min(CGFloat(titleBarHeight / 2), 18)
+    for x in stride(from: frame.maxX - 24, through: frame.minX + 90, by: -16) {
+        let candidate = CGPoint(x: x, y: titleY)
+        let top = topWindow(at: candidate)
+        if (top?[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid &&
+           (top?[kCGWindowNumber as String] as? NSNumber)?.intValue == windowNumber {
+            exposedPoint = candidate
+            break
+        }
+    }
+    guard let point = exposedPoint else {
+        let top = topWindow(at: CGPoint(x: frame.maxX - 24, y: titleY))
+        fputs("Receiver title bar is occluded; receiver=\(windowNumber) frame=\(frame) topPID=\((top?[kCGWindowOwnerPID as String] as? NSNumber)?.intValue ?? 0) topWindow=\((top?[kCGWindowNumber as String] as? NSNumber)?.intValue ?? 0) topBounds=\(String(describing: top.flatMap(windowBounds)))\n", stderr)
+        exit(3)
+    }
     for type in [CGEventType.leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
         else { exit(4) }
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.05)
     }
-    print("Receiver title-bar activation click sent pid=\(pid) window=\(windowNumber)")
+    print("Receiver title-bar activation click sent pid=\(pid) window=\(windowNumber) point=\(point)")
     exit(0)
 }
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--send" {
@@ -106,10 +128,14 @@ final class ReceiverDelegate: NSObject, NSApplicationDelegate {
         editItem.submenu = editMenu
         menu.addItem(editItem)
         NSApp.mainMenu = menu
-        window = NSWindow(contentRect: NSRect(x: 80, y: 160, width: 640, height: 260),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 180),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "ZSClip VV delivery receiver"
-        let scroller = NSScrollView(frame: NSRect(x: 16, y: 16, width: 608, height: 228))
+        if let area = NSScreen.screens.first?.visibleFrame {
+            window.setFrameOrigin(NSPoint(x: max(area.minX, area.maxX - window.frame.width - 12),
+                                          y: area.minY + 12))
+        }
+        let scroller = NSScrollView(frame: NSRect(x: 16, y: 16, width: 288, height: 148))
         scroller.hasVerticalScroller = true
         editor = RecordingTextView(frame: scroller.contentView.bounds)
         editor.isRichText = false
@@ -155,6 +181,7 @@ final class ReceiverDelegate: NSObject, NSApplicationDelegate {
                                   "selection_length": editor.selectedRange().length,
                                   "frontmost_pid": NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0,
                                   "window_number": window.windowNumber,
+                                  "titlebar_height": Double(window.frame.height - window.contentRect(forFrameRect: window.frame).height),
                                   "activation_point": ["x": Double(window.frame.maxX - 24),
                                                        "y": Double((NSScreen.screens.first?.frame.maxY ?? 0) - window.frame.maxY + 14)],
                                   "key_down_count": keyDownCount, "key_up_count": keyUpCount,
