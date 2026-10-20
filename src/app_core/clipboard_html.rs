@@ -22,8 +22,22 @@ fn parts(raw: &str) -> Option<(String, usize, usize)> {
         return None;
     }
     if has_header(raw) {
-        let start = usize::try_from(offset(raw, "StartFragment:")?).ok()?;
+        let mut start = usize::try_from(offset(raw, "StartFragment:")?).ok()?;
         let end = usize::try_from(offset(raw, "EndFragment:")?).ok()?;
+        // WPS can point one byte past the opening '<' of the selected table.
+        // Repair only that boundary, with both explicit fragment markers as
+        // evidence; never extend into arbitrary surrounding document content.
+        if start > 0 && raw.as_bytes().get(start - 1) == Some(&b'<')
+            && raw.get(end..).is_some_and(|tail| tail.starts_with(END))
+        {
+            if let Some(prefix) = raw.get(..start - 1) {
+                if let Some(marker) = prefix.rfind(START) {
+                    if prefix[marker + START.len()..].trim().is_empty() {
+                        start -= 1;
+                    }
+                }
+            }
+        }
         if start >= end || raw.get(start..end).is_none() {
             return None;
         }
@@ -105,6 +119,32 @@ mod tests {
         let encoded = normalize("<b>颜色</b>").unwrap();
         assert_eq!(fragment(&encoded).as_deref(), Some("<b>颜色</b>"));
         assert!(!encoded.contains("<style>"));
+    }
+
+    #[test]
+    fn excel_comment_wrapped_styles_and_empty_office_classes_survive() {
+        let html = r#"<html><head><style><!--
+td {font-family:Arial;color:#FF0000;font-weight:700;font-size:14pt;}
+.xl65 {mso-style-parent:style0;}
+.xl66 {color:#0000FF;font-weight:400;background:#FFFF00;}
+--></style></head><body><!--StartFragment--><table><tr><td class=xl65>红色加粗</td><td class=xl66>蓝色常规</td></tr></table><!--EndFragment--></body></html>"#;
+        let normalized = normalize(html).unwrap();
+        assert!(normalized.contains("td{font-family:Arial;color:#FF0000;font-weight:700;font-size:14pt}"));
+        assert!(normalized.contains(".zsclip0{}"));
+        assert!(normalized.contains(".zsclip1{color:#0000FF;font-weight:400;background:#FFFF00}"));
+        assert!(!normalized.contains("mso-style-parent"));
+        assert_eq!(normalize(&normalized).unwrap(), normalized);
+        assert!(fragment(&normalized).unwrap().contains("红色加粗"));
+    }
+
+    #[test]
+    fn wps_fragment_offset_one_byte_after_table_opening_is_repaired() {
+        let valid = normalize("<table><tr><td style='color:red;font-weight:bold'>红字</td></tr></table>").unwrap();
+        let start = offset(&valid, "StartFragment:").unwrap() as usize;
+        let wps = valid.replace(&format!("StartFragment:{start:010}"),
+            &format!("StartFragment:{:010}", start + 1));
+        assert_eq!(normalize(&wps).unwrap(), valid);
+        assert!(fragment(&wps).unwrap().starts_with("<table>"));
     }
 
     #[test]

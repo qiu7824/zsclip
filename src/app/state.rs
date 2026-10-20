@@ -55,7 +55,6 @@ pub(crate) struct AppSettings {
     pub(crate) card_view_enabled: bool,
     pub(crate) card_border_enabled: bool,
     pub(crate) card_shadow_enabled: bool,
-    #[serde(default)]
     pub(crate) rich_text_clipboard_enabled: bool,
     pub(crate) quick_delete_button: bool,
     pub(crate) context_menu_copy_enabled: bool,
@@ -133,10 +132,10 @@ mod appearance_settings_tests {
         let new = AppSettings::default();
         assert!(new.rich_text_clipboard_enabled);
         let old: AppSettings = serde_json::from_str("{}").unwrap();
-        assert!(!old.rich_text_clipboard_enabled);
+        assert!(old.rich_text_clipboard_enabled);
         assert_eq!(old.content_font_size, 0);
         assert_eq!(old.content_font_size(), 12);
-        assert!(!old.card_view_enabled);
+        assert!(old.card_view_enabled);
         assert!(old.phrase_titles_enabled);
         let titles_off: AppSettings = serde_json::from_str(r#"{"phrase_titles_enabled":false}"#).unwrap();
         assert!(!titles_off.phrase_titles_enabled);
@@ -188,7 +187,7 @@ impl Default for AppSettings {
             text_row_height: 44,
             file_row_height: 44,
             content_font_size: 0,
-            card_view_enabled: false,
+            card_view_enabled: true,
             card_border_enabled: true,
             card_shadow_enabled: true,
             rich_text_clipboard_enabled: true,

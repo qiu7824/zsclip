@@ -1,6 +1,6 @@
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
-    Graphics::Gdi::{ExcludeClipRect, HBRUSH, HDC, HFONT, HGDIOBJ},
+    Graphics::Gdi::{HBRUSH, HDC, HFONT, HGDIOBJ, SRCCOPY},
     UI::Controls::{
         DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_DISABLED, ODS_GRAYED, ODS_SELECTED, ODT_MENU,
     },
@@ -35,7 +35,6 @@ const ANTIALIASED_QUALITY: u32 = 4;
 const CLEARTYPE_QUALITY: u32 = 5;
 const ICON_FONT: &str = "Segoe MDL2 Assets";
 const GLYPH_CHECK: &str = "\u{E73E}";
-const GLYPH_CHEVRON_RIGHT: &str = "\u{E76C}";
 
 pub(crate) fn create_popup() -> HMENU {
     unsafe { CreatePopupMenu() }
@@ -178,7 +177,6 @@ struct OwnerDrawPopupMenu {
     items: Vec<Box<MenuItemData>>,
     background: HBRUSH,
     text_font: HFONT,
-    icon_font: HFONT,
     check_font: HFONT,
     palette: MenuPalette,
     metrics: MenuMetrics,
@@ -200,14 +198,12 @@ impl OwnerDrawPopupMenu {
             CLEARTYPE_QUALITY,
         );
         // Grayscale anti-aliasing keeps thin icon glyphs free of colour fringes.
-        let icon_font = create_menu_font(ICON_FONT, metrics.px(10), ANTIALIASED_QUALITY);
         let check_font = create_menu_font(ICON_FONT, metrics.px(12), ANTIALIASED_QUALITY);
         Some(Self {
             root,
             items: Vec::new(),
             background: platform_gdi::create_solid_brush(palette.background),
             text_font,
-            icon_font,
             check_font,
             palette,
             metrics,
@@ -391,6 +387,31 @@ impl OwnerDrawPopupMenu {
     }
 
     unsafe fn draw(&self, item: &MenuItemData, dis: &DRAWITEMSTRUCT) {
+        let saved = platform_gdi::save_dc(dis.hDC);
+        let rc = dis.rcItem;
+        let width = rc.right - rc.left;
+        let height = rc.bottom - rc.top;
+        let buffer = platform_gdi::create_compatible_dc(dis.hDC);
+        let bitmap = platform_gdi::create_compatible_bitmap(dis.hDC, width, height);
+        if !buffer.is_null() && !bitmap.is_null() {
+            let old = platform_gdi::select_object(buffer, bitmap as _);
+            let mut buffered = *dis;
+            buffered.hDC = buffer;
+            buffered.rcItem = RECT { left: 0, top: 0, right: width, bottom: height };
+            self.draw_contents(item, &buffered);
+            platform_gdi::bit_blt(dis.hDC, rc.left, rc.top, width, height, buffer, 0, 0, SRCCOPY);
+            platform_gdi::select_object(buffer, old);
+        } else {
+            self.draw_contents(item, dis);
+        }
+        if !bitmap.is_null() { platform_gdi::delete_object(bitmap as _); }
+        if !buffer.is_null() { platform_gdi::delete_dc(buffer); }
+        // The menu manager reuses this DC when the highlighted row changes.
+        // Leaking a clip exclusion hides subsequent rows and repaints.
+        if saved != 0 { platform_gdi::restore_dc(dis.hDC, saved); }
+    }
+
+    unsafe fn draw_contents(&self, item: &MenuItemData, dis: &DRAWITEMSTRUCT) {
         let dc = dis.hDC;
         let rc = dis.rcItem;
         let m = self.metrics;
@@ -410,7 +431,6 @@ impl OwnerDrawPopupMenu {
             let brush = platform_gdi::create_solid_brush(p.separator);
             platform_gdi::fill_rect(dc, &line, brush);
             platform_gdi::delete_object(brush as _);
-            ExcludeClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
             return;
         }
 
@@ -497,25 +517,7 @@ impl OwnerDrawPopupMenu {
             DT_LEFT,
         );
 
-        if item.kind == MenuItemKind::Submenu {
-            let arrow = RECT {
-                left: rc.right - right_area,
-                top: rc.top,
-                right: rc.right - m.px(8),
-                bottom: rc.bottom,
-            };
-            let glyph = to_wide(GLYPH_CHEVRON_RIGHT);
-            self.draw_text_run(
-                dc,
-                &glyph[..glyph.len() - 1],
-                &arrow,
-                self.icon_font,
-                secondary_color,
-                DT_CENTER,
-            );
-        }
-        // Stop the menu manager from painting its own submenu arrow on top.
-        ExcludeClipRect(dc, rc.left, rc.top, rc.right, rc.bottom);
+        // Win32 paints the submenu arrow after WM_DRAWITEM returns.
     }
 
     /// Tracks the menu with `owner` temporarily subclassed so it can answer
@@ -538,7 +540,6 @@ impl Drop for OwnerDrawPopupMenu {
         for object in [
             self.background as HGDIOBJ,
             self.text_font as HGDIOBJ,
-            self.icon_font as HGDIOBJ,
             self.check_font as HGDIOBJ,
         ] {
             if !object.is_null() {
@@ -746,5 +747,50 @@ mod tests {
         assert_eq!(large.item_height(), 45);
         assert!(normal.text_left(true) > normal.text_left(false));
         assert!(normal.right_area(true) > normal.right_area(false));
+    }
+
+    #[test]
+    fn repeated_menu_highlights_preserve_the_dc_and_repaint_every_row() {
+        use windows_sys::Win32::Graphics::Gdi::{GetBkMode, GetClipBox, GetPixel, GetTextColor};
+        unsafe {
+            let screen = platform_gdi::get_dc(core::ptr::null_mut());
+            let dc = platform_gdi::create_compatible_dc(screen);
+            let bitmap = platform_gdi::create_compatible_bitmap(screen, 240, 100);
+            assert!(!dc.is_null() && !bitmap.is_null());
+            let old = platform_gdi::select_object(dc, bitmap as _);
+            let menu = OwnerDrawPopupMenu::new(96).unwrap();
+            let mut item = MenuItemData { label: "菜单".encode_utf16().collect(),
+                shortcut: vec![], kind: MenuItemKind::Command, checked: true, check_column: true };
+            let mut clip: RECT = core::mem::zeroed();
+            let initial_clip = GetClipBox(dc, &mut clip);
+            let initial_color = GetTextColor(dc);
+            let initial_mode = GetBkMode(dc);
+            for turn in 0..60 {
+                for kind in [MenuItemKind::Command, MenuItemKind::Separator, MenuItemKind::Submenu] {
+                    item.kind = kind;
+                    let mut dis: DRAWITEMSTRUCT = core::mem::zeroed();
+                    dis.hDC = dc;
+                    dis.rcItem = RECT { left: 7, top: 9, right: 230, bottom: 39 };
+                    dis.itemState = if turn % 2 == 0 { ODS_SELECTED } else { 0 };
+                    menu.draw(&item, &dis);
+                    let mut after: RECT = core::mem::zeroed();
+                    assert_eq!(GetClipBox(dc, &mut after), initial_clip);
+                    assert_eq!((after.left, after.top, after.right, after.bottom),
+                        (clip.left, clip.top, clip.right, clip.bottom));
+                    assert_eq!(GetTextColor(dc), initial_color);
+                    assert_eq!(GetBkMode(dc), initial_mode);
+                    assert_eq!(GetPixel(dc, 8, 10), menu.palette.background);
+                    if kind != MenuItemKind::Separator {
+                        assert_eq!(GetPixel(dc, 170, 22), if turn % 2 == 0 {
+                            menu.palette.hover
+                        } else { menu.palette.background });
+                    }
+                }
+            }
+            platform_gdi::select_object(dc, old);
+            platform_gdi::delete_object(bitmap as _);
+            platform_gdi::delete_dc(dc);
+            platform_gdi::release_dc(core::ptr::null_mut(), screen);
+        }
     }
 }

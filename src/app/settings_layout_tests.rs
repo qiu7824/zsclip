@@ -554,10 +554,13 @@ fn scrolling_time_uses_variable_row_height_and_expires_after_scrolling() {
             created_at: format!("{}-07-01 12:00:00", 2024 + index),
         });
     }
-    state.scroll_y = 45;
-    assert!(scroll_time_hint_label(&state).unwrap().starts_with("2025-"));
-    state.scroll_y = 177;
-    assert!(scroll_time_hint_label(&state).unwrap().starts_with("2026-"));
+    for cards in [false, true] {
+        state.settings.card_view_enabled = cards;
+        state.scroll_y = 45 + if cards { 6 } else { 0 };
+        assert!(scroll_time_hint_label(&state).unwrap().starts_with("2025-"));
+        state.scroll_y = 177 + if cards { 12 } else { 0 };
+        assert!(scroll_time_hint_label(&state).unwrap().starts_with("2026-"));
+    }
     note_scroll_time_hint(&mut state);
     assert!(scroll_time_hint_visible(&state));
     state.scroll_date_hint_until = Some(Instant::now() - std::time::Duration::from_secs(1));

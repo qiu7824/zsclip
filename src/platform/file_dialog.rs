@@ -1,11 +1,4 @@
-use std::os::windows::process::CommandExt;
-use std::process::Command;
-
-use base64::Engine;
-
 use crate::app_core::{NativeFileDialogHost, NativeFileDialogRequest};
-
-const CREATE_NO_WINDOW_FLAG: u32 = 0x08000000;
 
 pub(crate) struct WindowsFileDialogHost;
 
@@ -68,79 +61,71 @@ impl WindowsFileDialogHost {
     }
 }
 
-fn encode_powershell_script(script: &str) -> String {
-    let bytes: Vec<u8> = script
+fn open_file_filter(name: &str, pattern: &str) -> Vec<u16> {
+    // Common dialogs use pairs of NUL-terminated strings and a final NUL.
+    let name = name.replace('\0', "");
+    let pattern = pattern.replace('\0', "");
+    format!("{name}\0{pattern}\0All Files (*.*)\0*.*\0\0")
         .encode_utf16()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-    base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn run_hidden_powershell_encoded(script: &str, args: &[&str]) -> Result<String, String> {
-    let encoded = encode_powershell_script(script);
-    let out = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW_FLAG)
-        .arg("-NoProfile")
-        .arg("-NonInteractive")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-EncodedCommand")
-        .arg(encoded)
-        .args(args)
-        .output()
-        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        Err(if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            "PowerShell 执行失败".to_string()
-        })
-    }
+        .collect()
 }
 
 impl NativeFileDialogHost for WindowsFileDialogHost {
     fn pick_file(&self, request: NativeFileDialogRequest<'_>) -> Result<Option<String>, String> {
-        let script = r#"
-Add-Type -AssemblyName System.Windows.Forms
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$dlg = New-Object System.Windows.Forms.OpenFileDialog
-$dlg.Filter = "$($args[1])|$($args[2])|All Files|*.*"
-$dlg.Title = $args[0]
-$dlg.Multiselect = $false
-if ($args.Count -gt 3 -and -not [string]::IsNullOrWhiteSpace($args[3])) {
-  $current = $args[3]
-  if (Test-Path $current) {
-    $dlg.FileName = $current
-    $parent = Split-Path -Parent $current
-    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
-  } else {
-    $parent = Split-Path -Parent $current
-    if (Test-Path $parent) { $dlg.InitialDirectory = $parent }
-  }
-}
-if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  Write-Output $dlg.FileName
-}
-"#;
-        let out = run_hidden_powershell_encoded(
-            script,
-            &[
-                request.title,
-                request.filter_name,
-                request.filter_pattern,
-                request.current_path,
-            ],
-        )?;
-        if out.trim().is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(out))
+        use windows_sys::Win32::UI::{
+            Controls::Dialogs::{
+                CommDlgExtendedError, GetOpenFileNameW, OFN_EXPLORER, OFN_FILEMUSTEXIST,
+                OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+            },
+            Input::KeyboardAndMouse::GetActiveWindow,
+        };
+        let title = crate::platform::string::to_wide(request.title);
+        let filter = open_file_filter(request.filter_name, request.filter_pattern);
+        let current: Vec<u16> = request.current_path.encode_utf16().collect();
+        let mut path = vec![0u16; 32768];
+        if current.len() >= path.len() || current.contains(&0) {
+            return Err("文件路径过长或包含无效字符".to_string());
         }
+        let current_path = std::path::Path::new(request.current_path);
+        if current_path.is_file() {
+            path[..current.len()].copy_from_slice(&current);
+        }
+        let initial_directory = current_path.parent().filter(|parent| parent.is_dir())
+            .map(|parent| crate::platform::string::to_wide(&parent.to_string_lossy()));
+        let mut dialog: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        dialog.hwndOwner = unsafe { GetActiveWindow() };
+        dialog.lpstrFilter = filter.as_ptr();
+        dialog.nFilterIndex = 1;
+        dialog.lpstrFile = path.as_mut_ptr();
+        dialog.nMaxFile = path.len() as u32;
+        dialog.lpstrTitle = title.as_ptr();
+        dialog.lpstrInitialDir = initial_directory.as_ref()
+            .map_or(std::ptr::null(), |directory| directory.as_ptr());
+        dialog.Flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+            let error = unsafe { CommDlgExtendedError() };
+            return if error == 0 {
+                Ok(None)
+            } else {
+                Err(format!("打开文件对话框失败: {error:#x}"))
+            };
+        }
+        let end = path.iter().position(|unit| *unit == 0).unwrap_or(path.len());
+        String::from_utf16(&path[..end])
+            .map(Some)
+            .map_err(|_| "文件路径编码无效".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_filter_keeps_unicode_and_multiple_audio_extensions() {
+        let filter = open_file_filter("音频文件", "*.wav;*.mp3;*.wma");
+        assert_eq!(String::from_utf16(&filter).unwrap(),
+            "音频文件\0*.wav;*.mp3;*.wma\0All Files (*.*)\0*.*\0\0");
     }
 }

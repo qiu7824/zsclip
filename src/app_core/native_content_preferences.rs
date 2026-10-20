@@ -12,6 +12,7 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
         "close_without_exit",
         "vv_mode_enabled",
         "image_preview_enabled",
+        "card_view_enabled",
         "card_border_enabled",
         "card_shadow_enabled",
         "rich_text_clipboard_enabled",
@@ -124,7 +125,7 @@ impl Default for NativeContentPreferences {
         Self {
             content_font_size: 12,
             phrase_titles_enabled: true,
-            card_view_enabled: false,
+            card_view_enabled: true,
             card_border_enabled: true,
             card_shadow_enabled: true,
         }
@@ -150,7 +151,7 @@ impl NativeContentPreferences {
                 12
             },
             phrase_titles_enabled: boolean("phrase_titles_enabled", true),
-            card_view_enabled: boolean("card_view_enabled", false),
+            card_view_enabled: boolean("card_view_enabled", true),
             card_border_enabled: boolean("card_border_enabled", true),
             card_shadow_enabled: boolean("card_shadow_enabled", true),
         }
@@ -226,14 +227,14 @@ mod tests {
         ] {
             assert_eq!(profile[key], true);
         }
-        assert_eq!(profile["card_view_enabled"], false);
+        assert_eq!(profile["card_view_enabled"], true);
     }
     #[test]
     fn native_preferences_keep_independent_card_flags_and_legacy_defaults() {
         let defaults = NativeContentPreferences::from_json(&serde_json::json!({}));
         assert_eq!(defaults.content_font_size, 12);
         assert!(defaults.phrase_titles_enabled);
-        assert!(!defaults.card_view_enabled);
+        assert!(defaults.card_view_enabled);
         assert!(defaults.card_border_enabled);
         assert!(defaults.card_shadow_enabled);
         for border in [false, true] {

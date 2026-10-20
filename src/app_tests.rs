@@ -1225,7 +1225,7 @@ fn rich_text_setting_defaults_on_for_new_profiles_and_is_bound_to_native_setting
     let surface_controls = settings_window_surface_controls_source();
 
     assert!(AppSettings::default().rich_text_clipboard_enabled);
-    assert!(!serde_json::from_str::<AppSettings>("{}").unwrap().rich_text_clipboard_enabled);
+    assert!(serde_json::from_str::<AppSettings>("{}").unwrap().rich_text_clipboard_enabled);
     assert!(settings_model.contains("(\"rich_text\", \"保留文本与表格格式\", Toggle)"));
     assert!(settings_model
         .contains("\"rich_text\" => native_setting_binding(\"rich_text_clipboard_enabled\")"));
@@ -2523,7 +2523,9 @@ fn windows_file_dialog_host_owns_open_file_dialog_operations() {
 
     assert!(file_dialog.contains("pub(crate) struct WindowsFileDialogHost"));
     assert!(file_dialog.contains("impl NativeFileDialogHost for WindowsFileDialogHost"));
-    assert!(file_dialog.contains("System.Windows.Forms.OpenFileDialog"));
+    assert!(file_dialog.contains("GetOpenFileNameW"));
+    assert!(file_dialog.contains("OFN_NOCHANGEDIR"));
+    assert!(!file_dialog.contains("EncodedCommand"));
     assert!(app_shell.contains("WindowsFileDialogHost::new().pick_file"));
     assert!(app_shell.contains("NativeFileDialogRequest"));
     assert!(!app_shell.contains("New-Object System.Windows.Forms.OpenFileDialog"));

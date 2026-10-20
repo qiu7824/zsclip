@@ -10,7 +10,7 @@ pub(super) unsafe fn draw_settings_appearance_preview(st: &SettingsWndState, dc:
     let row = RECT { left: sec.left(), top, right: sec.left() + sec.full_w(), bottom: top + settings_scale(76) };
     if st.draft.card_view_enabled {
         draw_clipboard_row_card(dc, row, false, false, st.draft.card_border_enabled,
-            st.draft.card_shadow_enabled, ((st.ui_dpi.max(96) + 48) / 96) as i32, theme);
+            st.draft.card_shadow_enabled, st.ui_dpi, theme);
     } else {
         draw_round_fill(dc as _, &row, theme.surface2, settings_scale(6));
     }

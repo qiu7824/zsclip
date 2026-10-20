@@ -196,20 +196,24 @@ pub(super) fn minimize(context: &str, start: usize, end: usize) -> Option<(Strin
         let begin = pos + index; let open_end = tag_end(context, begin)?;
         let close = lower[open_end..].find("</style")? + open_end;
         let css = without_comments(&context[open_end..close])?;
+        // Excel wraps its style sheet in an HTML comment for older readers.
+        // The wrapper is not part of the first selector (usually table/td).
+        let css = css.trim().strip_prefix("<!--").unwrap_or(css.trim());
+        let css = css.strip_suffix("-->").unwrap_or(css).trim();
         let compact = css.to_ascii_lowercase().split_whitespace().collect::<String>();
         if compact.contains("display:none") || compact.contains("visibility:hidden") || compact.contains("mso-hide:all") { return None; }
-        let mut rest = css.as_str();
+        let mut rest = css;
         while let Some(brace) = rest.find('{') {
             let Some(close) = rest[brace + 1..].find('}') else { break; };
             let close = close + brace + 1;
             let selector = rest[..brace].trim();
             let declarations = clean_style(&rest[brace + 1..close])?;
-            if !declarations.is_empty() {
-                let mut candidate_classes = classes.clone();
-                if let Some(selector) = rewrite_selector(selector, &mut candidate_classes) {
-                    classes = candidate_classes;
-                    styles.push_str(&format!("{selector}{{{declarations}}}"));
-                }
+            let mut candidate_classes = classes.clone();
+            if let Some(selector) = rewrite_selector(selector, &mut candidate_classes) {
+                classes = candidate_classes;
+                // A known Office class can contain only mso-* declarations.
+                // Keep an empty rule so it remains known on repeated normalization.
+                styles.push_str(&format!("{selector}{{{declarations}}}"));
             }
             rest = &rest[close + 1..];
         }

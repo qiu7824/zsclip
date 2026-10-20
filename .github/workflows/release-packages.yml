@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.10"
+        default: "1.0.11"
   push:
     tags:
       - "0.*"

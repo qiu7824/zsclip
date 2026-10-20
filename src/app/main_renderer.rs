@@ -2,21 +2,26 @@ use super::prelude::*;
 
 pub(super) unsafe fn draw_clipboard_row_card(
     hdc: HDC, row: RECT, selected: bool, hovered: bool,
-    border: bool, shadow: bool, scale: i32, theme: Theme,
+    border: bool, shadow: bool, dpi: u32, theme: Theme,
 ) {
-    let scale = scale.max(1);
-    let body = RECT { left: row.left + 2 * scale, top: row.top + 2 * scale,
-        right: row.right - 3 * scale, bottom: row.bottom - 4 * scale };
+    let px = |value: i32| (value * dpi.max(96) as i32 + 48) / 96;
+    let body = RECT { left: row.left + px(3), top: row.top + px(3),
+        right: row.right - px(4), bottom: row.bottom - px(5) };
     if body.right <= body.left || body.bottom <= body.top { return; }
     if shadow {
-        let shadow_rect = RECT { left: body.left + scale, top: body.top + 2 * scale,
-            right: body.right + scale, bottom: body.bottom + 2 * scale };
-        let color = if platform_appearance::is_dark_mode() { rgb(25, 25, 25) } else { rgb(223, 225, 228) };
-        draw_round_fill(hdc as _, &shadow_rect, color, 6 * scale);
+        let dark = platform_appearance::is_dark_mode();
+        let outer = RECT { left: body.left - px(1), top: body.top + px(1),
+            right: body.right + px(1), bottom: body.bottom + px(3) };
+        draw_round_fill(hdc as _, &outer,
+            if dark { rgb(32, 32, 32) } else { rgb(237, 238, 240) }, px(8));
+        let inner = RECT { left: body.left, top: body.top + px(1),
+            right: body.right, bottom: body.bottom + px(2) };
+        draw_round_fill(hdc as _, &inner,
+            if dark { rgb(24, 24, 24) } else { rgb(217, 220, 224) }, px(7));
     }
     let fill = if selected { theme.item_selected } else if hovered { theme.item_hover } else { theme.surface };
     let stroke = if selected { theme.accent } else if border { theme.control_stroke } else { fill };
-    draw_round_rect(hdc as _, &body, fill, stroke, 6 * scale);
+    draw_round_rect(hdc as _, &body, fill, stroke, px(7));
 }
 
 fn main_paint_fill_color(fill: MainPaintFill, th: Theme) -> u32 {
@@ -387,7 +392,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
             if state.settings.card_view_enabled {
                 draw_clipboard_row_card(memdc, row_plan.rect.into(), row_plan.selected, row_plan.hovered,
                     state.settings.card_border_enabled, state.settings.card_shadow_enabled,
-                    ((state.ui_dpi.max(96) + 48) / 96) as i32, th);
+                    state.ui_dpi, th);
             }
             let i = row_plan.index;
             let item = state.active_items()[i as usize].clone();
