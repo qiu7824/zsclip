@@ -480,6 +480,44 @@ fn hotkey_modifier_labels_and_fields_share_the_same_row() {
     }
 }
 
+#[test]
+#[ignore = "Interactive list/menu smoke test; requires an isolated ZSCLIP_DATA_DIR; F10 opens the tray menu"]
+fn interactive_clipboard_surface() {
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    unsafe extern "system" fn smoke_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+        if msg == WM_KEYDOWN && w == 0x79 {
+            crate::tray::show_tray_menu_localized(hwnd);
+            return 0;
+        }
+        wnd_proc(hwnd, msg, w, l)
+    }
+    unsafe {
+        platform_dpi::init_process_awareness();
+        platform_appearance::set_dark_mode_enabled(load_settings().dark_mode_enabled);
+        platform_appearance::init_dark_mode_for_process();
+        let layout = main_layout_for_window(null_mut());
+        let spec = crate::zsui::Window::new("ZSClip UI smoke")
+            .size(layout.win_w as u32, (layout.list_y + layout.list_h + 7) as u32)
+            .decorations(false).visible(true);
+        let mut host = WindowsMainWindowHost::new(Some(smoke_proc));
+        let NativeMainWindowPresentation::Created(handles) = host.create_main_windows(
+            NativeMainWindowRequest::from_zsui_window_for_host(&spec,
+                &crate::zsui::HostCapabilities::windows_native_window_host()),
+        ) else { panic!("Main window creation failed") };
+        // Expose this fixture in desktop accessibility inventories while
+        // retaining the production client renderer and message handlers.
+        let style = platform_window::window_ex_style(handles.main);
+        platform_window::set_window_ex_style(handles.main, style & !WS_EX_TOOLWINDOW);
+        (*get_state_ptr(handles.main)).settings.close_without_exit = false;
+        host.present_main_window(handles.main, NativeMainWindowPresentMode::ActivateAndFocus);
+        let mut message: MSG = std::mem::zeroed();
+        while platform_window::exists(handles.main) && platform_window::get_message(&mut message) > 0 {
+            platform_window::translate_message(&message);
+            platform_window::dispatch_message(&message);
+        }
+    }
+}
+
 fn panel_state(role: WindowRole) -> AppState {
     let mut state = AppState::new(
         role,
