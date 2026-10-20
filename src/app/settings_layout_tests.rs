@@ -485,7 +485,7 @@ fn hotkey_modifier_labels_and_fields_share_the_same_row() {
 fn interactive_clipboard_surface() {
     assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
     unsafe extern "system" fn smoke_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
-        if msg == WM_KEYDOWN && w == 0x79 {
+        if matches!(msg, WM_KEYDOWN | WM_SYSKEYDOWN) && w == 0x79 {
             crate::tray::show_tray_menu_localized(hwnd);
             return 0;
         }
