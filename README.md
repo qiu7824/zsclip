@@ -19,7 +19,7 @@
 
 - GitHub 发布页: <https://github.com/qiu7824/zsclip/releases/latest>
 - QQ 输入法桥接包在同一发布页提供；手机桥接版本为 `8.7.15-zsclip.8`，附件名中的 ZSClip 版本表示配套桌面版本。[连接说明](docs/q-input-sync.md)
-- [1.0.12 更新说明](docs/releases/1.0.12.md)
+- [1.0.12.1 更新说明](docs/releases/1.0.12.1.md)
 - 包管理器分发规划: [docs/package-managers.md](docs/package-managers.md)
 
 Windows 提供安装版和便携版；macOS 提供 Apple Silicon、Intel DMG；Linux 提供 x86_64 DEB 和压缩包。Linux 全局快捷键与 VV 面向 X11，macOS 需要辅助功能及输入监控权限。超级邮件合并、WPS 任务窗格和图片贴图使用 Windows 集成；各平台验证范围见 [原生宿主验证](docs/native-host-verification.md)。

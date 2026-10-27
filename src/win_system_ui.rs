@@ -87,6 +87,27 @@ fn paint_dpi_override() -> u32 {
     PAINT_DPI_OVERRIDE.with(|cell| cell.get())
 }
 
+/// Keeps nested native painting tied to its window's layout DPI.
+pub(crate) struct PaintDpiGuard {
+    previous: u32,
+    _thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl PaintDpiGuard {
+    pub(crate) fn new(dpi: u32) -> Self {
+        let previous = PAINT_DPI_OVERRIDE.with(|cell| cell.replace(dpi.max(96)));
+        Self { previous, _thread_bound: std::marker::PhantomData }
+    }
+}
+
+impl Drop for PaintDpiGuard {
+    fn drop(&mut self) { set_paint_dpi_override(self.previous); }
+}
+
+fn font_dpi(device_dpi: u32, window_dpi: u32) -> u32 {
+    if window_dpi > 0 { window_dpi.max(96) } else { device_dpi.max(96) }
+}
+
 pub(crate) unsafe fn create_scaled_font_for_hdc(
     hdc: *mut c_void,
     family: &str,
@@ -96,11 +117,7 @@ pub(crate) unsafe fn create_scaled_font_for_hdc(
     let font_name = resolve_ui_font_family(family);
     let hdc_dpi = platform_gdi::get_device_caps(hdc as _, LOGPIXELSY as i32).max(96) as u32;
     let override_dpi = paint_dpi_override();
-    let dpi = if override_dpi > hdc_dpi {
-        override_dpi as i32
-    } else {
-        hdc_dpi as i32
-    };
+    let dpi = font_dpi(hdc_dpi, override_dpi) as i32;
     let scaled_size = ((size.max(1) * dpi) + 48) / 96;
     let key = (font_name.to_string(), dpi, scaled_size, weight);
     let cache = SCALED_FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -288,4 +305,42 @@ pub(crate) fn get_x_lparam(lp: isize) -> i32 {
 
 pub(crate) fn get_y_lparam(lp: isize) -> i32 {
     ((lp >> 16) as i16) as i32
+}
+
+#[cfg(test)]
+mod dpi_tests {
+    use super::*;
+    #[test]
+    fn window_font_dpi_overrides_device_dpi_in_both_directions() {
+        assert_eq!(font_dpi(192,96),96);
+        assert_eq!(font_dpi(96,192),192);
+        assert_eq!(font_dpi(144,0),144);
+    }
+    #[test]
+    fn nested_paint_scopes_restore_dpi_and_reuse_fonts_at_exact_pixel_heights() {
+        use windows_sys::Win32::Graphics::Gdi::{GetObjectW,LOGFONTW};
+        unsafe {
+            let dc=platform_gdi::create_compatible_dc(std::ptr::null_mut());
+            assert!(!dc.is_null());
+            let initial=paint_dpi_override();
+            let mut fonts=Vec::new();
+            {
+                let _outer=PaintDpiGuard::new(192);
+                for dpi in [96,120,144,192,96] {
+                    let _inner=PaintDpiGuard::new(dpi);
+                    let font=create_scaled_font_for_hdc(dc,"Segoe UI",13,400);
+                    assert!(!font.is_null());
+                    let mut description:LOGFONTW=std::mem::zeroed();
+                    assert_ne!(GetObjectW(font,std::mem::size_of::<LOGFONTW>() as i32,
+                        &mut description as *mut _ as *mut _),0);
+                    assert_eq!(description.lfHeight,-((13*dpi as i32+48)/96));
+                    fonts.push(font);
+                }
+                assert_eq!(paint_dpi_override(),192);
+            }
+            assert_eq!(paint_dpi_override(),initial);
+            assert_eq!(fonts[0],fonts[4]);
+            platform_gdi::delete_dc(dc);
+        }
+    }
 }

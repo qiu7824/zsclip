@@ -181,6 +181,7 @@ unsafe fn refresh_list(editor: &mut Editor) {
 unsafe fn paint_background(hwnd: HWND, dc: HDC, editor: &Editor) {
     let theme = Theme::default();
     let dpi = platform_dpi::layout_dpi_for_window(hwnd).max(96) as i32;
+    let _font_dpi = crate::win_system_ui::PaintDpiGuard::new(dpi as u32);
     let px = |n: i32| (n * dpi + 48) / 96;
     let Some(client) = platform_window::client_rect(hwnd) else {
         return;

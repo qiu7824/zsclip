@@ -164,6 +164,7 @@ impl AppState {
 }
 
 pub(super) unsafe fn draw_category_bar(dc: HDC, state: &AppState, theme: Theme) {
+    let _font_dpi = crate::win_system_ui::PaintDpiGuard::new(state.ui_dpi);
     let layout = state.layout();
     let bar = state.category_bar();
     let selected = state.active_category_index();

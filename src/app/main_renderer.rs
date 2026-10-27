@@ -480,6 +480,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                         draw_round_fill(memdc as _,&rect,if hovered{th.button_hover}else{th.surface2},4);
                         use crate::app_core::customization::QuickRowAction;
                         let glyph=match action{QuickRowAction::Delete=>"\u{E74D}",QuickRowAction::Pin=>"\u{E718}",QuickRowAction::Edit=>"\u{E70F}"};
+                        let _font_dpi = crate::win_system_ui::PaintDpiGuard::new(state.ui_dpi);
                         draw_text_ex(memdc as _,glyph,&rect,if *action==QuickRowAction::Pin&&item.pinned{th.accent}else{th.text_muted},
                             16,false,true,"Segoe MDL2 Assets");
                     }

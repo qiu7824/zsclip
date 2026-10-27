@@ -19,7 +19,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 
 - GitHub release: <https://github.com/qiu7824/zsclip/releases/latest>
 - The QQ Input Method bridge APK is included on the same release page. Its internal bridge version is `8.7.15-zsclip.8`; the ZSClip version in the asset name identifies the accompanying desktop release. [Connection guide](docs/q-input-sync.md)
-- [1.0.12 release notes](docs/releases/1.0.12.md)
+- [1.0.12.1 release notes](docs/releases/1.0.12.1.md)
 
 Windows provides installers and portable packages; macOS provides Apple Silicon and Intel DMGs; Linux provides an x86_64 DEB and archive. Linux global shortcuts and VV target X11. macOS requires Accessibility and Input Monitoring permissions. Super Mail Merge, the WPS task pane, and image stickers use Windows integration. See [native host verification](docs/native-host-verification.md) for platform verification scope.
 

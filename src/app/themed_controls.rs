@@ -21,6 +21,7 @@ pub(super) unsafe fn draw_item(
     let dc = item.hDC;
     let rect = item.rcItem;
     let dpi = platform_dpi::layout_dpi_for_window(item.hwndItem).max(96) as i32;
+    let _font_dpi = crate::win_system_ui::PaintDpiGuard::new(dpi as u32);
     let px = |n: i32| (n * dpi + 48) / 96;
     let disabled = item.itemState & ODS_DISABLED != 0;
     let pressed = item.itemState & ODS_SELECTED != 0;
