@@ -47,4 +47,5 @@ pub(super) unsafe fn settings_refresh_theme_resources(st: &mut SettingsWndState)
     st.surface_brush = platform_gdi::create_solid_brush(th.surface) as _;
     st.control_brush = platform_gdi::create_solid_brush(th.control_bg) as _;
     st.nav_brush = platform_gdi::create_solid_brush(th.nav_bg) as _;
+    crate::settings_ui_host::refresh_settings_control_themes(st.viewport_hwnd);
 }

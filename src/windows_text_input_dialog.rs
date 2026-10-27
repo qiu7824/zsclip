@@ -30,7 +30,7 @@ const EM_SETSEL: u32 = 0x00B1;
 
 struct InputDialogData {
     result: Option<String>,
-    initial: [u16; 256],
+    initial: Vec<u16>,
     title_w: Vec<u16>,
     label_w: Vec<u16>,
     ui_font: *mut core::ffi::c_void,
@@ -388,14 +388,9 @@ unsafe fn prompt_text(parent: HWND, title: &str, label: &str, initial: &str) -> 
     window_class.hbrBackground = null_mut();
     let _ = platform_window::register_class_ex(&window_class);
 
-    let mut initial_buffer = [0u16; 256];
-    let initial_wide: Vec<u16> = initial.encode_utf16().collect();
-    let copy_len = initial_wide.len().min(initial_buffer.len() - 1);
-    initial_buffer[..copy_len].copy_from_slice(&initial_wide[..copy_len]);
-
     let data = Box::new(InputDialogData {
         result: None,
-        initial: initial_buffer,
+        initial: to_wide(initial),
         title_w: translate(title)
             .encode_utf16()
             .chain(std::iter::once(0))

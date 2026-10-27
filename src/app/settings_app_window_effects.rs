@@ -6,18 +6,11 @@ pub(super) unsafe fn settings_refresh_windows_after_commit(
     app: &mut AppState,
     baseline: &SettingsAppEffectBaseline,
 ) {
-    platform_window::set_pos(
-        st.parent_hwnd,
-        main_window_z_order(st.parent_hwnd),
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-    );
+    refresh_window_pin(st.parent_hwnd);
     if baseline.dark_mode_enabled != app.settings.dark_mode_enabled {
         platform_appearance::set_dark_mode_enabled(app.settings.dark_mode_enabled);
         platform_appearance::init_dark_mode_for_process();
+        super::notes_window::refresh_appearance();
         app.theme = Theme::default();
         refresh_search_theme_resources(app);
         WindowsMainWindowHost::new(Some(wnd_proc)).apply_main_window_appearance(st.parent_hwnd);

@@ -67,4 +67,5 @@ pub(super) unsafe fn settings_sync_plugin_page_state(st: &mut SettingsWndState) 
     settings_plugin_show_enable(st, st.btn_mail_merge, s.super_mail_merge_enabled, true);
     settings_plugin_show_enable(st, st.btn_wps_taskpane_docs, s.wps_taskpane_enabled, true);
     settings_plugin_show_enable(st, st.lb_qr_status, false, false);
+    settings_plugin_show_enable(st, st.btn_notes, true, s.notes_plugin_enabled);
 }

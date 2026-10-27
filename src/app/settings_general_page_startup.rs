@@ -46,6 +46,9 @@ pub(super) unsafe fn settings_create_appearance_page(hwnd: HWND, st: &mut Settin
         st.row_height_edits[index] = settings_page_dropdown(&b, st, &list, index as i32 + 4,
             labels[index], &format!("{} px", heights[index]), ids[index]);
     }
+    let actions=b.button(st,"配置快捷按钮",super::settings_customization::OPEN_QUICK_ACTIONS,
+        list.left(),list.row_y(7),settings_scale(190));
+    st.ownerdraw_ctrls.push(actions);
     let behavior = b.section(2, 138);
     st.chk_auto_hide_on_blur = settings_page_toggle(&b, st, &behavior, 0, "点击外部自动隐藏", IDC_SET_AUTOHIDE_BLUR);
     st.chk_edge_hide = settings_page_toggle(&b, st, &behavior, 1, "贴边自动隐藏", IDC_SET_EDGEHIDE);

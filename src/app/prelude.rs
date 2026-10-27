@@ -1,4 +1,5 @@
 pub(in crate::app) use super::constants::*;
+pub(in crate::app) use crate::win_system_params::{IDC_SET_NOTES_ENABLE, IDC_SET_NOTES_OPEN};
 pub(in crate::app) use super::data::*;
 pub(in crate::app) use super::main_clipboard_capture::*;
 pub(in crate::app) use super::main_cloud_sync::*;

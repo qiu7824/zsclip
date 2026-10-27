@@ -70,21 +70,28 @@ pub(crate) fn is_minimized(hwnd: HWND) -> bool {
 
 /// Includes auxiliary dialogs which are not registered as main window hosts.
 pub(crate) fn current_process_has_visible_window() -> bool {
+    current_process_has_visible_window_excluding(&[])
+}
+
+pub(crate) fn current_process_has_visible_window_excluding(excluded:&[HWND]) -> bool {
+    struct Scan<'a>{excluded:&'a[HWND],found:bool}
     unsafe extern "system" fn visit(hwnd: HWND, data: isize) -> i32 {
+        let scan=&mut *(data as *mut Scan<'_>);
+        if scan.excluded.contains(&hwnd){return 1;}
         let mut pid = 0;
         GetWindowThreadProcessId(hwnd, &mut pid);
         if pid == windows_sys::Win32::System::Threading::GetCurrentProcessId()
             && IsWindowVisible(hwnd) != 0
             && IsIconic(hwnd) == 0
         {
-            *(data as *mut bool) = true;
+            scan.found = true;
             return 0;
         }
         1
     }
-    let mut found = false;
-    unsafe { EnumWindows(Some(visit), &mut found as *mut bool as isize); }
-    found
+    let mut scan=Scan{excluded,found:false};
+    unsafe { EnumWindows(Some(visit), &mut scan as *mut Scan<'_> as isize); }
+    scan.found
 }
 
 pub(crate) fn root_ancestor(hwnd: HWND) -> HWND {

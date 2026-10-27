@@ -127,6 +127,13 @@ impl NativeMainSearchControlHost for WindowsMainSearchControlHost {
     }
 
     fn set_search_bounds(&mut self, handle: Self::Handle, bounds: UiRect) {
+        if !platform_window::exists(handle) {return;}
+        if let Some(rect)=platform_window::window_rect(handle) {
+            let parent=platform_window::parent(handle);
+            let mut origin=windows_sys::Win32::Foundation::POINT{x:rect.left,y:rect.top};
+            if platform_window::screen_to_client(parent,&mut origin) && origin.x==bounds.left && origin.y==bounds.top
+                && rect.right-rect.left==bounds.right-bounds.left && rect.bottom-rect.top==bounds.bottom-bounds.top {return;}
+        }
         platform_window::move_window(
             handle,
             bounds.left,
@@ -138,7 +145,10 @@ impl NativeMainSearchControlHost for WindowsMainSearchControlHost {
     }
 
     fn set_search_visible(&mut self, handle: Self::Handle, visible: bool) {
-        platform_window::set_visible(handle, visible);
+        if platform_window::exists(handle)
+            && (platform_window::window_style(handle)&windows_sys::Win32::UI::WindowsAndMessaging::WS_VISIBLE!=0)!=visible {
+            platform_window::set_visible(handle, visible);
+        }
     }
 
     fn search_text(&self, handle: Self::Handle) -> String {

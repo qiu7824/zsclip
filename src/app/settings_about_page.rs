@@ -116,7 +116,7 @@ mod tests {
                 settings_set_text(directory.hwnd, &long_path);
                 assert_eq!(settings_host_text(directory.hwnd), long_path);
                 assert_ne!(platform_window::window_style(directory.hwnd) & 0x4000, 0);
-                assert_eq!(directory.bounds.height(), settings_scale(28));
+                assert_eq!(directory.bounds.height(), settings_scale(32));
                 assert!(!platform_window::is_visible(surface.0));
             }
         }
@@ -143,7 +143,7 @@ mod tests {
                 state.ui_font,
                 settings_scale(24),
             );
-            assert!(settings_scale(28 + 4) + note_h <= settings_scale(108));
+            assert!(settings_scale(32 + 4) + note_h <= settings_scale(108));
             for (label, width) in [
                 ("Check for updates", 160),
                 ("Release notes", 128),

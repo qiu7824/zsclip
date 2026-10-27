@@ -9,7 +9,7 @@ on:
       version:
         description: "Release version to build"
         required: false
-        default: "1.0.11"
+        default: "1.0.12"
   push:
     tags:
       - "0.*"
@@ -607,6 +607,14 @@ jobs:
             $message = $message.Replace('%', '%25').Replace("`n", '%0A').Replace("`r", '%0D')
             Write-Output "::error title=Windows no-lan installer build failed::$message"
             exit $LASTEXITCODE
+          }
+      - name: Test no-LAN WebDAV and data storage
+        shell: pwsh
+        run: |
+          $env:ZSCLIP_TEST_UI_LANGUAGE = 'zh-CN'
+          foreach ($filter in @('cloud_sync::tests::', 'data_location::tests::')) {
+            cargo test --release --locked --bin zsclip --no-default-features --features "vv-paste,cloud-sync,mail-merge,ai-actions,sticker" $filter -- --test-threads=1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
       - name: Upload Windows installer
         uses: actions/upload-artifact@v7

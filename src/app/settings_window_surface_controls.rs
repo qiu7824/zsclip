@@ -49,6 +49,8 @@ fn is_general_surface_control(id: isize) -> bool {
             | IDC_SET_PASTE_SOUND_PICK
             | crate::win_system_params::IDC_SET_SOUND_TEST
             | IDC_SET_SKIP_WINDOW_CAPTURE
+            | IDC_SET_BTN_OPENCFG
+            | super::settings_customization::OPEN_QUICK_ACTIONS
     )
 }
 
@@ -82,6 +84,8 @@ fn is_group_surface_control(id: isize) -> bool {
             | IDC_SET_GROUP_DELETE
             | IDC_SET_GROUP_UP
             | IDC_SET_GROUP_DOWN
+            | super::settings_customization::OPEN_CATEGORIES
+            | 54001
     )
 }
 
@@ -101,10 +105,10 @@ fn is_cloud_surface_control(id: isize) -> bool {
 fn is_plugin_surface_control(id: isize) -> bool {
     matches!(
         id,
-        6101 | 6102 | 6103 | 7101 | 7102 | 7103 | 7104 | 7106 | 7201
+        6101 | 6102 | 6103 | 7101 | 7102 | 7103 | 7104 | 7106 | 7201 | IDC_SET_NOTES_ENABLE | IDC_SET_NOTES_OPEN
     )
 }
 
 fn is_about_surface_control(id: isize) -> bool {
-    matches!(id, IDC_SET_OPEN_SOURCE | IDC_SET_OPEN_UPDATE)
+    matches!(id, IDC_SET_OPEN_SOURCE | IDC_SET_OPEN_UPDATE | crate::win_system_params::IDC_SET_DATA_DIRECTORY)
 }

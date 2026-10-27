@@ -100,6 +100,17 @@ pub(super) unsafe fn dispatch_settings_ui_event(
                 repaint_settings_window(hwnd, true);
                 return Some(0);
             }
+            if control_id as isize == crate::win_system_params::IDC_SET_DATA_DIRECTORY {
+                super::settings_about_page_data::change_data_directory(hwnd);
+                return Some(0);
+            }
+            if control_id as isize == IDC_SET_NOTES_OPEN {
+                if (*st_ptr).draft.notes_plugin_enabled { super::notes_window::open_or_focus(); }
+                return Some(0);
+            }
+            if matches!(control_id as isize, super::settings_customization::OPEN_CATEGORIES | super::settings_customization::OPEN_QUICK_ACTIONS) {
+                super::settings_customization::open_from_settings(hwnd,control_id as isize);return Some(0);
+            }
             // Update dialogs pump messages; route them before borrowing SettingsWndState.
             if super::settings_platform_actions_about::handle_about_update_control(hwnd, control_id as isize) {
                 return Some(0);

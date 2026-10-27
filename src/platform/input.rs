@@ -2,7 +2,7 @@ use windows_sys::Win32::{
     Foundation::{HWND, POINT},
     UI::{
         Input::KeyboardAndMouse::{
-            keybd_event, GetAsyncKeyState, ReleaseCapture, SendInput, SetCapture, SetFocus, INPUT,
+            keybd_event, GetAsyncKeyState, GetKeyState, ReleaseCapture, SendInput, SetCapture, SetFocus, INPUT,
             INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_BACK, VK_CONTROL, VK_LBUTTON,
             VK_MBUTTON, VK_MENU, VK_RBUTTON, VK_SHIFT, VK_V,
         },
@@ -33,6 +33,11 @@ const TME_HOVER: u32 = 0x00000001;
 
 pub(crate) fn is_key_down(vk: u32) -> bool {
     unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+}
+
+/// Modifier state belonging to the input message currently being dispatched.
+pub(crate) fn is_message_key_down(vk: u32) -> bool {
+    unsafe { (GetKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
 pub(crate) fn primary_mouse_button_down() -> bool {

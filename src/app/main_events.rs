@@ -272,7 +272,7 @@ pub(super) unsafe fn handle_main_timer_task(hwnd: HWND, task: MainTimerTask) {
             if !ptr.is_null() {
                 let state = &mut *ptr;
                 cancel_hidden_memory_reclaim(hwnd, state);
-                if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+                if !window_counts_as_visible_for_memory_reclaim(hwnd) {
                     // Do not clear the shared hover preview while another host
                     // is visible. Its hide/close event will rearm reclamation.
                     if main_or_settings_window_blocks_hidden_reclaim() || pending_paste_blocks_hidden_reclaim() {return;}
@@ -422,6 +422,10 @@ pub(super) unsafe fn dispatch_main_ui_event(hwnd: HWND, event: UiEvent) -> bool 
 }
 
 pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: ApplicationEvent) {
+    let background_activity = matches!(&event,
+        ApplicationEvent::CloudSyncReady | ApplicationEvent::LanSyncReady
+        | ApplicationEvent::StartupDataReconciled { .. } | ApplicationEvent::UpdateCheckReady
+        | ApplicationEvent::ShellIntegrationRestored);
     match event {
         #[cfg(feature = "lan-sync")]
         ApplicationEvent::LanSyncReady => handle_lan_sync_ready(hwnd),
@@ -500,6 +504,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
         }
         ApplicationEvent::TrayCallback { code } => handle_tray(hwnd, code),
     }
+    if background_activity { schedule_hidden_memory_reclaim_after_activity(); }
 }
 
 pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) {
@@ -684,7 +689,7 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                     return;
                 }
                 state.image_thumb_loading.remove(&payload.item_id);
-                if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+                if !window_counts_as_visible_for_memory_reclaim(hwnd) {
                     // A late thumbnail must not repopulate a cache already
                     // released when this window was hidden.
                     schedule_hidden_reclaim_after_activity(hwnd,state);

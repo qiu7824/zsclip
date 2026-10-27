@@ -524,7 +524,7 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
 const GENERAL_TITLES: [&str; 2] = ["启动与托盘", "维护"];
 const APPEARANCE_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
     SettingsFormCardSpec { rows: 5, extra_px: 116 },
-    SettingsFormCardSpec { rows: 7, extra_px: 0 },
+    SettingsFormCardSpec { rows: if cfg!(windows) {8}else{7}, extra_px: 0 },
     SettingsFormCardSpec { rows: 4, extra_px: 0 },
     SettingsFormCardSpec { rows: 3, extra_px: 0 },
 ];
@@ -536,7 +536,7 @@ const CLIPBOARD_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
 ];
 const CLIPBOARD_TITLES: [&str; 3] = ["记录与格式", "粘贴行为", "提示音"];
 
-const PLUGIN_TITLES: [&str; 7] = [
+const PLUGIN_TITLES: &[&str] = &[
     "\u{641c}\u{7d22}\u{63d2}\u{4ef6}",
     "\u{56fe}\u{7247} OCR",
     "\u{6587}\u{672c}\u{7ffb}\u{8bd1}",
@@ -544,9 +544,11 @@ const PLUGIN_TITLES: [&str; 7] = [
     "\u{8d85}\u{7ea7}\u{90ae}\u{4ef6}\u{5408}\u{5e76}",
     "WPS \u{4efb}\u{52a1}\u{7a97}\u{683c}",
     "\u{5feb}\u{6377}\u{4e8c}\u{7ef4}\u{7801}\u{8f6c}\u{6362}",
+    #[cfg(windows)]
+    "便签",
 ];
 
-const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 7] = [
+const PLUGIN_FORM_SECTIONS: &[SettingsFormCardSpec] = &[
     SettingsFormCardSpec {
         rows: 1,
         extra_px: 0,
@@ -575,6 +577,8 @@ const PLUGIN_FORM_SECTIONS: [SettingsFormCardSpec; 7] = [
         rows: 1,
         extra_px: 0,
     },
+    #[cfg(windows)]
+    SettingsFormCardSpec { rows: 3, extra_px: 0 },
 ];
 
 fn plugin_form_sections(
@@ -584,8 +588,8 @@ fn plugin_form_sections(
     ai_provider_config_count: usize,
     super_mail_merge_enabled: bool,
     wps_taskpane_enabled: bool,
-) -> [SettingsFormCardSpec; 7] {
-    [
+) -> Vec<SettingsFormCardSpec> {
+    vec![
         SettingsFormCardSpec {
             rows: if quick_search_enabled { 4 } else { 1 },
             extra_px: 0,
@@ -621,12 +625,14 @@ fn plugin_form_sections(
             rows: 1,
             extra_px: 0,
         },
+        #[cfg(windows)]
+        SettingsFormCardSpec { rows: 3, extra_px: 0 },
     ]
 }
 
 const GROUP_FORM_SECTIONS: [SettingsFormCardSpec; 3] = [
     SettingsFormCardSpec {
-        rows: 2,
+        rows: if cfg!(windows) {3}else{2},
         extra_px: 0,
     },
     SettingsFormCardSpec {
@@ -1321,16 +1327,20 @@ pub const HOTKEY_MOD_OPTIONS: [&str; 8] = [
     "Ctrl+Alt+Shift",
 ];
 
-pub const MOUSE_SIDE_BUTTON_ACTION_OPTIONS: [(&str, &str); 3] = [
+const MOUSE_SIDE_BUTTON_ACTION_COUNT: usize = if cfg!(windows) { 4 } else { 3 };
+pub const MOUSE_SIDE_BUTTON_ACTION_OPTIONS: [(&str, &str); MOUSE_SIDE_BUTTON_ACTION_COUNT] = [
     ("none", "关闭"),
     ("quick_window", "快速窗口"),
     ("vv_mode", "VV 模式"),
+    #[cfg(windows)]
+    ("notes", "便签"),
 ];
 
 pub fn normalize_mouse_side_button_action(action: &str) -> &'static str {
     match action.trim() {
         "quick_window" => "quick_window",
         "vv_mode" => "vv_mode",
+        "notes" if cfg!(windows) => "notes",
         _ => "none",
     }
 }
@@ -1339,6 +1349,7 @@ pub fn mouse_side_button_action_display(action: &str) -> &'static str {
     match normalize_mouse_side_button_action(action) {
         "quick_window" => tr("快速窗口", "Quick Window"),
         "vv_mode" => tr("VV 模式", "VV Mode"),
+        "notes" => tr("便签", "Notes"),
         _ => tr("关闭", "Off"),
     }
 }
@@ -1347,6 +1358,7 @@ pub fn mouse_side_button_action_key_from_display(label: &str) -> &'static str {
     match label.trim() {
         "快速窗口" | "Quick Window" => "quick_window",
         "VV 模式" | "VV Mode" => "vv_mode",
+        "便签" | "Notes" if cfg!(windows) => "notes",
         _ => "none",
     }
 }
@@ -2782,7 +2794,7 @@ fn settings_native_section_specs_for_page(
         SettingsPage::Plugin => PLUGIN_TITLES
             .iter()
             .copied()
-            .zip(PLUGIN_FORM_SECTIONS)
+            .zip(PLUGIN_FORM_SECTIONS.iter().copied())
             .collect(),
         SettingsPage::Group => GROUP_TITLES
             .iter()
@@ -2990,6 +3002,7 @@ fn native_control_binding_for_key(key: &str) -> Option<SettingsNativeControlBind
         "plugin_ai_clean" => native_setting_binding("ai_text_clean_enabled"),
         "plugin_super_mail_merge" => native_setting_binding("super_mail_merge_enabled"),
         "plugin_wps_taskpane" => native_setting_binding("wps_taskpane_enabled"),
+        "plugin_notes" => native_setting_binding("notes_plugin_enabled"),
         "plugin_qr_quick" => native_setting_binding("quick_qr_enabled"),
         "group_enable" => native_setting_binding("grouping_enabled"),
         "group_type_filter" => native_setting_binding("group_type_filter_enabled"),
@@ -3134,6 +3147,7 @@ fn native_control_route_for_key(key: &str) -> Option<SettingsNativeControlRoute>
         "plugin_super_mail_merge" => native_toggle_route(7106),
         "plugin_mail_merge" => native_action_route("settings_platform", "open_mail_merge"),
         "plugin_wps_taskpane" => native_toggle_route(7104),
+        "plugin_notes" => native_toggle_route(7107),
         "wps_taskpane_docs" => native_action_route("settings_platform", "open_wps_taskpane_docs"),
         "plugin_qr_quick" => native_toggle_route(7103),
         "group_enable" => native_toggle_route(5030),
@@ -3394,6 +3408,10 @@ pub fn settings_native_control_summaries() -> Vec<SettingsNativeControlSummary> 
         6,
         &[("plugin_qr_quick", "快捷二维码转换", Toggle)],
     );
+
+    #[cfg(windows)]
+    push_native_controls(&mut controls, &sections, SettingsPage::Plugin, 7,
+        &[("plugin_notes", "启用便签", Toggle)]);
 
     push_native_controls(
         &mut controls,
@@ -3740,6 +3758,7 @@ fn settings_native_json_updates_for_applied_field(
         | "copy_success_sound_enabled"
         | "paste_success_sound_enabled"
         | "dark_mode_enabled"
+        | "notes_plugin_enabled"
         | "rich_text_clipboard_enabled"
         | "show_pin_button"
         | "phrase_titles_enabled"
@@ -4556,7 +4575,7 @@ mod tests {
     fn bdd_plugin_cards_are_compact_when_plugins_are_off() {
         let cards = settings_plugin_cards_for_state(false, "off", "off", false, false);
 
-        assert_eq!(cards.len(), 7);
+        assert_eq!(cards.len(), PLUGIN_TITLES.len());
         assert_eq!(cards[0].title, PLUGIN_TITLES[0]);
         assert!(cards[5].title.contains("WPS"));
         assert_eq!(cards[6].title, PLUGIN_TITLES[6]);
@@ -5476,7 +5495,7 @@ mod tests {
         assert_eq!(normalize_hotkey_key(" Enter "), "Enter");
         assert_eq!(normalize_hotkey_key("unknown"), "V");
         assert!(hotkey_preview_text("Ctrl+Shift", "V").contains("Ctrl+Shift + V"));
-        assert_eq!(MOUSE_SIDE_BUTTON_ACTION_OPTIONS.len(), 3);
+        assert_eq!(MOUSE_SIDE_BUTTON_ACTION_OPTIONS.len(), if cfg!(windows) { 4 } else { 3 });
         assert_eq!(
             normalize_mouse_side_button_action("quick_window"),
             "quick_window"
@@ -6299,7 +6318,7 @@ mod tests {
         let typed_json =
             settings_native_apply_submission_to_json(serde_json::json!({}), &typed_submission);
         assert_eq!(typed_json.settings_json["cloud_sync_enabled"], false);
-        assert_eq!(typed_json.settings_json["lan_sync_enabled"], true);
+        assert_eq!(typed_json.settings_json["lan_sync_enabled"], cfg!(feature = "lan-sync"));
         assert_eq!(typed_json.settings_json["lan_tcp_port"], 38474);
         assert_eq!(typed_json.settings_json["ai_clean_enabled"], true);
         assert_eq!(typed_json.settings_json["clipboard_capture_enabled"], false);
@@ -6347,7 +6366,8 @@ mod tests {
             "google"
         );
         let sync_mode = dropdown_for_key("multi_sync_mode");
-        assert_eq!(sync_mode.options[sync_mode.selected_index].raw_value, "lan");
+        assert_eq!(sync_mode.options[sync_mode.selected_index].raw_value,
+            if cfg!(feature = "lan-sync") { "lan" } else { "off" });
         let lan_receive = dropdown_for_key("lan_receive_mode");
         assert_eq!(
             lan_receive.options[lan_receive.selected_index].raw_value,
@@ -6428,8 +6448,9 @@ mod tests {
             settings_native_control_display_value(control, &settings_json).unwrap()
         };
         let sync_display = display_for_key("multi_sync_mode");
-        assert_eq!(sync_display.value, multi_sync_mode_display("lan"));
-        assert_eq!(multi_sync_mode_from_label(&sync_display.value), "lan");
+        let expected_mode = if cfg!(feature = "lan-sync") { "lan" } else { "off" };
+        assert_eq!(sync_display.value, multi_sync_mode_display(expected_mode));
+        assert_eq!(multi_sync_mode_from_label(&sync_display.value), expected_mode);
         assert!(!sync_display.sensitive);
         let url_display = display_for_key("cloud_webdav_url");
         assert_eq!(url_display.value, "https://dav.example/zsclip");

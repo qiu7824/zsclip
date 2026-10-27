@@ -122,7 +122,7 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
             .filter(|value| !value.is_empty())
             .unwrap_or(row.preview)
     } else {
-        row.preview
+        row.text.as_deref().and_then(crate::app_core::url_preview::summarize).unwrap_or(row.preview)
     };
     ClipItem {
         phrase_title: row.phrase_title,
@@ -283,6 +283,7 @@ pub(crate) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
 }
 
 pub(super) fn build_preview(text: &str) -> String {
+    if let Some(preview) = crate::app_core::url_preview::summarize(text) { return preview; }
     let one_line = text.replace(['\r', '\n'], " ").trim().to_string();
     if one_line.chars().count() > 72 {
         let mut s = String::new();
@@ -914,18 +915,23 @@ fn items_page_query_sql(
     let (search_terms, time_filter, app_filter, near_query) =
         parse_search_query_with_context(query.search_text.trim(), date_context);
     let select_columns = if near_query.is_some() {
-        "id, kind, preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title"
+        format!("id, kind, {} AS preview, text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title", crate::db_runtime::CLIP_LIST_PREVIEW_SQL)
     } else {
-        "id, kind, preview, CASE WHEN kind='files' THEN text_data ELSE NULL END AS text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title"
+        format!("id, kind, {} AS preview, CASE WHEN kind='files' THEN text_data ELSE NULL END AS text_data, COALESCE(source_app, '') as source_app, file_paths, image_path, image_width, image_height, pinned, group_id, COALESCE(created_at, '') as created_at, phrase_title", crate::db_runtime::CLIP_LIST_PREVIEW_SQL)
     };
+    let category_filter = if query.manual_tab_id.is_some() { "category IN (0,1)" } else { "category=?" };
     let mut sql = if near_query.is_some() {
         format!(
-                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"
+                "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND {category_filter}"
             )
     } else {
-        format!("SELECT {select_columns} FROM items WHERE category=?")
+        format!("SELECT {select_columns} FROM items WHERE {category_filter}")
     };
-    let mut bind_values = vec![SqlValue::from(query.category)];
+    let mut bind_values = if query.manual_tab_id.is_some() { Vec::new() } else { vec![SqlValue::from(query.category)] };
+    if let Some(tab_id) = &query.manual_tab_id {
+        sql.push_str(" AND EXISTS(SELECT 1 FROM clip_tab_items t WHERE t.item_id=items.id AND t.tab_id=?)");
+        bind_values.push(SqlValue::from(tab_id.clone()));
+    }
 
     if query.group_id > 0 {
         sql.push_str(" AND group_id=?");
@@ -1117,7 +1123,7 @@ fn run_latest_search<T>(conn: &rusqlite::Connection, hwnd: isize, tab: usize, re
 
 pub(super) fn db_load_vv_popup_items(category: i64, group_id: i64, limit: usize) -> Vec<ClipItem> {
     let query = ItemsQuery {
-        category,
+        manual_tab_id: None, category,
         group_id,
         search_text: String::new(),
         kind_filter: ClipKindFilter::All,
@@ -1747,6 +1753,7 @@ pub(super) fn db_promote_item_to_top(item_id: i64) -> rusqlite::Result<i64> {
         let new_id = tx.last_insert_rowid();
         tx.execute("UPDATE items SET phrase_title=(SELECT phrase_title FROM items WHERE id=?1) WHERE id=?2", params![item_id,new_id])?;
         tx.execute("UPDATE items SET lan_origin_message_id=(SELECT lan_origin_message_id FROM items WHERE id=?1),lan_origin_device_id=(SELECT lan_origin_device_id FROM items WHERE id=?1),lan_origin_seq=(SELECT lan_origin_seq FROM items WHERE id=?1),lan_origin_hash=(SELECT lan_origin_hash FROM items WHERE id=?1) WHERE id=?2",params![item_id,new_id])?;
+        crate::clip_tags::transfer(&tx, &[item_id], new_id)?;
         tx.execute("DELETE FROM items WHERE id=?", params![item_id])?;
         tx.commit()?;
         Ok(new_id)
@@ -2170,7 +2177,7 @@ mod tests {
                 insert_item(0, "text", "ordinary", 0, "2026-09-26 10:00:00")?;
                 assert!(db_load_item_full(secret).is_none());
                 for search in ["", "synthetic-db-secret"] {
-                    let query = ItemsQuery { category: 0, group_id: 0, search_text: search.into(), kind_filter: ClipKindFilter::All, near_query: None };
+                    let query = ItemsQuery { manual_tab_id: None, category: 0, group_id: 0, search_text: search.into(), kind_filter: ClipKindFilter::All, near_query: None };
                     let (items, _, _) = db_load_items_page(&query, None, 20)?;
                     assert!(items.iter().all(|item| item.id != secret));
                 }
@@ -2255,7 +2262,7 @@ mod tests {
             request_seq,
             app_data_generation: crate::db_runtime::current_app_data_generation(),
             query: ItemsQuery {
-                category: tab as i64,
+                manual_tab_id: None, category: tab as i64,
                 group_id: 0,
                 search_text: format!("request-{request_seq}"),
                 kind_filter: ClipKindFilter::All,
@@ -2298,7 +2305,7 @@ mod tests {
             insert_item(0, "files", "gamma file", 0, "2026-07-01 10:02:00")?;
 
             let query = ItemsQuery {
-                category: 0,
+                manual_tab_id: None, category: 0,
                 group_id: 0,
                 search_text: String::new(),
                 kind_filter: ClipKindFilter::Image,
@@ -2335,7 +2342,7 @@ mod tests {
             }
 
             let query = ItemsQuery {
-                category: 0,
+                manual_tab_id: None, category: 0,
                 group_id: 0,
                 search_text: "附近:invoice".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -2375,7 +2382,7 @@ mod tests {
         crate::db_runtime::with_test_db(|| {
             let item_id = insert_item(0, "text", "latest", 0, "2026-07-01 10:00:00")?;
             let query = ItemsQuery {
-                category: 0,
+                manual_tab_id: None, category: 0,
                 group_id: 0,
                 search_text: String::new(),
                 kind_filter: ClipKindFilter::All,

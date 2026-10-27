@@ -1,5 +1,48 @@
 # Native Host Verification
 
+## Windows notes and URL presentation
+
+Run the notes UI with an isolated `ZSCLIP_DATA_DIR`. Enable the notes plugin,
+save the setting, and bind either mouse side button to Notes. Verify opening,
+focusing, closing, creating multiple notes, switching between them, Unicode
+editing, autosave and reopening. A failed save or an unfinished IME composition
+must retain the editable window. A disabled plugin must not consume its side
+button binding. Clipboard history may paste ordinary text into the notes editor;
+protected-vault paste continues to require an external target.
+
+Check same-prefix URLs with distinct document IDs, query values and fragments.
+Check legacy history rows and the exact pasted address. Drag every edge and corner,
+reopen Main/Quick and restart with the same isolated profile. The saved logical
+width and height must survive, scale with DPI, fit the monitor and leave title buttons,
+search, row hit targets and scrollbar geometry aligned. Resizing must not change
+stored text or clipboard values, or be overwritten by stale settings drafts.
+
+Verify category names, add/remove/reorder/hide and overflow selection. Manual tags
+must start empty, allow many-to-many assignment of text, images, files and phrases,
+and preserve membership across restart, deduplication and paste-to-top. Removing
+membership or deleting a tag must keep original records. Automatic views must
+explicitly select source/group/type filters; new captures must not bypass either
+manual membership or type filters. Verify
+row button visibility/order, row-only actions and stale-query guards. Plain lists
+are the default; preserve explicit saved card preferences. Check auxiliary
+buttons, switches and choices in both light and dark modes.
+
+Run `resize_paint_cache_reuses_resources_and_releases_while_peer_is_visible`
+with an isolated profile. Record frame timings, bitmap allocations and row-layout
+builds across repeated native resizing. Hidden windows must release their local
+paint surfaces even while another panel remains visible; shared resources must
+wait until visible panels and pending paste operations no longer need them.
+
+Run `hidden_resize_and_tray_menu_close_rearm_memory_reclaim` and
+`notes_reopen_cycles_release_windows_gdi_and_reclaim_idle_working_set` separately
+in fresh isolated processes. Inspect working-set/commit samples and GDI object
+counts after warm-up. Visible editors must defer reclaim; hidden resize messages
+must preserve the quiet-period timer, and dismissed menus/background work must
+rearm it. There is no fixed 0.1 MB working-set guarantee.
+
+The notes window and mouse binding are Windows host features. AppKit/GTK notes
+surfaces require their own implementation and target-system verification.
+
 ## Windows VV input and full-text preview
 
 The Windows VV host uses the platform-neutral input session in

@@ -8,6 +8,11 @@ mod update_feed;
 mod lanzou_update;
 mod cloud_sync;
 mod db_runtime;
+mod clip_tags;
+#[cfg(any(windows, test))]
+mod notes_store;
+#[cfg(windows)]
+mod data_location;
 #[cfg(target_os = "windows")]
 mod hover_preview;
 #[path = "i18n_runtime.rs"]

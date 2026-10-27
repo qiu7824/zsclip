@@ -44,7 +44,7 @@ unsafe fn execute_settings_ui_command(
     }
     match command.id {
         command_ids::SAVE_SETTINGS => {
-            settings_collect_to_app(st);
+            if !settings_collect_to_app(st) { return true; }
             settings_apply_from_app(st);
             settings_sync_page_state(st, st.cur_page);
             show_settings_saved_feedback(hwnd, st);

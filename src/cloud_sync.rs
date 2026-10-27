@@ -299,7 +299,7 @@ fn upload_config(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
-    let settings_copy = temp_unique_path("config-upload", "json");
+    let settings_copy = temp_unique_path("config-upload", "json")?;
     let _settings_guard = TempPathGuard::file(settings_copy.clone());
     crate::db_runtime::with_exclusive_app_data_snapshot(|| {
         if !paths.settings_file.exists() {
@@ -327,7 +327,7 @@ fn apply_remote_config(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
-    let download_path = temp_file_path("settings-download", "json");
+    let download_path = temp_file_path("settings-download", "json")?;
     let _download_guard = TempPathGuard::file(download_path.clone());
     if !download_file(config, &remote.settings_url, &download_path)? {
         return Err("云端没有找到 settings.json。".to_string());
@@ -372,7 +372,7 @@ fn restore_remote_backup(
             ));
         }
     }
-    let download_path = temp_file_path("cloud-backup", "zip");
+    let download_path = temp_file_path("cloud-backup", "zip")?;
     let _download_guard = TempPathGuard::file(download_path.clone());
     if !download_file(config, &remote.backup_url, &download_path)? {
         return Err("云端没有找到可恢复的备份。".to_string());
@@ -466,7 +466,7 @@ fn upload_syncclipboard_manifest(
     let Some(bytes) = crate::multi_sync::load_image_png(id).map_err(|err| err.to_string())? else {
         return Ok(());
     };
-    let data_path = temp_file_path("syncclipboard-image", "png");
+    let data_path = temp_file_path("syncclipboard-image", "png")?;
     fs::write(&data_path, bytes).map_err(|err| err.to_string())?;
     let remote_data_url = append_url_path(&remote.sync_file_dir_url, &data_name);
     let upload_result = upload_file(config, &data_path, &remote_data_url);
@@ -498,7 +498,7 @@ fn import_remote_syncclipboard_clip(
     config: &CloudSyncConfig,
     remote: &RemoteLayout,
 ) -> Result<bool, String> {
-    let temp_path = temp_file_path("SyncClipboard-download", "json");
+    let temp_path = temp_file_path("SyncClipboard-download", "json")?;
     let found = download_optional_file(config, &remote.sync_clipboard_url, &temp_path)?;
     if !found {
         return Ok(false);
@@ -527,7 +527,7 @@ fn import_remote_syncclipboard_clip(
         return Ok(false);
     }
     let data_url = append_url_path(&remote.sync_file_dir_url, data_name);
-    let image_path = temp_file_path("SyncClipboard-image-download", "png");
+    let image_path = temp_file_path("SyncClipboard-image-download", "png")?;
     let found = download_file(config, &data_url, &image_path)?;
     if !found {
         return Ok(false);
@@ -546,7 +546,7 @@ fn download_remote_manifest(
     config: &CloudSyncConfig,
     remote: &RemoteLayout,
 ) -> Result<Option<CloudSyncManifest>, String> {
-    let temp_path = temp_file_path("manifest-download", "json");
+    let temp_path = temp_file_path("manifest-download", "json")?;
     let found = download_file(config, &remote.manifest_url, &temp_path)?;
     if !found {
         return Ok(None);
@@ -573,7 +573,7 @@ fn validate_settings_json(path: &Path) -> Result<(), String> {
 
 fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, String> {
     let protection_revision = crate::db_runtime::protected_sync_revision()?;
-    let staging_root = temp_dir_path("snapshot-staging");
+    let staging_root = temp_dir_path("snapshot-staging")?;
     if staging_root.exists() {
         let _ = fs::remove_dir_all(&staging_root);
     }
@@ -600,7 +600,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
     }
 
-    let archive_path = temp_unique_path("cloud", "zip");
+    let archive_path = temp_unique_path("cloud", "zip")?;
     let payload_paths = CloudSyncPaths {
         data_dir: payload_dir.clone(),
         settings_file: payload_dir.join("settings.json"),
@@ -609,7 +609,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
     let content_hash = local_state_hash(&payload_paths)?;
     let state_stamp = local_state_stamp(paths);
     let archive_guard = TempPathGuard::file(archive_path.clone());
-    let settings_copy = temp_unique_path("snapshot-settings", "json");
+    let settings_copy = temp_unique_path("snapshot-settings", "json")?;
     let settings_copy_guard = TempPathGuard::file(settings_copy.clone());
     fs::copy(payload_dir.join("settings.json"), &settings_copy)
         .map_err(|err| format!("无法保留云备份设置副本：{err}"))?;
@@ -629,7 +629,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
 }
 
 fn create_local_backup_archive(paths: &CloudSyncPaths) -> Result<PathBuf, String> {
-    let staging_root = temp_dir_path("local-restore-backup-staging");
+    let staging_root = temp_dir_path("local-restore-backup-staging")?;
     let staging_guard = TempPathGuard::dir(staging_root.clone());
     let payload_dir = staging_root.join("payload");
     fs::create_dir_all(&payload_dir).map_err(|err| err.to_string())?;
@@ -646,7 +646,7 @@ fn create_local_backup_archive(paths: &CloudSyncPaths) -> Result<PathBuf, String
     if images_dir.is_dir() {
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
     }
-    let archive_path = temp_unique_path("before-restore", "zip");
+    let archive_path = temp_unique_path("before-restore", "zip")?;
     let archive_guard = TempPathGuard::file(archive_path.clone());
     compress_archive(&payload_dir, &archive_path)?;
     archive_guard.dismiss();
@@ -685,7 +685,7 @@ fn stage_snapshot_restore(
     archive_path: &Path,
     expected_hash: Option<&str>,
 ) -> Result<StagedRestore, String> {
-    let extract_root = temp_dir_path("snapshot-restore");
+    let extract_root = temp_dir_path("snapshot-restore")?;
     if extract_root.exists() {
         let _ = fs::remove_dir_all(&extract_root);
     }
@@ -1199,42 +1199,6 @@ fn build_webdav_args(extra: &[String]) -> Vec<String> {
     args
 }
 
-#[cfg(windows)]
-fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<String, String> {
-    let mut args = build_webdav_args(extra);
-    let config_path = if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
-        let path = temp_unique_path("webdav_auth", "curl");
-        let content = format!(
-            "user = {}\n",
-            curl_config_quote(&format!(
-                "{}:{}",
-                config.webdav_user.trim(),
-                config.webdav_pass
-            ))
-        );
-        fs::write(&path, content).map_err(|err| err.to_string())?;
-        let path_arg = path.to_string_lossy().to_string();
-        args.insert(0, path_arg);
-        args.insert(0, "--config".to_string());
-        Some(path)
-    } else {
-        None
-    };
-    let mut result = run_curl_status(&args);
-    for _ in 0..5 {
-        if !matches!(&result, Err(err) if is_transient_curl_recv_error(err)) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(150));
-        result = run_curl_status(&args);
-    }
-    if let Some(path) = config_path {
-        let _ = fs::remove_file(path);
-    }
-    result
-}
-
-#[cfg(not(windows))]
 fn run_webdav_curl_status(config: &CloudSyncConfig, extra: &[String]) -> Result<String, String> {
     let mut args=build_webdav_args(extra);
     let auth=if !config.webdav_user.trim().is_empty() || !config.webdav_pass.is_empty() {
@@ -1294,20 +1258,19 @@ fn is_transient_curl_recv_error(err: &str) -> bool {
         || lower.contains("connection was aborted")
 }
 
-fn temp_unique_path(prefix: &str, ext: &str) -> PathBuf {
+fn temp_unique_path(prefix: &str, ext: &str) -> Result<PathBuf, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let root = cloud_sync_temp_root();
-    let _ = fs::create_dir_all(&root);
-    root.join(format!(
+    let root = prepare_cloud_sync_temp_root(&cloud_sync_temp_root())?;
+    Ok(root.join(format!(
         "zsclip_{}_{}_{}.{}",
         prefix,
         std::process::id(),
         ts,
         ext.trim_start_matches('.')
-    ))
+    )))
 }
 
 fn curl_config_quote(value: &str) -> String {
@@ -1362,32 +1325,38 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn temp_dir_path(prefix: &str) -> PathBuf {
+fn temp_dir_path(prefix: &str) -> Result<PathBuf, String> {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let root = cloud_sync_temp_root();
-    let _ = fs::create_dir_all(&root);
-    root.join(format!("zsclip-{prefix}-{}-{ts}", std::process::id()))
+    let root = prepare_cloud_sync_temp_root(&cloud_sync_temp_root())?;
+    Ok(root.join(format!("zsclip-{prefix}-{}-{ts}", std::process::id())))
 }
 
-fn temp_file_path(prefix: &str, ext: &str) -> PathBuf {
+fn temp_file_path(prefix: &str, ext: &str) -> Result<PathBuf, String> {
     temp_unique_path(prefix, ext)
 }
 
 fn cloud_sync_temp_root() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|path| {
-            path.parent()
-                .map(|dir| dir.join("data").join("temp").join("cloud_sync"))
-        })
-        .unwrap_or_else(|| std::env::temp_dir().join("zsclip").join("cloud_sync"))
+    #[cfg(windows)]
+    let data = crate::app::data_dir();
+    #[cfg(not(windows))]
+    let data = crate::native_paths::data_directory();
+    data.join("temp").join("cloud_sync")
+}
+
+fn prepare_cloud_sync_temp_root(root: &Path) -> Result<PathBuf, String> {
+    fs::create_dir_all(root).map_err(|error| format!(
+        "{} {}: {error}",
+        tr("无法创建云同步临时目录", "Cannot create cloud sync temporary directory"),
+        root.display(),
+    ))?;
+    Ok(root.to_path_buf())
 }
 
 fn write_temp_json_file<T: Serialize>(prefix: &str, value: &T) -> Result<PathBuf, String> {
-    let path = temp_file_path(prefix, "json");
+    let path = temp_file_path(prefix, "json")?;
     let raw = serde_json::to_vec_pretty(value).map_err(|err| err.to_string())?;
     fs::write(&path, raw).map_err(|err| err.to_string())?;
     Ok(path)
@@ -1950,9 +1919,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cloud_temporary_files_use_the_active_profile() {
+        #[cfg(windows)]
+        let data = crate::app::data_dir();
+        #[cfg(not(windows))]
+        let data = crate::native_paths::data_directory();
+        let path = temp_file_path("profile-location-test", "json").unwrap();
+        assert_eq!(path.parent(), Some(data.join("temp/cloud_sync").as_path()));
+        fs::write(&path, b"{}").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"{}");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalid_temporary_parent_reports_the_path_before_transfer() {
+        let root = temp_dir_path("cloud-path-error-test").unwrap();
+        fs::create_dir_all(&root).unwrap();
+        let blocked = root.join("not-a-directory");
+        fs::write(&blocked, b"keep").unwrap();
+        let path = blocked.join("cloud_sync");
+        let error = prepare_cloud_sync_temp_root(&path).unwrap_err();
+        assert!(error.contains(path.to_string_lossy().as_ref()));
+        assert_eq!(fs::read(&blocked).unwrap(), b"keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn protected_pending_zip_is_cancelled_when_registration_changes_during_remote_get() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("protected-pending-zip-test");
+        let root = temp_dir_path("protected-pending-zip-test").unwrap();
         fs::create_dir_all(&root).unwrap();
         let paths = restore_test_paths(&root);
         fs::write(&paths.settings_file, "{}").unwrap();
@@ -1998,7 +1993,7 @@ mod tests {
     #[test]
     fn protected_cloud_archive_excludes_vault_and_registered_legacy_text() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("protected-archive-test");
+        let root = temp_dir_path("protected-archive-test").unwrap();
         fs::create_dir_all(&root).unwrap();
         let paths = restore_test_paths(&root);
         write_active_restore_fixture(&paths);
@@ -2151,7 +2146,7 @@ mod tests {
     #[test]
     fn restore_staging_rejects_missing_database_and_bad_settings_without_touching_active_data() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-required-payload-test");
+        let root = temp_dir_path("restore-required-payload-test").unwrap();
         let data_dir = root.join("active");
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
@@ -2189,7 +2184,7 @@ mod tests {
     #[test]
     fn native_restore_rejects_opaque_or_damaged_protection_before_staging_data() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-native-protection-test");
+        let root = temp_dir_path("restore-native-protection-test").unwrap();
         let paths = restore_test_paths(&root.join("active"));
         write_active_restore_fixture(&paths);
         for (name, nested, file, bytes) in [
@@ -2223,7 +2218,7 @@ mod tests {
     #[test]
     fn restore_staging_rejects_hash_mismatch_before_touching_active_data() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-hash-mismatch-test");
+        let root = temp_dir_path("restore-hash-mismatch-test").unwrap();
         let data_dir = root.join("active");
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
@@ -2251,7 +2246,7 @@ mod tests {
     #[test]
     fn staged_restore_migrates_database_remaps_images_and_commits_all_artifacts() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-transaction-success-test");
+        let root = temp_dir_path("restore-transaction-success-test").unwrap();
         let data_dir = root.join("active");
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
@@ -2308,7 +2303,7 @@ mod tests {
     #[test]
     fn missing_database_at_commit_rolls_back_settings_and_images() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-transaction-rollback-test");
+        let root = temp_dir_path("restore-transaction-rollback-test").unwrap();
         let data_dir = root.join("active");
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
@@ -2346,7 +2341,7 @@ mod tests {
     #[test]
     fn missing_images_stage_rolls_back_settings_without_touching_active_data() {
         let _guard = cloud_sync_e2e_guard();
-        let root = temp_dir_path("restore-images-stage-rollback-test");
+        let root = temp_dir_path("restore-images-stage-rollback-test").unwrap();
         let data_dir = root.join("active");
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
@@ -2383,7 +2378,7 @@ mod tests {
     #[test]
     fn read_only_webdav_applies_valid_remote_settings_without_mkcol_or_put() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("read-only-settings-apply-test");
+        let data_dir = temp_dir_path("read-only-settings-apply-test").unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
         fs::write(&paths.settings_file, r#"{"source":"local"}"#).unwrap();
@@ -2417,7 +2412,7 @@ mod tests {
     #[test]
     fn invalid_remote_settings_leave_active_settings_unchanged() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("invalid-settings-apply-test");
+        let data_dir = temp_dir_path("invalid-settings-apply-test").unwrap();
         fs::create_dir_all(&data_dir).unwrap();
         let paths = restore_test_paths(&data_dir);
         fs::write(&paths.settings_file, r#"{"source":"local"}"#).unwrap();
@@ -2483,7 +2478,7 @@ mod tests {
     #[test]
     fn bdd_cleanup_removes_legacy_and_current_cloud_temp_archives() {
         let nonce = unix_now();
-        let dir = temp_dir_path("cloud-cleanup-test");
+        let dir = temp_dir_path("cloud-cleanup-test").unwrap();
         fs::create_dir_all(&dir).unwrap();
         let legacy = dir.join(format!("zsclip-cloud-{nonce}.zip"));
         let current = dir.join(format!("zsclip_cloud_{}_{}.zip", std::process::id(), nonce));
@@ -2511,7 +2506,7 @@ mod tests {
     #[test]
     fn bdd_sync_now_imports_android_syncclipboard_and_uploads_local_manifest() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-e2e-test");
+        let data_dir = temp_dir_path("cloud-sync-e2e-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2589,7 +2584,7 @@ mod tests {
     #[test]
     fn bdd_sync_now_uploads_image_data_named_by_syncclipboard_manifest() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-image-data-test");
+        let data_dir = temp_dir_path("cloud-sync-image-data-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2650,7 +2645,7 @@ mod tests {
     #[test]
     fn bdd_sync_now_imports_android_webdav_image_into_windows_history() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-remote-image-test");
+        let data_dir = temp_dir_path("cloud-sync-remote-image-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2720,7 +2715,7 @@ mod tests {
     #[test]
     fn bdd_sync_now_skips_remote_image_manifest_when_payload_is_missing() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-missing-remote-image-test");
+        let data_dir = temp_dir_path("cloud-sync-missing-remote-image-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2768,7 +2763,7 @@ mod tests {
     #[test]
     fn bdd_syncclipboard_download_retries_empty_success_body() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-empty-syncclipboard-test");
+        let data_dir = temp_dir_path("cloud-sync-empty-syncclipboard-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2819,7 +2814,7 @@ mod tests {
     #[test]
     fn bdd_sync_now_treats_empty_remote_syncclipboard_as_no_lightweight_record() {
         let _guard = cloud_sync_e2e_guard();
-        let data_dir = temp_dir_path("cloud-sync-empty-remote-syncclipboard-test");
+        let data_dir = temp_dir_path("cloud-sync-empty-remote-syncclipboard-test").unwrap();
         if data_dir.exists() {
             let _ = fs::remove_dir_all(&data_dir);
         }
@@ -2865,7 +2860,6 @@ mod tests {
         let _ = fs::remove_dir_all(data_dir);
     }
 
-    #[cfg(not(windows))]
     #[test]
     fn native_webdav_authentication_reaches_server_through_stdin_without_secret_arguments() {
         use base64::Engine;
@@ -2903,7 +2897,7 @@ mod tests {
         assert_eq!(result.unwrap(),"OK");
         assert!(!build_webdav_args(&extra).iter().any(|arg|arg.contains(password)));
         let source=include_str!("cloud_sync.rs");
-        let native=source.split_once("#[cfg(not(windows))]\nfn run_webdav_curl_status").or_else(||source.split_once("#[cfg(not(windows))]\r\nfn run_webdav_curl_status")).unwrap().1.split_once("fn run_curl_status").unwrap().0;
+        let native=source.split_once("fn run_webdav_curl_status").unwrap().1.split_once("fn run_curl_status").unwrap().0;
         assert!(native.contains("stdin(Stdio::piped())"));
         assert!(native.contains("args.insert(0,\"--disable\".to_string())"));
         assert!(!native.contains("fs::write"));
@@ -3207,9 +3201,9 @@ mod tests {
     }
 
     fn assert_backup_contains_android_text(zip_bytes: &[u8]) {
-        let archive_path = temp_unique_path("cloud-sync-e2e-backup", "zip");
+        let archive_path = temp_unique_path("cloud-sync-e2e-backup", "zip").unwrap();
         fs::write(&archive_path, zip_bytes).unwrap();
-        let extract_root = temp_dir_path("cloud-sync-e2e-extract");
+        let extract_root = temp_dir_path("cloud-sync-e2e-extract").unwrap();
         if extract_root.exists() {
             let _ = fs::remove_dir_all(&extract_root);
         }

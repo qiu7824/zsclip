@@ -12,7 +12,6 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
         "close_without_exit",
         "vv_mode_enabled",
         "image_preview_enabled",
-        "card_view_enabled",
         "card_border_enabled",
         "card_shadow_enabled",
         "rich_text_clipboard_enabled",
@@ -35,6 +34,8 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
         "image_preview_enabled",
         "quick_delete_button",
         "context_menu_copy_enabled",
+        "quick_pin_button",
+        "quick_edit_button",
         "click_hide",
         "move_pasted_item_to_top",
         "dedupe_filter_enabled",
@@ -53,6 +54,7 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
         "mouse_side_button_enabled",
         "plain_paste_hotkey_enabled",
         "quick_search_enabled",
+        "notes_plugin_enabled",
         "super_mail_merge_enabled",
         "wps_taskpane_enabled",
         "grouping_enabled",
@@ -67,6 +69,8 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
     }
     for (key, value) in [
         ("content_font_size", 0),
+        ("clipboard_window_width", 300),
+        ("clipboard_window_height", 615),
         ("image_row_height", 132),
         ("text_row_height", 44),
         ("file_row_height", 44),
@@ -83,6 +87,7 @@ pub(crate) fn native_settings_profile(saved: &serde_json::Value) -> serde_json::
     }
     for (key, value) in [
         ("show_pos_mode", "mouse"),
+        ("quick_action_order", "delete,pin,edit"),
         ("paste_success_sound_kind", "default"),
         ("hotkey_mod", if cfg!(target_os = "macos") { "Ctrl+Alt" } else { "Win" }),
         ("hotkey_key", "V"),
@@ -125,7 +130,7 @@ impl Default for NativeContentPreferences {
         Self {
             content_font_size: 12,
             phrase_titles_enabled: true,
-            card_view_enabled: true,
+            card_view_enabled: false,
             card_border_enabled: true,
             card_shadow_enabled: true,
         }
@@ -151,7 +156,7 @@ impl NativeContentPreferences {
                 12
             },
             phrase_titles_enabled: boolean("phrase_titles_enabled", true),
-            card_view_enabled: boolean("card_view_enabled", true),
+            card_view_enabled: boolean("card_view_enabled", false),
             card_border_enabled: boolean("card_border_enabled", true),
             card_shadow_enabled: boolean("card_shadow_enabled", true),
         }
@@ -227,14 +232,14 @@ mod tests {
         ] {
             assert_eq!(profile[key], true);
         }
-        assert_eq!(profile["card_view_enabled"], true);
+        assert_eq!(profile["card_view_enabled"], false);
     }
     #[test]
     fn native_preferences_keep_independent_card_flags_and_legacy_defaults() {
         let defaults = NativeContentPreferences::from_json(&serde_json::json!({}));
         assert_eq!(defaults.content_font_size, 12);
         assert!(defaults.phrase_titles_enabled);
-        assert!(defaults.card_view_enabled);
+        assert!(!defaults.card_view_enabled);
         assert!(defaults.card_border_enabled);
         assert!(defaults.card_shadow_enabled);
         for border in [false, true] {

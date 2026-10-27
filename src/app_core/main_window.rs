@@ -429,7 +429,7 @@ pub(crate) fn main_row_menu_action_label(
         MainRowMenuAction::Pin if input.selected_count > 1 && input.has_unpinned => "置顶所选",
         MainRowMenuAction::Pin if input.has_unpinned => "置顶",
         MainRowMenuAction::Pin => "取消置顶",
-        MainRowMenuAction::ToPhrase => "添加到短语",
+        MainRowMenuAction::ToPhrase => "添加到常用短语",
         MainRowMenuAction::AddToGroup => "添加到分组",
         MainRowMenuAction::RemoveFromGroup => "移出分组",
         MainRowMenuAction::Delete if input.selected_count > 1 => "删除所选",
@@ -2302,6 +2302,7 @@ impl Default for SharedTabViewState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ItemsQuery {
+    pub(crate) manual_tab_id: Option<String>,
     pub(crate) category: i64,
     pub(crate) group_id: i64,
     pub(crate) search_text: String,
@@ -2321,6 +2322,7 @@ impl ItemsQuery {
             parse_search_query_with_context(search_text.trim(), SearchDateContext::utc_now());
         Self {
             category: tab as i64,
+            manual_tab_id: None,
             group_id: if grouping_enabled {
                 tab_group_filters.get(tab).copied().unwrap_or(0)
             } else {
@@ -2994,6 +2996,34 @@ impl MainUiLayout {
             self.search_w = (right - left).max(20);
         }
         self
+    }
+
+    pub(crate) fn with_width(mut self, width: i32) -> Self {
+        let delta = width.max(1) - self.win_w;
+        self.win_w += delta;
+        self.seg_w = (self.seg_w + delta).max(1);
+        self.list_w = (self.list_w + delta).max(1);
+        self.search_w = (self.search_w + delta).max(1);
+        self
+    }
+
+    pub(crate) fn with_saved_width(self, logical_width: i32, dpi: u32, available: i32) -> Self {
+        let width = (logical_width.clamp(300, 4096) as i64 * dpi.max(96) as i64 + 48) / 96;
+        self.with_width((width.min(i32::MAX as i64) as i32).min(available.max(1)))
+    }
+
+    pub(crate) fn with_client_size(self, width: i32, height: i32) -> Self {
+        let mut layout = self.with_width(width);
+        layout.list_h = (height - layout.list_y - 7).max(1);
+        layout
+    }
+
+    pub(crate) fn with_saved_size(self, width: i32, height: i32, dpi: u32, available: super::Size) -> Self {
+        let layout = self.with_saved_width(width, dpi, available.width);
+        let pixel_height = ((height.clamp(240, 4096) as i64 * dpi.max(96) as i64 + 48) / 96)
+            .min(available.height.max(1) as i64) as i32;
+        let width = layout.win_w;
+        layout.with_client_size(width, pixel_height)
     }
 
     pub(crate) fn with_image_rows(mut self, images: impl Iterator<Item = bool>) -> Self {
@@ -6152,7 +6182,7 @@ mod tests {
         assert_eq!(
             ItemsQuery::for_tab(1, true, [3, 8], [ClipKindFilter::All; 2], "  bili  "),
             ItemsQuery {
-                category: 1,
+                manual_tab_id: None, category: 1,
                 group_id: 8,
                 search_text: "bili".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -6162,7 +6192,7 @@ mod tests {
         assert_eq!(
             ItemsQuery::for_tab(1, false, [3, 8], [ClipKindFilter::All; 2], "  catsxp  "),
             ItemsQuery {
-                category: 1,
+                manual_tab_id: None, category: 1,
                 group_id: 0,
                 search_text: "catsxp".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -6172,7 +6202,7 @@ mod tests {
 
         let mut load = TabLoadState::default();
         let query = ItemsQuery {
-            category: 0,
+            manual_tab_id: None, category: 0,
             group_id: 3,
             search_text: "clip".to_string(),
             kind_filter: ClipKindFilter::All,
@@ -6210,7 +6240,7 @@ mod tests {
 
     #[test]
     fn protection_rejection_invalidates_the_background_tab_without_disturbing_the_active_tab() {
-        let query=ItemsQuery {category:0,group_id:0,search_text:"old".into(),kind_filter:ClipKindFilter::All,near_query:None};
+        let query=ItemsQuery {manual_tab_id: None, category:0,group_id:0,search_text:"old".into(),kind_filter:ClipKindFilter::All,near_query:None};
         let mut tabs=[TabLoadState::default(),TabLoadState::default()];
         let old=tabs[0].begin_request(query.clone(),true);
         let active=tabs[1].begin_request(query.clone(),true);

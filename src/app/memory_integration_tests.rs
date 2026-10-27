@@ -5,10 +5,346 @@ use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::WindowsAndMessaging::{PeekMessageW, PM_REMOVE};
 
 unsafe extern "system" fn host_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_TIMER && wp == 9091 {
+        timer::stop(hwnd, 9091);
+        windows_sys::Win32::UI::WindowsAndMessaging::EndMenu();
+        return 0;
+    }
     if matches!(msg, WM_TIMER | WM_IMAGE_THUMB_READY | WM_IMAGE_PASTE_READY | WM_VV_SHOW | WM_VV_HIDE) {
         return super::main_entry::wnd_proc(hwnd, msg, wp, lp);
     }
     platform_window::default_window_proc(hwnd, msg, wp, lp)
+}
+
+#[test]
+#[ignore = "Requires an isolated profile and a fresh desktop test process"]
+fn hidden_resize_and_tray_menu_close_rearm_memory_reclaim() {
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_protected_texts(&[], || {
+        crate::db_runtime::with_test_db(|| {
+            unsafe {
+                let mut fixture = Fixture::new();
+                fixture.seed_cache();
+                schedule_hidden_memory_reclaim(fixture.main, &mut fixture.main_state);
+                handle_main_window_size(fixture.main, UiSize { width: 220, height: 110 }, false);
+                assert!(fixture.main_state.hidden_reclaim_timer,
+                    "A delayed non-minimized WM_SIZE must not cancel a hidden window's reclaim");
+                fixture.assert_cache_present();
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+                assert!(fixture.main_state.payload_cache.get(91001).is_none());
+
+                fixture.seed_cache();
+                timer::start(fixture.main, 9091, 80);
+                crate::tray::show_tray_menu_localized(fixture.main);
+                assert!(fixture.main_state.hidden_reclaim_timer,
+                    "Dismissing a tray menu must schedule reclaim even without a visibility change");
+                pump_for(Duration::from_millis(950));
+                assert!(fixture.main_state.payload_cache.get(91001).is_none());
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+
+                handle_global_hotkey(fixture.main, HOTKEY_ID_PLAIN);
+                assert!(fixture.main_state.hidden_reclaim_timer,
+                    "An empty/cancelled plain paste still ends a background activity");
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+            }
+            Ok(())
+        })
+    }).unwrap();
+}
+
+#[test]
+#[ignore = "Fresh isolated profile; validates the visible edge-peek state without moving the user's pointer"]
+fn collapsed_edge_peek_reclaims_cached_content_and_drops_late_thumbnails() {
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_db(||unsafe{
+        let mut fixture=Fixture::new();
+        platform_window::set_pos(fixture.main,null_mut(),-16000,-16000,640,480,SWP_NOACTIVATE|SWP_NOZORDER);
+        platform_window::show_no_activate(fixture.main);
+        fixture.main_state.settings.edge_auto_hide=true;
+        fixture.main_state.edge_hidden=true;
+        fixture.main_state.edge_hidden_side=EDGE_AUTO_HIDE_LEFT;
+        fixture.main_state.edge_docked_left=-17000;fixture.main_state.edge_docked_top=-17000;
+        fixture.main_state.edge_docked_right=-15000;fixture.main_state.edge_docked_bottom=-15000;
+        fixture.main_state.edge_anim_from_x=-16000;fixture.main_state.edge_anim_from_y=-16000;
+        fixture.main_state.edge_anim_to_x=-16000;fixture.main_state.edge_anim_to_y=-16000;
+        fixture.main_state.edge_anim_until=Some(Instant::now()-Duration::from_millis(1));
+        fixture.seed_cache();
+        let dc=platform_gdi::get_dc(fixture.main);
+        assert!(fixture.main_state.paint_buffer.ensure(dc,640,480).is_some());platform_gdi::release_dc(fixture.main,dc);
+        assert!(platform_window::is_visible(fixture.main));
+        assert!(window_counts_as_visible_for_memory_reclaim(fixture.main),"Pending animation must still protect visible content");
+        handle_edge_auto_hide_tick(fixture.main);
+        assert!(!window_counts_as_visible_for_memory_reclaim(fixture.main));
+        assert!(fixture.main_state.hidden_reclaim_timer);
+        assert!(fixture.main_state.paint_buffer.is_empty(),"Finishing edge collapse must release its local paint buffer immediately");
+        handle_main_window_size(fixture.main,UiSize{width:640,height:480},false);
+        assert!(fixture.main_state.hidden_reclaim_timer,"A late size event must not cancel edge-peek reclamation");
+        repaint_main_window(fixture.main,false);super::main_renderer::paint_main_window(fixture.main);
+        assert!(fixture.main_state.paint_buffer.is_empty(),"Peek repaint must not allocate a full-window bitmap");
+        pump_for(Duration::from_millis(950));
+        assert!(fixture.main_state.payload_cache.get(91001).is_none());
+        fixture.main_state.image_thumb_loading.insert(91002);
+        let ready=Box::new(crate::app_core::ImageThumbReadyResult{item_id:91002,
+            app_data_generation:fixture.main_state.app_data_generation,
+            image:Some(crate::app_core::ImageThumbnail{bytes:vec![0,0,255,255],width:1,height:1})});
+        assert!(post_boxed_message(fixture.main as isize,WM_IMAGE_THUMB_READY,0,ready));
+        pump_for(Duration::from_millis(30));
+        assert!(fixture.main_state.image_thumb_cache.get(91002).is_none());
+        assert!(fixture.main_state.hidden_reclaim_timer);
+        fixture.main_state.edge_hidden=false;
+        assert!(window_counts_as_visible_for_memory_reclaim(fixture.main));
+        cancel_hidden_memory_reclaim(fixture.main,&mut fixture.main_state);
+        platform_window::hide(fixture.main);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+#[ignore = "Fresh isolated profile; holds a temporary database lock to verify failed saves keep the editor alive"]
+fn notes_failed_save_keeps_editor_and_retries_without_losing_text() {
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_db(|| {
+        unsafe {
+            let _fixture = Fixture::new();
+            let notes = super::notes_window::open_hidden_for_test();
+            assert!(platform_window::exists(notes));
+            let editor = platform_window::child(notes, 8104);
+            assert!(!paste_window_is_zsclip(notes), "Notes must be a valid ordinary paste target");
+            let lock = rusqlite::Connection::open(data_dir().join("notes.sqlite3")).unwrap();
+            lock.execute_batch("BEGIN IMMEDIATE").unwrap();
+            let body = "保留未保存内容\r\nhttps://docs.qq.com/doc/DistinctDocument";
+            platform_window::send_message(editor, 0x00B1, 0, -1); // EM_SETSEL
+            platform_window::send_message(editor, 0x00C2, 1, to_wide(body).as_ptr() as isize); // EM_REPLACESEL, emits EN_CHANGE
+            assert!(super::notes_window::try_close().is_err());
+            assert!(platform_window::exists(notes));
+            assert_eq!(platform_window::text(editor), body);
+            lock.execute_batch("ROLLBACK").unwrap();
+            super::notes_window::try_close().unwrap();
+            assert!(!platform_window::exists(notes));
+            let saved: String = lock.query_row("SELECT body FROM notes ORDER BY id DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+            assert_eq!(saved, body);
+        }
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+#[ignore = "Fresh isolated profile; verifies queued Ctrl shortcuts on hidden note controls without physical input"]
+fn notes_queued_control_shortcuts_create_and_save_the_selected_note() {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetKeyboardState, SetKeyboardState, VK_CONTROL};
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_db(|| {
+        unsafe {
+            let _fixture = Fixture::new();
+            let notes = super::notes_window::open_hidden_for_test();
+            let editor = platform_window::child(notes, 8104);
+            let db = rusqlite::Connection::open(data_dir().join("notes.sqlite3")).unwrap();
+            let count: i64 = db.query_row("SELECT count(*) FROM notes", [], |r| r.get(0)).unwrap();
+            struct KeyboardState([u8; 256]);
+            impl Drop for KeyboardState {
+                fn drop(&mut self) { unsafe { SetKeyboardState(self.0.as_ptr()); } }
+            }
+            let mut saved = KeyboardState([0; 256]);
+            assert_ne!(GetKeyboardState(saved.0.as_mut_ptr()), 0);
+            let mut queued = saved.0;
+            queued[VK_CONTROL as usize] = 0x80;
+            assert_ne!(SetKeyboardState(queued.as_ptr()), 0);
+            let mut message = MSG { hwnd: editor, message: WM_KEYDOWN, wParam: 0x4E, ..std::mem::zeroed() };
+            assert!(super::notes_window::route_message(&message));
+            let after: i64 = db.query_row("SELECT count(*) FROM notes", [], |r| r.get(0)).unwrap();
+            assert_eq!(after, count + 1);
+            let body = "快捷键保存测试";
+            platform_window::send_message(editor, 0x00C2, 1, to_wide(body).as_ptr() as isize);
+            message.wParam = 0x53;
+            assert!(super::notes_window::route_message(&message));
+            let text: String = db.query_row("SELECT body FROM notes ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+            assert_eq!(text, body);
+            queued[VK_CONTROL as usize] = 0;
+            assert_ne!(SetKeyboardState(queued.as_ptr()), 0);
+            assert!(!super::notes_window::route_message(&message));
+            super::notes_window::try_close().unwrap();
+        }
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+#[ignore = "Fresh isolated profile; verifies native resize, persistence and quick-window restoration without physical input"]
+fn clipboard_window_width_survives_resize_and_reopen() {
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_db(|| {
+        unsafe {
+            let mut fixture = Fixture::new();
+            let dpi = main_window_layout_dpi(fixture.main).max(96);
+            fixture.main_state.ui_dpi = dpi;
+            let work = platform_monitor::nearest_work_rect_for_window(fixture.main);
+            let width = (720 * dpi as i32 / 96).min(work.right - work.left);
+            let height=(480*dpi as i32/96).min(work.bottom-work.top);
+            platform_window::set_pos(fixture.main, null_mut(), 0, 0, width,
+                height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+            fixture.main_state.window_interactive_move = true;
+            fixture.main_state.window_user_resized = true;
+            ensure_main_window_size_for_monitor(fixture.main, &mut fixture.main_state);
+            assert_eq!(platform_window::client_rect(fixture.main).unwrap().right, width);
+            handle_main_window_move_completed(fixture.main);
+            let saved = load_settings();
+            let logical = (width * 96 + dpi as i32 / 2) / dpi as i32;
+            assert_eq!(saved.clipboard_window_width, logical);
+            assert_eq!(saved.clipboard_window_height,(height*96+dpi as i32/2)/dpi as i32);
+            assert_eq!(fixture._quick_state.settings.clipboard_window_width, logical);
+            let actual = fixture.main_state.layout();
+            assert_eq!(actual.win_w, width);
+            assert_eq!(actual.list_w, width - actual.list_x * 2);
+            assert_eq!(actual.list_y+actual.list_h+7,height);
+            assert!(actual.title_button_rect("close").right <= width);
+            let rect = platform_window::window_rect(fixture.main).unwrap();
+            for (x, expected_hit) in [(rect.left + 2, HTLEFT), (rect.right - 2, HTRIGHT)] {
+                let y = rect.top + 100;
+                let point = ((x as u32 & 0xffff) | ((y as u32 & 0xffff) << 16)) as isize;
+                assert_eq!(handle_nchittest(fixture.main, point), expected_hit as isize);
+            }
+            let restored = AppState::new(WindowRole::Quick, null_mut(), null_mut(),
+                Icons { app:0,search:0,setting:0,min:0,close:0,text:0,image:0,file:0,folder:0,pin:0,del:0 }, None);
+            assert_eq!(restored.settings.clipboard_window_width, logical);
+            assert_eq!(restored.settings.clipboard_window_height,saved.clipboard_window_height);
+            position_main_window(fixture.quick, &saved, false);
+            let quick_dpi = main_window_layout_dpi(fixture.quick);
+            let quick_work = platform_monitor::nearest_work_rect_for_window(fixture.quick);
+            let expected = main_layout_for_dpi(quick_dpi).with_saved_width(logical, quick_dpi, quick_work.right - quick_work.left);
+            assert_eq!(platform_window::client_rect(fixture.quick).unwrap().right, expected.win_w);
+            assert_eq!(platform_window::client_rect(fixture.quick).unwrap().bottom,
+                (saved.clipboard_window_height*quick_dpi as i32+48)/96);
+        }
+        Ok(())
+    }).unwrap();
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct MemorySample {
+    cb: u32,
+    page_faults: u32,
+    peak_working_set: usize,
+    working_set: usize,
+    quota_peak_paged: usize,
+    quota_paged: usize,
+    quota_peak_nonpaged: usize,
+    quota_nonpaged: usize,
+    pagefile: usize,
+    peak_pagefile: usize,
+    private_commit: usize,
+    private_working_set: usize,
+    shared_commit: usize,
+}
+
+unsafe fn memory_sample() -> MemorySample {
+    #[link(name="psapi")]
+    unsafe extern "system" {
+        fn GetProcessMemoryInfo(process: *mut core::ffi::c_void, memory: *mut MemorySample, size: u32) -> i32;
+    }
+    let mut sample = MemorySample { cb: std::mem::size_of::<MemorySample>() as u32, ..Default::default() };
+    assert_ne!(GetProcessMemoryInfo(windows_sys::Win32::System::Threading::GetCurrentProcess(), &mut sample, std::mem::size_of::<MemorySample>() as u32), 0);
+    sample
+}
+
+#[test]
+#[ignore = "Isolated profile; paints an off-screen native fixture and measures resize cache reuse and hidden release"]
+fn resize_paint_cache_reuses_resources_and_releases_while_peer_is_visible() {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess,GetGuiResources,GR_GDIOBJECTS};
+    let output=std::path::PathBuf::from(std::env::var_os("ZSCLIP_TEST_TEMP_ROOT").expect("isolated output"));
+    crate::db_runtime::with_test_db(||{
+        unsafe {
+            let mut fixture=Fixture::new();
+            fixture.main_state.records=(0..2000).map(|i|{let mut item=cached_item();item.id=i+1;item.preview=format!("记录 {i} https://docs.qq.com/doc/shared-prefix-{i}");item}).collect();
+            fixture.main_state.list.apply_visible_len(2000);
+            fixture.main_state.window_interactive_move=true;
+            platform_window::set_pos(fixture.main,null_mut(),-16000,-16000,480,320,SWP_NOACTIVATE|SWP_NOZORDER);
+            platform_window::show_no_activate(fixture.main);
+            let mut samples=Vec::new();
+            for frame in 0..100 {
+                let width=480+frame*4;let height=320+frame*3;
+                let started=Instant::now();
+                platform_window::set_pos(fixture.main,null_mut(),-16000,-16000,width,height,SWP_NOACTIVATE|SWP_NOZORDER);
+                handle_main_window_size(fixture.main,UiSize{width,height},false);
+                super::main_renderer::paint_main_window(fixture.main);
+                samples.push(started.elapsed().as_micros() as u64);
+            }
+            let allocations=fixture.main_state.paint_buffer.allocations;
+            let layout_builds=fixture.main_state.row_layout_cache.borrow().builds;
+            assert!(allocations<=12,"Resizing allocated a fresh bitmap too often: {allocations}");
+            assert!(layout_builds<=2,"Row heights were rebuilt while only window size changed: {layout_builds}");
+            let gdi_before=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+            fixture.seed_cache();
+            platform_window::set_pos(fixture.quick,null_mut(),-16000,-16000,220,110,SWP_NOACTIVATE|SWP_NOZORDER);
+            platform_window::show_no_activate(fixture.quick);
+            platform_window::hide(fixture.main);
+            handle_main_lifecycle_event(fixture.main,LifecycleEvent::Suspend);
+            assert!(fixture.main_state.paint_buffer.is_empty());
+            fixture.assert_cache_present();
+            let gdi_after=GetGuiResources(GetCurrentProcess(),GR_GDIOBJECTS);
+            assert!(gdi_after<gdi_before,"Hidden window retained its bitmap/DC while another panel was visible");
+            platform_window::hide(fixture.quick);
+            schedule_hidden_memory_reclaim_after_activity();pump_for(Duration::from_millis(950));
+            assert!(fixture.main_state.payload_cache.get(91001).is_none());
+            samples.sort_unstable();let memory=memory_sample();
+            let report=serde_json::json!({"frames":100,"records":2000,"bitmap_allocations":allocations,"row_layout_builds":layout_builds,
+                "p50_us":samples[50],"p95_us":samples[95],"max_us":samples[99],"gdi_before_hide":gdi_before,"gdi_after_hide":gdi_after,
+                "closed_private_working_set":memory.private_working_set,"private_commit":memory.private_commit});
+            std::fs::write(output.join("resize-performance.json"),serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+            eprintln!("resize_performance={report}");
+        }
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
+#[ignore = "Fresh isolated process; 20 note open/save/close cycles and real idle reclamation timers"]
+fn notes_reopen_cycles_release_windows_gdi_and_reclaim_idle_working_set() {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetGuiResources, GR_GDIOBJECTS};
+    let output = std::path::PathBuf::from(std::env::var_os("ZSCLIP_TEST_TEMP_ROOT").expect("isolated temporary root"));
+    assert!(std::env::var_os("ZSCLIP_DATA_DIR").is_some());
+    crate::db_runtime::with_test_protected_texts(&[], || crate::db_runtime::with_test_db(|| {
+        unsafe {
+            let mut fixture = Fixture::new();
+            let mut measurements = Vec::new();
+            for cycle in 0..20 {
+                let notes = super::notes_window::open_hidden_for_test();
+                assert!(platform_window::exists(notes));
+                let editor = platform_window::child(notes, 8104);
+                assert!(!editor.is_null());
+                platform_window::send_message(editor, 0x00B1, 0, -1); // EM_SETSEL
+                let body = format!("便签测试 {cycle:02}\r\n{}", "0123456789 local note text\r\n".repeat(64));
+                platform_window::send_message(editor, 0x00C2, 1, to_wide(&body).as_ptr() as isize); // EM_REPLACESEL
+                let opened = memory_sample();
+                super::notes_window::try_close().unwrap();
+                assert!(!platform_window::exists(notes));
+                let saved = crate::notes_store::NotesStore::open(&data_dir().join("notes.sqlite3")).unwrap();
+                assert_eq!(saved.read(saved.selected().unwrap()).unwrap(), body);
+                drop(saved);
+                assert!(fixture.main_state.hidden_reclaim_timer);
+                pump_for(Duration::from_millis(950));
+                assert!(!fixture.main_state.hidden_reclaim_timer);
+                let closed = memory_sample();
+                let gdi = GetGuiResources(GetCurrentProcess(), GR_GDIOBJECTS);
+                measurements.push(serde_json::json!({"cycle":cycle,"open_private_working_set":opened.private_working_set,
+                    "closed_private_working_set":closed.private_working_set,"private_commit":closed.private_commit,"gdi_objects":gdi}));
+            }
+            let warm_commit = measurements[3]["private_commit"].as_u64().unwrap();
+            let warm_gdi = measurements[3]["gdi_objects"].as_u64().unwrap();
+            let last = measurements.last().unwrap();
+            assert!(last["private_commit"].as_u64().unwrap() <= warm_commit + 4*1024*1024,
+                "private commitment kept growing after warm-up: {measurements:?}");
+            assert!(last["gdi_objects"].as_u64().unwrap() <= warm_gdi + 4,
+                "GDI objects leaked across note windows: {measurements:?}");
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(output.join("notes-memory-cycles.json"), serde_json::to_vec_pretty(&measurements).unwrap()).unwrap();
+            eprintln!("notes_memory_cycles={}", serde_json::to_string(&measurements).unwrap());
+            fixture.seed_cache();
+        }
+        Ok(())
+    })).unwrap();
 }
 
 unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -16,6 +352,45 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
         return super::settings_window::settings_wnd_proc(hwnd, msg, wp, lp);
     }
     platform_window::default_window_proc(hwnd, msg, wp, lp)
+}
+
+#[test]
+#[ignore = "Renders off-screen native dark/light previews with synthetic clipboard records into the isolated output directory"]
+fn compact_tab_style_snapshots_keep_fixed_fonts_at_two_window_sizes() {
+    let output=std::path::PathBuf::from(std::env::var_os("ZSCLIP_TEST_TEMP_ROOT").expect("isolated output"));
+    crate::db_runtime::with_test_db(||unsafe{
+        let mut fixture=Fixture::new();
+        fixture.main_state.settings=AppSettings::default();
+        fixture.main_state.settings.clipboard_capture_enabled=false;
+        fixture.main_state.ui_dpi=96;
+        fixture.main_state.records=(0..15).map(|i|{
+            let mut item=cached_item();item.id=i+1;
+            item.preview=match i {
+                0=>"https://docs.qq.com/sheet/DWEFQb3h4b1VmRGhC?tab=000001".into(),
+                1=>"https://docs.qq.com/sheet/DWEFQb3h4b1VmRHdD?tab=000002".into(),
+                2=>"会议纪要：核对进度、材料和待办事项".into(),
+                3=>"周计划：整理清单，完成资料复核".into(),
+                _=>format!("工作记录 {}：资料整理与检查",i+1),
+            };item
+        }).collect();
+        fixture.main_state.list.apply_visible_len(15);
+        for dark in [true,false] {
+            platform_appearance::set_dark_mode_enabled(dark);fixture.main_state.theme=Theme::default();
+            for (width,height) in [(300,615),(710,750)] {
+                platform_window::set_pos(fixture.main,null_mut(),-16000,-16000,width,height,SWP_NOACTIVATE|SWP_NOZORDER);
+                platform_window::show_no_activate(fixture.main);
+                repaint_main_window(fixture.main,false);super::main_renderer::paint_main_window(fixture.main);
+                let rgba=fixture.main_state.paint_buffer.snapshot_rgba(width,height).unwrap();
+                let path=output.join(format!("tabs-{}-{width}.png",if dark{"dark"}else{"light"}));
+                let mut encoder=png::Encoder::new(std::fs::File::create(path).unwrap(),width as u32,height as u32);
+                encoder.set_color(png::ColorType::Rgba);encoder.set_depth(png::BitDepth::Eight);
+                let mut writer=encoder.write_header().unwrap();writer.write_image_data(&rgba).unwrap();writer.finish().unwrap();
+                assert_eq!(fixture.main_state.layout().row_text_size(),12);
+            }
+        }
+        platform_window::hide(fixture.main);
+        Ok(())
+    }).unwrap();
 }
 
 unsafe fn pump_for(duration: Duration) {
@@ -334,7 +709,7 @@ impl ControlledTarget {
     unsafe fn new() -> Self {
         let previous_foreground = platform_window::foreground();
         let hwnd = platform_window::create_window_ex(
-            WS_EX_TOOLWINDOW,
+            WS_EX_APPWINDOW,
             to_wide("EDIT").as_ptr(),
             to_wide("Synthetic memory target").as_ptr(),
             WS_OVERLAPPEDWINDOW | ES_MULTILINE as u32,
@@ -344,7 +719,13 @@ impl ControlledTarget {
         assert!(!hwnd.is_null());
         let target = Self { hwnd, previous_foreground };
         platform_window::show(hwnd);
-        assert!(platform_window::try_set_foreground(hwnd), "Controlled target must receive foreground without injected input");
+        let foreground=platform_window::try_set_foreground(hwnd);
+        if !foreground {
+            let wait=std::env::var("ZSCLIP_TEST_FOREGROUND_WAIT_MS").ok().and_then(|v|v.parse::<u64>().ok()).unwrap_or(0).min(30_000);
+            let deadline=Instant::now()+Duration::from_millis(wait);
+            while platform_window::foreground()!=hwnd && Instant::now()<deadline {pump_for(Duration::from_millis(20));}
+        }
+        assert_eq!(platform_window::foreground(),hwnd,"Controlled target needs foreground; a desktop test operator may activate this synthetic receiver");
         platform_input::set_focus(hwnd);
         pump_for(Duration::from_millis(30));
         assert_eq!(platform_window::foreground(), hwnd);

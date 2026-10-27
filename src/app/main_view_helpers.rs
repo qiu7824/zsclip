@@ -1,26 +1,27 @@
 use super::prelude::*;
 
 pub(super) fn window_pin_rect(state: &AppState) -> RECT {
-    main_layout_for_dpi(state.ui_dpi)
-        .with_pin_button(window_pin_visible(state))
+    state.layout()
         .title_button_rect("window_pin")
         .into()
 }
 
 pub(super) fn window_pin_visible(state: &AppState) -> bool {
-    state.role == WindowRole::Main && state.settings.show_pin_button
+    state.settings.show_pin_button
+}
+
+pub(super) fn window_auto_hide_on_blur(state: &AppState) -> bool {
+    state.settings.auto_hide_on_blur && !state.window_interactive_move
+        && !(window_pin_visible(state) && state.window_pinned)
 }
 
 pub(super) unsafe fn main_window_z_order(hwnd: HWND) -> HWND {
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
-        if (*ptr).role == WindowRole::Quick {
-            return HWND_TOPMOST;
-        }
         if !(*ptr).settings.show_pin_button {
             (*ptr).window_pinned = false;
         }
-        if (*ptr).window_pinned {
+        if (*ptr).role == WindowRole::Quick || (*ptr).window_pinned {
             return HWND_TOPMOST;
         }
     }
@@ -29,18 +30,29 @@ pub(super) unsafe fn main_window_z_order(hwnd: HWND) -> HWND {
 
 pub(super) unsafe fn toggle_window_pin(hwnd: HWND, state: &mut AppState) {
     let next = !state.window_pinned;
+    let topmost = next || state.role == WindowRole::Quick;
     if platform_window::set_pos(
         hwnd,
-        if next { HWND_TOPMOST } else { HWND_NOTOPMOST },
+        // A quick panel stays above the paste target while in use; pinning it
+        // additionally keeps it open when focus moves outside the panel.
+        if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST },
         0,
         0,
         0,
         0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-    ) {
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+    ) && (platform_window::window_ex_style(hwnd) & WS_EX_TOPMOST != 0) == topmost {
         state.window_pinned = next;
     }
+    refresh_low_level_input_hooks();
     repaint_main_window(hwnd, false);
+}
+
+pub(super) unsafe fn refresh_window_pin(hwnd: HWND) {
+    platform_window::set_pos(
+        hwnd, main_window_z_order(hwnd), 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+    );
 }
 
 pub(super) fn main_theme_role_color(role: MainThemeRole, th: Theme) -> u32 {
@@ -49,7 +61,7 @@ pub(super) fn main_theme_role_color(role: MainThemeRole, th: Theme) -> u32 {
         MainThemeRole::Surface2 => th.surface2,
         MainThemeRole::Stroke => th.stroke,
         MainThemeRole::SegmentSelected => {
-            if th.bg == rgb(255, 255, 255) {
+            if th.bg != rgb(32, 32, 32) {
                 th.surface2
             } else {
                 th.nav_sel_fill
@@ -63,7 +75,7 @@ pub(super) fn main_theme_role_color(role: MainThemeRole, th: Theme) -> u32 {
         MainThemeRole::CloseHover => th.close_hover,
         MainThemeRole::ItemSelected => th.item_selected,
         MainThemeRole::ItemHovered => th.item_hover,
-        MainThemeRole::Accent => th.accent,
+        MainThemeRole::Accent => th.accent_foreground(),
         MainThemeRole::OnAccent => rgb(255, 255, 255),
         MainThemeRole::Text => th.text,
         MainThemeRole::TextMuted => th.text_muted,

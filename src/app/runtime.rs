@@ -44,7 +44,9 @@ pub(super) fn preferred_secondary_drive_data_dir() -> Option<PathBuf> {
             continue;
         }
         let candidate = PathBuf::from(format!("{drive}\\ZSClip\\data"));
-        if dir_is_writable(&candidate) {
+        // Retain an existing store, but do not create a new profile on D: merely
+        // because the executable is installed in a protected directory.
+        if legacy_data_dir_has_content(&candidate) {
             return Some(candidate);
         }
     }
@@ -55,10 +57,11 @@ pub(super) fn dir_is_writable(dir: &Path) -> bool {
     if fs::create_dir_all(dir).is_err() {
         return false;
     }
-    let probe = dir.join(".zsclip_write_test");
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default().as_nanos();
+    let probe = dir.join(format!(".zsclip_write_test_{}_{stamp}", std::process::id()));
     match fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
         .open(&probe)
     {
@@ -84,7 +87,17 @@ pub(crate) fn data_dir() -> PathBuf {
                 let _ = fs::create_dir_all(&path);
                 return path;
             }
+            if let Some(location) = crate::data_location::config_file()
+                .and_then(|file| crate::data_location::read(&file).ok().flatten())
+            {
+                // Helpers and a second instance keep using the current store
+                // until the next primary process completes migration.
+                return location.migrate_from.unwrap_or(location.path);
+            }
             if let Some(exe_dir) = install_data_dir() {
+                if legacy_data_dir_has_content(&exe_dir) {
+                    return exe_dir;
+                }
                 if dir_is_writable(&exe_dir) {
                     migrate_legacy_data_dirs_to(&exe_dir);
                     return exe_dir;
@@ -99,6 +112,40 @@ pub(crate) fn data_dir() -> PathBuf {
             local
         })
         .clone()
+}
+
+pub(super) fn prepare_selected_data_directory() -> Result<Option<String>, String> {
+    if let Some(path) = std::env::var_os("ZSCLIP_DATA_DIR").map(PathBuf::from) {
+        if !path.is_absolute() || !dir_is_writable(&path) {
+            return Err(format!("ZSCLIP_DATA_DIR 必须指向可写的绝对路径：{}", path.display()));
+        }
+        return Ok(None);
+    }
+    if let Some(file) = crate::data_location::config_file() {
+        let selected = match crate::data_location::activate(&file) {
+            Ok(selected) => selected,
+            Err(error) => {
+                if let Some(source) = crate::data_location::read(&file)?.and_then(|entry| entry.migrate_from) {
+                    if source.is_dir() && dir_is_writable(&source) {
+                        DATA_DIR_CACHE.set(source.clone()).map_err(|_| "数据目录已初始化。".to_string())?;
+                        return Ok(Some(format!("数据目录迁移未完成，继续使用原目录 {}。可在设置中重新选择空目录。\n{error}", source.display())));
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if let Some(path) = selected {
+            if !dir_is_writable(&path) {
+                return Err(format!("数据目录不可写：{}。请检查路径及写入权限；历史记录未切换到其他目录。", path.display()));
+            }
+            DATA_DIR_CACHE.set(path).map_err(|_| "数据目录已初始化，无法完成切换。".to_string())?;
+        }
+    }
+    let path = data_dir();
+    if !dir_is_writable(&path) {
+        return Err(format!("数据目录不可写：{}。请检查路径及写入权限；原有历史记录未移动。", path.display()));
+    }
+    Ok(None)
 }
 
 fn migrate_legacy_data_dirs_to(target: &Path) {
@@ -400,12 +447,19 @@ mod row_display_settings_tests {
     }
 }
 
-fn load_settings_from_value(value: serde_json::Value) -> AppSettings {
-    match serde_json::from_value::<AppSettings>(value.clone()) {
+fn load_settings_from_value(mut value: serde_json::Value) -> AppSettings {
+    if let Some(tabs)=value.get("category_tabs") {
+        if serde_json::from_value::<Vec<crate::app_core::customization::CategoryTab>>(tabs.clone()).is_err() {
+            value["category_tabs"]=serde_json::to_value(crate::app_core::customization::default_category_tabs()).unwrap();
+        }
+    }
+    let mut settings=match serde_json::from_value::<AppSettings>(value.clone()) {
         Ok(settings) => settings,
         Err(_) => serde_json::from_value::<AppSettings>(sanitize_settings_value(value))
             .unwrap_or_default(),
-    }
+    };
+    crate::app_core::customization::normalize_category_tabs(&mut settings.category_tabs);
+    settings
 }
 
 fn sanitize_settings_value(mut value: serde_json::Value) -> serde_json::Value {
@@ -576,6 +630,19 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("zsclip-runtime-{name}-{ts}"))
+    }
+
+    #[test]
+    fn writable_probe_preserves_existing_files_and_rejects_file_parents() {
+        let root = test_runtime_dir("writable-probe");
+        fs::create_dir_all(&root).unwrap();
+        let retained = root.join(".zsclip_write_test");
+        fs::write(&retained, b"preserve-existing-file").unwrap();
+        assert!(dir_is_writable(&root));
+        assert_eq!(fs::read(&retained).unwrap(), b"preserve-existing-file");
+        assert!(!dir_is_writable(&retained.join("child")));
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

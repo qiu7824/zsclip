@@ -91,7 +91,7 @@ fn win32_main_window_styles(role: WindowRole, options: &NativeWindowOptions) -> 
         }
         style
     } else {
-        WS_POPUP | WS_CLIPCHILDREN
+        WS_POPUP | WS_CLIPCHILDREN | if options.resizable { WS_THICKFRAME } else { 0 }
     };
 
     (ex_style, style)
@@ -244,7 +244,8 @@ impl NativeMainWindowHost for WindowsMainWindowHost {
                 return NativeMainWindowPresentation::Failed;
             }
 
-            let quick_options = NativeWindowOptions::tool_window();
+            let mut quick_options = NativeWindowOptions::tool_window();
+            quick_options.resizable = true;
             let quick = self.create_window(
                 WindowRole::Quick,
                 &title,

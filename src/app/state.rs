@@ -43,11 +43,14 @@ pub(crate) struct AppSettings {
     pub(crate) show_fixed_x: i32,
     pub(crate) show_fixed_y: i32,
     pub(crate) quick_search_enabled: bool,
+    pub(crate) notes_plugin_enabled: bool,
     pub(crate) vv_mode_enabled: bool,
     pub(crate) vv_source_tab: usize,
     pub(crate) vv_group_id: i64,
     pub(crate) image_preview_enabled: bool,
     pub(crate) show_pin_button: bool,
+    pub(crate) clipboard_window_width: i32,
+    pub(crate) clipboard_window_height: i32,
     pub(crate) image_row_height: i32,
     pub(crate) text_row_height: i32,
     pub(crate) file_row_height: i32,
@@ -57,6 +60,10 @@ pub(crate) struct AppSettings {
     pub(crate) card_shadow_enabled: bool,
     pub(crate) rich_text_clipboard_enabled: bool,
     pub(crate) quick_delete_button: bool,
+    pub(crate) quick_pin_button: bool,
+    pub(crate) quick_edit_button: bool,
+    pub(crate) quick_action_order: String,
+    pub(crate) category_tabs: Vec<crate::app_core::customization::CategoryTab>,
     pub(crate) context_menu_copy_enabled: bool,
     pub(crate) move_pasted_item_to_top: bool,
     pub(crate) dedupe_filter_enabled: bool,
@@ -135,7 +142,7 @@ mod appearance_settings_tests {
         assert!(old.rich_text_clipboard_enabled);
         assert_eq!(old.content_font_size, 0);
         assert_eq!(old.content_font_size(), 12);
-        assert!(old.card_view_enabled);
+        assert!(!old.card_view_enabled);
         assert!(old.phrase_titles_enabled);
         let titles_off: AppSettings = serde_json::from_str(r#"{"phrase_titles_enabled":false}"#).unwrap();
         assert!(!titles_off.phrase_titles_enabled);
@@ -178,20 +185,27 @@ impl Default for AppSettings {
             show_fixed_x: 120,
             show_fixed_y: 120,
             quick_search_enabled: false,
+            notes_plugin_enabled: false,
             vv_mode_enabled: true,
             vv_source_tab: 0,
             vv_group_id: 0,
             image_preview_enabled: true,
             show_pin_button: false,
+            clipboard_window_width: 300,
+            clipboard_window_height: 615,
             image_row_height: 132,
             text_row_height: 44,
             file_row_height: 44,
             content_font_size: 0,
-            card_view_enabled: true,
+            card_view_enabled: false,
             card_border_enabled: true,
             card_shadow_enabled: true,
             rich_text_clipboard_enabled: true,
             quick_delete_button: true,
+            quick_pin_button: false,
+            quick_edit_button: false,
+            quick_action_order: "delete,pin,edit".into(),
+            category_tabs: crate::app_core::customization::default_category_tabs(),
             context_menu_copy_enabled: false,
             move_pasted_item_to_top: false,
             dedupe_filter_enabled: true,
@@ -264,9 +278,12 @@ pub(super) fn group_name_for_display(
 }
 
 pub(super) fn startup_can_hide(settings: &AppSettings) -> bool {
+    let available = |action: &str| {
+        let key = normalize_mouse_side_button_action(action);
+        key != "none" && (key != "notes" || settings.notes_plugin_enabled)
+    };
     let mouse_binding_available = settings.mouse_side_button_enabled
-        && (normalize_mouse_side_button_action(&settings.mouse_side_button_1_action) != "none"
-            || normalize_mouse_side_button_action(&settings.mouse_side_button_2_action) != "none");
+        && (available(&settings.mouse_side_button_1_action) || available(&settings.mouse_side_button_2_action));
     settings.silent_start
         && (settings.tray_icon_enabled || settings.hotkey_enabled || mouse_binding_available)
 }
@@ -378,6 +395,14 @@ pub(crate) struct AppState {
     pub(crate) native_min_size: Option<UiSize>,
     pub(crate) search_hwnd: HWND,
     pub(crate) ui_dpi: u32,
+    pub(crate) window_interactive_move: bool,
+    pub(crate) window_user_resized: bool,
+    pub(crate) paint_buffer: platform_gdi::PaintBuffer,
+    pub(crate) row_layout_cache: std::cell::RefCell<super::state_runtime::RowLayoutCache>,
+    pub(crate) active_category_id: String,
+    pub(crate) down_quick_action: Option<(i64, crate::app_core::customization::QuickRowAction)>,
+    pub(crate) hover_quick_action: Option<(i64, crate::app_core::customization::QuickRowAction)>,
+    pub(crate) hover_category: i32,
     pub(crate) dpi_comp: DpiCompensationState,
     pub(crate) search_font: *mut core::ffi::c_void,
     pub(crate) search_brush: *mut core::ffi::c_void,
@@ -926,6 +951,14 @@ impl AppState {
             native_min_size,
             search_hwnd,
             ui_dpi: unsafe { crate::platform::dpi::layout_dpi_for_window(hwnd) },
+            window_interactive_move: false,
+            window_user_resized: false,
+            paint_buffer: platform_gdi::PaintBuffer::default(),
+            row_layout_cache: std::cell::RefCell::new(Default::default()),
+            active_category_id: String::new(),
+            down_quick_action: None,
+            hover_quick_action: None,
+            hover_category: -1,
             dpi_comp: DpiCompensationState::default(),
             search_font: null_mut(),
             search_brush: null_mut(),
@@ -1034,6 +1067,9 @@ impl AppState {
             cloud_sync_next_due,
         };
         apply_shared_tab_view_state(&mut state);
+        if state.settings.category_tabs != crate::app_core::customization::default_category_tabs() {
+            state.reconcile_category();
+        }
         state
     }
 
@@ -1054,6 +1090,7 @@ impl AppState {
     }
 
     pub(super) fn items_for_tab_mut(&mut self, tab: usize) -> &mut Vec<ClipItem> {
+        self.row_layout_cache.get_mut().clear();
         if tab == 0 {
             &mut self.records
         } else {
@@ -1106,6 +1143,7 @@ impl AppState {
     }
 
     pub(crate) fn refilter(&mut self) {
+        self.row_layout_cache.get_mut().clear();
         self.ensure_tab_query_loaded(self.list.tab_index);
         let visible_len = self.active_items().len();
         self.list.apply_visible_len(visible_len);
@@ -1120,18 +1158,28 @@ impl AppState {
     }
 
     pub(super) fn desired_query_for_tab(&self, tab: usize) -> ItemsQuery {
-        let tab_kind_filters = if self.settings.group_type_filter_enabled {
+        let custom = !self.active_category_id.is_empty();
+        let tab_kind_filters = if self.settings.group_type_filter_enabled || custom {
             self.tab_kind_filters
         } else {
             [ClipKindFilter::All, ClipKindFilter::All]
         };
-        ItemsQuery::for_tab(
+        let mut query = ItemsQuery::for_tab(
             tab,
-            self.settings.grouping_enabled,
+            self.settings.grouping_enabled || custom,
             self.tab_group_filters,
             tab_kind_filters,
             &self.search_text,
-        )
+        );
+        if tab == self.tab_index {
+            if let Some(id) = self.active_manual_tab_id() {
+                query.manual_tab_id = Some(id.to_string());
+                query.category = -1;
+                query.group_id = 0;
+                query.kind_filter = ClipKindFilter::All;
+            }
+        }
+        query
     }
 
     pub(super) fn invalidate_tab_query(&mut self, tab: usize, clear_items: bool) {

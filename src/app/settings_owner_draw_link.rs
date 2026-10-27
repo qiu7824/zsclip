@@ -17,12 +17,8 @@ pub(super) unsafe fn draw_settings_source_link_item(
     let rc = dis.rcItem;
     let text_color = if open_source_url().trim().is_empty() {
         th.text_muted
-    } else if pressed {
-        rgb(22, 78, 180)
-    } else if hover {
-        rgb(14, 111, 214)
     } else {
-        rgb(24, 92, 189)
+        Theme{accent:if pressed{th.accent_pressed}else if hover{th.accent_hover}else{th.accent},..th}.accent_foreground()
     };
     let font_px = platform_dpi::scale_for_window(dis.hwndItem, 14).max(12);
     let font = platform_gdi::create_font_w(

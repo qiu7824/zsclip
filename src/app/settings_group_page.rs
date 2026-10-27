@@ -27,6 +27,9 @@ pub(super) unsafe fn settings_create_group_page(hwnd: HWND, st: &mut SettingsWnd
         sec0.full_w(),
     );
     st.chk_group_type_filter = type_btn;
+    let designer=b.button(st,"设计分类标签",super::settings_customization::OPEN_CATEGORIES,
+        sec0.left(),sec0.row_y(2),settings_scale(190));
+    st.ownerdraw_ctrls.push(designer);
 
     let tab_w = settings_scale(118);
     st.btn_group_view_records = b.button(

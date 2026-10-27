@@ -77,7 +77,7 @@ pub(super) unsafe fn open_settings_hotkey_dropdown(
                 st.cb_mouse_side_button_2
             };
             let options = MOUSE_SIDE_BUTTON_ACTION_OPTIONS
-                .map(|(key, _)| mouse_side_button_action_display(key));
+                .iter().map(|(key, _)| mouse_side_button_action_display(key)).collect::<Vec<_>>();
             let rc = settings_control_screen_rect_or_empty(control);
             let current_text = settings_host_text(control);
             let current = options

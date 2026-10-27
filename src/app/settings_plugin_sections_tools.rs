@@ -28,4 +28,8 @@ pub(super) unsafe fn settings_relayout_plugin_tool_sections(st: &mut SettingsWnd
 
     let sec6 = settings_plugin_layout(st, 6, 0);
     settings_plugin_move_toggle_row(st, st.lb_qr_title, st.chk_qr, &sec6, 0);
+    let notes = settings_plugin_layout(st, 7, 0);
+    settings_plugin_move_toggle_row(st, st.lb_notes_title, st.chk_notes, &notes, 0);
+    settings_plugin_move_control(st, st.btn_notes, notes.left(), notes.row_y(1), settings_scale(170), settings_scale(32));
+    settings_plugin_move_control(st, st.lb_notes_hint, notes.left(), notes.row_y(2), notes.full_w(), settings_scale(24));
 }

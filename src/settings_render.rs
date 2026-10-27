@@ -17,7 +17,13 @@ pub unsafe fn draw_settings_nav_item(
     th: Theme,
 ) {
     let plan = settings_nav_item_paint_plan(item);
-    draw_settings_paint_plan(hdc, plan, th);
+    let icon=match item.page {
+        crate::settings_model::SettingsPage::Appearance=>Some("\u{E790}"),
+        crate::settings_model::SettingsPage::About=>Some("\u{E946}"),
+        _=>None,
+    };
+    for command in plan.paint_commands {draw_settings_paint_command(hdc,command,th);}
+    for command in plan.text_commands {draw_settings_text_command(hdc,command,th,icon);}
 }
 
 unsafe fn draw_settings_paint_plan(
@@ -29,7 +35,7 @@ unsafe fn draw_settings_paint_plan(
         draw_settings_paint_command(hdc, command, th);
     }
     for command in plan.text_commands {
-        draw_settings_text_command(hdc, command, th);
+        draw_settings_text_command(hdc, command, th,None);
     }
 }
 
@@ -71,19 +77,20 @@ unsafe fn draw_settings_text_command(
     hdc: *mut core::ffi::c_void,
     command: SettingsTextCommand,
     th: Theme,
+    icon_override: Option<&str>,
 ) {
     let rc: RECT = command.rect.into();
     if let SettingsTextContent::Icon(icon) = command.content {
         // Navigation glyphs picked for meaning: keyboard (hotkeys), puzzle
         // (plugins), tag (groups), sync arrows (multi-device sync), info.
-        let glyph = match icon {
+        let glyph = icon_override.unwrap_or_else(||match icon {
             crate::zsui::ZsIcon::Code => "\u{E765}",
             crate::zsui::ZsIcon::Inspector => "\u{E946}",
             crate::zsui::ZsIcon::Tool => "\u{EA86}",
             crate::zsui::ZsIcon::Group => "\u{E8EC}",
             crate::zsui::ZsIcon::Refresh => "\u{E895}",
             _ => icon.windows_fluent_glyph(),
-        };
+        });
         draw_text_ex(
             hdc,
             glyph,
@@ -121,7 +128,7 @@ fn settings_theme_role_color(role: SettingsThemeRole, th: Theme) -> u32 {
             }
         }
         SettingsThemeRole::Surface => th.surface,
-        SettingsThemeRole::Accent => th.accent,
+        SettingsThemeRole::Accent => th.accent_foreground(),
         SettingsThemeRole::Stroke => th.stroke,
         SettingsThemeRole::ScrollbarTrack => {
             if th.bg == rgb(32, 32, 32) {

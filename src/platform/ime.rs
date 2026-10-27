@@ -83,6 +83,14 @@ impl WindowsImeHost {
         Self
     }
 
+    pub(crate) fn composition_active(self, focus: HWND) -> bool {
+        let context = unsafe { ImmGetContext(focus) };
+        if context == 0 { return false; }
+        let length = unsafe { ImmGetCompositionStringW(context, 8, core::ptr::null_mut(), 0) };
+        unsafe { ImmReleaseContext(focus, context); }
+        length > 0
+    }
+
     /// Cancel only the exact composition owned by VV, never a generic editor Escape.
     pub(crate) fn cancel_exact_vv_composition(self, focus: HWND) -> bool {
         #[cfg(test)]

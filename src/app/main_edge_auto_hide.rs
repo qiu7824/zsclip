@@ -158,6 +158,10 @@ unsafe fn edge_step_animation(hwnd: HWND, state: &mut AppState) -> bool {
                 | SWP_SHOWWINDOW,
         );
         state.edge_anim_until = None;
+        if state.edge_hidden {
+            state.paint_buffer.clear();state.row_layout_cache.get_mut().clear();
+            schedule_hidden_reclaim_after_activity(hwnd,state);
+        }
         return false;
     }
     true
@@ -340,6 +344,7 @@ pub(super) unsafe fn restore_edge_hidden_window(hwnd: HWND, state: &mut AppState
     if !state.edge_hidden {
         return;
     }
+    cancel_hidden_memory_reclaim(hwnd,state);
     let rc = platform_window::dock_rect(hwnd);
     begin_edge_animation(
         hwnd,

@@ -42,9 +42,9 @@ pub(super) unsafe extern "system" fn settings_wnd_proc(
             0
         }
         WM_DRAWITEM => draw_settings_window_item(hwnd, lparam),
-        WM_CTLCOLORSTATIC => settings_control_color(hwnd, wparam, SettingsControlColorRole::Static),
-        WM_CTLCOLOREDIT => settings_control_color(hwnd, wparam, SettingsControlColorRole::Edit),
-        WM_CTLCOLORLISTBOX => settings_control_color(hwnd, wparam, SettingsControlColorRole::List),
+        WM_CTLCOLORSTATIC => settings_control_color(hwnd, wparam, lparam as HWND, SettingsControlColorRole::Static),
+        WM_CTLCOLOREDIT => settings_control_color(hwnd, wparam, lparam as HWND, SettingsControlColorRole::Edit),
+        WM_CTLCOLORLISTBOX => settings_control_color(hwnd, wparam, lparam as HWND, SettingsControlColorRole::List),
         WM_ERASEBKGND => 1,
         WM_PAINT => {
             paint_settings_window(hwnd);

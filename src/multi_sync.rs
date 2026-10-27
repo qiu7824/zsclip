@@ -556,8 +556,12 @@ mod tests {
     fn bdd_transport_status_describes_selected_multi_sync_mode() {
         assert!(transport_status_label(false, false).contains("未选择同步方案"));
         assert!(transport_status_label(true, false).contains("当前方案为 WebDAV"));
-        assert!(transport_status_label(false, true).contains("当前方案为局域网"));
-        assert!(transport_status_label(true, true).contains("当前方案为局域网"));
+        assert!(transport_status_label(false, true).contains(if cfg!(feature = "lan-sync") {
+            "当前方案为局域网"
+        } else { "未选择同步方案" }));
+        assert!(transport_status_label(true, true).contains(if cfg!(feature = "lan-sync") {
+            "当前方案为局域网"
+        } else { "当前方案为 WebDAV" }));
     }
 
     #[test]

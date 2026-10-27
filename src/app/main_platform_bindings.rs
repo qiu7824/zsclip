@@ -122,6 +122,7 @@ pub(super) unsafe fn handle_global_hotkey(hwnd: HWND, id: i32) {
                 clear_hotkey_passthrough_state(state);
             }
             state.plain_text_paste_mode = false;
+            schedule_hidden_reclaim_after_activity(hwnd, state);
         }
         _ => {}
     }

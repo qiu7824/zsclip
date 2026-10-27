@@ -355,8 +355,12 @@ pub(super) unsafe fn clear_main_hover_state(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
+    let category_hover=state.hover_category!=-1;
+    state.hover_category=-1;
+    state.hover_quick_action=None;
+    if state.down_quick_action.take().is_some(){release_main_pointer(hwnd);}
     let transition = main_hover_target_from_state(state).clear_transition(false);
-    let mut dirty = transition.changed;
+    let mut dirty = transition.changed || category_hover;
     if transition.changed {
         apply_main_hover_target(state, transition.next);
     }

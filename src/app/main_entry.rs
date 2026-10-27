@@ -1,9 +1,6 @@
 use super::prelude::*;
 
 pub(crate) fn run() -> AppResult<()> {
-    let _ = crate::cloud_sync::cleanup_cloud_sync_temp_files();
-    let boot_settings = load_settings();
-    platform_appearance::set_dark_mode_enabled(boot_settings.dark_mode_enabled);
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
     let mutex_name = std::env::var_os("ZSCLIP_DATA_DIR")
         .map(|path| {
@@ -16,6 +13,7 @@ pub(crate) fn run() -> AppResult<()> {
     let (_single_instance_mutex, already_running) =
         platform_process::create_named_mutex(&mutex_name);
     if already_running {
+        let boot_settings = load_settings();
         // 已有实例：找到主窗口并激活
         let hwnd = platform_window::find_window_by_class(WindowRole::Main.class_name());
         if !hwnd.is_null() {
@@ -29,6 +27,19 @@ pub(crate) fn run() -> AppResult<()> {
         }
         return Ok(());
     }
+    match prepare_selected_data_directory() {
+        Ok(Some(message)) => { platform_dialog::WindowsDialogHost::new().show_message(
+            null_mut(), "数据目录", &message, NativeDialogLevel::Info); }
+        Ok(None) => {}
+        Err(message) => {
+            platform_dialog::WindowsDialogHost::new().show_message(
+                null_mut(), "数据目录", &message, NativeDialogLevel::Error);
+            return Err(io::Error::other(message));
+        }
+    }
+    let _ = crate::cloud_sync::cleanup_cloud_sync_temp_files();
+    let boot_settings = load_settings();
+    platform_appearance::set_dark_mode_enabled(boot_settings.dark_mode_enabled);
     unsafe {
         platform_dpi::init_process_awareness();
         // 进程级深色模式初始化：让系统菜单、滚动条、控件跟随主题
@@ -39,7 +50,7 @@ pub(crate) fn run() -> AppResult<()> {
         let startup_window = crate::zsui::Window::new(app_title())
             .size(startup_layout.win_w.max(1) as u32, startup_h.max(1) as u32)
             .visible(!startup_can_hide(&boot_settings))
-            .resizable(false)
+            .resizable(true)
             .decorations(false)
             .always_on_top(false);
         let mut main_window_host = WindowsMainWindowHost::new(Some(wnd_proc));
@@ -65,6 +76,7 @@ pub(crate) fn run() -> AppResult<()> {
             if code == 0 {
                 break;
             }
+            if super::notes_window::route_message(&msg) { continue; }
             if super::secret_vault_ui::route_main_view_message(&msg) {
                 continue;
             }
@@ -96,6 +108,11 @@ pub(super) unsafe extern "system" fn wnd_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    if msg == WM_TOGGLE_NOTES {
+        let ptr = get_state_ptr(hwnd);
+        if !ptr.is_null() && (*ptr).settings.notes_plugin_enabled { super::notes_window::toggle(); }
+        return 0;
+    }
     if msg == super::main_hover_preview::WM_SEARCH_HOVER_READY {
         super::main_hover_preview::apply_hover_preview_result(hwnd, lparam);
         let ptr=get_state_ptr(hwnd);
@@ -139,6 +156,17 @@ pub(super) unsafe extern "system" fn wnd_proc(
         }
     }
     match msg {
+        WM_NCCALCSIZE if platform_window::window_style(hwnd) & WS_CAPTION == 0 => 0,
+        WM_ENTERSIZEMOVE => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() { (*ptr).window_interactive_move = true; (*ptr).window_user_resized = false; }
+            0
+        }
+        WM_SIZING => {
+            let ptr = get_state_ptr(hwnd);
+            if !ptr.is_null() { (*ptr).window_user_resized = true; }
+            1
+        }
         WM_CREATE => {
             let cs = &*(lparam as *const CREATESTRUCTW);
             let create_params = WindowCreateParams::from_create_param(cs.lpCreateParams as isize);
@@ -218,15 +246,20 @@ fn apply_main_window_min_track_size(hwnd: HWND, lparam: LPARAM) {
     if ptr.is_null() || lparam == 0 {
         return;
     }
-    let Some(min_size) = (unsafe { (*ptr).native_min_size }) else {
-        return;
-    };
+    let dpi = unsafe { (*ptr).ui_dpi.max(96) };
+    let minimum_width = main_layout_for_dpi(dpi).win_w;
+    let work = platform_monitor::nearest_work_rect_for_window(hwnd);
+    let min_size = unsafe { (*ptr).native_min_size }.unwrap_or(UiSize { width: minimum_width, height: 1 });
     let info = lparam as *mut MINMAXINFO;
     if info.is_null() {
         return;
     }
     unsafe {
         apply_min_track_size(&mut *info, min_size);
+        (*info).ptMinTrackSize.x = minimum_width.max(min_size.width).min(work.right - work.left).max(1);
+        (*info).ptMaxTrackSize.x = (work.right - work.left).max(1);
+        (*info).ptMinTrackSize.y = (240 * dpi as i32 / 96).max(min_size.height).min(work.bottom - work.top).max(1);
+        (*info).ptMaxTrackSize.y = (work.bottom - work.top).max(1);
     }
 }
 

@@ -19,7 +19,7 @@ It combines clipboard history, phrases, grouping, VV quick paste, drag-out expor
 
 - GitHub release: <https://github.com/qiu7824/zsclip/releases/latest>
 - The QQ Input Method bridge APK is included on the same release page. Its internal bridge version is `8.7.15-zsclip.8`; the ZSClip version in the asset name identifies the accompanying desktop release. [Connection guide](docs/q-input-sync.md)
-- [1.0.11 release notes](docs/releases/1.0.11.md)
+- [1.0.12 release notes](docs/releases/1.0.12.md)
 
 Windows provides installers and portable packages; macOS provides Apple Silicon and Intel DMGs; Linux provides an x86_64 DEB and archive. Linux global shortcuts and VV target X11. macOS requires Accessibility and Input Monitoring permissions. Super Mail Merge, the WPS task pane, and image stickers use Windows integration. See [native host verification](docs/native-host-verification.md) for platform verification scope.
 
@@ -214,10 +214,27 @@ Notes:
 - Requires local Windows, Excel, and Word environment
 - The current implementation focuses on local Office automation workflows
 
+## Windows Notes and Resizable Clipboard Lists
+
+Enable **Notes** in **Settings → Plugins**, then save. Notes are a local multi-note list with automatic saving; the first line becomes the title. Use `Ctrl+N` to create, `Ctrl+S` to save and `Ctrl+V` to paste. In **Hotkeys & VV**, assign **Notes** to either mouse side button. The button opens or focuses notes, or saves and closes the foreground notes window. Failed saves and unfinished input compositions keep the editor open.
+
+Notes use `notes.sqlite3` in the data directory, move with the profile and are excluded from clipboard WebDAV/LAN synchronization. Closing the window releases its editor and database connection; disabling the plugin preserves saved notes.
+
+Drag any edge or corner of the Windows clipboard window to change its width and height. Main and Quick share the saved dimensions across reopening and application restarts, adapting to monitor scaling and available screen space. URL rows show original addresses within the actual row width. Pasting always uses the complete original address.
+
+The default presentation is a plain list; cards remain optional in Appearance settings. Category tabs retain rounded backgrounds and selection highlights, use compact content-sized widths and keep a fixed font size as the window expands. Auxiliary controls follow the light or dark palette.
+
+In **Settings → Groups → Category tabs**, rename, add, remove, reorder or hide tabs. The two initial tabs are automatic history and phrase views. New manual tags start empty; right-click records to add or remove them in batches. A record can belong to multiple tags, including text, URLs, images, files and phrases. Removing a tag or its membership keeps the original record; deleting the original record removes it from every tag. Names and ordering do not change membership, and deduplication or paste-to-top preserves it.
+
+Automatic views explicitly select a source, group and content type instead of accepting manual assignments. At least one tab must remain visible; overflow tabs are available through the more menu. In **Appearance → Quick buttons**, configure the visibility and left-to-right order of Delete, Pin and Edit. These buttons affect only their own row; Edit applies to text and phrases.
+
 ## Data Directory
 
-The app prefers a `data` folder next to the executable.  
-If installed inside a non-writable folder such as `C:\Program Files`, it automatically falls back to `%LOCALAPPDATA%\ZSClip\data`.
+On Windows, use **Settings → About → Change data directory** to select an empty folder by absolute path. After quitting and restarting, ZSClip copies and verifies history, settings and images before activating the destination. The original directory is retained. Migration failures keep the original store active and report the cause; existing destination files are never overwritten.
+
+`ZSCLIP_DATA_DIR` takes precedence. Without an override, existing stores retain their location. A writable executable-local `data` folder is preferred; protected installations without an existing store use `%LOCALAPPDATA%\ZSClip\data` instead of creating a new D-drive directory. The Windows selection is stored in `%LOCALAPPDATA%\ZSClip\storage.json` and is excluded from WebDAV configuration sync.
+
+Cloud synchronization uses `temp/cloud_sync` inside the active data directory and does not require write access to the installation directory.
 
 Common files:
 

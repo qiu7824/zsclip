@@ -120,6 +120,7 @@ mod automatic_skip_tests {
 }
 
 pub(super) unsafe fn paste_window_is_zsclip(hwnd: HWND) -> bool {
+    if super::notes_window::is_editor_window(hwnd) { return false; }
     if hwnd.is_null()
         || is_app_window(hwnd)
         || WindowsWindowIdentityHost::new().is_current_process_window(hwnd)

@@ -94,7 +94,7 @@ unsafe fn window_needs_outside_hide_timer(hwnd: HWND) -> bool {
         return false;
     }
     let state = &*ptr;
-    state.settings.auto_hide_on_blur
+    window_auto_hide_on_blur(state)
         && (state.role == WindowRole::Quick || state.main_window_noactivate)
 }
 
@@ -286,15 +286,15 @@ unsafe fn mouse_side_button_bindings_enabled(main: HWND) -> bool {
         return false;
     }
     let settings = &(*ptr).settings;
-    settings.mouse_side_button_enabled
-        && (normalize_mouse_side_button_action(&settings.mouse_side_button_1_action) != "none"
-            || normalize_mouse_side_button_action(&settings.mouse_side_button_2_action) != "none")
+    configured_mouse_side_button_action(settings, platform_hook::MouseHookButton::X1).is_some()
+        || configured_mouse_side_button_action(settings, platform_hook::MouseHookButton::X2).is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MouseSideBindingAction {
     QuickWindow,
     VvMode,
+    Notes,
 }
 
 fn configured_mouse_side_button_action(
@@ -312,6 +312,7 @@ fn configured_mouse_side_button_action(
     match normalize_mouse_side_button_action(configured) {
         "quick_window" => Some(MouseSideBindingAction::QuickWindow),
         "vv_mode" => Some(MouseSideBindingAction::VvMode),
+        "notes" if settings.notes_plugin_enabled => Some(MouseSideBindingAction::Notes),
         _ => None,
     }
 }
@@ -331,6 +332,10 @@ unsafe fn handle_mouse_side_button_binding(
         return false;
     };
     match action {
+        MouseSideBindingAction::Notes => {
+            if event.button_down { platform_window::post_hwnd_message(main, WM_TOGGLE_NOTES, 0, 0); }
+            true
+        }
         MouseSideBindingAction::QuickWindow => {
             if event.button_down {
                 platform_window::post_hwnd_message(main, WM_HOTKEY, HOTKEY_ID as usize, 0);
@@ -408,7 +413,7 @@ pub(super) unsafe fn handle_outside_click_requested(hwnd: HWND) {
         return;
     }
     let state = &*ptr;
-    if !state.settings.auto_hide_on_blur
+    if !window_auto_hide_on_blur(state)
         || !(state.role == WindowRole::Quick || state.main_window_noactivate)
         || vv_popup_menu_active()
     {
@@ -425,7 +430,7 @@ pub(super) unsafe fn handle_outside_hide_tick(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
-    if !state.settings.auto_hide_on_blur {
+    if !window_auto_hide_on_blur(state) {
         timer::stop(hwnd, ID_TIMER_OUTSIDE_HIDE);
         return;
     }
@@ -478,5 +483,16 @@ mod tests {
             configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X2),
             Some(MouseSideBindingAction::VvMode)
         );
+    }
+    #[test]
+    fn note_side_binding_requires_both_plugin_and_binding_switches() {
+        let mut settings = AppSettings::default();
+        settings.mouse_side_button_enabled = true;
+        settings.mouse_side_button_1_action = "notes".into();
+        assert_eq!(configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X1), None);
+        settings.notes_plugin_enabled = true;
+        assert_eq!(configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X1), Some(MouseSideBindingAction::Notes));
+        settings.mouse_side_button_enabled = false;
+        assert_eq!(configured_mouse_side_button_action(&settings, platform_hook::MouseHookButton::X1), None);
     }
 }

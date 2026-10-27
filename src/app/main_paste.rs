@@ -824,6 +824,7 @@ pub(super) unsafe fn paste_protected_text_to_target(
     // A saved external target is required after closing a password or vault dialog.
     // Never fall back to another window while a secret is being pasted.
     if text.is_empty()
+        || WindowsWindowIdentityHost::new().is_current_process_window(target)
         || !is_viable_paste_window(target, hwnd, paste_target_skip_classes(&state.settings))
         || platform_window::is_hung(target)
         || platform_process::process_has_higher_elevation(platform_window::window_process_id(

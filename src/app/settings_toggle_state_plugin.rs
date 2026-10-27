@@ -7,6 +7,7 @@ pub(super) fn settings_toggle_plugin_get(st: &SettingsWndState, cid: isize) -> O
         7103 => Some(st.draft.super_mail_merge_enabled),
         7106 => Some(st.draft.wps_taskpane_enabled),
         7104 => Some(st.draft.qr_quick_enabled),
+        IDC_SET_NOTES_ENABLE => Some(st.draft.notes_plugin_enabled),
         _ => None,
     }
 }
@@ -18,6 +19,7 @@ pub(super) fn settings_toggle_plugin_flip(st: &mut SettingsWndState, cid: isize)
         7103 => st.draft.super_mail_merge_enabled = !st.draft.super_mail_merge_enabled,
         7106 => st.draft.wps_taskpane_enabled = !st.draft.wps_taskpane_enabled,
         7104 => st.draft.qr_quick_enabled = !st.draft.qr_quick_enabled,
+        IDC_SET_NOTES_ENABLE => st.draft.notes_plugin_enabled = !st.draft.notes_plugin_enabled,
         _ => return false,
     }
     true

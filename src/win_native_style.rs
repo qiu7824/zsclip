@@ -102,6 +102,15 @@ impl Default for Theme {
     }
 }
 
+impl Theme {
+    pub fn accent_foreground(self)->u32 {
+        if self.bg==rgb(32,32,32){mix(self.accent,rgb(255,255,255),0.3)}else{self.accent}
+    }
+    pub fn icon_foreground(self)->u32 {
+        if self.bg==rgb(32,32,32){mix(self.text,self.text_muted,0.4)}else{self.text_muted}
+    }
+}
+
 pub fn rgb(r: u8, g: u8, b: u8) -> u32 {
     (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
 }

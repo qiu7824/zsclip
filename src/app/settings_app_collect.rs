@@ -14,15 +14,22 @@ pub(super) unsafe fn settings_collect_current_page_to_draft(st: &mut SettingsWnd
     }
 }
 
-pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) {
+pub(super) unsafe fn settings_collect_to_app(st: &mut SettingsWndState) -> bool {
     let pst = get_state_ptr(st.parent_hwnd);
     if pst.is_null() {
-        return;
+        return false;
     }
     settings_collect_general_to_draft(st);
     settings_collect_hotkey_to_draft(st);
     settings_collect_plugin_to_draft(st);
     settings_collect_group_to_draft(st);
     settings_collect_cloud_to_draft(st);
+    if !st.draft.notes_plugin_enabled {
+        if let Err(error) = super::notes_window::try_close() {
+            platform_dialog::WindowsDialogHost::new().show_message(st.parent_hwnd, tr("便签", "Notes"), &error, NativeDialogLevel::Error);
+            return false;
+        }
+    }
     settings_commit_collected_app_settings(st, &mut *pst);
+    true
 }

@@ -9,7 +9,7 @@ use std::ptr::{null, null_mut};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{GetWindowDC, ReleaseDC, DEFAULT_GUI_FONT, PAINTSTRUCT},
-    UI::Shell::{DefSubclassProc, SetWindowSubclass},
+    UI::Shell::{DefSubclassProc, SetWindowSubclass, RemoveWindowSubclass},
     UI::WindowsAndMessaging::*,
 };
 
@@ -683,7 +683,8 @@ pub(crate) fn settings_control_role_for_control(cmd: isize) -> Option<SettingsCo
         | IDC_SET_PLUGIN_SUPER_MAIL_MERGE
         | IDC_SET_PLUGIN_SEARCH
         | IDC_SET_PLUGIN_QR_QUICK
-        | IDC_SET_PLUGIN_WPS_TASKPANE => Some(SettingsControlRole::Toggle),
+        | IDC_SET_PLUGIN_WPS_TASKPANE
+        | crate::win_system_params::IDC_SET_NOTES_ENABLE => Some(SettingsControlRole::Toggle),
         _ => None,
     }
 }
@@ -837,6 +838,7 @@ pub(crate) fn settings_page_to_sync_after_toggle(control_id: isize) -> Option<us
             | IDC_SET_PLUGIN_QR_QUICK
             | IDC_SET_PLUGIN_WPS_TASKPANE
             | IDC_SET_PLUGIN_SUPER_MAIL_MERGE
+            | crate::win_system_params::IDC_SET_NOTES_ENABLE
     ) {
         Some(SettingsPage::Plugin.index())
     } else {
@@ -1183,6 +1185,7 @@ pub unsafe fn create_settings_toggle_plain(
         null(),
     );
     set_settings_font(label, font);
+    if !label.is_null(){SetWindowSubclass(label,Some(settings_label_theme_proc),0x5a10,0);}
 
     let btn = create_settings_component_from_spec(
         parent,
@@ -1291,6 +1294,7 @@ pub unsafe fn create_settings_label(
     );
     if !hwnd.is_null() {
         platform_window::send_message(hwnd, WM_SETFONT, font as usize, 1);
+        SetWindowSubclass(hwnd,Some(settings_label_theme_proc),0x5a10,0);
     }
     hwnd
 }
@@ -1322,8 +1326,37 @@ unsafe fn create_settings_label_wrap(
     );
     if !hwnd.is_null() {
         platform_window::send_message(hwnd, WM_SETFONT, font as usize, 1);
+        SetWindowSubclass(hwnd,Some(settings_label_theme_proc),0x5a10,0);
     }
     hwnd
+}
+
+unsafe fn paint_settings_label(hwnd:HWND,dc:*mut c_void) {
+    use windows_sys::Win32::Graphics::Gdi::{DrawTextW,DT_LEFT,DT_NOPREFIX,DT_SINGLELINE,DT_VCENTER,DT_END_ELLIPSIS,DT_WORDBREAK,DT_EDITCONTROL};
+    let Some(mut rect)=platform_window::client_rect(hwnd) else{return;};
+    let th=Theme::default();let brush=platform_gdi::create_solid_brush(th.surface);
+    platform_gdi::fill_rect(dc,&rect,brush);platform_gdi::delete_object(brush as _);
+    let style=platform_window::window_style(hwnd);
+    platform_gdi::set_text_color(dc,if style&windows_sys::Win32::UI::WindowsAndMessaging::WS_DISABLED!=0{settings_disabled_text(th)}else{th.text});
+    platform_gdi::set_bk_mode(dc,1);
+    let font=platform_window::send_message(hwnd,windows_sys::Win32::UI::WindowsAndMessaging::WM_GETFONT,0,0) as *mut c_void;
+    let previous=if !font.is_null(){platform_gdi::select_object(dc,font)}else{null_mut()};
+    let text=to_wide(&platform_window::text(hwnd));
+    let flags=DT_LEFT|DT_NOPREFIX|if style&0x0200!=0{DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS}else{DT_WORDBREAK|DT_EDITCONTROL};
+    DrawTextW(dc,text.as_ptr(),text.len().saturating_sub(1) as i32,&mut rect,flags);
+    if !previous.is_null(){platform_gdi::select_object(dc,previous);}
+}
+
+unsafe extern "system" fn settings_label_theme_proc(hwnd:HWND,msg:u32,w:WPARAM,l:LPARAM,id:usize,_data:usize)->LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_PAINT,WM_PRINT,WM_PRINTCLIENT,WM_ERASEBKGND,WM_NCDESTROY};
+    match msg {
+        WM_PAINT=>{let mut ps=std::mem::zeroed();let dc=platform_gdi::begin_paint(hwnd,&mut ps);
+            if !dc.is_null(){paint_settings_label(hwnd,dc);}platform_gdi::end_paint(hwnd,&ps);0}
+        WM_PRINT|WM_PRINTCLIENT=>{if w!=0{paint_settings_label(hwnd,w as _);}0}
+        WM_ERASEBKGND=>1,
+        WM_NCDESTROY=>{RemoveWindowSubclass(hwnd,Some(settings_label_theme_proc),id);DefSubclassProc(hwnd,msg,w,l)}
+        _=>DefSubclassProc(hwnd,msg,w,l),
+    }
 }
 
 pub unsafe fn settings_measure_text_height(
@@ -1431,6 +1464,36 @@ pub unsafe fn create_settings_edit(
         );
     }
     hwnd
+}
+
+/// Refresh already-created native fields when the application changes theme.
+pub(crate) unsafe fn refresh_settings_control_themes(root:HWND) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE,SWP_NOMOVE,SWP_NOSIZE,SWP_NOZORDER,SWP_NOACTIVATE,SWP_FRAMECHANGED};
+    if root.is_null(){return;}
+    let dark=platform_appearance::is_dark_mode();
+    let mut pending=platform_window::children_bottom_to_top(root);
+    while let Some(child)=pending.pop() {
+        pending.extend(platform_window::children_bottom_to_top(child));
+        let class=platform_window::class_name(child);
+        if class.eq_ignore_ascii_case("Edit") {
+            platform_appearance::apply_dark_mode_to_window(child);
+            platform_appearance::set_window_theme(child,if dark{"DarkMode_CFD"}else{"Explorer"});
+        }else if class.eq_ignore_ascii_case("ListBox") {
+            let style=platform_window::window_style(child);
+            let ex=platform_window::window_ex_style(child);
+            let next_style=if dark{style|WS_BORDER}else{style&!WS_BORDER};
+            let next_ex=if dark{ex&!WS_EX_CLIENTEDGE}else{ex|WS_EX_CLIENTEDGE};
+            platform_window::set_window_long_ptr(child,GWL_STYLE,next_style as isize);
+            platform_window::set_window_ex_style(child,next_ex);
+            if dark{SetWindowSubclass(child,Some(settings_listbox_border_proc),1,0);}
+            else{RemoveWindowSubclass(child,Some(settings_listbox_border_proc),1);}
+            platform_appearance::apply_dark_mode_to_window(child);
+            platform_appearance::set_window_theme(child,if dark{"DarkMode_Explorer"}else{"Explorer"});
+            if style!=next_style||ex!=next_ex{platform_window::set_pos(child,core::ptr::null_mut(),0,0,0,0,
+                SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);}
+        }
+        platform_gdi::invalidate_rect(child,core::ptr::null(),0);
+    }
 }
 
 pub unsafe fn create_settings_password_edit(

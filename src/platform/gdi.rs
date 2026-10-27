@@ -65,6 +65,75 @@ pub(crate) fn create_compatible_bitmap(dc: HDC, width: i32, height: i32) -> HBIT
     unsafe { CreateCompatibleBitmap(dc, width, height) }
 }
 
+/// A reusable, bounded native paint surface; release when its window is hidden.
+#[derive(Default)]
+pub(crate) struct PaintBuffer {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    width: i32,
+    height: i32,
+    #[cfg(test)]
+    pub(crate) allocations: usize,
+}
+
+impl PaintBuffer {
+    pub(crate) fn ensure(&mut self, target: HDC, width: i32, height: i32) -> Option<HDC> {
+        if target.is_null() || width <= 0 || height <= 0 || width > 16384 || height > 16384 { return None; }
+        if !self.dc.is_null() && width <= self.width && height <= self.height { return Some(self.dc); }
+        let capacity_w = ((width + 127) / 128) * 128;
+        let capacity_h = ((height + 127) / 128) * 128;
+        let dc = create_compatible_dc(target);
+        if dc.is_null() { return None; }
+        let bitmap = create_compatible_bitmap(target, capacity_w, capacity_h);
+        if bitmap.is_null() { delete_dc(dc); return None; }
+        let previous = select_object(dc, bitmap as _);
+        if previous.is_null() || previous as isize == -1 {
+            delete_object(bitmap as _); delete_dc(dc); return None;
+        }
+        self.clear();
+        self.dc = dc; self.bitmap = bitmap; self.previous = previous;
+        self.width = capacity_w; self.height = capacity_h;
+        #[cfg(test)] { self.allocations += 1; }
+        Some(dc)
+    }
+    pub(crate) fn clear(&mut self) {
+        if !self.dc.is_null() {
+            select_object(self.dc, self.previous);
+            delete_object(self.bitmap as _);
+            delete_dc(self.dc);
+        }
+        self.dc = core::ptr::null_mut(); self.bitmap = core::ptr::null_mut(); self.previous = core::ptr::null_mut();
+        self.width = 0; self.height = 0;
+    }
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool { self.dc.is_null() }
+    #[cfg(test)]
+    pub(crate) fn snapshot_rgba(&self,width:i32,height:i32)->Option<Vec<u8>> {
+        if self.dc.is_null()||width<=0||height<=0||width>self.width||height>self.height{return None;}
+        snapshot_dc_rgba(self.dc,width,height)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_dc_rgba(source:HDC,width:i32,height:i32)->Option<Vec<u8>> {
+        if source.is_null()||width<=0||height<=0{return None;}
+        let dc=create_compatible_dc(source);if dc.is_null(){return None;}
+        let (bitmap,bits)=create_top_down_32bpp_dib(dc,width,height);
+        if bitmap.is_null()||bits.is_null(){if !bitmap.is_null(){delete_object(bitmap as _);}delete_dc(dc);return None;}
+        let previous=select_object(dc,bitmap as _);
+        let copied=copy_bits(dc,0,0,width,height,source,0,0);
+        unsafe {windows_sys::Win32::Graphics::Gdi::GdiFlush();}
+        let result=if copied {
+            let mut rgba=unsafe{std::slice::from_raw_parts(bits as *const u8,width as usize*height as usize*4)}.to_vec();
+            for pixel in rgba.chunks_exact_mut(4){pixel.swap(0,2);pixel[3]=255;}
+            Some(rgba)
+        }else{None};
+        select_object(dc,previous);delete_object(bitmap as _);delete_dc(dc);result
+}
+
+impl Drop for PaintBuffer { fn drop(&mut self) { self.clear(); } }
+
 pub(crate) fn create_dib_section(
     dc: HDC,
     info: *const BITMAPINFO,

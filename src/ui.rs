@@ -35,6 +35,20 @@ mod tests {
     };
     use crate::win_native_style::rgb;
 
+    #[test]
+    fn resized_clipboard_layout_keeps_margins_and_scales_saved_width() {
+        let normal = MainUiLayout::zsclip();
+        let wide = normal.clone().with_width(720);
+        assert_eq!(wide.list_w, 708);
+        assert_eq!(wide.seg_w, 708);
+        assert_eq!(wide.search_w, normal.search_w + 420);
+        assert_eq!(wide.title_button_rect("close").right, normal.title_button_rect("close").right + 420);
+        assert_eq!(wide.row_h, normal.row_h);
+        assert_eq!(normal.clone().scaled(144).with_saved_width(720, 144, 1920).win_w, 1080);
+        assert_eq!(normal.clone().scaled(192).with_saved_width(720, 192, 1024).win_w, 1024);
+        assert_eq!(normal.with_saved_width(-1, 96, 1920).win_w, 300);
+    }
+
     fn test_main_layout() -> MainUiLayout {
         MainUiLayout {
             win_w: 400,
@@ -191,7 +205,7 @@ mod tests {
         assert_eq!(
             ItemsQuery::for_tab(1, true, [3, 8], [ClipKindFilter::All; 2], "  bili  "),
             ItemsQuery {
-                category: 1,
+                manual_tab_id: None, category: 1,
                 group_id: 8,
                 search_text: "bili".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -201,7 +215,7 @@ mod tests {
         assert_eq!(
             ItemsQuery::for_tab(1, false, [3, 8], [ClipKindFilter::All; 2], "  catsxp  "),
             ItemsQuery {
-                category: 1,
+                manual_tab_id: None, category: 1,
                 group_id: 0,
                 search_text: "catsxp".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -211,7 +225,7 @@ mod tests {
         assert_eq!(
             ItemsQuery::for_tab(9, true, [3, 8], [ClipKindFilter::All; 2], "  all  "),
             ItemsQuery {
-                category: 9,
+                manual_tab_id: None, category: 9,
                 group_id: 0,
                 search_text: "all".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -241,7 +255,7 @@ mod tests {
         load.has_more = false;
 
         let query = ItemsQuery {
-            category: 0,
+            manual_tab_id: None, category: 0,
             group_id: 7,
             search_text: "hello".to_string(),
             kind_filter: ClipKindFilter::All,
@@ -259,7 +273,7 @@ mod tests {
         assert!(!load.accepts_result(
             seq,
             &ItemsQuery {
-                category: 1,
+                manual_tab_id: None, category: 1,
                 group_id: 7,
                 search_text: "hello".to_string(),
                 kind_filter: ClipKindFilter::All,
@@ -272,7 +286,7 @@ mod tests {
     fn tab_load_state_finish_and_invalidate_reset_transient_state() {
         let mut load = TabLoadState::default();
         let query = ItemsQuery {
-            category: 1,
+            manual_tab_id: None, category: 1,
             group_id: 0,
             search_text: String::new(),
             kind_filter: ClipKindFilter::All,

@@ -1,5 +1,17 @@
 use super::prelude::*;
 
+type RowLayoutKey = (usize, usize, u32, i32, i32, i32, i32, bool, bool);
+#[derive(Default)]
+pub(super) struct RowLayoutCache {
+    key: Option<RowLayoutKey>,
+    offsets: Option<std::sync::Arc<[i32]>>,
+    #[cfg(test)]
+    pub(super) builds: usize,
+}
+impl RowLayoutCache {
+    pub(super) fn clear(&mut self) { self.key = None; self.offsets = None; }
+}
+
 pub(super) fn protected_item_for_use(mut item: ClipItem) -> Option<ClipItem> {
     if matches!(item.kind, ClipKind::Text | ClipKind::Phrase) {
         if crate::db_runtime::text_is_protected(&item.phrase_title)
@@ -180,6 +192,8 @@ impl AppState {
     }
 
     pub(super) fn clear_payload_cache(&mut self) {
+        self.paint_buffer.clear();
+        self.row_layout_cache.get_mut().clear();
         self.payload_cache.clear();
         self.image_thumb_cache.clear();
         self.image_thumb_loading.clear();
@@ -399,6 +413,10 @@ impl AppState {
                     duplicate_ids.into_iter().skip(1).collect()
                 };
                 if !removed_ids.is_empty() {
+                    if crate::clip_tags::merge(&removed_ids, existing_id).is_err() {
+                        remove_uninserted_image_file(&item);
+                        return ClipItemAddOutcome::RetryableFailure;
+                    }
                     for id in &removed_ids {
                         let _ = db_delete_item(*id);
                         self.remove_cached_item(*id);
@@ -462,7 +480,9 @@ impl AppState {
         }
         let summary = clip_item_to_summary(&item);
         let visible_query = self.load_state_for_tab(0).query.clone();
-        let inserted_index = if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
+        let inserted_index = if matches!(visible_query, Some(ref query) if query.manual_tab_id.is_none()
+            && query.category == 0 && query.kind_filter == ClipKindFilter::All
+            && query.group_id == 0 && query.search_text.trim().is_empty())
         {
             let index = self.insert_loaded_record_at_sorted_front(summary);
             if self.tab_index == 0 {
@@ -510,11 +530,22 @@ impl AppState {
     pub(super) fn layout(&self) -> MainUiLayout {
         let mut layout =
             main_layout_for_dpi(self.ui_dpi).with_app_icon_visible(self.settings.app_icon_visible);
+        if let Some(rect) = main_window_client_bounds(self.hwnd) {
+            if rect.right > 0 && rect.bottom > 0 { layout = layout.with_client_size(rect.right, rect.bottom); }
+        }
         layout = layout.with_content_font_size(self.settings.content_font_size);
         layout = layout.with_pin_button(window_pin_visible(self));
         let search_right = layout.title_button_rect("search").left - 4;
         layout.search_w = (search_right - layout.search_left).max(30);
         let scale = layout.row_h;
+        let key = (self.tab_index, self.active_items().len(), self.ui_dpi,
+            self.settings.image_row_height, self.settings.text_row_height, self.settings.file_row_height,
+            self.settings.content_font_size, self.settings.image_preview_enabled, self.settings.card_view_enabled);
+        let mut cache = self.row_layout_cache.borrow_mut();
+        if cache.key == Some(key) {
+            layout.row_offsets = cache.offsets.clone();
+            return layout;
+        }
         layout = layout.with_row_heights(self.active_items().iter().map(|item| {
             let height = match item.kind {
                 ClipKind::Image if self.settings.image_preview_enabled => {
@@ -527,6 +558,9 @@ impl AppState {
             let height = height.max(min_height) + if self.settings.card_view_enabled { 6 } else { 0 };
             (height * scale + 22) / 44
         }));
+        cache.key = Some(key);
+        cache.offsets = layout.row_offsets.clone();
+        #[cfg(test)] { cache.builds += 1; }
         layout
     }
 

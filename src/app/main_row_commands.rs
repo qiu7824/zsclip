@@ -321,7 +321,6 @@ unsafe fn execute_row_data_action(hwnd: HWND, state: &mut AppState, action: Main
 }
 
 pub(super) const RENAME_PHRASE_COMMAND: usize = 41021;
-
 pub(super) unsafe fn rename_phrase(hwnd: HWND, state: &mut AppState, item: &ClipItem) {
     if !state.settings.phrase_titles_enabled || item.kind != ClipKind::Phrase { return; }
     let generation = state.app_data_generation;
@@ -503,6 +502,7 @@ pub(super) unsafe fn execute_row_command(
             }
         }
         MainMenuCommandIntent::RowAction(MainRowMenuAction::DeleteUnpinned) => {
+            if state.active_manual_tab_id().is_some() { return; }
             let plan = main_row_delete_unpinned_data_plan(
                 source_tab_category(state.tab_index),
                 state.tab_index,

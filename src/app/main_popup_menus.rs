@@ -57,7 +57,7 @@ pub(super) unsafe fn show_row_menu(
     current_can_translate: bool,
 ) -> usize {
     let groups = state.groups_for_tab(tab_index);
-    let grouping_enabled = state.settings.grouping_enabled;
+    let grouping_enabled = state.settings.grouping_enabled && state.active_manual_tab_id().is_none();
     let native_row_action_ids = native_row_action_menu_ids_from_specs();
     debug_assert!(native_row_action_ids.contains(&menu_ids::ROW_PASTE));
     debug_assert!(native_row_action_ids.contains(&menu_ids::ROW_EDIT));
@@ -100,6 +100,18 @@ pub(super) unsafe fn show_row_menu(
     #[cfg(feature = "lan-sync")]
     let entries = super::main_qq_cloud::extend_menu(entries, current_kind, selected_count, state.settings.qq_cloud_menu_enabled);
     let mut entries = super::main_secret_vault::append_row_menu(entries, current_kind, selected_count);
+    if state.active_manual_tab_id().is_some() {
+        entries.retain(|entry| !matches!(entry, NativePopupMenuEntry::Command { id, .. }
+            if *id == menu_ids::ROW_DELETE_UNPINNED || *id == menu_ids::ROW_GROUP_REMOVE));
+        for entry in &mut entries {
+            if let NativePopupMenuEntry::Command { id, label, .. } = entry {
+                if *id == menu_ids::ROW_DELETE {
+                    *label = tr("删除原记录（所有标签）", "Delete Original Record (All Tags)").into();
+                }
+            }
+        }
+    }
+    entries.extend(super::main_customization::tag_row_menu_entries(state));
     if state.settings.phrase_titles_enabled && current_kind == ClipKind::Phrase && selected_count <= 1 {
         entries.insert(0, NativePopupMenuEntry::Command {
             id: super::main_row_commands::RENAME_PHRASE_COMMAND,

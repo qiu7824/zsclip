@@ -48,13 +48,19 @@ pub(super) unsafe fn reclaim_hidden_window_memory(hwnd: HWND, state: &mut AppSta
     reclaim_hidden_peer_window_memory(hwnd);
 }
 
-fn window_counts_as_visible_for_memory_reclaim(hwnd: HWND) -> bool {
-    platform_window::exists(hwnd)
+pub(super) fn window_counts_as_visible_for_memory_reclaim(hwnd: HWND) -> bool {
+    let visible=platform_window::exists(hwnd)
         && platform_window::is_visible(hwnd)
-        && !platform_window::is_minimized(hwnd)
+        && !platform_window::is_minimized(hwnd);
+    if visible && window_host_hwnds().contains(&hwnd) {
+        let ptr=unsafe{get_state_ptr(hwnd)};
+        if !ptr.is_null() && unsafe{(*ptr).edge_hidden&&(*ptr).edge_anim_until.is_none()&&!(*ptr).window_interactive_move}{return false;}
+    }
+    visible
 }
 
 pub(super) unsafe fn main_or_settings_window_blocks_hidden_reclaim() -> bool {
+    if super::notes_window::is_visible() { return true; }
     window_host_hwnds().into_iter().any(|hwnd| {
         if window_counts_as_visible_for_memory_reclaim(hwnd) {return true;}
         let state=get_state_ptr(hwnd);
@@ -64,7 +70,7 @@ pub(super) unsafe fn main_or_settings_window_blocks_hidden_reclaim() -> bool {
 
 pub(super) fn transient_window_blocks_hidden_reclaim() -> bool {
     window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
-        || platform_window::current_process_has_visible_window()
+        || platform_window::current_process_has_visible_window_excluding(&window_host_hwnds())
 }
 
 pub(super) unsafe fn pending_paste_blocks_hidden_reclaim() -> bool {
@@ -85,7 +91,7 @@ pub(super) unsafe fn pending_paste_blocks_hidden_reclaim() -> bool {
 /// Visible hosts resume reclamation through their own hide/close lifecycle.
 pub(super) unsafe fn schedule_hidden_reclaim_after_activity(hwnd: HWND, state: &mut AppState) {
     if platform_window::exists(hwnd)
-        && (!platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd))
+        && !window_counts_as_visible_for_memory_reclaim(hwnd)
         && !main_or_settings_window_blocks_hidden_reclaim()
         && !window_counts_as_visible_for_memory_reclaim(current_vv_popup_hwnd())
         && !pending_paste_blocks_hidden_reclaim()
@@ -168,13 +174,18 @@ pub(super) fn main_layout_for_dpi(dpi: u32) -> MainUiLayout {
     MAIN_UI_LAYOUT.scaled(dpi.max(96))
 }
 
-fn main_window_size_for_dpi(dpi: u32) -> (i32, i32) {
-    let layout = main_layout_for_dpi(dpi);
+fn main_window_size_for_dpi(dpi: u32, settings: &AppSettings, available: UiSize) -> (i32, i32) {
+    let layout = main_layout_for_dpi(dpi).with_saved_size(settings.clipboard_window_width,
+        settings.clipboard_window_height, dpi, available);
     (layout.win_w, layout.list_y + layout.list_h + 7)
 }
 
 pub(super) unsafe fn main_layout_for_window(hwnd: HWND) -> MainUiLayout {
-    main_layout_for_dpi(main_window_layout_dpi(hwnd))
+    let layout = main_layout_for_dpi(main_window_layout_dpi(hwnd));
+    match main_window_client_bounds(hwnd) {
+        Some(rect) if rect.right > 0 && rect.bottom > 0 => layout.with_client_size(rect.right, rect.bottom),
+        _ => layout,
+    }
 }
 
 pub(super) unsafe fn handle_main_window_size(hwnd: HWND, _size: UiSize, minimized: bool) {
@@ -186,17 +197,24 @@ pub(super) unsafe fn handle_main_window_size(hwnd: HWND, _size: UiSize, minimize
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
         let state = &mut *ptr;
+        if minimized || !window_counts_as_visible_for_memory_reclaim(hwnd) {
+            state.paint_buffer.clear();
+            state.row_layout_cache.get_mut().clear();
+        }
         if minimized {
             reclaim_hidden_window_memory(hwnd, state);
             schedule_hidden_memory_reclaim(hwnd, state);
+        } else if !window_counts_as_visible_for_memory_reclaim(hwnd) {
+            schedule_hidden_memory_reclaim(hwnd, state);
         } else {
             cancel_hidden_memory_reclaim(hwnd, state);
+            state.clamp_scroll();
         }
     }
-    WindowsMainWindowHost::new(Some(wnd_proc)).apply_main_window_appearance(hwnd);
+    if minimized { return; }
     layout_children(hwnd);
     super::secret_vault_ui::resize_main_view(hwnd);
-    repaint_main_window(hwnd, true);
+    repaint_main_window(hwnd, false);
 }
 
 pub(super) unsafe fn handle_main_app_activation_changed(hwnd: HWND, active: bool) {
@@ -208,7 +226,7 @@ pub(super) unsafe fn handle_main_app_activation_changed(hwnd: HWND, active: bool
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
         let state = &mut *ptr;
-        if state.settings.auto_hide_on_blur
+        if window_auto_hide_on_blur(state)
             && !state.main_window_noactivate
             && state.role != WindowRole::Quick
             && !vv_popup_menu_active()
@@ -231,6 +249,7 @@ pub(super) unsafe fn handle_main_system_metrics_changed(hwnd: HWND) {
 pub(super) unsafe fn handle_main_window_moved(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
+        if (*ptr).window_interactive_move { return; }
         if (*ptr).role == WindowRole::Main && !edge_animation_active(&*ptr) {
             remember_window_pos(hwnd);
         }
@@ -248,7 +267,29 @@ pub(super) unsafe fn handle_main_window_moved(hwnd: HWND) {
 pub(super) unsafe fn handle_main_window_move_completed(hwnd: HWND) {
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
+        (*ptr).window_interactive_move = false;
+        if (*ptr).window_user_resized {
+            (*ptr).window_user_resized = false;
+            if let Some(client) = main_window_client_bounds(hwnd) {
+                let dpi = (*ptr).ui_dpi.max(96) as i64;
+                let logical = ((client.right as i64 * 96 + dpi / 2) / dpi).clamp(300, 4096) as i32;
+                let logical_height = ((client.bottom as i64 * 96 + dpi / 2) / dpi).clamp(240, 4096) as i32;
+                (*ptr).settings.clipboard_window_width = logical;
+                (*ptr).settings.clipboard_window_height = logical_height;
+                for peer in window_host_hwnds() {
+                    if peer == hwnd { continue; }
+                    let other = get_state_ptr(peer);
+                    if !other.is_null() {
+                        (*other).settings.clipboard_window_width = logical;
+                        (*other).settings.clipboard_window_height = logical_height;
+                    }
+                }
+                save_state_settings(&mut *ptr);
+                reset_main_dpi_compensation(&mut *ptr);
+            }
+        }
         ensure_main_window_size_for_monitor(hwnd, &mut *ptr);
+        refresh_low_level_input_hooks();
         if (*ptr).role == WindowRole::Main && !edge_animation_active(&*ptr) {
             remember_window_pos(hwnd);
         }
@@ -269,7 +310,11 @@ pub(super) unsafe fn handle_main_close_requested(hwnd: HWND) {
 }
 
 pub(super) unsafe fn handle_main_lifecycle_event(hwnd: HWND, event: LifecycleEvent) {
-    if matches!(event,LifecycleEvent::Suspend) {clear_main_hover_state(hwnd);}
+    if matches!(event,LifecycleEvent::Suspend) {
+        clear_main_hover_state(hwnd);
+        let ptr=get_state_ptr(hwnd);
+        if !ptr.is_null() {(*ptr).paint_buffer.clear();(*ptr).row_layout_cache.get_mut().clear();}
+    }
     let ptr = get_state_ptr(hwnd);
     if !ptr.is_null() {
         let state = &mut *ptr;
@@ -371,7 +416,7 @@ unsafe fn refresh_main_window_metrics(hwnd: HWND) {
 }
 
 pub(super) unsafe fn ensure_main_window_size_for_monitor(hwnd: HWND, state: &mut AppState) {
-    if edge_animation_active(state) || state.edge_hidden {
+    if edge_animation_active(state) || state.edge_hidden || state.window_interactive_move {
         return;
     }
     if !platform_dpi::is_per_monitor_aware() {
@@ -382,7 +427,9 @@ pub(super) unsafe fn ensure_main_window_size_for_monitor(hwnd: HWND, state: &mut
         return;
     }
     let dpi = main_window_layout_dpi(hwnd).max(96);
-    let (win_w, win_h) = main_window_size_for_dpi(dpi);
+    let work = platform_monitor::nearest_work_rect_for_window(hwnd);
+    let (win_w, win_h) = main_window_size_for_dpi(dpi, &state.settings,
+        UiSize { width: work.right - work.left, height: work.bottom - work.top });
     let Some(rc) = main_window_bounds(hwnd) else {
         refresh_main_window_layout_for_monitor(hwnd, state, Some(dpi));
         return;
@@ -473,6 +520,10 @@ pub(crate) fn hide_main_window(hwnd: HWND) {
 }
 
 pub(super) fn destroy_main_window(hwnd: HWND) {
+    if let Err(error) = unsafe { super::notes_window::try_close() } {
+        platform_dialog::WindowsDialogHost::new().show_message(hwnd, tr("便签", "Notes"), &error, NativeDialogLevel::Error);
+        return;
+    }
     WindowsMainWindowHost::new(Some(wnd_proc)).destroy_main_window(hwnd);
 }
 

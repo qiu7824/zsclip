@@ -1039,13 +1039,13 @@ fn multi_sync_mode_is_exclusive() {
 
     settings_apply_multi_sync_mode(&mut settings, "lan");
     assert!(!settings.cloud_sync_enabled);
-    assert!(settings.lan_sync_enabled);
+    assert_eq!(settings.lan_sync_enabled, cfg!(feature = "lan-sync"));
 
     settings.cloud_sync_enabled = true;
     settings.lan_sync_enabled = true;
     settings_normalize_multi_sync_mode(&mut settings);
-    assert!(!settings.cloud_sync_enabled);
-    assert!(settings.lan_sync_enabled);
+    assert_eq!(settings.cloud_sync_enabled, !cfg!(feature = "lan-sync"));
+    assert_eq!(settings.lan_sync_enabled, cfg!(feature = "lan-sync"));
 
     settings_apply_multi_sync_mode(&mut settings, "off");
     assert!(!settings.cloud_sync_enabled);
@@ -6161,7 +6161,10 @@ fn windows_main_window_appearance_uses_main_window_host() {
     assert!(on_create_block.contains("apply_main_window_appearance(hwnd)"));
     assert!(on_create_block.contains("set_main_window_app_icon("));
     assert!(on_create_block.contains("NativeAppIconResource"));
-    assert!(size_block.contains("apply_main_window_appearance(hwnd)"));
+    // Theme and corner attributes are applied on creation/theme changes, not
+    // repeatedly in the native interactive resize loop.
+    assert!(!size_block.contains("apply_main_window_appearance(hwnd)"));
+    assert!(include_str!("app/main_events.rs").contains("apply_main_window_appearance(hwnd)"));
     assert!(!production.contains("unsafe fn apply_main_window_region"));
     assert!(!on_create_block.contains("platform_appearance::set_rounded_corners(hwnd)"));
     assert!(!on_create_block.contains("platform_appearance::apply_dark_mode_to_window(hwnd)"));
@@ -6571,7 +6574,7 @@ fn windows_main_renderer_uses_the_loaded_application_icon_for_the_title() {
     let renderer = include_str!("../src/app/main_renderer.rs");
 
     assert!(renderer.contains("matches!(command.kind, MainIconKind::App) && app_icon != 0"));
-    assert!(renderer.contains("draw_main_icon_command(memdc, *command, dark, state.icons.app)"));
+    assert!(renderer.contains("draw_main_icon_command(memdc, *command, th, state.icons.app)"));
 }
 
 #[test]

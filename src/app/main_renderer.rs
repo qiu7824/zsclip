@@ -202,7 +202,7 @@ pub(super) fn windows_native_clip_row_component_specs_for_items(
     )
 }
 
-unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, dark: bool, app_icon: isize) {
+unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, theme: Theme, app_icon: isize) {
     let rect: RECT = command.rect.into();
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
@@ -213,7 +213,7 @@ unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, dark: bool,
     };
     if icon != 0 {
         let (tint_for_dark_mode, soften) = match command.color_mode {
-            MainIconColorMode::ThemeAware => (dark, 0),
+            MainIconColorMode::ThemeAware => (theme.bg == rgb(32, 32, 32), 0),
             MainIconColorMode::Original => (false, 0),
         };
         draw_icon_tinted_soft(
@@ -235,15 +235,22 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         return;
     }
     let state = &mut *ptr;
-    state.maybe_request_more_for_active_tab();
     let th = state.theme;
-    let dark = platform_appearance::is_dark_mode();
 
     let mut ps: PAINTSTRUCT = zeroed();
     let hdc = platform_gdi::begin_paint(hwnd, &mut ps);
     if hdc.is_null() {
         return;
     }
+    if !platform_window::is_visible(hwnd) || platform_window::is_minimized(hwnd) {
+        platform_gdi::end_paint(hwnd,&ps);return;
+    }
+    if state.edge_hidden&&state.edge_anim_until.is_none()&&!state.window_interactive_move {
+        state.paint_buffer.clear();state.row_layout_cache.get_mut().clear();
+        let brush=platform_gdi::create_solid_brush(th.bg);platform_gdi::fill_rect(hdc,&ps.rcPaint,brush);
+        platform_gdi::delete_object(brush as _);platform_gdi::end_paint(hwnd,&ps);return;
+    }
+    state.maybe_request_more_for_active_tab();
 
     let Some(client_bounds) = main_window_client_bounds(hwnd) else {
         platform_gdi::end_paint(hwnd, &ps);
@@ -253,19 +260,11 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
     let w = rc_client.right - rc_client.left;
     let h = rc_client.bottom - rc_client.top;
 
-    let memdc = platform_gdi::create_compatible_dc(hdc);
-    let membmp = platform_gdi::create_compatible_bitmap(hdc, w, h);
-    if memdc.is_null() || membmp.is_null() {
-        if !membmp.is_null() {
-            platform_gdi::delete_object(membmp as _);
-        }
-        if !memdc.is_null() {
-            platform_gdi::delete_dc(memdc);
-        }
+    let Some(memdc) = state.paint_buffer.ensure(hdc, w, h) else {
         platform_gdi::end_paint(hwnd, &ps);
         return;
-    }
-    let oldbmp = platform_gdi::select_object(memdc, membmp as _);
+    };
+    let frame_dc = platform_gdi::save_dc(memdc);
 
     let layout = state.layout();
     let mut row_icon_kinds = vec![MainIconKind::Text; state.visible_count()];
@@ -313,7 +312,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         if !state.settings.app_icon_visible && matches!(command.kind, MainIconKind::App) {
             continue;
         }
-        draw_main_icon_command(memdc, *command, dark, state.icons.app);
+        draw_main_icon_command(memdc, *command, th, state.icons.app);
     }
 
     if window_pin_visible(state) {
@@ -356,15 +355,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         );
     }
 
-    for command in &render_plan.segment_commands {
-        draw_main_paint_command(memdc, *command, th);
-    }
-    draw_main_text_commands(
-        memdc,
-        &render_plan.segment_text_commands,
-        MainTextLayer::Content,
-        th,
-    );
+    super::main_customization::draw_category_bar(memdc,state,th);
 
     let saved_clip = platform_gdi::save_dc(memdc);
     let list_clip_rc: RECT = render_plan.list_clip_rect.into();
@@ -376,12 +367,19 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
         list_clip_rc.bottom,
     );
     if state.visible_count() == 0 {
+        if state.active_manual_tab_id().is_some() && !state.search_results_pending() {
+            if let Some(rect) = render_plan.empty_state_rect {
+                draw_text_ex(memdc, tr("标签暂无内容；右键记录可添加到标签", "Empty tag; right-click a record to add it"),
+                    &rect.into(), th.text_muted, layout.row_text_size(), false, true, ui_text_font_family());
+            }
+        } else {
         draw_main_text_commands(
             memdc,
             &render_plan.text_commands,
             MainTextLayer::Content,
             th,
         );
+        }
     } else {
         if !state.settings.card_view_enabled {
             for command in &render_plan.row_background_commands {
@@ -402,24 +400,31 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
             );
 
             if let Some(command) = row_plan.item_icon_command {
-                draw_main_icon_command(memdc, command, dark, state.icons.app);
+                draw_main_icon_command(memdc, command, th, state.icons.app);
             }
 
-            let row_content = layout.row_content_plan(
+            let mut row_content = layout.row_content_plan(
                 row_plan,
                 MainRowContentInput {
                     pinned: row_presentation.pin_badge.is_some(),
-                    show_delete: row_shows_delete_button(state, i),
+                    show_delete: false,
                     delete_hovered: state.hover_delete_idx == i,
                     show_preview: row_supports_image_preview(&item, &state.settings),
                 },
             );
 
+            let actions=if state.hover_idx==i&&!state.search_results_pending(){state.row_actions(&item)}else{Vec::new()};
+            if !actions.is_empty() {
+                if let Some(rect)=layout.quick_action_rect(i,state.visible_count(),state.scroll_y,(actions.len()-1) as i32) {
+                    row_content.text_command.rect.right=row_content.text_command.rect.right.min(rect.left-6);
+                }
+            }
+
             for command in &row_content.paint_commands {
                 draw_main_paint_command(memdc, *command, th);
             }
             for command in &row_content.icon_commands {
-                draw_main_icon_command(memdc, *command, dark, state.icons.app);
+                draw_main_icon_command(memdc, *command, th, state.icons.app);
             }
 
             if let Some(preview_rc) = row_content.preview_rect {
@@ -467,6 +472,20 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                     item.display_title_with_preference(state.settings.phrase_titles_enabled)
                 };
             draw_main_row_text_command(memdc, row_content.text_command, preview_str, th);
+            if state.hover_idx == i && !state.search_results_pending() {
+                for (index,action) in actions.iter().enumerate() {
+                    if let Some(rect)=layout.quick_action_rect(i,state.visible_count(),state.scroll_y,(actions.len()-1-index) as i32) {
+                        let rect:RECT=rect.into();
+                        let hovered=state.hover_quick_action==Some((item.id,*action));
+                        draw_round_fill(memdc as _,&rect,if hovered{th.button_hover}else{th.surface2},4);
+                        use crate::app_core::customization::QuickRowAction;
+                        let glyph=match action{QuickRowAction::Delete=>"\u{E74D}",QuickRowAction::Pin=>"\u{E718}",QuickRowAction::Edit=>"\u{E70F}"};
+                        draw_text_ex(memdc as _,glyph,&rect,if *action==QuickRowAction::Pin&&item.pinned{th.accent}else{th.text_muted},
+                            (16*state.ui_dpi.max(96) as i32/96).max(12),false,true,"Segoe MDL2 Assets");
+                    }
+                }
+            }
+
         }
 
         draw_main_text_commands(
@@ -514,9 +533,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
     platform_gdi::restore_dc(memdc, saved_clip);
 
     platform_gdi::copy_bits(hdc, 0, 0, w, h, memdc, 0, 0);
-    platform_gdi::select_object(memdc, oldbmp);
-    platform_gdi::delete_object(membmp as _);
-    platform_gdi::delete_dc(memdc);
+    platform_gdi::restore_dc(memdc, frame_dc);
     platform_gdi::end_paint(hwnd, &ps);
 }
 
@@ -636,7 +653,7 @@ mod visual_regression_tests {
                     rect: icon,
                     color_mode: MainIconColorMode::ThemeAware,
                 },
-                false,
+                theme,
                 0,
             );
             let rgba = [45u8, 145, 210, 255].repeat(160 * 90);

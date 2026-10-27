@@ -1,7 +1,7 @@
 use super::*;
 
 fn query(text: &str, category: i64) -> ItemsQuery {
-    ItemsQuery { category, group_id: 0, search_text: text.into(), kind_filter: ClipKindFilter::All, near_query: None }
+    ItemsQuery { manual_tab_id: None, category, group_id: 0, search_text: text.into(), kind_filter: ClipKindFilter::All, near_query: None }
 }
 
 fn insert(text: &str, title: &str, category: i64) -> rusqlite::Result<i64> {
@@ -10,6 +10,28 @@ fn insert(text: &str, title: &str, category: i64) -> rusqlite::Result<i64> {
             params![category, if category == 1 { "phrase" } else { "text" }, text, title])?;
         Ok(conn.last_insert_rowid())
     })
+}
+
+#[test]
+fn url_previews_keep_legacy_link_suffixes_without_changing_paste_values() {
+    crate::db_runtime::with_test_protected_texts(&[], || crate::db_runtime::with_test_db(|| {
+        let prefix = format!("https://docs.qq.com/{}/sheet/", "shared-prefix/".repeat(8));
+        let first = format!("{prefix}DOCUMENT_A?tab=one#position");
+        let second = format!("{prefix}DOCUMENT_B?tab=two#position");
+        let a = insert(&first, "", 0)?;
+        let b = insert(&second, "", 0)?;
+        with_db(|conn| conn.execute("UPDATE items SET preview=substr(text_data,1,72),signature='original-signature'", []))?;
+        let summaries = db_load_items_page(&query("", 0), None, 200)?.0;
+        assert_eq!(summaries.len(), 2);
+        assert!(summaries.iter().all(|item| item.text.is_none()));
+        assert_ne!(summaries[0].preview, summaries[1].preview);
+        assert!(summaries.iter().any(|item| item.preview.contains("DOCUMENT_A")));
+        assert!(summaries.iter().any(|item| item.preview.contains("DOCUMENT_B")));
+        assert_eq!(db_load_item_full(a).unwrap().text.as_deref(), Some(first.as_str()));
+        assert_eq!(db_load_item_full(b).unwrap().text.as_deref(), Some(second.as_str()));
+        assert!(summaries.iter().all(|item| item.phrase_title.is_empty()));
+        Ok(())
+    })).unwrap();
 }
 
 #[test]

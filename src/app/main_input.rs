@@ -37,6 +37,10 @@ pub(super) unsafe fn handle_mouse_move(hwnd: HWND, position: UiPoint) {
     let layout = state.layout();
     let title_buttons = main_title_button_visibility(&state.settings);
     let current_hover = main_hover_target_from_state(state);
+    let category_bar=state.category_bar();
+    let category_hover=category_bar.hit(x,y).map(|i|i as i32).unwrap_or_else(||
+        if category_bar.more.is_some_and(|r|crate::app_core::customization::contains(r,x,y)){-2}else{-1});
+    if state.hover_category!=category_hover {state.hover_category=category_hover;repaint_main_window(hwnd,false);}
     if window_pin_visible(state) && pt_in_rect(x, y, &window_pin_rect(state)) {
         if state.hover_btn != "window_pin" {
             state.hover_btn = "window_pin";
@@ -101,6 +105,9 @@ pub(super) unsafe fn handle_mouse_move(hwnd: HWND, position: UiPoint) {
     );
     if let Some(hover) = transition.hover {
         apply_main_hover_target(state, hover.next);
+        let quick_hover=state.quick_action_hit(x,y);
+        let quick_hover_changed=state.hover_quick_action!=quick_hover;
+        state.hover_quick_action=quick_hover;
         // 悬停时立即显示滚动条（满透明）
         if hover.show_scrollbar_feedback {
             show_main_scrollbar_feedback(hwnd, state, false);
@@ -110,7 +117,7 @@ pub(super) unsafe fn handle_mouse_move(hwnd: HWND, position: UiPoint) {
             hide_hover_preview();
         }
 
-        if hover.target_changed {
+        if hover.target_changed || quick_hover_changed {
             repaint_main_window(hwnd, false);
         }
     }
@@ -138,6 +145,11 @@ pub(super) unsafe fn handle_lbutton_down(hwnd: HWND, position: UiPoint) {
         capture_main_pointer(hwnd);
         repaint_main_window(hwnd, false);
         return;
+    }
+    if super::main_customization::handle_category_click(hwnd,state,x,y) {return;}
+    if let Some(action)=state.quick_action_hit(x,y) {
+        state.down_quick_action=Some(action); state.down_row=-1;
+        capture_main_pointer(hwnd); repaint_main_window(hwnd,false);return;
     }
     let target = layout.pointer_down_target(
         x,
@@ -266,6 +278,11 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
     let state = &mut *ptr;
     let x = position.x;
     let y = position.y;
+    if let Some((id,action))=state.down_quick_action.take() {
+        release_main_pointer(hwnd);
+        if state.quick_action_hit(x,y)==Some((id,action)) { super::main_customization::perform_quick_action(hwnd,state,id,action); }
+        return;
+    }
     if state.down_btn == "window_pin" {
         state.down_btn = "";
         release_main_pointer(hwnd);
@@ -329,10 +346,6 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
                 return;
             }
             let idx = release.release_row;
-            let row_has_item = state
-                .visible_src_idx(idx as usize)
-                .and_then(|src_idx| state.active_items().get(src_idx))
-                .is_some();
             let modifiers = hotkey::pointer_modifiers_from_pressed_state();
             let action = state.layout().row_release_action(
                 release,
@@ -341,7 +354,7 @@ pub(super) unsafe fn handle_lbutton_up(hwnd: HWND, position: UiPoint) {
                 state.visible_count(),
                 state.scroll_y,
                 state.hover_idx,
-                row_has_item && state.settings.quick_delete_button,
+                false,
                 modifiers,
             );
             match action {
@@ -381,6 +394,7 @@ pub(super) unsafe fn handle_lbutton_dblclk(hwnd: HWND, position: UiPoint) {
         return;
     }
     let state = &mut *ptr;
+    if state.quick_action_hit(position.x,position.y).is_some() { return; }
     if scroll_time_hint_rect(state)
         .map(|rect| pt_in_rect(position.x, position.y, &rect))
         .unwrap_or(false)
@@ -407,16 +421,20 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
     hide_hover_preview();
     let x = position.x;
     let y = position.y;
-    let (tab0, tab1) = state.segment_rects();
+    let category = state.category_bar().hit(x,y);
+    if let Some(index) = category {
+        if state.settings.category_tabs[index].is_manual() {
+            state.activate_category(index);
+            repaint_main_window(hwnd, true);
+            return;
+        }
+    }
     if state.settings.grouping_enabled
         && windows_main_tool_action_available(NativeHostMainToolAction::GroupFilter)
-        && (pt_in_rect(x, y, &tab0) || pt_in_rect(x, y, &tab1))
+        && category.is_some()
     {
-        let target_tab = if pt_in_rect(x, y, &tab1) {
-            1usize
-        } else {
-            0usize
-        };
+        state.activate_category(category.unwrap());
+        let target_tab = state.tab_index;
         let pt = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
         let cmd = show_group_filter_menu(hwnd, pt.x, pt.y, target_tab, state);
         if super::main_secret_vault::dispatch(hwnd, cmd, None) {
@@ -507,6 +525,9 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
                 main_row_external_action_plan(MainRowMenuAction::TextTranslate, Some(item), &[])
             })
             .is_some();
+    let tag_targets = state.settings.category_tabs.clone();
+    let tag_item_ids = state.selected_db_ids();
+    let tag_generation = state.app_data_generation;
     let cmd = show_row_menu(
         hwnd,
         x,
@@ -522,6 +543,9 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
         current_can_translate,
     );
     if cmd != 0 {
+        if super::main_customization::handle_tag_row_command(hwnd, state, cmd, &tag_targets, &tag_item_ids, tag_generation) {
+            return;
+        }
         if cmd == super::main_row_commands::RENAME_PHRASE_COMMAND {
             if let Some(item) = current_item.as_ref() { super::main_row_commands::rename_phrase(hwnd, state, item); }
             repaint_main_window(hwnd, false);
@@ -654,6 +678,29 @@ pub(super) unsafe fn handle_nchittest(hwnd: HWND, lparam: LPARAM) -> LRESULT {
     };
     platform_window::screen_to_client(hwnd, &mut pt);
 
+    if !state.edge_hidden {
+        if let Some(client) = main_window_client_bounds(hwnd) {
+            let grip = (5 * state.ui_dpi.max(96) as i32 / 96).max(4);
+            if pt.x >= 0 && pt.x < client.right && pt.y >= 0 && pt.y < client.bottom {
+                let left = pt.x < grip;
+                let right = pt.x >= client.right - grip;
+                let top = pt.y < grip;
+                let bottom = pt.y >= client.bottom - grip;
+                let edge = match (left, right, top, bottom) {
+                    (true, _, true, _) => HTTOPLEFT,
+                    (_, true, true, _) => HTTOPRIGHT,
+                    (true, _, _, true) => HTBOTTOMLEFT,
+                    (_, true, _, true) => HTBOTTOMRIGHT,
+                    (true, _, _, _) => HTLEFT,
+                    (_, true, _, _) => HTRIGHT,
+                    (_, _, true, _) => HTTOP,
+                    (_, _, _, true) => HTBOTTOM,
+                    _ => HTCLIENT,
+                };
+                if edge != HTCLIENT { return edge as LRESULT; }
+            }
+        }
+    }
     let hit = state.layout().frame_hit_target(
         pt.x,
         pt.y,

@@ -87,8 +87,12 @@ fn main_window_layout_for_point(pt: POINT) -> MainUiLayout {
     unsafe { MainUiLayout::zsclip().scaled(platform_dpi::layout_dpi_for_point(pt)) }
 }
 
-fn main_window_size_for_point(pt: POINT) -> (i32, i32) {
-    let layout = main_window_layout_for_point(pt);
+fn main_window_size_for_point(pt: POINT, settings: &AppSettings) -> (i32, i32) {
+    let dpi = unsafe { platform_dpi::layout_dpi_for_point(pt) };
+    let work = platform_monitor::nearest_work_rect_for_point(pt);
+    let layout = main_window_layout_for_point(pt)
+        .with_saved_size(settings.clipboard_window_width, settings.clipboard_window_height, dpi,
+            crate::app_core::Size { width: work.right - work.left, height: work.bottom - work.top });
     (layout.win_w, layout.list_y + layout.list_h + 7)
 }
 
@@ -108,12 +112,12 @@ fn edge_preferred_position(state: &AppState) -> Option<(i32, i32)> {
     .map(|anchor| (anchor.x, anchor.y))
 }
 
-unsafe fn position_window_at_restore(hwnd: HWND, restore_x: i32, restore_y: i32) {
+unsafe fn position_window_at_restore(hwnd: HWND, restore_x: i32, restore_y: i32, settings: &AppSettings) {
     let anchor = POINT {
         x: restore_x,
         y: restore_y,
     };
-    let (win_w, win_h) = main_window_size_for_point(anchor);
+    let (win_w, win_h) = main_window_size_for_point(anchor, settings);
     let work = platform_monitor::nearest_work_rect_for_point(anchor);
     let monitor = platform_monitor::nearest_rect_for_point(anchor);
     let clamp_rect = RECT {
@@ -143,7 +147,7 @@ fn resolve_main_window_position(
     cursor: POINT,
 ) -> (i32, i32, i32, i32) {
     let requested = parse_main_window_pos_mode(settings.show_pos_mode.as_str());
-    let (win_w, win_h) = main_window_size_for_point(cursor);
+    let (win_w, win_h) = main_window_size_for_point(cursor, settings);
     let cursor_work = platform_monitor::nearest_work_rect_for_point(cursor);
     let cursor_monitor = platform_monitor::nearest_rect_for_point(cursor);
     let cursor_bounds = UiRect::new(
@@ -172,7 +176,7 @@ fn resolve_main_window_position(
         x: anchor.x,
         y: anchor.y,
     };
-    let (win_w, win_h) = main_window_size_for_point(anchor_point);
+    let (win_w, win_h) = main_window_size_for_point(anchor_point, settings);
     let work = platform_monitor::nearest_work_rect_for_point(anchor_point);
     let monitor = platform_monitor::nearest_rect_for_point(anchor_point);
     let plan = main_window_position_plan(MainWindowPositionInput {
@@ -285,6 +289,7 @@ pub(crate) unsafe fn show_tray_menu_localized(hwnd: HWND) {
 
     let mut host = WindowsStatusItemHost::new(hwnd, TRAY_UID, WM_TRAYICON, 0);
     host.present_menu(&entries);
+    crate::app::schedule_hidden_memory_reclaim_after_activity();
 }
 
 pub(crate) unsafe fn add_tray_icon_localized(hwnd: HWND, icon: isize) -> bool {
@@ -296,11 +301,11 @@ unsafe fn position_main_window_for_state(hwnd: HWND, state: &AppState, by_hotkey
     let pt = platform_input::cursor_pos().unwrap_or_else(|| zeroed());
     if state.settings.edge_auto_hide {
         if let Some((restore_x, restore_y)) = edge_preferred_position(state) {
-            position_window_at_restore(hwnd, restore_x, restore_y);
+            position_window_at_restore(hwnd, restore_x, restore_y, &state.settings);
             return;
         }
         let work = platform_monitor::nearest_work_rect_for_point(pt);
-        let (win_w, win_h) = main_window_size_for_point(pt);
+        let (win_w, win_h) = main_window_size_for_point(pt, &state.settings);
         let x = work.left + ((work.right - work.left - win_w) / 2);
         let y = work.top + ((work.bottom - work.top - win_h) / 3);
         crate::app::set_main_window_bounds(hwnd, UiRect::new(x, y, x + win_w, y + win_h));

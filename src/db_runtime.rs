@@ -571,7 +571,16 @@ pub(crate) fn text_is_registered(text: &str) -> bool {
         && protected_exclusion_matcher().is_ok_and(|matches| matches(text))
 }
 
+pub(crate) const CLIP_LIST_PREVIEW_SQL: &str = "zsclip_display_preview(CASE WHEN kind IN ('text','phrase') AND length(CAST(text_data AS BLOB))<=8192 THEN text_data ELSE NULL END, COALESCE(preview,''))";
+
 pub(crate) fn register_protected_text_filter(conn: &Connection) -> rusqlite::Result<()> {
+    conn.create_scalar_function("zsclip_display_preview", 2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            let text = context.get_raw(0).as_str().ok();
+            let fallback = context.get_raw(1).as_str().unwrap_or("");
+            Ok(text.and_then(crate::app_core::url_preview::summarize).unwrap_or_else(|| fallback.to_string()))
+        })?;
     // This function must not be deterministic: the protected registry can change
     // while a prepared query remains cached or while the vault is locked.
     conn.create_scalar_function("zsclip_is_protected", 1, rusqlite::functions::FunctionFlags::SQLITE_UTF8,
@@ -906,6 +915,14 @@ fn migrate_db(conn: &Connection) -> rusqlite::Result<()> {
             received_at_ms INTEGER NOT NULL,
             PRIMARY KEY(origin_device_id, message_id)
         );
+        CREATE TABLE IF NOT EXISTS clip_tab_items(
+            tab_id TEXT NOT NULL,
+            item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE ON UPDATE CASCADE,
+            PRIMARY KEY(tab_id, item_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_clip_tab_items_item ON clip_tab_items(item_id);
+        CREATE TRIGGER IF NOT EXISTS clip_tab_items_after_delete AFTER DELETE ON items
+        BEGIN DELETE FROM clip_tab_items WHERE item_id=OLD.id; END;
         CREATE INDEX IF NOT EXISTS idx_items_category_pinned_id ON items(category, pinned, id DESC);
         CREATE INDEX IF NOT EXISTS idx_items_group_id ON items(group_id, id DESC);
         CREATE INDEX IF NOT EXISTS idx_items_category_signature ON items(category, signature, id DESC);
@@ -1521,7 +1538,7 @@ fn normalize_native_captured_text(text: &str) -> String {
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn native_clip_preview(text: &str) -> String {
-    text.chars().take(120).collect()
+    crate::app_core::url_preview::summarize(text).unwrap_or_else(|| text.chars().take(120).collect())
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
@@ -1723,9 +1740,8 @@ pub(crate) fn native_clip_list_items_for_group_kind_filter(
     limit: usize,
 ) -> rusqlite::Result<Vec<crate::app_core::NativeHostClipListItemProjection>> {
     with_db(|conn| {
-        let mut sql = "SELECT id, kind, COALESCE(preview, ''), COALESCE(source_app, ''), pinned, phrase_title \
-             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"
-            .to_string();
+        let mut sql = format!("SELECT id, kind, {} AS preview, COALESCE(source_app, ''), pinned, phrase_title \
+             FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?", CLIP_LIST_PREVIEW_SQL);
         let mut values = vec![rusqlite::types::Value::from(category)];
         if group_id > 0 {
             sql.push_str(" AND group_id=?");
@@ -1825,7 +1841,7 @@ fn native_clip_list_items_for_query_internal(
             }
             conn.progress_handler(500, Some(move || generation.load(Ordering::Acquire) != expected));
         }
-        let select_columns = "id, kind, COALESCE(preview, '') AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at, phrase_title";
+        let select_columns = format!("id, kind, {} AS preview, COALESCE(source_app, '') AS source_app, pinned, COALESCE(file_paths, text_data, '') AS searchable_data, COALESCE(created_at, '') AS created_at, phrase_title", CLIP_LIST_PREVIEW_SQL);
         let mut sql = if near_query.is_some() {
             format!(
                 "WITH base AS (SELECT {select_columns}, ROW_NUMBER() OVER (ORDER BY pinned DESC, id DESC) AS rn FROM items WHERE (kind NOT IN ('text','phrase') OR (zsclip_is_protected(COALESCE(NULLIF(text_data, ''), preview, ''))=0 AND zsclip_is_protected_html(rich_text_html)=0 AND zsclip_is_protected(phrase_title)=0)) AND category=?"

@@ -298,6 +298,14 @@ pub(super) unsafe fn paint_settings_window(hwnd: HWND) {
         }
     }
 
+    #[cfg(test)]
+    if let Some(path)=std::env::var_os("ZSCLIP_SETTINGS_SNAPSHOT") {
+        if let Some(rgba)=platform_gdi::snapshot_dc_rgba(memdc,rc.right,rc.bottom) {
+            let mut encoder=png::Encoder::new(std::fs::File::create(path).expect("snapshot file"),rc.right as u32,rc.bottom as u32);
+            encoder.set_color(png::ColorType::Rgba);encoder.set_depth(png::BitDepth::Eight);
+            let mut writer=encoder.write_header().unwrap();writer.write_image_data(&rgba).unwrap();writer.finish().unwrap();
+        }
+    }
     if back_buffer.is_some() {
         platform_gdi::copy_bits(
             hdc,

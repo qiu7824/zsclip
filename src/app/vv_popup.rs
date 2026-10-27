@@ -819,10 +819,8 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                     .map(|entry| {
                         let label = if entry.item.kind == ClipKind::Image {
                             format_created_at_local(&entry.item.created_at, &entry.item.preview)
-                        } else if !state.settings.phrase_titles_enabled {
-                            entry.item.preview.clone()
                         } else {
-                            entry.item.display_title().to_string()
+                            entry.item.display_title_with_preference(state.settings.phrase_titles_enabled).to_string()
                         };
                         MainVvPopupRenderItem {
                             index: entry.index,

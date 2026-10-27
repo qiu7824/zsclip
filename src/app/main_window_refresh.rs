@@ -26,7 +26,10 @@ unsafe fn apply_loaded_settings_locked(hwnd: HWND, state: &mut AppState) {
     #[cfg(feature = "lan-sync")]
     crate::lan_sync::ensure_device_identity(&mut loaded);
     settings_normalize_multi_sync_mode(&mut loaded);
+    let categories_changed=state.settings.category_tabs!=loaded.category_tabs;
     state.settings = loaded;
+    if categories_changed {state.reconcile_category();}
+    refresh_window_pin(hwnd);
     refresh_search_font(state);
     platform_appearance::set_dark_mode_enabled(state.settings.dark_mode_enabled);
     state.theme = Theme::default();
@@ -75,7 +78,10 @@ unsafe fn refresh_window_state_locked(hwnd: HWND, reload_settings: bool) {
     let state = &mut *ptr;
     if reload_settings {
         let (settings, app_data_generation) = load_settings_with_generation();
+        let categories_changed=state.settings.category_tabs!=settings.category_tabs;
         state.settings = settings;
+        if categories_changed {state.reconcile_category();}
+        refresh_window_pin(hwnd);
         refresh_search_font(state);
         platform_appearance::set_dark_mode_enabled(state.settings.dark_mode_enabled);
         state.theme = Theme::default();
