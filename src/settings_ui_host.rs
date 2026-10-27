@@ -1475,7 +1475,8 @@ pub(crate) unsafe fn refresh_settings_control_themes(root:HWND) {
     while let Some(child)=pending.pop() {
         pending.extend(platform_window::children_bottom_to_top(child));
         let class=platform_window::class_name(child);
-        if class.eq_ignore_ascii_case("Edit") {
+        if class.eq_ignore_ascii_case("Edit") || class.eq_ignore_ascii_case("ComboBox") {
+            // DarkMode_Explorer leaves combo boxes with a light frame and arrow.
             platform_appearance::apply_dark_mode_to_window(child);
             platform_appearance::set_window_theme(child,if dark{"DarkMode_CFD"}else{"Explorer"});
         }else if class.eq_ignore_ascii_case("ListBox") {

@@ -202,7 +202,7 @@ pub(super) fn windows_native_clip_row_component_specs_for_items(
     )
 }
 
-unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, theme: Theme, app_icon: isize) {
+pub(super) unsafe fn draw_main_icon_command(hdc: HDC, command: MainIconCommand, theme: Theme, app_icon: isize) {
     let rect: RECT = command.rect.into();
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
@@ -481,7 +481,7 @@ pub(super) unsafe fn paint_main_window(hwnd: HWND) {
                         use crate::app_core::customization::QuickRowAction;
                         let glyph=match action{QuickRowAction::Delete=>"\u{E74D}",QuickRowAction::Pin=>"\u{E718}",QuickRowAction::Edit=>"\u{E70F}"};
                         draw_text_ex(memdc as _,glyph,&rect,if *action==QuickRowAction::Pin&&item.pinned{th.accent}else{th.text_muted},
-                            (16*state.ui_dpi.max(96) as i32/96).max(12),false,true,"Segoe MDL2 Assets");
+                            16,false,true,"Segoe MDL2 Assets");
                     }
                 }
             }

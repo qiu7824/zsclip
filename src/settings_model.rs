@@ -18,7 +18,9 @@ pub const SETTINGS_FORM_ROW_H: i32 = 32;
 pub const SETTINGS_FORM_ROW_GAP: i32 = 8;
 pub const SETTINGS_FORM_SECTION_GAP: i32 = 12;
 pub const SETTINGS_FORM_SECTION_PAD: i32 = 18;
-pub const SETTINGS_FORM_BOTTOM_SAFE_H: i32 = 24;
+// Windows cards end close to their last row so top and bottom padding read as
+// balanced; layout tests keep every Windows control inside its card.
+pub const SETTINGS_FORM_BOTTOM_SAFE_H: i32 = if cfg!(windows) { 8 } else { 24 };
 pub const SETTINGS_VIEWPORT_MASK_H: i32 = 14;
 pub const SETTINGS_DROPDOWN_ITEM_H: i32 = 38;
 pub const SETTINGS_DROPDOWN_PAD: i32 = 6;
@@ -523,7 +525,8 @@ const GENERAL_FORM_SECTIONS: [SettingsFormCardSpec; 2] = [
 ];
 const GENERAL_TITLES: [&str; 2] = ["启动与托盘", "维护"];
 const APPEARANCE_FORM_SECTIONS: [SettingsFormCardSpec; 4] = [
-    SettingsFormCardSpec { rows: 5, extra_px: 116 },
+    // Windows draws a 92px list sample below the five rows.
+    SettingsFormCardSpec { rows: 5, extra_px: if cfg!(windows) { 100 } else { 116 } },
     SettingsFormCardSpec { rows: if cfg!(windows) {8}else{7}, extra_px: 0 },
     SettingsFormCardSpec { rows: 4, extra_px: 0 },
     SettingsFormCardSpec { rows: 3, extra_px: 0 },
@@ -1098,10 +1101,12 @@ pub fn settings_chrome_render_plan(window: UiRect) -> SettingsChromeRenderPlan {
         ),
         page_title_rect: settings_title_rect(),
         content_clip_rect: settings_safe_paint_rect_for_window(window),
+        // Span exactly the card column (see settings_content_w_scaled) so the
+        // header rule lines up with the cards below it.
         viewport_mask_separator_rect: UiRect::new(
-            viewport_mask_rect.left + settings_scale(12),
+            settings_content_x_scaled(),
             viewport_mask_rect.bottom - 1,
-            viewport_mask_rect.right - settings_scale(12),
+            (window.right - settings_scale(28)).max(settings_content_x_scaled() + 1),
             viewport_mask_rect.bottom,
         ),
         viewport_mask_rect,
@@ -5017,9 +5022,9 @@ mod tests {
         assert_eq!(
             plan.viewport_mask_separator_rect,
             UiRect::new(
-                mask.left + 12,
+                settings_content_x_scaled(),
                 mask.bottom - 1,
-                mask.right - 12,
+                1100 - 28,
                 mask.bottom
             )
         );

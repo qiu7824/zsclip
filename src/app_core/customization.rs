@@ -151,10 +151,22 @@ pub(crate) struct CategoryBar {
     pub items: Vec<CategoryBarItem>,
     pub more: Option<UiRect>,
 }
+/// Shares `extra` pixels across `widths` so their sum grows by exactly `extra`.
+fn spread_extra(widths: &mut [i32], extra: i32) {
+    let count = widths.len() as i32;
+    if count == 0 || extra <= 0 {
+        return;
+    }
+    for (index, width) in widths.iter_mut().enumerate() {
+        *width += extra / count + i32::from((index as i32) < extra % count);
+    }
+}
+
 impl CategoryBar {
     pub fn new(tabs: &[CategoryTab], active: usize, rect: UiRect, dpi: u32) -> Self {
         let px = |n: i32| (n * dpi.max(96) as i32 + 48) / 96;
-        let entries: Vec<_> = tabs
+        // (tab index, preferred width, narrowest width that still fits the label)
+        let entries: Vec<(usize, i32, i32)> = tabs
             .iter()
             .enumerate()
             .filter(|(_, t)| t.visible)
@@ -164,7 +176,7 @@ impl CategoryBar {
                     .chars()
                     .map(|ch| if ch.is_ascii() { 7 } else { 13 })
                     .sum::<i32>();
-                (index, px((text + 32).max(144)))
+                (index, px((text + 32).max(144)), px((text + 20).max(44)))
             })
             .collect();
         if entries.is_empty() {
@@ -174,41 +186,70 @@ impl CategoryBar {
             };
         }
         let available = (rect.right - rect.left).max(1);
-        let overflow = entries.iter().map(|(_, w)| *w).sum::<i32>() > available;
-        let more_width = if overflow { px(28).min(available) } else { 0 };
-        let budget = (available - more_width).max(1);
-        let active_pos = entries.iter().position(|(i, _)| *i == active).unwrap_or(0);
-        let mut start = if overflow { active_pos } else { 0 };
-        let mut used = entries[start].1.min(budget);
-        if overflow {
-            while start > 0 && used + entries[start - 1].1 <= budget {
-                start -= 1;
-                used += entries[start].1;
-            }
+        let preferred_total = entries.iter().map(|e| e.1).sum::<i32>();
+        let compact_total = entries.iter().map(|e| e.2).sum::<i32>();
+        let row = |left: i32, shown: &[(usize, i32, i32)], widths: &[i32]| {
+            let mut x = left;
+            let items = shown
+                .iter()
+                .zip(widths)
+                .map(|(&(index, _, _), &width)| {
+                    let item = CategoryBarItem {
+                        index,
+                        rect: UiRect::new(x, rect.top, x + width, rect.bottom),
+                    };
+                    x += width;
+                    item
+                })
+                .collect::<Vec<_>>();
+            (items, x)
+        };
+        if preferred_total <= available {
+            // Roomy: keep the default tab size and centre the strip.
+            let widths: Vec<_> = entries.iter().map(|e| e.1).collect();
+            let left = rect.left + (available - preferred_total) / 2;
+            return Self {
+                items: row(left, &entries, &widths).0,
+                more: None,
+            };
         }
-        let mut end = if overflow { active_pos + 1 } else { 1 };
-        while end < entries.len() && used + entries[end].1 <= budget {
-            used += entries[end].1;
+        if compact_total <= available {
+            // Tight: shrink every tab evenly instead of hiding tabs behind the
+            // more button; equal widths whenever every label still fits.
+            let count = entries.len() as i32;
+            let mut widths: Vec<_> = if entries.iter().all(|e| e.2 <= available / count) {
+                vec![available / count; entries.len()]
+            } else {
+                entries.iter().map(|e| e.2).collect()
+            };
+            let extra = available - widths.iter().sum::<i32>();
+            spread_extra(&mut widths, extra);
+            return Self {
+                items: row(rect.left, &entries, &widths).0,
+                more: None,
+            };
+        }
+        let more_width = px(28).min(available);
+        let budget = (available - more_width).max(1);
+        let active_pos = entries.iter().position(|e| e.0 == active).unwrap_or(0);
+        let mut start = active_pos;
+        let mut used = entries[start].2.min(budget);
+        while start > 0 && used + entries[start - 1].2 <= budget {
+            start -= 1;
+            used += entries[start].2;
+        }
+        let mut end = active_pos + 1;
+        while end < entries.len() && used + entries[end].2 <= budget {
+            used += entries[end].2;
             end += 1;
         }
-        let left = rect.left + (available - used - more_width).max(0) / 2;
-        let mut x = left;
-        let items = entries[start..end]
-            .iter()
-            .map(|&(index, width)| {
-                let right = (x + width).min(left + budget);
-                let item = CategoryBarItem {
-                    index,
-                    rect: UiRect::new(x, rect.top, right, rect.bottom),
-                };
-                x = right;
-                item
-            })
-            .collect();
+        let shown = &entries[start..end];
+        let mut widths: Vec<_> = shown.iter().map(|e| e.2.min(budget)).collect();
+        spread_extra(&mut widths, budget - used);
+        let (items, x) = row(rect.left, shown, &widths);
         Self {
             items,
-            more: overflow
-                .then(|| UiRect::new(x, rect.top, (x + more_width).min(rect.right), rect.bottom)),
+            more: Some(UiRect::new(x, rect.top, (x + more_width).min(rect.right), rect.bottom)),
         }
     }
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
@@ -328,6 +369,35 @@ mod tests {
             .more
             .is_none());
     }
+    #[test]
+    fn tight_category_bars_shrink_tabs_before_hiding_them() {
+        let mut tabs = default_category_tabs();
+        for name in ["工作", "代码", "文件"] {
+            tabs.push(CategoryTab { id: name.into(), name: name.into(), ..Default::default() });
+        }
+        for count in 3..=5 {
+            let bar = CategoryBar::new(&tabs[..count], 0, UiRect::new(6, 36, 294, 66), 96);
+            assert!(bar.more.is_none(), "{count} tabs should fit at the default width");
+            assert_eq!(bar.items.len(), count);
+            assert_eq!(bar.items.first().unwrap().rect.left, 6);
+            assert_eq!(bar.items.last().unwrap().rect.right, 294);
+            for pair in bar.items.windows(2) {
+                assert_eq!(pair[0].rect.right, pair[1].rect.left);
+            }
+            // Labels keep 52px (four CJK) or 26px (two CJK) of text plus padding.
+            for item in &bar.items {
+                assert!(item.rect.width() >= if item.index < 2 { 72 } else { 46 });
+            }
+        }
+        let three = CategoryBar::new(&tabs[..3], 0, UiRect::new(6, 36, 294, 66), 96);
+        assert!(three.items.iter().all(|item| item.rect.width() == 96));
+        let crowded = CategoryBar::new(&tabs, 4, UiRect::new(6, 36, 214, 66), 96);
+        assert!(crowded.more.is_some());
+        assert!(crowded.items.iter().any(|item| item.index == 4));
+        assert_eq!(crowded.items.last().unwrap().rect.right, crowded.more.unwrap().left);
+        assert_eq!(crowded.more.unwrap().right, 214);
+    }
+
     #[test]
     fn row_buttons_deduplicate_order_and_retain_missing_actions() {
         assert_eq!(

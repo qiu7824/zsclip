@@ -119,6 +119,39 @@ fn overlaps(a: UiRect, b: UiRect) -> bool {
 }
 
 #[test]
+fn every_scrollable_settings_control_stays_inside_a_card() {
+    unsafe {
+        let surface = HiddenSettingsSurface::new();
+        let state = &mut *(platform_window::user_data(surface.0) as *mut SettingsWndState);
+        for page in 0..SETTINGS_PAGE_LABELS.len() {
+            settings_show_page(surface.0, state, page);
+            let sections = settings_content_render_plan(
+                page,
+                0,
+                &state.plugin_sections,
+                &state.multi_sync_sections,
+            )
+            .sections;
+            for control in state.ui.page_regs(page).filter(|c| c.visible && c.scrollable) {
+                let bounds = control.bounds;
+                assert!(
+                    sections.iter().any(|section| {
+                        let card = section.rect;
+                        bounds.left >= card.left
+                            && bounds.right <= card.right
+                            && bounds.top >= card.top
+                            && bounds.bottom <= card.bottom
+                    }),
+                    "page {page}: {:?} {bounds:?} leaves its card; cards {:?}",
+                    settings_host_text(control.hwnd),
+                    sections.iter().map(|s| s.rect).collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn notes_plugin_toggle_controls_entry_and_roundtrips_without_enabling_by_default() {
     unsafe {
         let surface = HiddenSettingsSurface::new();

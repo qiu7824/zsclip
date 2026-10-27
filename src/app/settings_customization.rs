@@ -33,6 +33,11 @@ struct Editor {
     kind: HWND,
     visible: HWND,
     status: HWND,
+    hint: HWND,
+    /// Client y of the footer divider above 确定/取消.
+    footer_y: i32,
+    /// Sample row showing the quick buttons in their configured order.
+    preview: Option<RECT>,
     group_ids: Vec<i64>,
     kind_keys: Vec<&'static str>,
     actions: Vec<QuickRowAction>,
@@ -104,25 +109,38 @@ unsafe fn commit(editor: &mut Editor) {
         }
     }
 }
+fn action_glyph(action: QuickRowAction) -> char {
+    // Same glyphs as the row buttons in the clipboard list.
+    match action {
+        QuickRowAction::Delete => '\u{E74D}',
+        QuickRowAction::Pin => '\u{E718}',
+        QuickRowAction::Edit => '\u{E70F}',
+    }
+}
 unsafe fn refresh_list(editor: &mut Editor) {
+    use super::themed_controls::{LIST_BADGE_SEPARATOR, LIST_ITEM_MUTED};
     editor.loading = true;
     platform_window::send_message(editor.list, WM_SETREDRAW, 0, 0);
     platform_window::send_message(editor.list, LB_RESETCONTENT, 0, 0);
-    let labels: Vec<String> = if editor.categories {
+    // (label, badge, glyph, shown)
+    let rows: Vec<(String, &str, char, bool)> = if editor.categories {
         editor
             .settings
             .category_tabs
             .iter()
             .map(|t| {
-                format!(
-                    "{}{}{}",
-                    if t.name.is_empty() {
-                        "未命名"
+                (
+                    if t.name.is_empty() { "未命名".to_string() } else { t.name.clone() },
+                    if !t.visible {
+                        "已隐藏"
+                    } else if t.is_manual() {
+                        "手动"
                     } else {
-                        &t.name
+                        "自动筛选"
                     },
-                    if t.is_manual() { "（手动）" } else { "（自动筛选）" },
-                    if t.visible { "" } else { "（隐藏）" }
+                    // Tag for hand-picked contents, filter for automatic views.
+                    if t.is_manual() { '\u{E8EC}' } else { '\u{E71C}' },
+                    t.visible,
                 )
             })
             .collect()
@@ -131,30 +149,75 @@ unsafe fn refresh_list(editor: &mut Editor) {
             .actions
             .iter()
             .map(|&a| {
-                format!(
-                    "{}{}",
-                    a.label(),
-                    if action_enabled(&editor.settings, a) {
-                        ""
-                    } else {
-                        "（隐藏）"
-                    }
-                )
+                let shown = action_enabled(&editor.settings, a);
+                (a.label().to_string(), if shown { "" } else { "已隐藏" }, action_glyph(a), shown)
             })
             .collect()
     };
-    for label in labels {
-        platform_window::send_message(
+    for (label, badge, glyph, shown) in rows {
+        let text = format!("{label}{LIST_BADGE_SEPARATOR}{badge}");
+        let index = platform_window::send_message(
             editor.list,
             LB_ADDSTRING,
             0,
-            to_wide(&label).as_ptr() as isize,
+            to_wide(&text).as_ptr() as isize,
         );
+        if index >= 0 {
+            let data = glyph as usize | if shown { 0 } else { LIST_ITEM_MUTED };
+            platform_window::send_message(editor.list, LB_SETITEMDATA, index as usize, data as isize);
+        }
     }
     platform_window::send_message(editor.list, LB_SETCURSEL, editor.selected, 0);
     platform_window::send_message(editor.list, WM_SETREDRAW, 1, 0);
     platform_gdi::invalidate_rect(editor.list, null(), 0);
+    if let Some(preview) = editor.preview {
+        let parent = platform_window::parent(editor.list);
+        platform_gdi::invalidate_rect(parent, &preview, 1);
+    }
     editor.loading = false;
+}
+
+/// Paints the dialog background, footer divider and quick-button preview.
+unsafe fn paint_background(hwnd: HWND, dc: HDC, editor: &Editor) {
+    let theme = Theme::default();
+    let dpi = platform_dpi::layout_dpi_for_window(hwnd).max(96) as i32;
+    let px = |n: i32| (n * dpi + 48) / 96;
+    let Some(client) = platform_window::client_rect(hwnd) else {
+        return;
+    };
+    platform_gdi::fill_rect(dc, &client, editor.brush);
+    let divider = platform_gdi::create_solid_brush(theme.stroke);
+    platform_gdi::fill_rect(
+        dc,
+        &RECT { top: editor.footer_y, bottom: editor.footer_y + 1, ..client },
+        divider,
+    );
+    platform_gdi::delete_object(divider as _);
+    let Some(row) = editor.preview else {
+        return;
+    };
+    draw_round_rect(dc, &row, theme.surface, theme.stroke, px(6));
+    let size = px(24);
+    let gap = px(6);
+    let mut right = row.right - px(10);
+    let top = row.top + (row.bottom - row.top - size) / 2;
+    let shown: Vec<_> = editor
+        .actions
+        .iter()
+        .copied()
+        .filter(|&a| action_enabled(&editor.settings, a))
+        .collect();
+    for action in shown.iter().rev() {
+        let button = RECT { left: right - size, top, right, bottom: top + size };
+        draw_round_fill(dc, &button, theme.surface2, px(4));
+        draw_text_ex(dc, &action_glyph(*action).to_string(), &button, theme.text_muted, 14,
+            false, true, "Segoe MDL2 Assets");
+        right = button.left - gap;
+    }
+    let text = RECT { left: row.left + px(14), top: row.top, right: right - px(6), bottom: row.bottom };
+    draw_text_ex(dc, if shown.is_empty() { "示例记录（不显示快捷按钮）" } else { "示例记录" },
+        &text, if shown.is_empty() { theme.text_muted } else { theme.text }, 14, false, false,
+        ui_text_font_family());
 }
 unsafe fn load_fields(editor: &mut Editor) {
     editor.loading = true;
@@ -246,7 +309,9 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
         }
         WM_MEASUREITEM if l != 0 => {
             let item = &mut *(l as *mut windows_sys::Win32::UI::Controls::MEASUREITEMSTRUCT);
-            item.itemHeight = (24 * platform_dpi::layout_dpi_for_window(hwnd).max(96) / 96) as u32;
+            // List rows carry an icon and badge; dropdown rows stay compact.
+            let height = if item.CtlType == windows_sys::Win32::UI::Controls::ODT_LISTBOX { 30 } else { 24 };
+            item.itemHeight = (height * platform_dpi::layout_dpi_for_window(hwnd).max(96) / 96) as u32;
             1
         }
         WM_CLOSE => {
@@ -278,12 +343,21 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                 let tab = &mut editor.settings.category_tabs[editor.selected];
                 tab.group_id = 0;
                 tab.kind = "all".into();
+                refresh_list(editor);
                 load_fields(editor);
+                return 0;
+            }
+            if id == NAME && code == EN_CHANGE as usize {
+                // Keep the list label in step with the name being typed.
+                commit(editor);
+                refresh_list(editor);
                 return 0;
             }
             match id {
                 VISIBLE if code == BN_CLICKED as usize => {
                     check(editor.visible, !checked(editor.visible));
+                    commit(editor);
+                    refresh_list(editor);
                 }
                 ADD if editor.categories => {
                     commit(editor);
@@ -373,6 +447,8 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
                     } else {
                         rgb(180, 40, 40)
                     }
+                } else if l as HWND == editor.hint {
+                    theme.text_muted
                 } else {
                     theme.text
                 },
@@ -388,9 +464,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LR
             brush as isize
         }
         WM_ERASEBKGND => {
-            if let Some(rect) = platform_window::client_rect(hwnd) {
-                platform_gdi::fill_rect(w as HDC, &rect, editor.brush);
-            }
+            paint_background(hwnd, w as HDC, editor);
             1
         }
         _ => platform_window::default_window_proc(hwnd, msg, w, l),
@@ -416,8 +490,11 @@ unsafe fn show_impl(
     let dpi = platform_dpi::layout_dpi_for_window(parent).max(96) as i32;
     let px = |n: i32| n * dpi / 96;
     let work = platform_monitor::nearest_work_rect_for_window(parent);
-    let width = px(700);
-    let height = px(if categories { 545 } else { 375 });
+    // Layout grid (logical px): 20px margins, a 240px list column and a
+    // 376px field column, with the footer below a divider.
+    let footer_y = if categories { 478 } else { 200 };
+    let width = px(680);
+    let height = px(footer_y + 64);
     let hwnd = platform_window::create_window_ex(
         WS_EX_DLGMODALFRAME,
         class.as_ptr(),
@@ -439,6 +516,20 @@ unsafe fn show_impl(
     );
     if hwnd.is_null() {
         return None;
+    }
+    // The layout describes the client area; grow the frame by the caption and
+    // borders so the footer buttons are never clipped.
+    if let (Some(outer), Some(inner)) = (platform_window::window_rect(hwnd), platform_window::client_rect(hwnd)) {
+        let frame_w = width + (outer.right - outer.left) - (inner.right - inner.left);
+        let frame_h = height + (outer.bottom - outer.top) - (inner.bottom - inner.top);
+        platform_window::move_window(
+            hwnd,
+            work.left + (work.right - work.left - frame_w) / 2,
+            work.top + (work.bottom - work.top - frame_h) / 2,
+            frame_w,
+            frame_h,
+            false,
+        );
     }
     let font = platform_gdi::create_font_w(
         -px(14),
@@ -470,6 +561,14 @@ unsafe fn show_impl(
         kind: null_mut(),
         visible: null_mut(),
         status: null_mut(),
+        hint: null_mut(),
+        footer_y: px(footer_y),
+        preview: (!categories).then(|| RECT {
+            left: px(284),
+            top: px(108),
+            right: px(660),
+            bottom: px(152),
+        }),
         group_ids: vec![],
         kind_keys: vec![],
         font,
@@ -513,7 +612,9 @@ unsafe fn show_impl(
             );
             child
         };
-    create(
+    // Left column x 20..260, right column x 284..660; creation order is the
+    // tab order, so controls are created top-to-bottom, left-to-right.
+    editor.hint = create(
         "STATIC",
         if categories {
             "手动标签新建为空，可右键添加记录；自动筛选按来源、分组和类型显示。"
@@ -522,12 +623,13 @@ unsafe fn show_impl(
         },
         0,
         0,
+        20,
         16,
-        16,
-        650,
-        26,
+        640,
+        22,
     );
-    let list_h = if categories { 340 } else { 170 };
+    // 30px rows plus the border: 11 rows for tags, 3 for the quick buttons.
+    let list_bottom = if categories { 384 } else { 142 };
     editor.list = create(
         "LISTBOX",
         "",
@@ -535,66 +637,71 @@ unsafe fn show_impl(
             | WS_BORDER
             | WS_VSCROLL
             | LBS_NOTIFY as u32
+            | LBS_NOINTEGRALHEIGHT as u32
             | LBS_OWNERDRAWFIXED as u32
             | LBS_HASSTRINGS as u32,
         LIST,
-        16,
-        50,
-        230,
-        list_h,
+        20,
+        48,
+        240,
+        list_bottom - 48,
     );
-    let button_y = if categories { 404 } else { 234 };
-    create("BUTTON", "上移", WS_TABSTOP, UP, 16, button_y, 108, 30);
-    create("BUTTON", "下移", WS_TABSTOP, DOWN, 138, button_y, 108, 30);
+    let mut button_y = list_bottom + 12;
     if categories {
-        create("BUTTON", "新增标签", WS_TABSTOP, ADD, 16, 444, 108, 30);
-        create("BUTTON", "删除标签", WS_TABSTOP, REMOVE, 138, 444, 108, 30);
-        create("STATIC", "名称", 0, 0, 272, 52, 100, 24);
+        create("BUTTON", "新增标签", WS_TABSTOP, ADD, 20, button_y, 114, 30);
+        create("BUTTON", "删除标签", WS_TABSTOP, REMOVE, 146, button_y, 114, 30);
+        button_y += 38;
+    }
+    create("BUTTON", "上移", WS_TABSTOP, UP, 20, button_y, 114, 30);
+    create("BUTTON", "下移", WS_TABSTOP, DOWN, 146, button_y, 114, 30);
+    let field = |label: &str, y: i32| create("STATIC", label, 0, 0, 284, y, 376, 20);
+    if categories {
+        field("名称", 48);
         editor.name = create(
             "EDIT",
             "",
             WS_TABSTOP | WS_BORDER | ES_AUTOHSCROLL as u32,
             NAME,
-            272,
-            80,
-            390,
-            32,
+            284,
+            72,
+            376,
+            30,
         );
         platform_window::send_message(editor.name, 0x00C5, 32, 0);
-        create("STATIC", "内容方式", 0, 0, 272, 128, 150, 24);
+        field("内容方式", 116);
         editor.source = create(
             "COMBOBOX",
             "",
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             SOURCE,
-            272,
-            155,
-            390,
+            284,
+            140,
+            376,
             150,
         );
         combo_add(editor.source, "手动添加（新标签默认）");
         combo_add(editor.source, "自动筛选：复制记录");
         combo_add(editor.source, "自动筛选：常用短语");
-        create("STATIC", "分组", 0, 0, 272, 203, 150, 24);
+        field("分组", 184);
         editor.group = create(
             "COMBOBOX",
             "",
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             GROUP,
-            272,
-            230,
-            390,
+            284,
+            208,
+            376,
             180,
         );
-        create("STATIC", "文件类型", 0, 0, 272, 278, 150, 24);
+        field("文件类型", 252);
         editor.kind = create(
             "COMBOBOX",
             "",
             WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
             KIND,
-            272,
-            305,
-            390,
+            284,
+            276,
+            376,
             160,
         );
     }
@@ -607,22 +714,25 @@ unsafe fn show_impl(
         },
         WS_TABSTOP | BS_AUTOCHECKBOX as u32,
         VISIBLE,
-        272,
-        if categories { 366 } else { 82 },
+        284,
+        if categories { 324 } else { 48 },
         260,
-        30,
+        28,
     );
+    if !categories {
+        field("预览", 84);
+    }
     editor.status = create(
         "STATIC",
         "",
         0,
         8220,
-        272,
-        if categories { 411 } else { 184 },
-        390,
-        48,
+        284,
+        if categories { 362 } else { 160 },
+        376,
+        if categories { 40 } else { 24 },
     );
-    let footer = if categories { 474 } else { 290 };
+    let footer = footer_y + 14;
     create(
         "BUTTON",
         "确定",
@@ -633,7 +743,7 @@ unsafe fn show_impl(
         100,
         32,
     );
-    create("BUTTON", "取消", WS_TABSTOP, CANCEL, 562, footer, 100, 32);
+    create("BUTTON", "取消", WS_TABSTOP, CANCEL, 560, footer, 100, 32);
     refresh_list(&mut editor);
     load_fields(&mut editor);
     crate::settings_ui_host::refresh_settings_control_themes(hwnd);

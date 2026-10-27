@@ -4,20 +4,43 @@ pub(super) fn content_font_size_label(size: i32) -> String {
     if size == 0 { tr("默认", "Default").to_string() } else { format!("{} px", size.clamp(12, 20)) }
 }
 
+/// Height of the list sample below the card toggles (see APPEARANCE_FORM_SECTIONS).
+pub(super) const APPEARANCE_PREVIEW_H: i32 = 92;
+
+/// A miniature clipboard list: one resting row and one hovered row, so the
+/// card, border and shadow toggles show their effect against the list frame.
 pub(super) unsafe fn draw_settings_appearance_preview(st: &SettingsWndState, dc: HDC, scroll_y: i32, theme: Theme) {
     let sec = SettingsFormSectionLayout::new(SettingsPage::Appearance.index(), 0, 138);
     let top = sec.row_y(5) - scroll_y;
-    let row = RECT { left: sec.left(), top, right: sec.left() + sec.full_w(), bottom: top + settings_scale(76) };
-    if st.draft.card_view_enabled {
-        draw_clipboard_row_card(dc, row, false, false, st.draft.card_border_enabled,
-            st.draft.card_shadow_enabled, st.ui_dpi, theme);
-    } else {
-        draw_round_fill(dc as _, &row, theme.surface2, settings_scale(6));
+    let frame = RECT { left: sec.left(), top, right: sec.left() + sec.full_w(),
+        bottom: top + settings_scale(APPEARANCE_PREVIEW_H) };
+    draw_round_rect(dc as _, &frame, theme.surface, theme.stroke, settings_scale(8));
+    let pad = settings_scale(6);
+    let row_h = (frame.bottom - frame.top - pad * 2) / 2;
+    let samples = ["剪贴板内容预览 · ZSClip 123", "https://github.com/qiu7824/zsclip"];
+    for (index, sample) in samples.into_iter().enumerate() {
+        let row_top = frame.top + pad + row_h * index as i32;
+        let row = RECT { left: frame.left + pad, top: row_top, right: frame.right - pad, bottom: row_top + row_h };
+        let hovered = index == 1;
+        if st.draft.card_view_enabled {
+            draw_clipboard_row_card(dc, row, false, hovered, st.draft.card_border_enabled,
+                st.draft.card_shadow_enabled, st.ui_dpi, theme);
+        } else if hovered {
+            draw_round_fill(dc as _, &row, theme.item_hover, settings_scale(4));
+        }
+        let icon_size = settings_scale(20);
+        let icon = UiRect::new(row.left + settings_scale(12), row.top + (row_h - icon_size) / 2,
+            row.left + settings_scale(12) + icon_size, row.top + (row_h - icon_size) / 2 + icon_size);
+        super::main_renderer::draw_main_icon_command(dc, MainIconCommand {
+            kind: MainIconKind::Text,
+            rect: icon,
+            color_mode: MainIconColorMode::ThemeAware,
+        }, theme, 0);
+        let text_rect = RECT { left: icon.right + settings_scale(12), top: row.top,
+            right: row.right - settings_scale(12), bottom: row.bottom };
+        draw_text_ex(dc as _, sample, &text_rect, theme.text,
+            st.draft.content_font_size(), false, false, ui_text_font_family());
     }
-    let text_rect = RECT { left: row.left + settings_scale(14), top: row.top + settings_scale(8),
-        right: row.right - settings_scale(14), bottom: row.bottom - settings_scale(8) };
-    draw_text_ex(dc as _, "剪贴板内容预览 · ZSClip 123", &text_rect, theme.text,
-        st.draft.content_font_size(), false, false, ui_text_font_family());
 }
 
 pub(super) unsafe fn settings_create_appearance_page(hwnd: HWND, st: &mut SettingsWndState) {

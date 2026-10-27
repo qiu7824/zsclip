@@ -231,6 +231,7 @@ pub(super) unsafe fn draw_category_bar(dc: HDC, state: &AppState, theme: Theme) 
             right: rect.right - px(8),
             ..rect
         };
+        // Text sizes are logical; the font cache scales them for the DC.
         draw_text_ex(
             dc,
             text,
@@ -240,7 +241,7 @@ pub(super) unsafe fn draw_category_bar(dc: HDC, state: &AppState, theme: Theme) 
             } else {
                 theme.text_muted
             },
-            px(13),
+            13,
             false,
             true,
             ui_display_font_family(),
@@ -248,7 +249,8 @@ pub(super) unsafe fn draw_category_bar(dc: HDC, state: &AppState, theme: Theme) 
     }
     if let Some(rect) = bar.more {
         let rect: RECT = rect.into();
-        if state.hover_category == -2 {
+        let hovered = state.hover_category == -2;
+        if hovered {
             draw_round_fill(
                 dc,
                 &RECT {
@@ -263,13 +265,13 @@ pub(super) unsafe fn draw_category_bar(dc: HDC, state: &AppState, theme: Theme) 
         }
         draw_text_ex(
             dc,
-            "⋯",
+            "\u{E712}",
             &rect,
-            theme.text_muted,
-            px(16),
+            if hovered { theme.text } else { theme.text_muted },
+            14,
             false,
             true,
-            ui_text_font_family(),
+            "Segoe MDL2 Assets",
         );
     }
 }
@@ -286,7 +288,7 @@ pub(super) unsafe fn handle_category_click(
         repaint_main_window(hwnd, false);
         return true;
     }
-    if bar.more.is_some_and(|r| contains(r, x, y)) {
+    if let Some(more) = bar.more.filter(|r| contains(*r, x, y)) {
         let entries: Vec<_> = state
             .settings
             .category_tabs
@@ -300,7 +302,11 @@ pub(super) unsafe fn handle_category_click(
                 checked: i == state.active_category_index(),
             })
             .collect();
-        let point = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
+        // Drop the list from under the button like a dropdown, not from the cursor.
+        let mut point = POINT { x: more.left, y: more.bottom + 2 };
+        if !platform_window::client_to_screen(hwnd, &mut point) {
+            point = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
+        }
         vv_set_popup_menu_active(true);
         let selected = platform_menu::WindowsPopupMenuHost::new().present_popup_menu(
             hwnd,
