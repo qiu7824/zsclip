@@ -197,6 +197,12 @@ pub(super) fn browser_download_selection_should_skip(
     if url_payload_present {
         return true;
     }
+    // Plain-text fallback for browsers that copy a download selection as
+    // "file name" + URL without publishing any URL clipboard format. Only
+    // accept a line that can plausibly be a bare file name: ASCII, no
+    // whitespace, no path separators. Otherwise a normal copy of
+    // "URL + description line" (CJK text, or any sentence) is misread as a
+    // download selection and silently dropped from the history.
     lines.len() > 1
         && lines.iter().any(|line| text_line_is_url(line))
         && lines.iter().any(|line| {
@@ -204,6 +210,8 @@ pub(super) fn browser_download_selection_should_skip(
                 && line.len() <= 260
                 && !line.contains('\\')
                 && !line.contains('/')
+                && line.is_ascii()
+                && !line.chars().any(char::is_whitespace)
         })
 }
 
