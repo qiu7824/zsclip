@@ -41,6 +41,9 @@ unsafe extern "system" {
         token_information_length: u32,
         return_length: *mut u32,
     ) -> i32;
+    fn IsValidSid(sid: *mut core::ffi::c_void) -> i32;
+    fn GetSidSubAuthorityCount(sid: *mut core::ffi::c_void) -> *mut u8;
+    fn GetSidSubAuthority(sid: *mut core::ffi::c_void, index: u32) -> *mut u32;
 }
 
 #[link(name = "psapi")]
@@ -181,7 +184,84 @@ pub(crate) fn process_is_elevated(pid: u32) -> Option<bool> {
 }
 
 pub(crate) fn process_has_higher_elevation(pid: u32) -> bool {
+    // UIPI compares integrity levels, not the administrator/elevated Boolean.
+    // A UIAccess token is explicitly allowed to cross this input boundary.
+    if let Some((current, ui_access)) = process_input_security(current_process_id()) {
+        if ui_access {
+            return false;
+        }
+        if let Some((target, _)) = process_input_security(pid) {
+            return input_integrity_blocks(current, target, ui_access);
+        }
+    }
     elevation_boundary_blocks_input(current_process_is_elevated(), process_is_elevated(pid))
+}
+
+fn input_integrity_blocks(current: u32, target: u32, ui_access: bool) -> bool {
+    !ui_access && current < target
+}
+
+fn process_input_security(pid: u32) -> Option<(u32, bool)> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut token = core::ptr::null_mut();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token) != 0;
+        CloseHandle(process);
+        if !opened || token.is_null() {
+            return None;
+        }
+        let result = (|| {
+            let mut size = 0;
+            // TokenIntegrityLevel: TOKEN_MANDATORY_LABEL followed by its SID.
+            GetTokenInformation(token, 25, core::ptr::null_mut(), 0, &mut size);
+            if size < core::mem::size_of::<usize>() as u32 || size > 4096 {
+                return None;
+            }
+            let mut buffer = vec![0usize; (size as usize).div_ceil(core::mem::size_of::<usize>())];
+            if GetTokenInformation(token, 25, buffer.as_mut_ptr().cast(), size, &mut size) == 0 {
+                return None;
+            }
+            let sid = buffer[0] as *mut core::ffi::c_void;
+            if sid.is_null() || IsValidSid(sid) == 0 {
+                return None;
+            }
+            let count = *GetSidSubAuthorityCount(sid);
+            if count == 0 {
+                return None;
+            }
+            let integrity = *GetSidSubAuthority(sid, u32::from(count - 1));
+            let mut ui_access = 0u32;
+            if GetTokenInformation(token, 26, (&mut ui_access as *mut u32).cast(), 4, &mut size)
+                == 0
+            {
+                return None;
+            }
+            Some((integrity, ui_access != 0))
+        })();
+        CloseHandle(token);
+        result
+    }
+}
+
+pub(crate) fn wait_for_process_exit_bounded(pid: u32) -> bool {
+    if pid == 0 || pid == current_process_id() {
+        return false;
+    }
+    unsafe {
+        let process = OpenProcess(SYNCHRONIZE, 0, pid);
+        if process.is_null() {
+            return GetLastError() == 87;
+        }
+        let result = WaitForSingleObject(process, 15_000);
+        CloseHandle(process);
+        result == WAIT_OBJECT_0
+    }
 }
 
 pub(crate) fn trim_current_working_set() -> bool {
@@ -194,6 +274,24 @@ pub(crate) fn trim_current_working_set() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uipi_compares_integrity_levels_and_respects_ui_access() {
+        for (current, target, blocked) in [
+            (0x2000, 0x2000, false),
+            (0x2000, 0x3000, true),
+            (0x3000, 0x2000, false),
+            (0x3000, 0x3000, false),
+            (0x1000, 0x2000, true),
+        ] {
+            assert_eq!(input_integrity_blocks(current, target, false), blocked);
+            assert!(!input_integrity_blocks(current, target, true));
+        }
+        let (integrity, _) =
+            process_input_security(current_process_id()).expect("own token is readable");
+        assert!(integrity > 0);
+        assert!(!process_has_higher_elevation(current_process_id()));
+    }
 
     #[test]
     fn fixed_drive_probe_rejects_remote_unc_paths() {

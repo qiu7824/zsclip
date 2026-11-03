@@ -651,16 +651,20 @@ pub(super) struct PasteFailureNotice {
     pub(super) generation: u64,
     pub(super) text: String,
     pub(super) rule: Option<String>,
+    pub(super) elevation_blocked: bool,
 }
 
 unsafe fn post_paste_failure_help(hwnd: HWND, state: &AppState, target: HWND, text: String) {
     if PASTE_FAILURE_HELP_PENDING.swap(true, Ordering::AcqRel) {
         return;
     }
+    let elevation_blocked = platform_process::process_has_higher_elevation(
+        platform_window::window_process_id(target));
     let notice = Box::new(PasteFailureNotice {
         generation: state.app_data_generation,
         text,
-        rule: automatic_skip_rule_for_failed_target(target),
+        rule: if elevation_blocked { None } else { automatic_skip_rule_for_failed_target(target) },
+        elevation_blocked,
     });
     if !post_boxed_message(hwnd as isize, WM_PASTE_FAILURE_HELP, 0, notice) {
         PASTE_FAILURE_HELP_PENDING.store(false, Ordering::Release);
@@ -673,6 +677,26 @@ pub(super) unsafe fn open_paste_failure_help(hwnd: HWND, notice: PasteFailureNot
     let owner = if owner.is_null() { hwnd } else { owner };
     let ptr = get_state_ptr(owner);
     if ptr.is_null() || notice.generation != (*ptr).app_data_generation {
+        return;
+    }
+    if notice.elevation_blocked {
+        // This is a Windows input boundary, not a clipboard-read failure or
+        // a bad target class. Keep the prepared clipboard and avoid opening
+        // unrelated skip-list settings or permanently changing startup rights.
+        let message = tr(
+            "内容已写入剪贴板。目标程序权限更高，Windows 阻止自动粘贴。\n\n选择“否”可返回目标程序手动按 Ctrl+V；若留下 vv，请先删除它。\n\n是否通过 Windows UAC，以管理员身份重新启动 ZSClip，仅用于本次运行？重启后请重新选择要粘贴的记录。取消 UAC 将保留当前 ZSClip。",
+            "The content is in the clipboard. Windows blocked automatic paste into a higher-privilege target.\n\nChoose No and press Ctrl+V in the target; remove any remaining vv first.\n\nRestart ZSClip through Windows UAC as administrator for this session only? Select the record again after restart. Cancelling UAC keeps the current instance running.",
+        );
+        if crate::platform::relaunch::confirm_session_restart(owner,
+            tr("粘贴权限", "Paste permissions"), message) {
+            match crate::platform::relaunch::request_session_restart(owner, &data_dir()) {
+                Ok(()) => destroy_main_window(owner),
+                Err(error) => platform_dialog::WindowsDialogHost::new().show_message(owner,
+                    tr("未重新启动", "Restart not completed"),
+                    &format!("{}\n{error}", tr("当前程序和剪贴板内容已保留。", "The current app and clipboard content were retained.")),
+                    NativeDialogLevel::Info),
+            }
+        }
         return;
     }
     let mut saved_rule = None;

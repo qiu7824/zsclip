@@ -379,7 +379,13 @@ fn read_clipboard_capture_result(
 
     if snapshot.has_text {
         if let Some(text) = platform_clipboard::read_text_for_sequence(sequence) {
-            let normalized = normalize_captured_text(&text);
+            let rich_text_html = if rich_text_enabled {
+                platform_clipboard::html_format_payload_from_snapshot(&snapshot)
+                    .and_then(|html| crate::db_runtime::sanitize_rich_text_html(&html))
+            } else { None };
+            // Rich Office text is a parallel clipboard format, not a search
+            // normalization input: retain tabs, blank cells and Unicode joiners.
+            let normalized = captured_text_with_rich_format(&text, rich_text_html.is_some());
             if crate::db_runtime::text_is_protected(&text) || crate::db_runtime::text_is_protected(&normalized) {
                 return ClipboardCaptureReadResult {
                     sequence, source_app,
@@ -392,7 +398,7 @@ fn read_clipboard_capture_result(
                     },
                 };
             }
-            if !normalized.is_empty() {
+            if !normalized.is_empty() || rich_text_html.is_some() {
                 let url_payloads = if source_app_is_browser(&source_app)
                     || source_app_is_browser(&foreground_app)
                     || source_app_is_clipboard_proxy(&source_app)
@@ -409,13 +415,6 @@ fn read_clipboard_capture_result(
                 ) {
                     return empty_clipboard_capture_result(sequence, source_app);
                 }
-                let rich_text_html = if rich_text_enabled {
-                    platform_clipboard::html_format_payload_from_snapshot(&snapshot)
-                        .filter(|html| !html.trim().is_empty())
-                        .and_then(|html| crate::db_runtime::sanitize_rich_text_html(&html))
-                } else {
-                    None
-                };
                 if !clipboard_sequence_is_current(sequence) {
                     return empty_clipboard_capture_result(sequence, source_app);
                 }
@@ -949,6 +948,10 @@ fn source_app_is_windows_screenshot_tool(source_app: &str) -> bool {
         || source.contains("screenclip")
 }
 
+fn captured_text_with_rich_format(raw: &str, rich: bool) -> String {
+    if rich { raw.to_string() } else { normalize_captured_text(raw) }
+}
+
 pub(super) fn normalize_captured_text(raw: &str) -> String {
     let mut normalized = raw
         .replace("\r\n", "\n")
@@ -1367,6 +1370,14 @@ pub(super) unsafe fn capture_clipboard_guarded(hwnd: HWND) {
 #[cfg(test)]
 mod clipboard_helper_tests {
     use super::*;
+
+    #[test]
+    fn office_unicode_format_keeps_blank_cells_tabs_joiners_and_display_values() {
+        for text in ["\tE2\t\r\n", "\r\n", "", "👩‍💻\t中文\r\n", "0012", "¥1,234.50", "2026-11-03", "2", "a\r\nb"] {
+            assert_eq!(captured_text_with_rich_format(text, true), text);
+        }
+        assert_eq!(captured_text_with_rich_format(" plain \r\n", false), "plain");
+    }
 
     #[test]
     fn protected_capture_wire_never_serializes_secret_or_rich_text() {

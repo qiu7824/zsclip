@@ -571,15 +571,16 @@ pub(crate) fn text_is_registered(text: &str) -> bool {
         && protected_exclusion_matcher().is_ok_and(|matches| matches(text))
 }
 
-pub(crate) const CLIP_LIST_PREVIEW_SQL: &str = "zsclip_display_preview(CASE WHEN kind IN ('text','phrase') AND length(CAST(text_data AS BLOB))<=8192 THEN text_data ELSE NULL END, COALESCE(preview,''))";
+pub(crate) const CLIP_LIST_PREVIEW_SQL: &str = "zsclip_display_preview(CASE WHEN kind IN ('text','phrase') AND (length(CAST(text_data AS BLOB))<=8192 OR COALESCE(rich_text_html,'')<>'') THEN substr(text_data,1,8192) ELSE NULL END, COALESCE(preview,''), COALESCE(rich_text_html,'')<>'')";
 
 pub(crate) fn register_protected_text_filter(conn: &Connection) -> rusqlite::Result<()> {
-    conn.create_scalar_function("zsclip_display_preview", 2,
+    conn.create_scalar_function("zsclip_display_preview", 3,
         rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
         |context| {
             let text = context.get_raw(0).as_str().ok();
             let fallback = context.get_raw(1).as_str().unwrap_or("");
-            Ok(text.and_then(crate::app_core::url_preview::summarize).unwrap_or_else(|| fallback.to_string()))
+            let rich = context.get::<bool>(2)?;
+            Ok(crate::app_core::clipboard_text::stored_preview(text, fallback, rich))
         })?;
     // This function must not be deterministic: the protected registry can change
     // while a prepared query remains cached or while the vault is locked.

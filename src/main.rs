@@ -104,6 +104,7 @@ pub use zsui;
 
 #[cfg(target_os = "windows")]
 fn main() {
+    if !platform::relaunch::prepare_session_restart() { return; }
     if let Some(code) = app::maybe_run_clipboard_read_helper_from_args() {
         std::process::exit(code);
     }

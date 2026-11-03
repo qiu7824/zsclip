@@ -1168,7 +1168,7 @@ fn rich_text_preview_summarizes_html_tables_and_decodes_entities() {
         "<table><tr><th>Name</th><th>Qty</th></tr><tr><td>A&amp;B</td><td>2</td></tr></table>";
 
     let preview = build_rich_text_preview(html, "");
-    assert!(preview.starts_with("HTML 表格 2x2"));
+    assert!(!preview.starts_with("HTML"));
     assert!(preview.contains("A&B"));
 
     let body = rich_text_preview_text(html, "", 4, 120);
@@ -1204,7 +1204,7 @@ fn rich_text_html_persists_and_loads_with_full_clip_payload() {
         let id = db_insert_item(0, &item, None)?;
         let loaded = db_load_item_full(id).unwrap();
 
-        assert!(loaded.preview.starts_with("HTML 表格 2x2"));
+        assert_eq!(loaded.preview, build_preview(item.text.as_deref().unwrap()));
         let canonical = crate::app_core::clipboard_html::normalize(html).unwrap();
         assert_eq!(loaded.rich_text_html.as_deref(), Some(canonical.as_str()));
         assert_eq!(crate::app_core::clipboard_html::fragment(loaded.rich_text_html.as_deref().unwrap()).as_deref(), Some(html));
@@ -1214,6 +1214,45 @@ fn rich_text_html_persists_and_loads_with_full_clip_payload() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn excel_display_text_and_legacy_preview_survive_database_reopen() {
+    let path = std::env::var_os("ZSCLIP_TEST_TEMP_ROOT").map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir).join(format!("office-reopen-{}.db",std::process::id()));
+    let result = crate::db_runtime::with_test_db_path(&path, || {
+        let text = "\t¥1,234.50\t👩‍💻\r\n\t2026-11-03\t\r\n";
+        let html = "<table><tr><td></td><td style='color:red;font-weight:bold'>1234.5</td><td>👩‍💻</td></tr><tr><td></td><td>46329</td><td></td></tr></table>";
+        let mut item = text_item(text);
+        item.preview = "HTML 表格 2x3: 1234.5".into();
+        item.rich_text_html = Some(html.into());
+        let id = db_insert_item(0,&item,None)?;
+        assert!(id > 0);
+        crate::db_runtime::close_db();
+        let loaded = db_load_item_full(id).expect("reopened full record");
+        assert_eq!(loaded.text.as_deref(),Some(text));
+        assert_eq!(loaded.preview,build_preview(text));
+        assert_eq!(loaded.rich_text_html,crate::app_core::clipboard_html::normalize(html));
+        let list_preview:String = with_db(|conn| conn.query_row(
+            &format!("SELECT {} FROM items WHERE id=?",crate::db_runtime::CLIP_LIST_PREVIEW_SQL),
+            [id],|row|row.get(0)))?;
+        assert_eq!(list_preview,build_preview(text));
+        assert_eq!(rich_text_preview_text(html,text,10,1000), "¥1,234.50 👩‍💻\n2026-11-03");
+        assert!(loaded.rich_text_html.as_deref().unwrap().contains("font-weight:bold"));
+        let stored_preview:String=with_db(|conn|conn.query_row("SELECT preview FROM items WHERE id=?",[id],|row|row.get(0)))?;
+        assert_eq!(stored_preview,item.preview,"display repair must not rewrite legacy data");
+        let blank_html="<table><tr><td style='background:yellow'></td></tr></table>";
+        let mut blank=text_item("\r\n"); blank.rich_text_html=Some(blank_html.into());
+        blank.preview=build_rich_text_preview(blank_html,"\r\n");
+        let blank_id=db_insert_item(0,&blank,None)?;
+        crate::db_runtime::close_db();
+        let blank_loaded=db_load_item_full(blank_id).unwrap();
+        assert_eq!(blank_loaded.text.as_deref(),Some("\r\n"));
+        assert!(blank_loaded.rich_text_html.unwrap().contains("background:yellow"));
+        Ok(())
+    });
+    let _=std::fs::remove_file(path);
+    result.unwrap();
 }
 
 #[test]

@@ -8,6 +8,7 @@
 
 pub(crate) mod ai_action_protocol;
 pub(crate) mod clipboard_html;
+pub(crate) mod clipboard_text;
 pub(crate) mod url_preview;
 pub(crate) mod customization;
 pub(crate) mod command_protocol;

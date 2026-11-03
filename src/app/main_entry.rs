@@ -2,14 +2,7 @@ use super::prelude::*;
 
 pub(crate) fn run() -> AppResult<()> {
     // ── 单实例保护：若已有实例运行则激活它并退出 ──
-    let mutex_name = std::env::var_os("ZSCLIP_DATA_DIR")
-        .map(|path| {
-            format!(
-                "Local\\ZSClipData-{:x}",
-                md5::compute(path.to_string_lossy().as_bytes())
-            )
-        })
-        .unwrap_or_else(|| "Global\\ZsClipSingleInstanceV2".to_string());
+    let mutex_name = crate::platform::relaunch::instance_mutex_name();
     let (_single_instance_mutex, already_running) =
         platform_process::create_named_mutex(&mutex_name);
     if already_running {

@@ -5,6 +5,10 @@ const VV_IMM_POINT_MAX_X_DRIFT: i32 = 120;
 const VV_IMM_POINT_MAX_Y_DRIFT: i32 = 180;
 const VV_PREVIEW_HOVER_TIMER: usize = 1;
 
+#[cfg(test)]
+#[path = "vv_paint_tests.rs"]
+mod paint_tests;
+
 #[derive(Copy, Clone)]
 struct VvOverlayAnchor {
     left: i32,
@@ -456,6 +460,7 @@ pub(super) unsafe fn vv_popup_hide(hwnd: HWND, state: &mut AppState) {
     state.vv_popup_protection_revision = None;
     state.vv_popup_group_id = 0;
     state.vv_popup_items.clear();
+    state.vv_popup_paint_buffer.clear();
     if owns_session {
         vv_popup_sync_hook_state(false, null_mut());
     }
@@ -743,7 +748,7 @@ pub(super) unsafe fn vv_popup_show(hwnd: HWND, state: &mut AppState, target: HWN
         }
     }
     state.vv_popup_trigger_text_visible = input_mode == WindowsImeInputMode::Alphanumeric;
-    platform_gdi::invalidate_rect(popup, null(), 1);
+    platform_gdi::invalidate_rect(popup, null(), 0);
     let _ = vv_popup_move_near_target(state, popup);
     true
 }
@@ -782,13 +787,16 @@ unsafe extern "system" fn vv_popup_wnd_proc(
             platform_appearance::set_rounded_corners(hwnd);
             1
         }
+        // The complete frame is painted off-screen. Erasing the target first
+        // exposes an empty popup on Win10 when the highlight changes rows.
+        WM_ERASEBKGND => 1,
         WM_PAINT => {
             let main_hwnd = platform_window::user_data(hwnd) as HWND;
             let ptr = get_state_ptr(main_hwnd);
             let mut ps: PAINTSTRUCT = zeroed();
             let hdc = platform_gdi::begin_paint(hwnd, &mut ps);
             if !hdc.is_null() && !ptr.is_null() {
-                let state = &*ptr;
+                let state = &mut *ptr;
                 if state.vv_popup_protection_revision.is_none()
                     || state.vv_popup_protection_revision
                         != crate::db_runtime::search_protection_revision().ok()
@@ -799,6 +807,10 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                 }
                 let th = Theme::default();
                 let rc = platform_window::client_rect(hwnd).unwrap_or_else(|| zeroed());
+                let target = hdc;
+                let hdc = state.vv_popup_paint_buffer
+                    .ensure(target, rc.right - rc.left, rc.bottom - rc.top)
+                    .unwrap_or(target);
                 let layout =
                     vv_popup_layout_for_window(hwnd).with_width((rc.right - rc.left).max(1));
                 let bg = platform_gdi::create_solid_brush(th.surface);
@@ -859,6 +871,10 @@ unsafe extern "system" fn vv_popup_wnd_proc(
                 }
                 for command in &plan.text_commands {
                     draw_vv_popup_text_command(hdc, command, th);
+                }
+                if hdc != target {
+                    platform_gdi::copy_bits(target, 0, 0, rc.right - rc.left,
+                        rc.bottom - rc.top, hdc, 0, 0);
                 }
             }
             platform_gdi::end_paint(hwnd, &ps);

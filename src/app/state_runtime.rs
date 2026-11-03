@@ -193,6 +193,7 @@ impl AppState {
 
     pub(super) fn clear_payload_cache(&mut self) {
         self.paint_buffer.clear();
+        self.vv_popup_paint_buffer.clear();
         self.row_layout_cache.get_mut().clear();
         self.payload_cache.clear();
         self.image_thumb_cache.clear();

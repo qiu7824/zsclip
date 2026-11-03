@@ -143,6 +143,26 @@ pub(crate) fn open(owner: HWND) -> bool {
     unsafe { OpenClipboard(owner) != 0 }
 }
 
+// Captures run in the bounded clipboard helper. Retry a short-lived owner lock,
+// but never combine two successive clipboard versions into one history item.
+fn retry_read_open(mut current: impl FnMut() -> bool, mut try_open: impl FnMut() -> bool,
+    mut pause: impl FnMut()) -> bool {
+    for attempt in 0..6 {
+        if !current() { return false; }
+        if try_open() { return true; }
+        if attempt < 5 { pause(); }
+    }
+    false
+}
+
+fn open_for_read(expected_sequence: u32) -> bool {
+    retry_read_open(
+        || clipboard_sequence_matches(expected_sequence),
+        || open(core::ptr::null_mut()),
+        || std::thread::sleep(std::time::Duration::from_millis(10)),
+    )
+}
+
 pub(crate) fn close() {
     unsafe {
         CloseClipboard();
@@ -245,7 +265,7 @@ fn read_cf_unicode_text_from_open_clipboard() -> Option<String> {
 }
 
 fn read_cf_unicode_text_bounded(expected_sequence: u32) -> Option<String> {
-    if !clipboard_sequence_matches(expected_sequence) || !open(core::ptr::null_mut()) {
+    if !open_for_read(expected_sequence) {
         return None;
     }
     let text = if clipboard_sequence_matches(expected_sequence) {
@@ -303,7 +323,7 @@ fn standard_format_id(format: u32) -> bool {
 
 pub(crate) fn snapshot_formats() -> ClipboardFormatSnapshot {
     let sequence = sequence_number();
-    if !open(core::ptr::null_mut()) {
+    if !open_for_read(sequence) {
         return ClipboardFormatSnapshot {
             sequence,
             open_failed: true,
@@ -808,7 +828,7 @@ pub(crate) fn html_format_payload_from_snapshot(
         return None;
     }
     let format = snapshot.named_format_id(FORMAT_HTML_FORMAT)?;
-    if !open(core::ptr::null_mut()) {
+    if !open_for_read(snapshot.sequence) {
         return None;
     }
     if snapshot.sequence != 0 && sequence_number() != snapshot.sequence {
@@ -869,6 +889,24 @@ pub(crate) fn url_format_payloads_from_snapshot(snapshot: &ClipboardFormatSnapsh
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_lock_retry_is_bounded_and_aborts_when_clipboard_changes() {
+        use std::cell::Cell;
+        let attempts = Cell::new(0);
+        let waits = Cell::new(0);
+        assert!(retry_read_open(||true, || { attempts.set(attempts.get()+1); attempts.get()==3 },
+            ||waits.set(waits.get()+1)));
+        assert_eq!((attempts.get(),waits.get()),(3,2));
+        attempts.set(0); waits.set(0);
+        assert!(!retry_read_open(||true, || {attempts.set(attempts.get()+1);false},
+            ||waits.set(waits.get()+1)));
+        assert_eq!((attempts.get(),waits.get()),(6,5));
+        attempts.set(0); waits.set(0);
+        assert!(!retry_read_open(||waits.get()==0, || {attempts.set(attempts.get()+1);false},
+            ||waits.set(waits.get()+1)));
+        assert_eq!((attempts.get(),waits.get()),(1,1));
+    }
 
     #[test]
     fn rich_clipboard_publication_prefers_html_and_preserves_text_fallback() {

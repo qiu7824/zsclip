@@ -122,7 +122,8 @@ fn row_to_clip_item_impl(row: DbItem, summary_only: bool) -> ClipItem {
             .filter(|value| !value.is_empty())
             .unwrap_or(row.preview)
     } else {
-        row.text.as_deref().and_then(crate::app_core::url_preview::summarize).unwrap_or(row.preview)
+        crate::app_core::clipboard_text::stored_preview(
+            row.text.as_deref(), &row.preview, row.rich_text_html.is_some())
     };
     ClipItem {
         phrase_title: row.phrase_title,
@@ -283,21 +284,7 @@ pub(crate) fn clip_item_to_summary(item: &ClipItem) -> ClipItem {
 }
 
 pub(super) fn build_preview(text: &str) -> String {
-    if let Some(preview) = crate::app_core::url_preview::summarize(text) { return preview; }
-    let one_line = text.replace(['\r', '\n'], " ").trim().to_string();
-    if one_line.chars().count() > 72 {
-        let mut s = String::new();
-        for (idx, ch) in one_line.chars().enumerate() {
-            if idx >= 72 {
-                break;
-            }
-            s.push(ch);
-        }
-        s.push_str(" ...");
-        s
-    } else {
-        one_line
-    }
+    crate::app_core::clipboard_text::preview(text)
 }
 
 fn count_html_tag(lower_html: &str, tag: &str) -> usize {
@@ -422,26 +409,22 @@ pub(crate) fn rich_text_preview_text(
     max_lines: usize,
     max_chars: usize,
 ) -> String {
-    let extracted = normalize_rich_text_preview_text(&html_to_text(html), max_lines, max_chars);
-    if extracted.is_empty() {
-        normalize_rich_text_preview_text(fallback_text, max_lines, max_chars)
-    } else {
-        extracted
-    }
+    // CF_UNICODETEXT contains Excel's displayed values (dates, currency,
+    // formula results), while HTML may contain different underlying values.
+    // Only use HTML extraction when no plain representation is available.
+    let plain = normalize_rich_text_preview_text(fallback_text, max_lines, max_chars);
+    if !plain.is_empty() { return plain; }
+    normalize_rich_text_preview_text(&html_to_text(html), max_lines, max_chars)
 }
 
 pub(super) fn build_rich_text_preview(html: &str, fallback_text: &str) -> String {
     let text = rich_text_preview_text(html, fallback_text, 2, 96).replace('\n', " ");
-    if let Some((rows, cols)) = html_table_shape(html) {
-        if text.is_empty() {
-            format!("HTML 表格 {rows}x{cols}")
-        } else {
-            format!("HTML 表格 {rows}x{cols}: {}", build_preview(&text))
-        }
-    } else if text.is_empty() {
-        "HTML 富文本".to_string()
+    if !text.is_empty() {
+        build_preview(&text)
+    } else if let Some((rows, cols)) = html_table_shape(html) {
+        format!("{} {rows}x{cols}", tr("空白表格", "Empty table"))
     } else {
-        format!("HTML: {}", build_preview(&text))
+        tr("富文本", "Rich text").to_string()
     }
 }
 

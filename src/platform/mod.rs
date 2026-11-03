@@ -2,6 +2,7 @@ pub(crate) mod accessibility;
 pub(crate) mod appearance;
 pub(crate) mod autostart;
 pub(crate) mod buffered_paint;
+pub(crate) mod relaunch;
 pub(crate) mod clipboard;
 pub(crate) mod clipboard_listener;
 pub(crate) mod com;
