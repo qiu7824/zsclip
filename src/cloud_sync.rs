@@ -1,3 +1,5 @@
+mod incremental;
+
 use crate::app_version::APP_VERSION;
 use crate::i18n::tr;
 use crate::time_utils::utc_secs_to_local_parts;
@@ -69,10 +71,13 @@ struct CloudSyncManifest {
     #[serde(default)]
     snapshot_hash: String,
     backup_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunks: Option<incremental::ChunkIndex>,
 }
 
-struct SnapshotArchive {
-    path: PathBuf,
+struct SnapshotPayload {
+    root: PathBuf,
+    _guard: TempPathGuard,
     settings_copy: PathBuf,
     content_hash: String,
     state_stamp: u64,
@@ -189,20 +194,19 @@ fn sync_snapshot(
     remote: &RemoteLayout,
     paths: &CloudSyncPaths,
 ) -> Result<CloudSyncOutcome, String> {
+    let mut local_state = incremental::LocalSyncState::load(config, paths);
     let imported_light_clip = crate::db_runtime::with_shared_app_data(|| {
-        import_remote_syncclipboard_clip(config, remote)
+        import_remote_syncclipboard_clip(config, remote, &local_state)
     })?;
     let snapshot = crate::db_runtime::with_exclusive_app_data_snapshot(|| {
         crate::db_runtime::with_exclusive_db_snapshot(&paths.db_file, || {
-            create_snapshot_archive(paths)
+            create_snapshot_payload(paths)
         })
     })?;
-    let _archive_guard = TempPathGuard::file(snapshot.path.clone());
-    let _settings_guard = TempPathGuard::file(snapshot.settings_copy.clone());
     let local_stamp = snapshot.state_stamp;
     let local_hash = snapshot.content_hash.clone();
     let remote_manifest = download_remote_manifest(config, remote)?;
-    if let Some(manifest) = remote_manifest {
+    if let Some(manifest) = remote_manifest.as_ref() {
         let version_cmp = compare_versions(&manifest.version, APP_VERSION);
         if !manifest.snapshot_hash.is_empty()
             && manifest.snapshot_hash == local_hash
@@ -215,10 +219,13 @@ fn sync_snapshot(
                 )
                 .to_string(),
                 reload_settings: false,
-                reload_data: false,
+                reload_data: imported_light_clip,
             });
         }
-        if manifest.updated_at > local_stamp.saturating_add(5) {
+        if (!local_state.snapshot_hash.is_empty() && local_state.snapshot_hash == local_hash
+            && manifest.updated_at >= local_state.updated_at)
+            || manifest.updated_at > local_stamp.saturating_add(5)
+        {
             if version_cmp.is_gt() {
                 return Err(format!(
                     "{}{}{}",
@@ -245,35 +252,31 @@ fn sync_snapshot(
                 ..outcome
             });
         }
-        if local_stamp <= manifest.updated_at.saturating_add(5)
-            && version_cmp.is_eq()
-            && (manifest.snapshot_hash.is_empty() || manifest.snapshot_hash == local_hash)
-        {
-            return Ok(CloudSyncOutcome {
-                status_text: "本地与云端已同步，无需更新。".to_string(),
-                reload_settings: false,
-                reload_data: false,
-            });
-        }
     }
 
     let stamp = local_stamp.max(unix_now());
     ensure_remote_layout(config, remote)?;
-    crate::db_runtime::with_shared_app_data(|| {
-        crate::db_runtime::ensure_protected_sync_revision(&snapshot.protection_revision)?;
-        upload_file(config, &snapshot.path, &remote.backup_url)
-    })?;
+    let chunks = incremental::upload_snapshot(config, remote, &snapshot, remote_manifest.as_ref())?;
     upload_file(config, &snapshot.settings_copy, &remote.settings_url)?;
+    let uploaded_clip = upload_syncclipboard_manifest(config, remote, &local_state.uploaded_clip)?;
+    local_state.uploaded_clip = uploaded_clip;
+    local_state.save(paths)?;
     let manifest = CloudSyncManifest {
         version: APP_VERSION.to_string(),
         updated_at: stamp,
         snapshot_hash: local_hash,
-        backup_name: BACKUP_FILE_NAME.to_string(),
+        backup_name: incremental::BACKUP_FORMAT.to_string(),
+        chunks: Some(chunks),
     };
     let manifest_path = write_temp_json_file("manifest", &manifest)?;
     let _manifest_guard = TempPathGuard::file(manifest_path.clone());
-    upload_file(config, &manifest_path, &remote.manifest_url)?;
-    upload_syncclipboard_manifest(config, remote)?;
+    crate::db_runtime::with_shared_app_data(|| {
+        crate::db_runtime::ensure_protected_sync_revision(&snapshot.protection_revision)?;
+        upload_file(config, &manifest_path, &remote.manifest_url)
+    })?;
+    local_state.snapshot_hash = manifest.snapshot_hash.clone();
+    local_state.updated_at = manifest.updated_at;
+    local_state.save(paths)?;
     let imported_note = if imported_light_clip {
         tr(
             " 已导入云端最新轻量清单。",
@@ -285,7 +288,7 @@ fn sync_snapshot(
     Ok(CloudSyncOutcome {
         status_text: format!(
             "{}{}{}",
-            format!("云同步完成，已上传本地快照（{}）。", format_unix_ts(stamp)),
+            format!("{} ({})", tr("云同步完成，已上传变化的数据块。", "Cloud sync complete; changed blocks uploaded."), format_unix_ts(stamp)),
             imported_note,
             ""
         ),
@@ -365,23 +368,27 @@ fn restore_remote_backup(
                 ),
             ));
         }
-        if manifest.backup_name.trim() != BACKUP_FILE_NAME {
+        if manifest.backup_name.trim() != BACKUP_FILE_NAME
+            && manifest.backup_name != incremental::BACKUP_FORMAT {
             return Err(format!(
-                "不支持云端备份文件名：{}（当前仅支持 {BACKUP_FILE_NAME}）。",
+                "不支持云端备份格式：{}。",
                 manifest.backup_name
             ));
         }
     }
-    let download_path = temp_file_path("cloud-backup", "zip")?;
-    let _download_guard = TempPathGuard::file(download_path.clone());
-    if !download_file(config, &remote.backup_url, &download_path)? {
-        return Err("云端没有找到可恢复的备份。".to_string());
-    }
-    let expected_hash = manifest
-        .as_ref()
-        .map(|manifest| manifest.snapshot_hash.trim())
-        .filter(|hash| !hash.is_empty());
-    let mut staged_restore = stage_snapshot_restore(paths, &download_path, expected_hash)?;
+    let expected_hash = manifest.as_ref()
+        .map(|manifest| manifest.snapshot_hash.trim()).filter(|hash| !hash.is_empty());
+    let mut staged_restore = if let Some(manifest) = manifest.as_ref()
+        .filter(|manifest| manifest.backup_name == incremental::BACKUP_FORMAT) {
+        incremental::stage_restore(config, remote, paths, manifest)?
+    } else {
+        let download_path = temp_file_path("cloud-backup", "zip")?;
+        let _download_guard = TempPathGuard::file(download_path.clone());
+        if !download_file(config, &remote.backup_url, &download_path)? {
+            return Err("云端没有找到可恢复的备份。".to_string());
+        }
+        stage_snapshot_restore(paths, &download_path, expected_hash)?
+    };
     let local_backup = with_app_data_replacement_for_paths(paths, || {
         crate::db_runtime::with_exclusive_db_file_replacement(&paths.db_file, || {
             let local_backup = create_local_restore_backup(paths)?;
@@ -447,31 +454,35 @@ fn ensure_remote_layout(config: &CloudSyncConfig, remote: &RemoteLayout) -> Resu
 fn upload_syncclipboard_manifest(
     config: &CloudSyncConfig,
     remote: &RemoteLayout,
-) -> Result<(), String> {
+    previous_receipt: &str,
+) -> Result<String, String> {
     let protection_revision = crate::db_runtime::protected_sync_revision()?;
     let manifest = crate::multi_sync::latest_manifest("webdav").map_err(|err| err.to_string())?;
+    let receipt = incremental::clip_receipt(&manifest)?;
+    if receipt == previous_receipt {
+        return Ok(receipt);
+    }
     let data_name = manifest
         .clip
         .as_ref()
         .and_then(|clip| clip.data_name.as_deref())
         .map(|value| value.to_string());
+    if let Some(data_name) = data_name {
+        if let Some(id) = crate::multi_sync::image_id_from_data_name(&data_name) {
+            if let Some(bytes) = crate::multi_sync::load_image_png(id).map_err(|err| err.to_string())? {
+                let data_path = temp_file_path("syncclipboard-image", "png")?;
+                let _guard = TempPathGuard::file(data_path.clone());
+                fs::write(&data_path, bytes).map_err(|err| err.to_string())?;
+                let remote_data_url = append_url_path(&remote.sync_file_dir_url, &data_name);
+                crate::db_runtime::with_shared_app_data(|| {
+                    crate::db_runtime::ensure_protected_sync_revision(&protection_revision)?;
+                    upload_file(config, &data_path, &remote_data_url)
+                })?;
+            }
+        }
+    }
     upload_prepared_syncclipboard_manifest(config, remote, &manifest, &protection_revision)?;
-
-    let Some(data_name) = data_name else {
-        return Ok(());
-    };
-    let Some(id) = crate::multi_sync::image_id_from_data_name(&data_name) else {
-        return Ok(());
-    };
-    let Some(bytes) = crate::multi_sync::load_image_png(id).map_err(|err| err.to_string())? else {
-        return Ok(());
-    };
-    let data_path = temp_file_path("syncclipboard-image", "png")?;
-    fs::write(&data_path, bytes).map_err(|err| err.to_string())?;
-    let remote_data_url = append_url_path(&remote.sync_file_dir_url, &data_name);
-    let upload_result = upload_file(config, &data_path, &remote_data_url);
-    let _ = fs::remove_file(&data_path);
-    upload_result
+    Ok(receipt)
 }
 
 fn upload_prepared_syncclipboard_manifest(
@@ -497,6 +508,7 @@ fn upload_prepared_syncclipboard_manifest(
 fn import_remote_syncclipboard_clip(
     config: &CloudSyncConfig,
     remote: &RemoteLayout,
+    local_state: &incremental::LocalSyncState,
 ) -> Result<bool, String> {
     let temp_path = temp_file_path("SyncClipboard-download", "json")?;
     let found = download_optional_file(config, &remote.sync_clipboard_url, &temp_path)?;
@@ -510,6 +522,10 @@ fn import_remote_syncclipboard_clip(
     }
     let manifest = serde_json::from_str::<crate::multi_sync::MultiSyncManifest>(&raw)
         .map_err(|err| err.to_string())?;
+    if incremental::clip_receipt(&manifest)? == local_state.uploaded_clip
+        || crate::multi_sync::latest_manifest("webdav").map_err(|err| err.to_string())? == manifest {
+        return Ok(false);
+    }
     if let Some(outcome) =
         crate::multi_sync::import_remote_text_clip(&manifest).map_err(|err| err.to_string())?
     {
@@ -571,7 +587,7 @@ fn validate_settings_json(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, String> {
+fn create_snapshot_payload(paths: &CloudSyncPaths) -> Result<SnapshotPayload, String> {
     let protection_revision = crate::db_runtime::protected_sync_revision()?;
     let staging_root = temp_dir_path("snapshot-staging")?;
     if staging_root.exists() {
@@ -593,6 +609,7 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
     fs::copy(&paths.settings_file, payload_dir.join("settings.json"))
         .map_err(|err| err.to_string())?;
     validate_settings_json(&payload_dir.join("settings.json"))?;
+    incremental::normalize_snapshot_settings(&payload_dir.join("settings.json"))?;
     fs::copy(&paths.db_file, payload_dir.join("clipboard.db")).map_err(|err| err.to_string())?;
     crate::db_runtime::sanitize_protected_snapshot(&payload_dir.join("clipboard.db"))?;
     let images_dir = paths.data_dir.join("images");
@@ -600,33 +617,19 @@ fn create_snapshot_archive(paths: &CloudSyncPaths) -> Result<SnapshotArchive, St
         copy_dir_recursive(&images_dir, &payload_dir.join("images"))?;
     }
 
-    let archive_path = temp_unique_path("cloud", "zip")?;
-    let payload_paths = CloudSyncPaths {
-        data_dir: payload_dir.clone(),
-        settings_file: payload_dir.join("settings.json"),
-        db_file: payload_dir.join("clipboard.db"),
-    };
-    let content_hash = local_state_hash(&payload_paths)?;
+    let content_hash = incremental::payload_hash(&payload_dir)?;
     let state_stamp = local_state_stamp(paths);
-    let archive_guard = TempPathGuard::file(archive_path.clone());
-    let settings_copy = temp_unique_path("snapshot-settings", "json")?;
-    let settings_copy_guard = TempPathGuard::file(settings_copy.clone());
-    fs::copy(payload_dir.join("settings.json"), &settings_copy)
-        .map_err(|err| format!("无法保留云备份设置副本：{err}"))?;
-    sync_file(&settings_copy).map_err(|err| format!("无法同步云备份设置副本：{err}"))?;
-    compress_archive(&payload_dir, &archive_path)?;
     crate::db_runtime::ensure_protected_sync_revision(&protection_revision)?;
-    archive_guard.dismiss();
-    settings_copy_guard.dismiss();
-    drop(staging_guard);
-    Ok(SnapshotArchive {
-        path: archive_path,
-        settings_copy,
+    Ok(SnapshotPayload {
+        settings_copy: payload_dir.join("settings.json"),
+        root: payload_dir,
+        _guard: staging_guard,
         content_hash,
         state_stamp,
         protection_revision,
     })
 }
+
 
 fn create_local_backup_archive(paths: &CloudSyncPaths) -> Result<PathBuf, String> {
     let staging_root = temp_dir_path("local-restore-backup-staging")?;
@@ -689,7 +692,7 @@ fn stage_snapshot_restore(
     if extract_root.exists() {
         let _ = fs::remove_dir_all(&extract_root);
     }
-    let extract_guard = TempPathGuard::dir(extract_root.clone());
+    let _extract_guard = TempPathGuard::dir(extract_root.clone());
     fs::create_dir_all(&extract_root).map_err(|err| err.to_string())?;
     expand_archive(archive_path, &extract_root)?;
     let payload_dir = extract_root.join("payload");
@@ -698,13 +701,22 @@ fn stage_snapshot_restore(
     } else {
         extract_root.clone()
     };
+    stage_payload_restore(paths, &extract_root, &source_dir, expected_hash)
+}
+
+fn stage_payload_restore(
+    paths: &CloudSyncPaths,
+    _extract_root: &Path,
+    source_dir: &Path,
+    expected_hash: Option<&str>,
+) -> Result<StagedRestore, String> {
     if !source_dir.is_dir() {
         return Err("云备份缺少有效的 payload 目录。".to_string());
     }
     #[cfg(not(windows))]
     {
-        crate::native_protection::validate_profile(&extract_root)?;
-        if source_dir != extract_root {
+        crate::native_protection::validate_profile(_extract_root)?;
+        if source_dir != _extract_root {
             crate::native_protection::validate_profile(&source_dir)?;
         }
     }
@@ -724,11 +736,15 @@ fn stage_snapshot_restore(
     }
 
     let payload_paths = CloudSyncPaths {
-        data_dir: source_dir.clone(),
+        data_dir: source_dir.to_path_buf(),
         settings_file: settings_src.clone(),
         db_file: db_src.clone(),
     };
-    let payload_hash = local_state_hash(&payload_paths)?;
+    let payload_hash = if expected_hash.is_some_and(|hash| hash.starts_with("sha256:")) {
+        incremental::payload_hash(source_dir)?
+    } else {
+        local_state_hash(&payload_paths)?
+    };
     if let Some(expected_hash) = expected_hash {
         if !payload_hash.eq_ignore_ascii_case(expected_hash.trim()) {
             return Err(format!(
@@ -779,7 +795,6 @@ fn stage_snapshot_restore(
     settings_guard.dismiss();
     db_guard.dismiss();
     images_guard.dismiss();
-    drop(extract_guard);
     Ok(StagedRestore {
         token,
         settings: settings_staged,
@@ -865,9 +880,14 @@ fn hash_path_contents(hasher: &mut Fnv64, path: &Path, label: &str) -> Result<()
         return Ok(());
     }
     hasher.update(&[1]);
-    let bytes = fs::read(path).map_err(|err| err.to_string())?;
-    hasher.update(&(bytes.len() as u64).to_le_bytes());
-    hasher.update(&bytes);
+    let mut file = File::open(path).map_err(|err| err.to_string())?;
+    hasher.update(&file.metadata().map_err(|err| err.to_string())?.len().to_le_bytes());
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer).map_err(|err| err.to_string())?;
+        if count == 0 { break; }
+        hasher.update(&buffer[..count]);
+    }
     Ok(())
 }
 
@@ -1919,6 +1939,129 @@ mod tests {
     use super::*;
 
     #[test]
+    fn incremental_webdav_skips_idle_uploads_and_transfers_only_changed_chunks() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("incremental-round-trip-test").unwrap();
+        let _root_guard = TempPathGuard::dir(root.clone());
+        fs::create_dir_all(root.join("images")).unwrap();
+        let paths = restore_test_paths(&root);
+        fs::write(&paths.settings_file, r#"{"cloud_last_sync_status":"running","dark_mode_enabled":false}"#).unwrap();
+        // An unchanged large image must never be sent again when text changes.
+        let image_bytes = vec![7_u8; 9 * 1024 * 1024];
+        fs::write(root.join("images/large.png"), &image_bytes).unwrap();
+        crate::db_runtime::with_test_db_path(&paths.db_file, || {
+            crate::db_runtime::with_db(|conn| conn.execute(
+                "INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','first','first')", []))?;
+            let server = FakeWebDavServer::start_without_remote_syncclipboard();
+            let config = CloudSyncConfig { webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(), webdav_pass: String::new(), remote_dir: "ZSClip".into() };
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            let first = server.requests();
+            assert!(!first.iter().any(|request| request.path.ends_with("latest.zip")));
+            let first_chunks: std::collections::HashSet<_> = first.iter()
+                .filter(|request| request.method == "PUT" && request.path.contains("/chunks-v1/"))
+                .map(|request| request.path.clone()).collect();
+            assert!(first_chunks.len() >= 3);
+
+            // Exercise actual persisted server state over multiple polls, including restart receipts.
+            for status in ["completed at 1", "running", "completed at 2"] {
+                fs::write(&paths.settings_file, format!(r#"{{"cloud_last_sync_status":"{status}","dark_mode_enabled":false}}"#)).unwrap();
+                let start = server.requests().len();
+                let outcome = perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+                assert!(!outcome.reload_data);
+                assert!(!server.requests()[start..].iter().any(|request| request.method == "PUT"), "idle sync sent data");
+            }
+            let count: i64 = crate::db_runtime::with_db(|conn| conn.query_row("SELECT count(*) FROM items", [], |row| row.get(0)))?;
+            assert_eq!(count, 1, "cloud echo must not create a second local item");
+
+            crate::db_runtime::with_db(|conn| conn.execute(
+                "INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','second','second')", []))?;
+            let start = server.requests().len();
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            let requests = server.requests();
+            let new_chunks: Vec<_> = requests[start..].iter()
+                .filter(|request| request.method == "PUT" && request.path.contains("/chunks-v1/")).collect();
+            assert!(!new_chunks.is_empty());
+            assert!(new_chunks.iter().all(|request| !first_chunks.contains(&request.path)));
+            assert!(new_chunks.iter().map(|request| request.body.len()).sum::<usize>() < 128 * 1024);
+
+            // Real restore validates every chunk, then commits the complete profile.
+            let restored = restore_test_paths(&root.join("restored"));
+            let remote = RemoteLayout::from_config(&config).unwrap();
+            let outcome = restore_remote_backup(&config, &remote, &restored).unwrap();
+            assert!(outcome.reload_data);
+            assert_eq!(fs::read(restored.data_dir.join("images/large.png")).unwrap(), image_bytes);
+            let conn = rusqlite::Connection::open(&restored.db_file).unwrap();
+            let texts: Vec<String> = conn.prepare("SELECT text_data FROM items ORDER BY id").unwrap()
+                .query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+            assert_eq!(texts, ["first", "second"]);
+            drop(conn);
+
+            // Deletions and genuine settings changes are reflected in a complete restore.
+            fs::remove_file(root.join("images/large.png")).unwrap();
+            fs::write(&paths.settings_file, r#"{"dark_mode_enabled":true}"#).unwrap();
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            restore_remote_backup(&config, &remote, &restored).unwrap();
+            assert!(!restored.data_dir.join("images/large.png").exists());
+            let settings: serde_json::Value = serde_json::from_slice(&fs::read(&restored.settings_file).unwrap()).unwrap();
+            assert_eq!(settings["dark_mode_enabled"], true);
+            server.stop();
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
+    fn incremental_webdav_failed_publish_keeps_previous_backup_and_retry_recovers() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("incremental-retry-test").unwrap();
+        let _root_guard = TempPathGuard::dir(root.clone());
+        fs::create_dir_all(&root).unwrap();
+        let paths = restore_test_paths(&root);
+        fs::write(&paths.settings_file, "{}").unwrap();
+        crate::db_runtime::with_test_db_path(&paths.db_file, || {
+            crate::db_runtime::with_db(|conn| conn.execute(
+                "INSERT INTO items(category,kind,preview,text_data) VALUES(0,'text','before','before')", []))?;
+            let server = FakeWebDavServer::start_without_remote_syncclipboard();
+            let config = CloudSyncConfig { webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+                webdav_user: String::new(), webdav_pass: String::new(), remote_dir: "ZSClip".into() };
+            let remote = RemoteLayout::from_config(&config).unwrap();
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            let manifest_path = "/root/ZSClip/manifest.json";
+            let original = server.files.lock().unwrap()[manifest_path].clone();
+            crate::db_runtime::with_db(|conn| conn.execute(
+                "UPDATE items SET text_data='after',preview='after'", []))?;
+            *server.fail_put.lock().unwrap() = Some(".zip".into());
+            assert!(perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).is_err());
+            assert_eq!(server.files.lock().unwrap()[manifest_path], original);
+            *server.fail_put.lock().unwrap() = Some("/manifest.json".into());
+            assert!(perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).is_err());
+            assert_eq!(server.files.lock().unwrap()[manifest_path], original);
+            let previous = restore_test_paths(&root.join("previous"));
+            restore_remote_backup(&config, &remote, &previous).unwrap();
+            assert_eq!(restored_test_preview(&previous.db_file), "before");
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert_ne!(server.files.lock().unwrap()[manifest_path], original);
+            let current = restore_test_paths(&root.join("current"));
+            restore_remote_backup(&config, &remote, &current).unwrap();
+            assert_eq!(restored_test_preview(&current.db_file), "after");
+
+            // Missing or damaged chunks cannot replace active data.
+            let manifest: CloudSyncManifest = serde_json::from_slice(&server.files.lock().unwrap()[manifest_path]).unwrap();
+            let chunk = server.files.lock().unwrap().keys().find(|path| path.contains("/chunks-v1/")
+                && serde_json::to_string(manifest.chunks.as_ref().unwrap()).unwrap().contains(path.rsplit('/').next().unwrap().trim_end_matches(".zip")))
+                .cloned().unwrap();
+            server.files.lock().unwrap().insert(chunk.clone(), b"invalid zip".to_vec());
+            assert!(restore_remote_backup(&config, &remote, &current).is_err());
+            assert_eq!(restored_test_preview(&current.db_file), "after");
+            server.files.lock().unwrap().remove(&chunk);
+            assert!(restore_remote_backup(&config, &remote, &current).is_err());
+            assert_eq!(restored_test_preview(&current.db_file), "after");
+            server.stop();
+            Ok(())
+        }).unwrap();
+    }
+
+    #[test]
     fn cloud_temporary_files_use_the_active_profile() {
         #[cfg(windows)]
         let data = crate::app::data_dir();
@@ -2002,8 +2145,11 @@ mod tests {
         rusqlite::Connection::open(&paths.db_file).unwrap()
             .execute("UPDATE items SET preview='synthetic-archive-secret'", []).unwrap();
         crate::db_runtime::with_test_protected_texts(&["synthetic-archive-secret"], || {
-            let snapshot = create_snapshot_archive(&paths).unwrap();
-            let file = fs::File::open(&snapshot.path).unwrap();
+            let snapshot = create_snapshot_payload(&paths).unwrap();
+            let archive_path = temp_unique_path("cloud", "zip").unwrap();
+            let _archive_guard = TempPathGuard::file(archive_path.clone());
+            compress_archive(&snapshot.root, &archive_path).unwrap();
+            let file = fs::File::open(&archive_path).unwrap();
             let mut archive = ZipArchive::new(file).unwrap();
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).unwrap();
@@ -2014,8 +2160,6 @@ mod tests {
                 assert!(!bytes.windows(b"synthetic-archive-secret".len()).any(|window| window == b"synthetic-archive-secret"));
             }
             drop(archive);
-            fs::remove_file(snapshot.path).unwrap();
-            fs::remove_file(snapshot.settings_copy).unwrap();
         });
         fs::remove_dir_all(root).unwrap();
     }
@@ -2141,6 +2285,30 @@ mod tests {
             b"local image",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn legacy_webdav_zip_remains_restorable() {
+        let _guard = cloud_sync_e2e_guard();
+        let root = temp_dir_path("legacy-webdav-restore-test").unwrap();
+        let _root_guard = TempPathGuard::dir(root.clone());
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("legacy.db");
+        write_restore_test_database(&database, "legacy backup");
+        let archive = write_restore_test_archive(&root, Some("{}"), Some(&database), &[]);
+        let server = FakeWebDavServer::start_without_remote_syncclipboard();
+        server.files.lock().unwrap().insert("/root/ZSClip/backups/latest.zip".into(), fs::read(archive).unwrap());
+        // Pre-chunk clients omit the new optional chunks field.
+        server.files.lock().unwrap().insert("/root/ZSClip/manifest.json".into(), serde_json::to_vec(&serde_json::json!({
+            "version": APP_VERSION, "updated_at": 1, "snapshot_hash": "", "backup_name": "latest.zip"
+        })).unwrap());
+        let config = CloudSyncConfig { webdav_url: format!("http://127.0.0.1:{}/root", server.port),
+            webdav_user: String::new(), webdav_pass: String::new(), remote_dir: "ZSClip".into() };
+        let remote = RemoteLayout::from_config(&config).unwrap();
+        let paths = restore_test_paths(&root.join("restored"));
+        restore_remote_backup(&config, &remote, &paths).unwrap();
+        assert_eq!(restored_test_preview(&paths.db_file), "legacy backup");
+        assert!(!server.requests().iter().any(|request| request.method == "PUT"));
     }
 
     #[test]
@@ -2568,11 +2736,16 @@ mod tests {
             );
             assert_eq!(uploaded_json["clip"]["content"], "hello from android");
 
-            let backup_upload = requests
-                .iter()
-                .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/backups/latest.zip")
-                .unwrap();
-            assert_backup_contains_android_text(&backup_upload.body);
+            let backup_manifest = requests.iter().rev().find(|request|
+                request.method == "PUT" && request.path.ends_with("/manifest.json")).unwrap();
+            let manifest: CloudSyncManifest = serde_json::from_slice(&backup_manifest.body).unwrap();
+            assert_eq!(manifest.backup_name, incremental::BACKUP_FORMAT);
+            assert!(manifest.chunks.as_ref().unwrap().files.contains_key("clipboard.db"));
+            let restored = restore_test_paths(&data_dir.join("restored"));
+            restore_remote_backup(&config, &RemoteLayout::from_config(&config).unwrap(), &restored).unwrap();
+            let conn = rusqlite::Connection::open(&restored.db_file).unwrap();
+            let text: String = conn.query_row("SELECT text_data FROM items WHERE source_app='WebDAV: Android' LIMIT 1", [], |row| row.get(0)).unwrap();
+            assert_eq!(text, "hello from android");
 
             server.stop();
             Ok(())
@@ -2634,6 +2807,10 @@ mod tests {
                 .find(|req| req.method == "PUT" && req.path == "/root/ZS%20Clip/file/zsclip_image_1.png")
                 .unwrap();
             assert!(image_upload.body.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let start = requests.len();
+            perform_cloud_sync(CloudSyncAction::SyncNow, &config, &paths).unwrap();
+            assert!(!server.requests()[start..].iter().any(|request|
+                request.method == "PUT" || request.path.contains("/file/")));
 
             server.stop();
             Ok(())
@@ -2879,6 +3056,7 @@ mod tests {
                     Err(error)=>panic!("synthetic WebDAV listener: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
             let mut reader=BufReader::new(stream.try_clone().unwrap());
             let mut authenticated=false;
@@ -2908,6 +3086,8 @@ mod tests {
         port: u16,
         running: Arc<AtomicBool>,
         requests: Arc<Mutex<Vec<RecordedRequest>>>,
+        files: Arc<Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+        fail_put: Arc<Mutex<Option<String>>>,
         handle: Option<thread::JoinHandle<()>>,
     }
 
@@ -2984,6 +3164,10 @@ mod tests {
             let port = listener.local_addr().unwrap().port();
             let running = Arc::new(AtomicBool::new(true));
             let requests = Arc::new(Mutex::new(Vec::new()));
+            let files = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
+            let fail_put = Arc::new(Mutex::new(None));
+            let files_thread = files.clone();
+            let fail_put_thread = fail_put.clone();
             let empty_syncclipboard_count = Arc::new(AtomicUsize::new(empty_syncclipboard_count));
             let running_thread = running.clone();
             let requests_thread = requests.clone();
@@ -3000,6 +3184,8 @@ mod tests {
                             remote_settings,
                             allow_writes,
                             protection_registry.as_ref(),
+                            &files_thread,
+                            &fail_put_thread,
                         ),
                         Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
@@ -3012,6 +3198,8 @@ mod tests {
                 port,
                 running,
                 requests,
+                files,
+                fail_put,
                 handle: Some(handle),
             }
         }
@@ -3048,7 +3236,10 @@ mod tests {
         remote_settings: Option<&'static str>,
         allow_writes: bool,
         protection_registry: Option<&Arc<Mutex<Vec<String>>>>,
+        files: &Arc<Mutex<std::collections::BTreeMap<String, Vec<u8>>>>,
+        fail_put: &Arc<Mutex<Option<String>>>,
     ) {
+        stream.set_nonblocking(false).expect("blocking accepted WebDAV test connection");
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut request_line = String::new();
         let mut headers = Vec::new();
@@ -3100,7 +3291,19 @@ mod tests {
             body: body.clone(),
         });
 
-        let (status, response_body) = if method == "GET" && path.ends_with("/zsSyncClipboard.json")
+        let stored = files.lock().unwrap().get(&path).cloned();
+        let (status, response_body) = if method == "PUT" && allow_writes {
+            let fail = fail_put.lock().unwrap().as_ref().is_some_and(|suffix| path.ends_with(suffix));
+            if fail {
+                *fail_put.lock().unwrap() = None;
+                (503, Vec::new())
+            } else {
+                files.lock().unwrap().insert(path.clone(), body);
+                (201, Vec::new())
+            }
+        } else if method == "GET" && stored.is_some() {
+            (200, stored.unwrap())
+        } else if method == "GET" && path.ends_with("/zsSyncClipboard.json")
         {
             if let Some(body) = remote_syncclipboard {
                 if empty_syncclipboard_count
@@ -3200,32 +3403,4 @@ mod tests {
         out
     }
 
-    fn assert_backup_contains_android_text(zip_bytes: &[u8]) {
-        let archive_path = temp_unique_path("cloud-sync-e2e-backup", "zip").unwrap();
-        fs::write(&archive_path, zip_bytes).unwrap();
-        let extract_root = temp_dir_path("cloud-sync-e2e-extract").unwrap();
-        if extract_root.exists() {
-            let _ = fs::remove_dir_all(&extract_root);
-        }
-        expand_archive(&archive_path, &extract_root).unwrap();
-        let db_path = {
-            let nested = extract_root.join("payload").join("clipboard.db");
-            if nested.exists() {
-                nested
-            } else {
-                extract_root.join("clipboard.db")
-            }
-        };
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let text: String = conn
-            .query_row(
-                "SELECT text_data FROM items WHERE source_app='WebDAV: Android' LIMIT 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(text, "hello from android");
-        let _ = fs::remove_file(archive_path);
-        let _ = fs::remove_dir_all(extract_root);
-    }
 }

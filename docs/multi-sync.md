@@ -41,7 +41,11 @@ GET /file/zsclip_image_<id>.png?device=<device_id>&token=<token>
 
 桌面端执行 WebDAV 同步时，会先读取远端 `zsSyncClipboard.json`。如果远端最新记录是文本且本地还没有同签名记录，会导入为本地剪贴板记录；如果远端最新记录是图片，会按 `dataName` 下载 `<remote_dir>/file/...` 中的 PNG，校验后导入本地图片记录。
 
-现有快照同步仍然保留 `manifest.json` 和 `backups/latest.zip`，用于完整数据库/设置恢复；`zsSyncClipboard.json` 则面向移动端和轻量客户端读取最新剪贴板状态。
+完整备份使用 `manifest.json` 和 `backups/chunks-v1/<SHA256>.zip`。数据库、设置和图片按 4 MiB 数据块计算 SHA-256，并分别压缩；首次同步建立完整基线，之后仅上传云端当前清单未引用的变化块。清单在所有数据上传成功后发布，上传失败不会替换上一份完整备份。恢复时逐块检查长度和 SHA-256，再按原有事务流程替换本地资料。
+
+无内容变化的轮询只读取云端清单，不上传备份或重复上传图片；同步状态文字不计入备份内容，未修改的 Windows 凭据保留原加密值。本地 `cloud-sync-state.json` 按服务地址、账号和目录保存回执，避免把本机上传的剪贴板再次导入。
+
+旧版 `backups/latest.zip` 仍可恢复，首次使用增量格式时会建立数据块基线。旧客户端不支持恢复 `chunks-v1` 备份，同一云端目录的桌面客户端应统一升级。已上传的数据块不会在自动同步中删除，旧清单不再引用的数据块和旧 ZIP 可能继续占用云端空间。`zsSyncClipboard.json` 的移动端协议保持兼容。
 
 ### 二维码绑定
 
@@ -94,6 +98,8 @@ The desktop settings page now uses `Multi-device Sync` as the shared entry with 
 The shared contract is a latest-state manifest. LAN now exposes a read-only `zsSyncClipboard.json` and lazy `/file/...` downloads while preserving the existing ZSClip pairing token, `/v1/clip`, and `/v1/latest` protocol. WebDAV sync also uploads the same manifest shape to `<remote_dir>/zsSyncClipboard.json`, with image payloads under `<remote_dir>/file/`.
 
 When desktop WebDAV sync runs, it reads the remote `zsSyncClipboard.json` first. Remote text clips are imported into local history when their lightweight signature is new. Remote image clips download the referenced `<remote_dir>/file/...` PNG and import it into local image history after validation.
+
+Full backups use `manifest.json` and compressed, SHA-256-addressed 4 MiB blocks under `backups/chunks-v1/`. The first sync establishes a baseline; later syncs upload only changed blocks absent from the current remote manifest. The manifest is published last, preserving the preceding recoverable backup on failure. Restore verifies block lengths and hashes before the existing transactional replacement. Idle polls send no uploads; local progress text is excluded, Windows credential ciphertext is reused when unchanged, and endpoint-scoped receipts prevent self-imports. Legacy `backups/latest.zip` remains restorable. Desktop clients sharing a directory must support the new format; mobile manifests remain compatible. Automatic sync does not delete unreferenced historical blocks or the old ZIP.
 
 ### Manifest
 

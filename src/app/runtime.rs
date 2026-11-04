@@ -513,6 +513,16 @@ fn sanitize_setting_field(incoming: &mut serde_json::Value, expected: &serde_jso
 }
 
 fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Error> {
+    let previous = fs::read_to_string(settings_file())
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    serialize_settings_with_previous(settings, previous.as_ref())
+}
+
+fn serialize_settings_with_previous(
+    settings: &AppSettings,
+    previous: Option<&serde_json::Value>,
+) -> Result<String, serde_json::Error> {
     let mut value = serde_json::to_value(settings)?;
     if let Some(obj) = value.as_object_mut() {
         for (plain_key, encrypted_key) in SECRET_STORAGE_FIELDS {
@@ -527,9 +537,15 @@ fn serialize_settings(settings: &AppSettings) -> Result<String, serde_json::Erro
             );
             if secret.trim().is_empty() {
                 obj.remove(encrypted_key);
-            } else if let Some(enc) =
-                crate::platform::secret_store::encrypt_secret_for_storage(&secret)
-            {
+            } else if let Some(enc) = previous
+                .and_then(|value| value.get(encrypted_key))
+                .and_then(|value| value.as_str())
+                .filter(|encoded| {
+                    crate::platform::secret_store::decrypt_secret_from_storage(encoded)
+                        .is_some_and(|stored| stored == secret)
+                })
+                .map(str::to_owned)
+                .or_else(|| crate::platform::secret_store::encrypt_secret_for_storage(&secret)) {
                 obj.insert(encrypted_key.to_string(), serde_json::Value::String(enc));
             }
         }
@@ -623,6 +639,23 @@ pub(super) fn apply_autostart(enabled: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchanged_credentials_keep_ciphertext_and_changed_credentials_round_trip() {
+        let mut settings = AppSettings::default();
+        settings.cloud_webdav_pass = "synthetic-webdav-password".into();
+        let first = serialize_settings_with_previous(&settings, None).unwrap();
+        let previous: serde_json::Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(serialize_settings_with_previous(&settings, Some(&previous)).unwrap(), first);
+        settings.cloud_webdav_pass = "changed-synthetic-password".into();
+        let changed = serialize_settings_with_previous(&settings, Some(&previous)).unwrap();
+        assert_ne!(first, changed);
+        assert_eq!(load_settings_from_text(&changed).cloud_webdav_pass, settings.cloud_webdav_pass);
+        settings.cloud_webdav_pass.clear();
+        let cleared: serde_json::Value = serde_json::from_str(
+            &serialize_settings_with_previous(&settings, Some(&previous)).unwrap()).unwrap();
+        assert!(cleared.get(CLOUD_WEBDAV_PASS_ENCRYPTED_KEY).is_none());
+    }
 
     fn test_runtime_dir(name: &str) -> PathBuf {
         let ts = SystemTime::now()
