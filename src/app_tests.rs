@@ -745,7 +745,7 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(!app.contains("fn normalize_captured_text("));
     assert!(!app.contains("fn normalize_captured_image_rgba("));
     assert!(!app.contains("fn read_windows_clipboard_bitmap_rgba("));
-    assert!(!app.contains("unsafe fn clipboard_source_app_name("));
+    assert!(!app.contains("unsafe fn clipboard_owner_app_name("));
 
     assert!(capture.contains("pub(super) unsafe fn capture_clipboard("));
     assert!(capture.contains("pub(super) fn browser_download_selection_should_skip("));
@@ -754,7 +754,7 @@ fn windows_main_clipboard_capture_lives_outside_app_rs() {
     assert!(capture.contains("pub(super) fn normalize_captured_text("));
     assert!(capture.contains("pub(super) fn normalize_captured_image_rgba("));
     assert!(capture.contains("fn read_windows_clipboard_bitmap_rgba("));
-    assert!(capture.contains("unsafe fn clipboard_source_app_name("));
+    assert!(capture.contains("unsafe fn clipboard_owner_app_name("));
     assert!(capture.contains("platform_clipboard::read_text_for_sequence(sequence)"));
     assert!(capture.contains("WindowsClipboardHost::read_image_rgba"));
     assert!(capture.contains("WindowsClipboardHost::read_file_paths"));
@@ -902,7 +902,7 @@ fn clipboard_data_reads_are_process_isolated_and_time_bounded() {
     assert!(capture.contains("std::process::Command::new(executable)"));
     assert!(capture.contains("CLIPBOARD_READ_HELPER_TIMEOUT"));
     assert!(capture.contains("let _ = child.kill();"));
-    assert!(capture.contains("clipboard_read_sender().try_send(request)"));
+    assert!(capture.contains("queue.pending = Some(ClipboardCaptureReadRequest"));
     assert!(capture.contains("post_boxed_message("));
     assert!(main_entry.contains("if msg == WM_CLIPBOARD_CAPTURE_READ_READY"));
     assert!(main.contains("app::maybe_run_clipboard_read_helper_from_args()"));
@@ -982,6 +982,34 @@ fn load_16_bit_png_normalizes_to_rgba8() {
     let (bytes, width, height) = load_image_bytes_from_path(path.to_str().unwrap()).unwrap();
     assert_eq!((width, height), (2, 1));
     assert_eq!(bytes, vec![255, 0, 0, 255, 0, 255, 0, 255]);
+
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn load_jpeg_normalizes_to_rgba8() {
+    let dir = std::env::temp_dir().join(format!(
+        "zsclip-jpeg-test-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("sample.jpg");
+    {
+        let file = fs::File::create(&path).unwrap();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(file, 100);
+        encoder
+            .encode(&[255, 0, 0, 0, 255, 0], 2, 1, image::ExtendedColorType::Rgb8)
+            .unwrap();
+    }
+
+    let (bytes, width, height) = load_image_bytes_from_path(path.to_str().unwrap()).unwrap();
+    assert_eq!((width, height), (2, 1));
+    assert_eq!(bytes.len(), 2 * 1 * 4);
+    assert!(bytes.chunks_exact(4).all(|pixel| pixel[3] == 255));
 
     let _ = fs::remove_dir_all(dir);
 }
@@ -3512,9 +3540,6 @@ fn windows_main_runtime_state_behavior_lives_outside_app_rs() {
     for function in [
         "fn should_skip_transient_duplicate_capture(",
         "fn remember_lan_message_key(",
-        "fn note_programmatic_clipboard_signature(",
-        "fn consume_skip_next_clipboard_update_once(",
-        "fn consume_recent_programmatic_clipboard_signature(",
         "fn selected_items_owned(",
         "fn current_scroll_anchor(",
         "fn reload_state_from_db_preserve_scroll(",
@@ -5256,7 +5281,7 @@ fn windows_window_identity_queries_use_identity_host() {
     let identity_host = include_str!("platform/window_identity.rs").replace("\r\n", "\n");
     let ignored_start = vv_hook.find("unsafe fn vv_target_is_ignored").unwrap();
     let source_start = clipboard_capture
-        .find("unsafe fn clipboard_source_app_name")
+        .find("unsafe fn clipboard_owner_app_name")
         .unwrap();
     let foreground_start = clipboard_capture
         .find("unsafe fn foreground_source_app_name")
@@ -5330,7 +5355,7 @@ fn windows_window_identity_queries_use_identity_host() {
     let capture_skip_block = &settings_actions[capture_skip_start..capture_skip_end];
 
     assert!(production.contains("mod vv_hook;"));
-    assert!(!production.contains("unsafe fn clipboard_source_app_name"));
+    assert!(!production.contains("unsafe fn clipboard_owner_app_name"));
     assert!(!production.contains("unsafe fn foreground_source_app_name"));
     assert!(!production.contains("unsafe fn window_process_name"));
     assert!(!production.contains("unsafe fn vv_target_is_ignored"));
@@ -5341,7 +5366,7 @@ fn windows_window_identity_queries_use_identity_host() {
     );
     assert!(source_block.contains("WindowsWindowIdentityHost::new()"));
     assert!(source_block.contains("identity_host.root_handle(owner)"));
-    assert!(source_block.contains("identity_host.foreground_handle()"));
+    assert!(!source_block.contains("identity_host.foreground_handle()"));
     assert!(source_block.contains("identity_host.process_name("));
     assert!(foreground_block.contains("identity_host.foreground_handle()"));
     assert!(foreground_block.contains("identity_host.process_name(foreground)"));
@@ -5633,7 +5658,6 @@ fn windows_main_window_registry_lives_outside_hosts_rs() {
         "pub(super) fn set_window_host",
         "pub(super) fn clear_window_host",
         "pub(super) fn window_host_hwnds",
-        "pub(super) unsafe fn set_ignore_clipboard_for_all_hosts",
         "pub(super) fn is_app_window",
         "pub(crate) unsafe fn get_state_ptr",
         "pub(super) unsafe fn get_state_mut",
@@ -5651,8 +5675,6 @@ fn windows_main_window_registry_lives_outside_hosts_rs() {
         "pub(super) fn clear_window_host",
         "pub(super) fn window_host_hwnds",
         "pub(super) fn window_host_hwnds_try",
-        "pub(super) unsafe fn set_ignore_clipboard_for_all_hosts",
-        "pub(super) unsafe fn skip_next_clipboard_update_for_all_hosts",
         "pub(super) fn is_app_window",
         "pub(crate) unsafe fn get_state_ptr",
         "pub(super) unsafe fn get_state_mut",
@@ -6090,7 +6112,7 @@ fn windows_text_processing_skips_only_the_successful_programmatic_clipboard_upda
         .unwrap();
     let success = branch.find("if clipboard_written {").unwrap();
     let skip = branch
-        .find("skip_next_clipboard_update_for_all_hosts();")
+        .find("note_programmatic_clipboard_write(signature.clone());")
         .unwrap();
     let failure = branch
         .find("show_clipboard_write_failure_message(hwnd);")

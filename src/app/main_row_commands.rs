@@ -74,6 +74,9 @@ unsafe fn execute_row_external_action(hwnd: HWND, state: &mut AppState, action: 
         }
         MainRowExternalActionPlan::CopyText(text) => {
             let copied = platform_clipboard::WindowsClipboardHost::write_text(&text);
+            if copied {
+                note_programmatic_clipboard_write(text_content_signature(&text));
+            }
             play_copy_success_sound_if_enabled(state, copied);
         }
         MainRowExternalActionPlan::LanPushFiles(paths) => {

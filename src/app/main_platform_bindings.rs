@@ -1,6 +1,31 @@
 use super::prelude::*;
 
 pub(super) fn register_hotkey_for(hwnd: HWND, state: &mut AppState) {
+    if try_register_hotkey_for(hwnd, state) == Err(hotkey::ERROR_HOTKEY_ALREADY_REGISTERED)
+        && !state.hotkey_conflict_notified
+    {
+        state.hotkey_conflict_notified = true;
+        show_native_dialog_message(
+            hwnd,
+            translate("快捷键冲突").as_ref(),
+            &hotkey_conflict_message(state),
+            NativeDialogLevel::Warning,
+        );
+    }
+}
+
+pub(super) fn hotkey_conflict_message(state: &AppState) -> String {
+    let hotkey = hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key)
+        .replace(tr("当前设置：", "Current setting: "), "");
+    format!(
+        "{} {} {}",
+        tr("快捷键", "Hotkey"),
+        hotkey,
+        tr("已被其他程序或系统占用。请在设置-快捷键中改用其他组合。", "is already used by another app or the system. Choose another combination in Settings > Hotkeys.")
+    )
+}
+
+pub(super) fn try_register_hotkey_for(hwnd: HWND, state: &mut AppState) -> Result<(), u32> {
     let plan = main_hotkey_registration_plan(MainHotkeyRegistrationInput {
         enabled: state.settings.hotkey_enabled,
         already_registered: state.hotkey_registered,
@@ -12,40 +37,20 @@ pub(super) fn register_hotkey_for(hwnd: HWND, state: &mut AppState) {
         state.hotkey_registered = false;
     }
     let Some(spec) = plan.register else {
-        return;
+        state.hotkey_conflict_notified = false;
+        return Ok(());
     };
-    match hotkey::register(
+    let result = hotkey::register(
         hwnd as isize,
         HOTKEY_ID,
         hotkey::mods_from_spec(spec.modifiers),
         hotkey::vk_from_spec(spec.key),
-    ) {
-        Ok(()) => {
-            state.hotkey_registered = true;
-            state.hotkey_conflict_notified = false;
-        }
-        Err(err) => {
-            state.hotkey_registered = false;
-            if err == hotkey::ERROR_HOTKEY_ALREADY_REGISTERED && !state.hotkey_conflict_notified {
-                state.hotkey_conflict_notified = true;
-                let hk =
-                    hotkey_preview_text(&state.settings.hotkey_mod, &state.settings.hotkey_key)
-                        .replace(tr("当前设置：", "Current setting: "), "");
-                let message = format!(
-                    "{} {} {}",
-                    tr("快捷键", "Hotkey"),
-                    hk,
-                    tr("已被其他程序或系统占用，当前不会注册全局热键。请在设置-快捷键中改用其他组合。", "is already used by another app or the system. The global hotkey will not be registered. Please choose another combination in Settings > Hotkeys.")
-                );
-                show_native_dialog_message(
-                    hwnd,
-                    translate("快捷键冲突").as_ref(),
-                    &message,
-                    NativeDialogLevel::Warning,
-                );
-            }
-        }
+    );
+    state.hotkey_registered = result.is_ok();
+    if state.hotkey_registered {
+        state.hotkey_conflict_notified = false;
     }
+    result
 }
 
 pub(super) fn unregister_hotkey_for(hwnd: HWND, state: &mut AppState) {

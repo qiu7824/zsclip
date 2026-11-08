@@ -498,7 +498,7 @@ pub(super) unsafe fn handle_main_application_event(hwnd: HWND, event: Applicatio
             if !ptr.is_null() && (*ptr).role == WindowRole::Main {
                 let state = &mut *ptr;
                 state.tray_icon_registered = false;
-                state.startup_recovery_ticks = STARTUP_RECOVERY_TICKS;
+                arm_startup_recovery_if_needed(state);
                 retry_startup_integrations(hwnd, state);
             }
         }
@@ -598,11 +598,7 @@ pub(super) unsafe fn handle_main_async_event(hwnd: HWND, event: MainAsyncEvent) 
                 .unwrap_or(false);
             if clipboard_written {
                 let (bytes, width, height) = payload.image.as_ref().unwrap();
-                state.note_programmatic_clipboard_signature(
-                    image_content_signature(bytes, *width, *height),
-                    1200,
-                );
-                set_ignore_clipboard_for_all_hosts(1200);
+                note_programmatic_clipboard_write(image_content_signature(bytes, *width, *height));
             }
             let target_available = clipboard_written && identity_host.exists(target);
             if payload.context == ImagePasteRequestContext::VvPopup {
@@ -724,7 +720,7 @@ pub(super) unsafe fn handle_text_processing_result(
         let signature = text_content_signature(&normalized);
         let clipboard_written = platform_clipboard::WindowsClipboardHost::write_text(&normalized);
         if clipboard_written {
-            skip_next_clipboard_update_for_all_hosts();
+            note_programmatic_clipboard_write(signature.clone());
         } else {
             show_clipboard_write_failure_message(hwnd);
         }

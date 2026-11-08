@@ -26,11 +26,7 @@ pub(super) unsafe fn copy_selection_to_clipboard(state: &mut AppState) -> bool {
         MainCopySelectionPlan::CopyMergedText(merged) => {
             let ok = platform_clipboard::WindowsClipboardHost::write_text(&merged);
             if ok {
-                state.note_programmatic_clipboard_signature(
-                    text_content_signature(&merged),
-                    CLIPBOARD_IGNORE_MS_PASTE,
-                );
-                set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
+                note_programmatic_clipboard_write(text_content_signature(&merged));
             }
             ok
         }
@@ -55,7 +51,7 @@ pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &Cl
         return false;
     };
 
-    let ok = match item.kind {
+    match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             if let Some(text) = &item.text {
                 let prepared = maybe_ai_clean_text(state, text);
@@ -71,10 +67,7 @@ pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &Cl
                         .and_then(crate::app_core::clipboard_html::normalize)
                         .map(|html| rich_text_content_signature(&prepared, &html))
                         .unwrap_or_else(|| text_content_signature(&prepared));
-                    state.note_programmatic_clipboard_signature(
-                        signature,
-                        CLIPBOARD_IGNORE_MS_PASTE,
-                    );
+                    note_programmatic_clipboard_write(signature);
                 }
                 ok
             } else {
@@ -87,10 +80,7 @@ pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &Cl
                     &bytes, width, height,
                 );
                 if ok {
-                    state.note_programmatic_clipboard_signature(
-                        image_content_signature(&bytes, width, height),
-                        CLIPBOARD_IGNORE_MS_PASTE,
-                    );
+                    note_programmatic_clipboard_write(image_content_signature(&bytes, width, height));
                 }
                 ok
             } else {
@@ -101,31 +91,21 @@ pub(super) unsafe fn apply_item_to_clipboard(state: &mut AppState, item_ref: &Cl
             if let Some(paths) = &item.file_paths {
                 let ok = platform_clipboard::WindowsClipboardHost::write_file_paths(paths);
                 if ok {
-                    state.note_programmatic_clipboard_signature(
-                        file_paths_signature(paths),
-                        CLIPBOARD_IGNORE_MS_PASTE,
-                    );
+                    note_programmatic_clipboard_write(file_paths_signature(paths));
                 }
                 ok
             } else if let Some(text) = &item.text {
                 let prepared = maybe_ai_clean_text(state, text);
                 let ok = platform_clipboard::WindowsClipboardHost::write_text(&prepared);
                 if ok {
-                    state.note_programmatic_clipboard_signature(
-                        text_content_signature(&prepared),
-                        CLIPBOARD_IGNORE_MS_PASTE,
-                    );
+                    note_programmatic_clipboard_write(text_content_signature(&prepared));
                 }
                 ok
             } else {
                 false
             }
         }
-    };
-    if ok {
-        set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
     }
-    ok
 }
 
 unsafe fn apply_item_to_clipboard_plain_text(state: &mut AppState, item_ref: &ClipItem) -> bool {
@@ -157,11 +137,7 @@ unsafe fn apply_item_to_clipboard_plain_text(state: &mut AppState, item_ref: &Cl
     };
     let ok = platform_clipboard::WindowsClipboardHost::write_text(&text);
     if ok {
-        state.note_programmatic_clipboard_signature(
-            text_content_signature(&text),
-            CLIPBOARD_IGNORE_MS_PASTE,
-        );
-        set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
+        note_programmatic_clipboard_write(text_content_signature(&text));
     }
     ok
 }
@@ -341,7 +317,6 @@ pub(super) unsafe fn try_apply_to_explorer_rename(
     let ok =
         WindowsPasteTargetHost::new().replace_paste_target_selection(state.hotkey_passthrough_edit, &text);
     if ok {
-        set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_DIRECT_EDIT);
         clear_hotkey_passthrough_state(state);
     }
     ok
@@ -861,11 +836,6 @@ pub(super) unsafe fn paste_protected_text_to_target(
     if !platform_clipboard::set_protected_text(hwnd, text) {
         return false;
     }
-    state.note_programmatic_clipboard_signature(
-        text_content_signature(text),
-        CLIPBOARD_IGNORE_MS_PASTE,
-    );
-    set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
     state.hotkey_passthrough_active = true;
     state.hotkey_passthrough_target = target;
     state.hotkey_passthrough_focus =

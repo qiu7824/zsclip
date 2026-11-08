@@ -142,48 +142,6 @@ impl AppState {
         true
     }
 
-    pub(super) fn note_programmatic_clipboard_signature(&mut self, signature: String, ms: u64) {
-        self.recent_programmatic_clipboard_signature = signature;
-        self.recent_programmatic_clipboard_until =
-            Some(Instant::now() + std::time::Duration::from_millis(ms.max(1)));
-    }
-
-    pub(super) fn consume_skip_next_clipboard_update_once(&mut self, sequence: u32) -> bool {
-        if !self.skip_next_clipboard_update_once {
-            return false;
-        }
-        self.skip_next_clipboard_update_once = false;
-        if sequence != 0 {
-            self.last_clipboard_seq = sequence;
-        }
-        true
-    }
-
-    pub(super) fn consume_recent_programmatic_clipboard_signature(
-        &mut self,
-        signature: &str,
-    ) -> bool {
-        if signature.is_empty() || self.recent_programmatic_clipboard_signature.is_empty() {
-            return false;
-        }
-        let now = Instant::now();
-        let still_active = self
-            .recent_programmatic_clipboard_until
-            .map(|until| now < until)
-            .unwrap_or(false);
-        if !still_active {
-            self.recent_programmatic_clipboard_signature.clear();
-            self.recent_programmatic_clipboard_until = None;
-            return false;
-        }
-        if self.recent_programmatic_clipboard_signature == signature {
-            self.recent_programmatic_clipboard_signature.clear();
-            self.recent_programmatic_clipboard_until = None;
-            return true;
-        }
-        false
-    }
-
     pub(super) fn selected_items_owned(&self) -> Vec<ClipItem> {
         self.selected_source_indices()
             .into_iter()

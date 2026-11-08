@@ -9,6 +9,7 @@ pub(crate) const KEY_CREATE_SUB_KEY: u32 = 0x0004;
 pub(crate) const ERROR_FILE_NOT_FOUND: i32 = 2;
 
 pub(crate) const REG_SZ: u32 = 1;
+pub(crate) const REG_BINARY: u32 = 3;
 pub(crate) const REG_MULTI_SZ: u32 = 7;
 const REG_DWORD: u32 = 4;
 

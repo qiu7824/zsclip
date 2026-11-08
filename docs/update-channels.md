@@ -21,10 +21,10 @@ Windows 安装包按发布版本命名：
 
 程序优先尝试匹配的镜像，并始终按官方发布的 SHA-256 和字节数校验。镜像不存在、无法匿名下载、文件大小或摘要不符时，回退到同一发布的 GitHub 安装包。无匹配镜像时直接使用 GitHub。
 
-发布者可在仓库 Actions 变量 `LANZOU_MIRRORS_JSON` 中配置镜像。使用 [蓝奏公开更新目录](https://www.ilanzou.com/s/PyjrO6mP) 时，先上传 `zsclip-v1.0.7-setup.exe` 和 `zsclip-v1.0.7-setup-no-lan.exe`，再核对两个文件的大小与摘要。目录中没有这两个严格同名安装包时，不启用 1.0.7 镜像配置。完成上传和匿名下载校验后，可执行以下配置：
+发布者可在仓库 Actions 变量 `LANZOU_MIRRORS_JSON` 中配置镜像。使用 [蓝奏公开更新目录](https://www.ilanzou.com/s/PyjrO6mP) 时，先上传 `zsclip-v1.0.13-setup.exe` 和 `zsclip-v1.0.13-setup-no-lan.exe`，再核对两个文件的大小与摘要。目录中没有这两个严格同名安装包时，不启用 1.0.13 镜像配置。完成上传和匿名下载校验后，可执行以下配置：
 
 ```powershell
-$version = '1.0.7'
+$version = '1.0.13'
 $shareUrl = 'https://www.ilanzou.com/s/PyjrO6mP'
 $mirrors = @{
     version = $version

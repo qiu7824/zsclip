@@ -41,13 +41,11 @@ pub(in crate::app) const MAIN_TIMER_IDS: MainTimerIds = MainTimerIds {
     outside_hide: ID_TIMER_OUTSIDE_HIDE,
     cloud_sync: ID_TIMER_CLOUD_SYNC,
 };
-pub(in crate::app) const STARTUP_RECOVERY_TICKS: u8 = 24;
+pub(in crate::app) const STARTUP_RECOVERY_TICKS: u8 = 60;
 pub(crate) const TRAY_UID: u32 = 1;
 pub(in crate::app) const HOTKEY_ID: i32 = 1;
 pub(in crate::app) const HOTKEY_ID_PLAIN: i32 = 3;
 pub(in crate::app) const MAIN_UI_LAYOUT: MainUiLayout = MainUiLayout::zsclip();
-pub(in crate::app) const CLIPBOARD_IGNORE_MS_PASTE: u64 = 1800;
-pub(in crate::app) const CLIPBOARD_IGNORE_MS_DIRECT_EDIT: u64 = 600;
 pub(in crate::app) const TRANSIENT_DUPLICATE_CAPTURE_MS: u64 = 3500;
 pub(in crate::app) const TRANSIENT_DUPLICATE_QUEUE_MS: u64 = 5000;
 pub(in crate::app) const LAN_RECENT_MESSAGE_LIMIT: usize = 512;

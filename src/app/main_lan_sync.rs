@@ -316,7 +316,7 @@ pub(super) unsafe fn handle_lan_sync_ready(hwnd: HWND) {
                                 db_find_duplicate_item_ids(0,&clipboard_item,&signature).first().copied()
                                     .and_then(db_load_item_full)
                             } else { Some(clipboard_item.clone()) };
-                            if let Some(item)=item { let _ = apply_lan_item_to_clipboard(state, &item); }
+                            if let Some(item)=item { let _ = apply_lan_item_to_clipboard(&item); }
                         }
                     } else {
                         remove_uninserted_image_file(&clipboard_item);
@@ -331,18 +331,15 @@ pub(super) unsafe fn handle_lan_sync_ready(hwnd: HWND) {
     refresh_settings_cloud_page_after_lan_sync(state.settings_hwnd);
 }
 
-unsafe fn apply_lan_item_to_clipboard(state: &mut AppState, item: &ClipItem) -> bool {
-    let ok = match item.kind {
+unsafe fn apply_lan_item_to_clipboard(item: &ClipItem) -> bool {
+    match item.kind {
         ClipKind::Text | ClipKind::Phrase => {
             let Some(text) = &item.text else {
                 return false;
             };
             let ok = platform_clipboard::WindowsClipboardHost::write_text(text);
             if ok {
-                state.note_programmatic_clipboard_signature(
-                    text_content_signature(text),
-                    CLIPBOARD_IGNORE_MS_PASTE,
-                );
+                note_programmatic_clipboard_write(text_content_signature(text));
             }
             ok
         }
@@ -353,10 +350,7 @@ unsafe fn apply_lan_item_to_clipboard(state: &mut AppState, item: &ClipItem) -> 
             let ok =
                 platform_clipboard::WindowsClipboardHost::write_image_rgba(&bytes, width, height);
             if ok {
-                state.note_programmatic_clipboard_signature(
-                    image_content_signature(&bytes, width, height),
-                    CLIPBOARD_IGNORE_MS_PASTE,
-                );
+                note_programmatic_clipboard_write(image_content_signature(&bytes, width, height));
             }
             ok
         }
@@ -366,18 +360,11 @@ unsafe fn apply_lan_item_to_clipboard(state: &mut AppState, item: &ClipItem) -> 
             };
             let ok = platform_clipboard::WindowsClipboardHost::write_file_paths(paths);
             if ok {
-                state.note_programmatic_clipboard_signature(
-                    file_paths_signature(paths),
-                    CLIPBOARD_IGNORE_MS_PASTE,
-                );
+                note_programmatic_clipboard_write(file_paths_signature(paths));
             }
             ok
         }
-    };
-    if ok {
-        set_ignore_clipboard_for_all_hosts(CLIPBOARD_IGNORE_MS_PASTE);
     }
-    ok
 }
 
 fn lan_message_key_from_envelope(envelope: &LanClipEnvelope) -> String {

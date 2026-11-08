@@ -40,9 +40,6 @@ pub(super) unsafe fn protected_entry_saved(parent: HWND, value: &str) {
         state.last_capture_source_app.clear();
         state.last_capture_at = None;
         state.recent_capture_signatures.clear();
-        state.recent_programmatic_clipboard_signature.clear();
-        state.recent_programmatic_clipboard_until = None;
-        state.ignore_clipboard_until = None;
         state.clear_selection();
         state.invalidate_all_queries();
         reload_state_from_db_persisting(state);

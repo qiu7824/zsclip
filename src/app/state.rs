@@ -278,14 +278,17 @@ pub(super) fn group_name_for_display(
 }
 
 pub(super) fn startup_can_hide(settings: &AppSettings) -> bool {
+    settings.silent_start
+        && (settings.tray_icon_enabled || settings.hotkey_enabled || startup_mouse_binding_available(settings))
+}
+
+pub(super) fn startup_mouse_binding_available(settings: &AppSettings) -> bool {
     let available = |action: &str| {
         let key = normalize_mouse_side_button_action(action);
         key != "none" && (key != "notes" || settings.notes_plugin_enabled)
     };
-    let mouse_binding_available = settings.mouse_side_button_enabled
-        && (available(&settings.mouse_side_button_1_action) || available(&settings.mouse_side_button_2_action));
-    settings.silent_start
-        && (settings.tray_icon_enabled || settings.hotkey_enabled || mouse_binding_available)
+    settings.mouse_side_button_enabled
+        && (available(&settings.mouse_side_button_1_action) || available(&settings.mouse_side_button_2_action))
 }
 
 pub(super) fn tray_mode_enabled(settings: &AppSettings) -> bool {
@@ -428,10 +431,6 @@ pub(crate) struct AppState {
     pub(crate) last_capture_at: Option<Instant>,
     pub(crate) last_clipboard_seq: u32,
     pub(crate) clipboard_terminal_sequence: u32,
-    pub(crate) ignore_clipboard_until: Option<Instant>,
-    pub(crate) skip_next_clipboard_update_once: bool,
-    pub(crate) recent_programmatic_clipboard_signature: String,
-    pub(crate) recent_programmatic_clipboard_until: Option<Instant>,
     pub(crate) settings: AppSettings,
     pub(crate) app_data_generation: u64,
     pub(crate) tray_icon_registered: bool,
@@ -985,10 +984,6 @@ impl AppState {
             last_capture_at: None,
             last_clipboard_seq: 0,
             clipboard_terminal_sequence: 0,
-            ignore_clipboard_until: None,
-            skip_next_clipboard_update_once: false,
-            recent_programmatic_clipboard_signature: String::new(),
-            recent_programmatic_clipboard_until: None,
             settings,
             app_data_generation,
             tray_icon_registered: false,
@@ -996,11 +991,7 @@ impl AppState {
             plain_paste_hotkey_registered: false,
             clipboard_listener_registered: false,
             hotkey_conflict_notified: false,
-            startup_recovery_ticks: if role == WindowRole::Main {
-                STARTUP_RECOVERY_TICKS
-            } else {
-                0
-            },
+            startup_recovery_ticks: 0,
             settings_hwnd: null_mut(),
             hover_scroll: false,
             scroll_fade_alpha: 0,

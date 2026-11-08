@@ -318,7 +318,7 @@ pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) ->
             }
             reload_state_from_db_persisting(state);
             spawn_startup_data_reconcile(hwnd, !state.settings.dedupe_filter_enabled);
-            register_hotkey_for(hwnd, state);
+            let _ = try_register_hotkey_for(hwnd, state);
             register_plain_paste_hotkey_for(hwnd, state);
             let _ = update_vv_mode_hook(hwnd, state.settings.vv_mode_enabled);
             position_main_window(hwnd, &state.settings, false);
@@ -350,8 +350,8 @@ pub(super) unsafe fn on_create(hwnd: HWND, create_params: WindowCreateParams) ->
     layout_children(hwnd);
     repaint_main_window(hwnd, true);
     if role == WindowRole::Main {
-        timer::start(hwnd, ID_TIMER_STARTUP_RECOVERY, 500);
         if let Some(state) = get_state_mut(hwnd) {
+            arm_startup_recovery_if_needed(state);
             schedule_cloud_sync(state, false);
         }
     }

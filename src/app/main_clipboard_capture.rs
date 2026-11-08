@@ -5,7 +5,6 @@ pub(super) const WM_CLIPBOARD_CAPTURE_READ_READY: u32 =
 const CLIPBOARD_READ_HELPER_ARG: &str = "--zsclip-read-clipboard-helper";
 const CLIPBOARD_READ_HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const MAX_CLIPBOARD_HELPER_RESULT_BYTES: u64 = 128 * 1024 * 1024;
-const CLIPBOARD_READ_QUEUE_CAPACITY: usize = 16;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 enum ClipboardCaptureWirePayload {
@@ -66,26 +65,28 @@ struct ClipboardCaptureReadReady {
     result: ClipboardCaptureReadResult,
 }
 
-static CLIPBOARD_READ_SENDER: OnceLock<std::sync::mpsc::SyncSender<ClipboardCaptureReadRequest>> =
-    OnceLock::new();
+struct ClipboardReadQueue {
+    worker: Option<std::thread::JoinHandle<()>>,
+    pending: Option<ClipboardCaptureReadRequest>,
+}
+
+static CLIPBOARD_READ_QUEUE: Mutex<ClipboardReadQueue> = Mutex::new(ClipboardReadQueue {
+    worker: None,
+    pending: None,
+});
+static CLIPBOARD_READ_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+static PROGRAMMATIC_CLIPBOARD_WRITE: Mutex<Option<(u32, String)>> = Mutex::new(None);
 static CLIPBOARD_HELPER_TEMP_COUNTER: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(1);
 
-unsafe fn clipboard_source_app_name() -> String {
+unsafe fn clipboard_owner_app_name() -> String {
     let owner = platform_clipboard::owner();
     let identity_host = WindowsWindowIdentityHost::new();
     let owner_root = identity_host.root_handle(owner);
-    if !owner_root.is_null() && !is_app_window(owner_root) {
-        let name = identity_host.process_name(owner_root);
-        if !name.is_empty() {
-            return name;
-        }
-    }
-    let foreground = identity_host.foreground_handle();
-    if foreground.is_null() || is_app_window(foreground) {
+    if owner_root.is_null() {
         return String::new();
     }
-    identity_host.process_name(foreground)
+    identity_host.process_name(owner_root)
 }
 
 unsafe fn foreground_source_app_name() -> String {
@@ -307,17 +308,23 @@ fn read_clipboard_capture_result(
         sequence = snapshot.sequence;
     }
 
-    let source_app = unsafe { clipboard_source_app_name() };
+    let owner_app = unsafe { clipboard_owner_app_name() };
+    let own_clipboard = is_self_clipboard_source_app(&owner_app);
+    let foreground_app = unsafe { foreground_source_app_name() };
+    let source_app = if owner_app.is_empty() {
+        foreground_app.clone()
+    } else {
+        owner_app
+    };
     if snapshot.open_failed || !clipboard_sequence_is_current(sequence) {
         return empty_clipboard_capture_result(sequence, source_app);
     }
-    let foreground_app = unsafe { foreground_source_app_name() };
     if source_app_uses_fragile_delayed_clipboard_rendering(&source_app)
         || source_app_uses_fragile_delayed_clipboard_rendering(&foreground_app)
         || snapshot.has_ignore_capture_format
         || snapshot.has_only_custom_formats
         || platform_clipboard::should_ignore_capture_by_snapshot(&snapshot)
-        || is_self_clipboard_source_app(&source_app)
+        || own_clipboard
     {
         return empty_clipboard_capture_result(sequence, source_app);
     }
@@ -624,6 +631,9 @@ fn run_clipboard_read_helper(
 ) -> Option<ClipboardCaptureReadResult> {
     use std::os::windows::process::CommandExt;
 
+    if !clipboard_sequence_is_current(request.sequence) {
+        return None;
+    }
     let executable = std::env::current_exe().ok()?;
     let (result_path, rgba_path) = clipboard_helper_temp_paths();
     let result = (|| {
@@ -664,38 +674,30 @@ fn run_clipboard_read_helper(
     result
 }
 
-fn clipboard_read_sender() -> &'static std::sync::mpsc::SyncSender<ClipboardCaptureReadRequest> {
-    CLIPBOARD_READ_SENDER.get_or_init(|| {
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<ClipboardCaptureReadRequest>(
-            CLIPBOARD_READ_QUEUE_CAPACITY,
-        );
-        let _ = std::thread::Builder::new()
-            .name("zsclip-clipboard-read".to_string())
-            .spawn(move || {
-                while let Ok(request) = receiver.recv() {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run_clipboard_read_helper(&request)
-                    }))
-                    .ok()
-                    .flatten();
-                    if let Some(result) = result {
-                        let ready = ClipboardCaptureReadReady {
-                            app_data_generation: request.app_data_generation,
-                            result,
-                        };
-                        unsafe {
-                            let _ = post_boxed_message(
-                                request.hwnd,
-                                WM_CLIPBOARD_CAPTURE_READ_READY,
-                                0,
-                                Box::new(ready),
-                            );
-                        }
-                    }
-                }
-            });
-        sender
-    })
+fn clipboard_read_worker() {
+    loop {
+        let request = {
+            let Ok(queue) = CLIPBOARD_READ_QUEUE.lock() else { return; };
+            let Ok(mut queue) = CLIPBOARD_READ_WAKE.wait_while(queue, |queue| queue.pending.is_none()) else {
+                return;
+            };
+            queue.pending.take().expect("clipboard read request was signaled")
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_clipboard_read_helper(&request)
+        }))
+        .ok()
+        .flatten();
+        if let Some(result) = result {
+            let ready = ClipboardCaptureReadReady {
+                app_data_generation: request.app_data_generation,
+                result,
+            };
+            unsafe {
+                let _ = post_boxed_message(request.hwnd, WM_CLIPBOARD_CAPTURE_READ_READY, 0, Box::new(ready));
+            }
+        }
+    }
 }
 
 struct CapturedItemDbRequest {
@@ -1138,7 +1140,7 @@ unsafe fn add_captured_image_item_locked(
         return false;
     }
     let sig = image_content_signature(&bytes, width, height);
-    if state.consume_recent_programmatic_clipboard_signature(&sig) {
+    if consume_programmatic_clipboard_write(sequence, &sig) {
         return true;
     }
     if state.should_skip_transient_duplicate_capture(&sig, source_app, sequence) {
@@ -1196,14 +1198,44 @@ fn clipboard_sequence_is_current(sequence: u32) -> bool {
     sequence == 0 || platform_clipboard::WindowsClipboardHost::sequence_number() == sequence
 }
 
+pub(super) fn note_programmatic_clipboard_write(signature: String) {
+    let sequence = platform_clipboard::sequence_number();
+    if let Ok(mut write) = PROGRAMMATIC_CLIPBOARD_WRITE.lock() {
+        *write = (sequence != 0 && !signature.is_empty()).then_some((sequence, signature));
+    }
+}
+
+fn consume_programmatic_clipboard_write(sequence: u32, signature: &str) -> bool {
+    PROGRAMMATIC_CLIPBOARD_WRITE
+        .lock()
+        .ok()
+        .and_then(|mut write| write.take())
+        .is_some_and(|(written_sequence, written_signature)| {
+            sequence == written_sequence && signature == written_signature
+        })
+}
+
 fn queue_clipboard_capture_read(hwnd: HWND, state: &AppState, sequence: u32) -> bool {
-    let request = ClipboardCaptureReadRequest {
+    let Ok(mut queue) = CLIPBOARD_READ_QUEUE.lock() else { return false; };
+    if queue.worker.as_ref().is_none_or(std::thread::JoinHandle::is_finished) {
+        let Ok(worker) = std::thread::Builder::new()
+            .name("zsclip-clipboard-read".to_string())
+            .spawn(clipboard_read_worker)
+        else {
+            return false;
+        };
+        queue.worker = Some(worker);
+    }
+    // The system exposes only the current clipboard. Keep the most recent
+    // copy pending while a previous clipboard owner is slow to render.
+    queue.pending = Some(ClipboardCaptureReadRequest {
         hwnd: hwnd as isize,
         app_data_generation: state.app_data_generation,
         sequence,
         rich_text_clipboard_enabled: state.settings.rich_text_clipboard_enabled,
-    };
-    clipboard_read_sender().try_send(request).is_ok()
+    });
+    CLIPBOARD_READ_WAKE.notify_one();
+    true
 }
 
 pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPARAM) {
@@ -1218,6 +1250,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
     let state = &mut *ptr;
     if ready.app_data_generation != state.app_data_generation
         || state.app_data_generation != crate::db_runtime::current_app_data_generation()
+        || !clipboard_capture_allowed(&state.settings)
         || !clipboard_sequence_is_current(ready.result.sequence)
     {
         return;
@@ -1236,7 +1269,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
         ClipboardCaptureReadPayload::Files { paths } => {
             let preview = build_files_preview(&paths);
             let signature = file_paths_signature(&paths);
-            if state.consume_recent_programmatic_clipboard_signature(&signature)
+            if consume_programmatic_clipboard_write(sequence, &signature)
                 || state.should_skip_transient_duplicate_capture(
                     &signature,
                     source_app.as_str(),
@@ -1284,7 +1317,7 @@ pub(super) unsafe fn apply_clipboard_capture_read_ready(hwnd: HWND, lparam: LPAR
                 .as_deref()
                 .map(|html| rich_text_content_signature(&normalized, html))
                 .unwrap_or_else(|| text_content_signature(&normalized));
-            if state.consume_recent_programmatic_clipboard_signature(&signature)
+            if consume_programmatic_clipboard_write(sequence, &signature)
                 || state.should_skip_transient_duplicate_capture(
                     &signature,
                     source_app.as_str(),
@@ -1347,16 +1380,6 @@ pub(super) unsafe fn capture_clipboard(hwnd: HWND) {
         remember_clipboard_sequence(state, sequence);
         return;
     }
-    if state.consume_skip_next_clipboard_update_once(sequence) {
-        return;
-    }
-    if let Some(until) = state.ignore_clipboard_until {
-        if Instant::now() < until {
-            remember_clipboard_sequence(state, sequence);
-            return;
-        }
-        state.ignore_clipboard_until = None;
-    }
     if !queue_clipboard_capture_read(hwnd, state, sequence) {
         remember_clipboard_sequence(state, sequence);
     }
@@ -1370,6 +1393,21 @@ pub(super) unsafe fn capture_clipboard_guarded(hwnd: HWND) {
 #[cfg(test)]
 mod clipboard_helper_tests {
     use super::*;
+
+    #[test]
+    fn programmatic_write_skips_its_own_payload_but_keeps_the_next_copy() {
+        let signature = text_content_signature("programmatic text");
+        *PROGRAMMATIC_CLIPBOARD_WRITE.lock().unwrap() = Some((41, signature.clone()));
+        assert!(consume_programmatic_clipboard_write(41, &signature));
+
+        *PROGRAMMATIC_CLIPBOARD_WRITE.lock().unwrap() = Some((41, signature.clone()));
+        assert!(!consume_programmatic_clipboard_write(42, &signature));
+
+        // Another process may replace the clipboard before we sample its
+        // sequence after a programmatic write.
+        *PROGRAMMATIC_CLIPBOARD_WRITE.lock().unwrap() = Some((42, signature));
+        assert!(!consume_programmatic_clipboard_write(42, &text_content_signature("ordinary copy")));
+    }
 
     #[test]
     fn office_unicode_format_keeps_blank_cells_tabs_joiners_and_display_values() {

@@ -24,9 +24,9 @@ pub(super) unsafe fn retry_startup_integrations(hwnd: HWND, state: &mut AppState
         sync_main_tray_icon(hwnd, state);
     }
 
-    if state.settings.hotkey_enabled && !state.hotkey_registered {
-        register_hotkey_for(hwnd, state);
-    }
+    let hotkey_conflict = state.settings.hotkey_enabled
+        && !state.hotkey_registered
+        && try_register_hotkey_for(hwnd, state) == Err(hotkey::ERROR_HOTKEY_ALREADY_REGISTERED);
 
     if state.settings.plain_paste_hotkey_enabled && !state.plain_paste_hotkey_registered {
         register_plain_paste_hotkey_for(hwnd, state);
@@ -40,17 +40,29 @@ pub(super) unsafe fn retry_startup_integrations(hwnd: HWND, state: &mut AppState
         register_clipboard_listener_for(hwnd, state);
     }
 
-    let tray_ready =
-        !tray_mode_enabled(&state.settings) || state.icons.app == 0 || state.tray_icon_registered;
-    let hotkey_ready = !state.settings.hotkey_enabled || state.hotkey_registered;
-    let plain_hotkey_ready =
-        !state.settings.plain_paste_hotkey_enabled || state.plain_paste_hotkey_registered;
-    let vv_ready = !state.settings.vv_mode_enabled || vv_hook_registered();
-    let clipboard_ready = state.clipboard_listener_registered;
-    if tray_ready && hotkey_ready && plain_hotkey_ready && vv_ready && clipboard_ready {
-        state.startup_recovery_ticks = 0;
+    if startup_integrations_need_retry(state) {
+        state.startup_recovery_ticks -= 1;
     } else {
-        state.startup_recovery_ticks = state.startup_recovery_ticks.saturating_sub(1);
+        state.startup_recovery_ticks = 0;
+    }
+    if state.startup_recovery_ticks != 0 {
+        return;
+    }
+
+    timer::stop(hwnd, ID_TIMER_STARTUP_RECOVERY);
+    if hotkey_conflict && state.tray_icon_registered && !state.hotkey_conflict_notified {
+        state.hotkey_conflict_notified = true;
+        crate::platform::tray_icon::notify(
+            hwnd, TRAY_UID, translate("快捷键冲突").as_ref(), &hotkey_conflict_message(state),
+        );
+    }
+    if startup_can_hide(&state.settings)
+        && !state.tray_icon_registered
+        && !state.hotkey_registered
+        && !startup_mouse_binding_available(&state.settings)
+        && !platform_window::is_visible(hwnd)
+    {
+        platform_window::show_no_activate(hwnd);
     }
 }
 
@@ -68,6 +80,7 @@ fn startup_integrations_need_retry(state: &AppState) -> bool {
 pub(super) fn arm_startup_recovery_if_needed(state: &mut AppState) {
     if startup_integrations_need_retry(state) {
         state.startup_recovery_ticks = STARTUP_RECOVERY_TICKS;
+        timer::start(state.hwnd, ID_TIMER_STARTUP_RECOVERY, 500);
     }
 }
 
