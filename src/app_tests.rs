@@ -1049,6 +1049,33 @@ fn browser_download_selection_text_is_skipped() {
 }
 
 #[test]
+fn browser_download_selection_keeps_link_with_description_text() {
+    // A normal copy of "link + description" from a browser publishes only
+    // CF_UNICODETEXT, so the plain-text fallback must not treat the
+    // description line as a download file name.
+    assert!(!browser_download_selection_should_skip(
+        "msedge.exe",
+        "msedge.exe",
+        "https://example.test/path?start=ref1\n这是一行中文说明",
+        &[]
+    ));
+    assert!(!browser_download_selection_should_skip(
+        "chrome.exe",
+        "chrome.exe",
+        "https://example.test/file.zip\nDownload report",
+        &[]
+    ));
+    // A bare ASCII file name in front of the URL still looks like a
+    // download selection and stays filtered.
+    assert!(browser_download_selection_should_skip(
+        "chrome.exe",
+        "chrome.exe",
+        "report.zip\nhttps://example.test/file.zip",
+        &[]
+    ));
+}
+
+#[test]
 fn max_items_label_parser_rejects_empty_text() {
     assert_eq!(settings_dropdown_max_items_from_label_opt("500"), Some(500));
     assert_eq!(
