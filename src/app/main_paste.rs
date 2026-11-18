@@ -406,7 +406,7 @@ pub(super) unsafe fn execute_paste_completion_plan_to_target(
             &state.settings.paste_success_sound_path,
         );
     }
-    if plan.hide_main_now {
+    if should_hide_after_paste(state, plan.hide_main_now) {
         WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
     }
     if plan.reset_plain_text_paste_mode {
@@ -425,6 +425,10 @@ pub(super) fn clear_pending_paste_completion(state: &mut AppState) {
     state.pending_paste_hide_main = false;
 }
 
+pub(super) fn should_hide_after_paste(state: &AppState, requested: bool) -> bool {
+    requested && !window_pin_keeps_open(state)
+}
+
 pub(super) unsafe fn execute_pending_paste_completion_after_focus(
     hwnd: HWND,
     state: &mut AppState,
@@ -436,7 +440,7 @@ pub(super) unsafe fn execute_pending_paste_completion_after_focus(
         debug_assert!(!plan.send_paste_after_clipboard);
         execute_paste_completion_plan(hwnd, state, plan);
     }
-    if hide_main_after_focus && !completion_hides_main {
+    if !completion_hides_main && should_hide_after_paste(state, hide_main_after_focus) {
         WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
     }
 }
@@ -901,7 +905,7 @@ unsafe fn queue_paste_after_clipboard_ready_to_target(
     state.paste_backspace_count = backspaces;
     state.paste_focus_retry_attempts = 0;
     if !target.is_null() {
-        if hide_main_immediately {
+        if should_hide_after_paste(state, hide_main_immediately) {
             WindowsMainWindowHost::new(Some(wnd_proc)).hide_main_window(hwnd);
         }
         if state.vv_paste_guard.is_none() {

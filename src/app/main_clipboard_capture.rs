@@ -910,9 +910,8 @@ pub(super) unsafe fn apply_captured_item_db_ready(hwnd: HWND, payload: CapturedI
             }
             state.cache_full_item(&item);
             let summary = clip_item_to_summary(&item);
-            let visible_query = state.load_state_for_tab(0).query.clone();
-            let inserted_index = if matches!(visible_query, Some(ref query) if query.group_id == 0 && query.search_text.trim().is_empty())
-            {
+            let visible_query = state.load_state_for_tab(0).query.as_ref();
+            let inserted_index = if visible_query.is_some_and(ItemsQuery::is_unfiltered_history) {
                 let index = state.insert_loaded_record_at_sorted_front(summary);
                 if state.tab_index == 0 {
                     state.list.apply_visible_len(state.records.len());

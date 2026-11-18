@@ -324,6 +324,39 @@ unsafe fn execute_row_data_action(hwnd: HWND, state: &mut AppState, action: Main
 }
 
 pub(super) const RENAME_PHRASE_COMMAND: usize = 41021;
+
+pub(super) unsafe fn create_group_for_selection(
+    hwnd: HWND, state: &mut AppState, category: i64, ids: &[i64], generation: u64,
+) {
+    if ids.is_empty() {
+        return;
+    }
+    let request = settings_group_text_input_request(SettingsGroupTextInputKind::Add, "");
+    let Some(name) = WindowsTextInputDialogHost::new().prompt_text(hwnd, request) else { return };
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+    let result = crate::db_runtime::with_shared_app_data_generation(generation, || {
+        db_create_named_group(category, name, ids)
+    });
+    match result {
+        Some(Ok(_)) => {
+            reload_state_from_db_persisting(state);
+            sync_peer_windows_from_db(hwnd);
+        }
+        Some(Err(error)) => {
+            show_native_dialog_message(hwnd, translate("新建分组失败").as_ref(),
+                &error.to_string(), NativeDialogLevel::Error);
+        }
+        None => {
+            apply_loaded_settings(hwnd, state);
+            show_native_dialog_message(hwnd, translate("新建分组失败").as_ref(),
+                tr("数据已更新，请重新打开菜单。", "Data changed. Reopen the menu."), NativeDialogLevel::Info);
+        }
+    }
+    repaint_main_window(hwnd, true);
+}
 pub(super) unsafe fn rename_phrase(hwnd: HWND, state: &mut AppState, item: &ClipItem) {
     if !state.settings.phrase_titles_enabled || item.kind != ClipKind::Phrase { return; }
     let generation = state.app_data_generation;

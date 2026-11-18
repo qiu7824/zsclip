@@ -1930,21 +1930,24 @@ pub(super) fn db_rename_group(
     })
 }
 
-pub(super) fn db_create_named_group(category: i64, name: &str) -> rusqlite::Result<ClipGroup> {
-    with_db(|conn| {
-        let next_sort: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM clip_groups WHERE category=?",
-                [category],
-                |row| row.get(0),
-            )
-            .unwrap_or(1);
-        conn.execute(
-            "INSERT INTO clip_groups(category, name, sort_order) VALUES(?, ?, ?)",
-            params![category, name, next_sort],
+pub(super) fn db_create_named_group(category: i64, name: &str, item_ids: &[i64]) -> rusqlite::Result<ClipGroup> {
+    with_db_mut(|conn| {
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO clip_groups(category, name, sort_order)
+             SELECT ?1, ?2, COALESCE(MAX(sort_order), 0) + 1 FROM clip_groups WHERE category=?1",
+            params![category, name],
         )?;
+        let id = tx.last_insert_rowid();
+        for item_id in item_ids {
+            if tx.execute("UPDATE items SET group_id=?1 WHERE id=?2 AND category=?3",
+                          params![id, item_id, category])? != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+        }
+        tx.commit()?;
         Ok(ClipGroup {
-            id: conn.last_insert_rowid(),
+            id,
             category,
             name: name.to_string(),
         })

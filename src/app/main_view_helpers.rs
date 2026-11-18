@@ -10,9 +10,13 @@ pub(super) fn window_pin_visible(state: &AppState) -> bool {
     state.settings.show_pin_button
 }
 
+pub(super) fn window_pin_keeps_open(state: &AppState) -> bool {
+    window_pin_visible(state) && state.window_pinned
+}
+
 pub(super) fn window_auto_hide_on_blur(state: &AppState) -> bool {
     state.settings.auto_hide_on_blur && !state.window_interactive_move
-        && !(window_pin_visible(state) && state.window_pinned)
+        && !window_pin_keeps_open(state)
 }
 
 pub(super) unsafe fn main_window_z_order(hwnd: HWND) -> HWND {

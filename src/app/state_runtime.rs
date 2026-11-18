@@ -63,6 +63,10 @@ fn sorted_front_insert_index(items: &[ClipItem], pinned: bool) -> usize {
 }
 
 fn insert_loaded_item_at_sorted_front(items: &mut Vec<ClipItem>, item: ClipItem) -> usize {
+    // A page refresh can observe a committed row before its capture notification arrives.
+    if let Some(index) = items.iter().position(|loaded| loaded.id == item.id) {
+        return index;
+    }
     let index = sorted_front_insert_index(items, item.pinned);
     items.insert(index, clip_item_to_summary(&item));
     index
@@ -438,11 +442,8 @@ impl AppState {
             self.cache_full_item(&item);
         }
         let summary = clip_item_to_summary(&item);
-        let visible_query = self.load_state_for_tab(0).query.clone();
-        let inserted_index = if matches!(visible_query, Some(ref query) if query.manual_tab_id.is_none()
-            && query.category == 0 && query.kind_filter == ClipKindFilter::All
-            && query.group_id == 0 && query.search_text.trim().is_empty())
-        {
+        let visible_query = self.load_state_for_tab(0).query.as_ref();
+        let inserted_index = if visible_query.is_some_and(ItemsQuery::is_unfiltered_history) {
             let index = self.insert_loaded_record_at_sorted_front(summary);
             if self.tab_index == 0 {
                 self.list.apply_visible_len(self.records.len());
@@ -569,6 +570,15 @@ mod sorted_insert_tests {
             group_id: 0,
             created_at: String::new(),
         }
+    }
+
+    #[test]
+    fn capture_notification_keeps_the_row_already_loaded_by_paging() {
+        let mut items = vec![item(9, true), item(8, false), item(7, false)];
+        assert_eq!(insert_loaded_item_at_sorted_front(&mut items, item(7, false)), 2);
+        assert_eq!(insert_loaded_item_at_sorted_front(&mut items, item(9, false)), 0);
+        assert_eq!(items.iter().map(|i| (i.id, i.pinned)).collect::<Vec<_>>(),
+                   [(9, true), (8, false), (7, false)]);
     }
 
     #[test]

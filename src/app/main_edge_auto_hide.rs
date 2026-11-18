@@ -437,6 +437,11 @@ pub(super) unsafe fn handle_edge_auto_hide_tick(hwnd: HWND) {
         clear_edge_dock_state(state);
         return;
     }
+    if window_pin_keeps_open(state) {
+        restore_edge_hidden_window(hwnd, state);
+        state.edge_hide_pending_until = None;
+        return;
+    }
 
     let cursor = platform_input::cursor_pos().unwrap_or(POINT { x: 0, y: 0 });
 

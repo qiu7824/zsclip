@@ -28,7 +28,7 @@ pub(super) unsafe fn execute_settings_group_action(
                 let category = source_tab_category(settings_group_view_current(st));
                 let result =
                     crate::db_runtime::with_shared_app_data_generation(expected_generation, || {
-                        db_create_named_group(category, &name)
+                        db_create_named_group(category, &name, &[])
                     });
                 let Some(result) = result else {
                     refresh_settings_groups_after_stale_data(st);

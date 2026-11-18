@@ -2311,6 +2311,15 @@ pub(crate) struct ItemsQuery {
 }
 
 impl ItemsQuery {
+    pub(crate) fn is_unfiltered_history(&self) -> bool {
+        self.category == 0
+            && self.manual_tab_id.is_none()
+            && self.group_id == 0
+            && self.kind_filter == ClipKindFilter::All
+            && self.search_text.trim().is_empty()
+            && self.near_query.is_none()
+    }
+
     pub(crate) fn for_tab(
         tab: usize,
         grouping_enabled: bool,

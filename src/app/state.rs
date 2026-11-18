@@ -296,7 +296,7 @@ pub(super) fn tray_mode_enabled(settings: &AppSettings) -> bool {
 }
 
 pub(super) fn close_to_tray_enabled(settings: &AppSettings) -> bool {
-    tray_mode_enabled(settings) && settings.close_without_exit
+    settings.close_without_exit
 }
 
 pub(super) fn title_button_visible(_settings: &AppSettings, _key: &str) -> bool {
