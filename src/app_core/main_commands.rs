@@ -294,6 +294,7 @@ pub(crate) mod menu_ids {
     pub(crate) const ROW_QR_IMAGE: usize = 41018;
     pub(crate) const ROW_TEXT_TRANSLATE: usize = 41019;
     pub(crate) const ROW_LAN_PUSH: usize = 41020;
+    pub(crate) const ROW_CREATE_GROUP: usize = 41022;
     pub(crate) const ROW_GROUP_BASE: usize = 41100;
     pub(crate) const GROUP_FILTER_ALL: usize = 43100;
     pub(crate) const GROUP_FILTER_BASE: usize = 43110;

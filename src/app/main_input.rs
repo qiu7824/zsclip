@@ -526,8 +526,9 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
             })
             .is_some();
     let tag_targets = state.settings.category_tabs.clone();
-    let tag_item_ids = state.selected_db_ids();
-    let tag_generation = state.app_data_generation;
+    let item_ids = state.selected_db_ids();
+    let generation = state.app_data_generation;
+    let category = source_tab_category(state.tab_index);
     let cmd = show_row_menu(
         hwnd,
         x,
@@ -543,7 +544,11 @@ pub(super) unsafe fn handle_rbutton_up(hwnd: HWND, position: UiPoint) {
         current_can_translate,
     );
     if cmd != 0 {
-        if super::main_customization::handle_tag_row_command(hwnd, state, cmd, &tag_targets, &tag_item_ids, tag_generation) {
+        if cmd == menu_ids::ROW_CREATE_GROUP {
+            super::main_row_commands::create_group_for_selection(hwnd, state, category, &item_ids, generation);
+            return;
+        }
+        if super::main_customization::handle_tag_row_command(hwnd, state, cmd, &tag_targets, &item_ids, generation) {
             return;
         }
         if cmd == super::main_row_commands::RENAME_PHRASE_COMMAND {

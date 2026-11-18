@@ -11,7 +11,7 @@ pub(crate) fn run() -> AppResult<()> {
         let hwnd = platform_window::find_window_by_class(WindowRole::Main.class_name());
         if !hwnd.is_null() {
             let mut main_window_host = WindowsMainWindowHost::new(Some(wnd_proc));
-            if !boot_settings.tray_icon_enabled {
+            if !boot_settings.tray_icon_enabled && !close_to_tray_enabled(&boot_settings) {
                 main_window_host.close_main_window(hwnd);
             } else {
                 main_window_host.restore_main_window(hwnd);

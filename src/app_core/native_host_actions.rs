@@ -380,6 +380,7 @@ pub(crate) struct NativeHostRowPopupMenuInput {
     pub(crate) menu: MainRowMenuInput,
     pub(crate) labels: MainRowMenuLabelInput,
     pub(crate) empty_group_label: String,
+    pub(crate) create_group_label: Option<String>,
 }
 
 impl NativeHostRowPopupMenuInput {
@@ -405,6 +406,7 @@ impl NativeHostRowPopupMenuInput {
                 current_is_dir: false,
             },
             empty_group_label: "(No groups)".to_string(),
+            create_group_label: None,
         }
     }
 }
@@ -450,6 +452,7 @@ pub(crate) fn native_host_row_popup_menu_input_for_projection(
             current_is_dir: false,
         },
         empty_group_label: "(No groups)".to_string(),
+        create_group_label: None,
     }
 }
 
@@ -493,11 +496,25 @@ where
 {
     let grouping_enabled = input.menu.grouping_enabled;
     let plan = main_row_menu_plan(input.menu);
+    let mut group_entries = main_row_group_popup_entries(groups, input.empty_group_label);
+    if let Some(label) = input.create_group_label {
+        if groups.is_empty() {
+            group_entries.clear();
+        } else {
+            group_entries.push(NativePopupMenuEntry::Separator);
+        }
+        group_entries.push(NativePopupMenuEntry::Command {
+            id: menu_ids::ROW_CREATE_GROUP,
+            label,
+            enabled: true,
+            checked: false,
+        });
+    }
     main_row_popup_menu_entries(
         &plan,
         input.labels,
         grouping_enabled,
-        main_row_group_popup_entries(groups, input.empty_group_label),
+        group_entries,
         label_localizer,
     )
 }

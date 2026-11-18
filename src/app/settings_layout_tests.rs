@@ -692,6 +692,54 @@ fn panel_state(role: WindowRole) -> AppState {
 }
 
 #[test]
+fn paste_hide_respects_the_current_pin_on_both_panels() {
+    for role in [WindowRole::Main, WindowRole::Quick] {
+        let mut state = panel_state(role);
+        state.settings.show_pin_button = true;
+        state.settings.click_hide = true;
+        let queued = paste_completion_input(&state, 1);
+        assert!(should_hide_after_paste(&state, queued.click_hide));
+        state.window_pinned = true;
+        assert!(!should_hide_after_paste(&state, queued.click_hide));
+        state.window_pinned = false;
+        assert!(should_hide_after_paste(&state, queued.click_hide));
+        assert!(!should_hide_after_paste(&state, false));
+    }
+}
+
+#[test]
+fn close_without_exit_works_with_or_without_the_tray_icon() {
+    let mut settings = AppSettings::default();
+    for tray_visible in [true, false] {
+        settings.tray_icon_enabled = tray_visible;
+        for keep_running in [true, false] {
+            settings.close_without_exit = keep_running;
+            assert_eq!(close_to_tray_enabled(&settings), keep_running);
+        }
+    }
+}
+
+#[test]
+fn creating_a_group_assigns_only_the_selected_category_and_rolls_back_stale_selections() {
+    crate::db_runtime::with_test_db(|| {
+        with_db(|db| db.execute_batch("INSERT INTO items(id,category,kind,preview) VALUES
+            (10,0,'text','one'),(11,0,'image','two'),(12,1,'phrase','three')"))?;
+        let group = db_create_named_group(0, "work", &[10, 11])?;
+        let phrase = db_create_named_group(1, "phrase", &[12])?;
+        assert!(db_create_named_group(0, "changed", &[10, 12]).is_err());
+        assert!(db_create_named_group(0, "missing", &[11, 21]).is_err());
+        let assigned = with_db(|db| {
+            let mut rows = db.prepare("SELECT group_id FROM items ORDER BY id")?;
+            let ids = rows.query_map([], |row| row.get::<_, i64>(0))?;
+            ids.collect::<rusqlite::Result<Vec<_>>>()
+        })?;
+        assert_eq!(assigned, [group.id, group.id, phrase.id]);
+        assert_eq!(db_load_groups(0).len(), 1);
+        Ok(())
+    }).unwrap();
+}
+
+#[test]
 fn pin_button_save_updates_live_and_reloaded_main_panel() {
     crate::db_runtime::with_test_db(|| unsafe {
         let owner = platform_window::create_window_ex(

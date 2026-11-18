@@ -3846,6 +3846,35 @@ fn native_host_full_row_popup_entries_route_through_menu_commands() {
 }
 
 #[test]
+fn live_capture_inserts_directly_only_into_unfiltered_history() {
+    let history = ItemsQuery::for_tab(0, false, [0; 2], [ClipKindFilter::All; 2], "");
+    assert!(history.is_unfiltered_history());
+    for filtered in [
+        ItemsQuery { kind_filter: ClipKindFilter::Image, ..history.clone() },
+        ItemsQuery { manual_tab_id: Some("work".into()), ..history.clone() },
+        ItemsQuery { group_id: 1, ..history.clone() },
+        ItemsQuery { category: 1, ..history.clone() },
+        ItemsQuery { search_text: "project".into(), ..history.clone() },
+        ItemsQuery { near_query: Some("text".into()), ..history.clone() },
+    ] {
+        assert!(!filtered.is_unfiltered_history());
+    }
+}
+
+#[test]
+fn new_group_command_is_available_in_the_empty_row_group_submenu() {
+    let mut input = NativeHostRowPopupMenuInput::demo();
+    input.create_group_label = Some("New Group".into());
+    let entries = native_host_full_row_popup_menu_entries_for_groups(&[], input, str::to_owned);
+    let group = entries.iter().find_map(|entry| match entry {
+        NativePopupMenuEntry::Submenu { label, entries, enabled: true } if label == "添加到分组" => Some(entries),
+        _ => None,
+    }).unwrap();
+    assert!(matches!(group.as_slice(), [NativePopupMenuEntry::Command { id, enabled: true, .. }]
+        if *id == menu_ids::ROW_CREATE_GROUP));
+}
+
+#[test]
 fn native_host_row_popup_entries_accept_real_group_list() {
     let entries = native_host_full_row_popup_menu_entries_for_groups(
         &[

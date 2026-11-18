@@ -93,6 +93,7 @@ pub(super) unsafe fn show_row_menu(
                 current_is_dir,
             },
             empty_group_label: translate("（暂无分组）").into_owned(),
+            create_group_label: Some(translate("新建分组").into_owned()),
         },
         |label| translate(label).into_owned(),
     );
